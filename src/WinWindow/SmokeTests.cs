@@ -137,11 +137,18 @@ internal static class SmokeTests
             Palette.Apply(false); shell.Width = 880; shell.Height = 560; shell.UpdateLayout();
             Capture(shell, Path.Combine(output, "workbench-minimum.png"));
             ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            shell.UpdateLayout(); Capture(shell, Path.Combine(output, "settings-minimum.png"));
+            await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            await Task.Delay(100); shell.UpdateLayout();
+            Assert(((TextBox)shell.FindName("ShowKeyBox")).Text == "Win+Ctrl+Space", "settings retain the actual hotkey text");
+            Capture(shell, Path.Combine(output, "settings-minimum.png"));
             ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var slider = (Slider)shell.FindName("OpacitySlider");
+            slider.Focus(); slider.Value = 25; slider.Value = 73;
+            await WaitAsync("coalesced slider edit", () => Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(73));
+            Assert(slider.IsEnabled && slider.Value == 73, "slider keeps accepting input and applies the latest value");
+            await WaitAsync("slider completion", () => !chosen.IsBusy);
             await shell.Manager.RestoreAllAsync();
             Assert(store.ReadRecovery().Count == 0, "normal recovery clears the journal");
-
             shell.ShowShell(); await WaitAsync("own activation", () => Native.GetForegroundWindow() == own);
             Assert(Native.IsTopmost(own), "actual focus temporarily pins the workbench");
             Native.SetForegroundWindow(normal.Hwnd);
@@ -215,8 +222,7 @@ internal static class SmokeTests
     }
     private static async Task DesktopRegressionAsync(string output, List<Process> processes)
     {
-        // Unlike the visual fixture above, these are full production startup
-        // paths, with the real mutex, message hook, tray and hotkey registration.
+        // Full production startup: real mutex, message hook, tray and hotkeys.
         var trayStore = ChildStore(output, true);
         var tray = await StartMainAsync(trayStore, processes);
         await WakeAsync(trayStore, tray.Hwnd);
@@ -229,7 +235,6 @@ internal static class SmokeTests
         await WakeAsync(trayStore, tray.Hwnd);
         Assert(!Native.IsIconic(tray.Hwnd), "real desktop entry wakes a minimized workbench");
         Stop(tray.Process); await tray.Process.WaitForExitAsync();
-
         string name = @"Local\WinWindow.Stall." + Guid.NewGuid().ToString("N");
         using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, name + ".entered");
         using var release = new EventWaitHandle(false, EventResetMode.ManualReset, name + ".release");
@@ -240,8 +245,7 @@ internal static class SmokeTests
             var store = ChildStore(output, false);
             store.Preferences.Rules.Add(Rule(stuck.Hwnd)); store.Preferences.Rules.Add(Rule(healthy.Hwnd)); store.SavePreferences();
             Native.PostMessage(stuck.Hwnd, 0x8014, 0, 0);
-            // This is setup only: success below requires the actual native call
-            // to enter the target WndProc and signal the named event.
+            // Success requires the actual native call to enter the target WndProc.
             await Task.Delay(100);
             var app = await StartMainAsync(store, processes);
             await WaitAsync("worker entered blocked foreign WndProc", () => entered.WaitOne(0));

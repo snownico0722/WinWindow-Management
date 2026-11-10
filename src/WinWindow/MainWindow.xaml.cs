@@ -29,7 +29,7 @@ public partial class MainWindow : Window
     private HwndSource? _source;
     private nint _hwnd;
     private string _filter = "all";
-    private bool _ready, _syncing, _picking, _compact, _quitting, _allowClose, _drainingOpacity;
+    private bool _ready, _syncing, _picking, _compact, _quitting, _allowClose;
     private Rect _expandedBounds;
     private WindowState _expandedState = WindowState.Normal, _lastState = WindowState.Normal;
     private Task? _initialization;
@@ -59,7 +59,7 @@ public partial class MainWindow : Window
         Manager.Changed += RefreshView; Manager.Notice += ShowStatus; store.Error += ShowStatus;
         _refreshTimer.Tick += async (_, _) => { _refreshTimer.Stop(); await RunAsync(Manager.RefreshAsync); };
         _aggressiveTimer.Tick += (_, _) => { if (CanEnforceOwn() && Native.OverlappingTopmostAbove(_hwnd)) Native.Raise(_hwnd); };
-        _opacityTimer.Tick += async (_, _) => await DrainOpacityAsync();
+        _opacityTimer.Tick += (_, _) => DrainOpacity();
         _statusTimer.Tick += (_, _) => DismissStatus();
         SourceInitialized += OnSourceInitialized;
         Loaded += async (_, _) => await InitializeAsync();
@@ -156,6 +156,7 @@ public partial class MainWindow : Window
             SelectHint.Visibility = Selected is null ? Visibility.Visible : Visibility.Collapsed;
         }
         finally { _syncing = false; }
+        if (_ready) SyncSelected();
     }
     internal void SelectForTest(WindowItem item) { WindowList.SelectedItem = item; WindowList.ScrollIntoView(item); }
     private void SyncSelected()
@@ -165,7 +166,11 @@ public partial class MainWindow : Window
         try
         {
             item.Changed(nameof(item.Pinned)); item.Changed(nameof(item.ClickThrough)); item.NotifyState();
-            if (!OpacityBox.IsKeyboardFocusWithin && !_pendingOpacity.ContainsKey(item)) item.Changed(nameof(item.Opacity));
+            if (!_pendingOpacity.ContainsKey(item))
+            {
+                if (!OpacityBox.IsKeyboardFocusWithin) OpacityBox.Text = item.Opacity.ToString();
+                if (!OpacitySlider.IsMouseCaptureWithin && !OpacitySlider.IsKeyboardFocusWithin) OpacitySlider.Value = item.Opacity;
+            }
         }
         finally { _syncing = false; }
     }
@@ -187,36 +192,34 @@ public partial class MainWindow : Window
     private void QueueOpacity(WindowItem item, int value)
     {
         if (_quitting) return;
-        _pendingOpacity[item] = value; _opacityTimer.Start();
+        _pendingOpacity[item] = Math.Clamp(value, 0, 100); _opacityTimer.Start();
     }
-    private async Task DrainOpacityAsync()
+    private void DrainOpacity()
     {
-        if (_drainingOpacity || _quitting) return;
-        _drainingOpacity = true;
-        try
+        if (_quitting) return;
+        // A blocked target keeps only its latest desired value. Do not await it
+        // here: other targets and subsequent UI input must remain independent.
+        foreach (var pair in _pendingOpacity.ToArray())
         {
-            foreach (var pair in _pendingOpacity.ToArray())
-            {
-                if (_quitting) break;
-                if (pair.Key.IsBusy) continue;
-                _pendingOpacity.Remove(pair.Key);
-                if (Manager.Items.Contains(pair.Key)) await RunAsync(() => Manager.SetOpacityAsync(pair.Key, pair.Value));
-            }
-            if (_pendingOpacity.Count == 0) _opacityTimer.Stop();
+            if (pair.Key.IsBusy) continue;
+            _pendingOpacity.Remove(pair.Key);
+            if (Manager.Items.Contains(pair.Key)) _ = RunAsync(() => Manager.SetOpacityAsync(pair.Key, pair.Value));
         }
-        finally { _drainingOpacity = false; }
+        if (_pendingOpacity.Count == 0) _opacityTimer.Stop();
     }
     private void OpacitySlider_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (!_ready || _syncing || Selected is not { } item || !(OpacitySlider.IsMouseCaptureWithin || OpacitySlider.IsKeyboardFocusWithin)) return;
-        QueueOpacity(item, (int)Math.Round(e.NewValue));
+        int value = (int)Math.Round(e.NewValue);
+        if (!OpacityBox.IsKeyboardFocusWithin) OpacityBox.Text = value.ToString();
+        QueueOpacity(item, value);
     }
     private void ApplyOpacityText()
     {
         var item = _opacityEditItem; string text = _opacityEditText; _opacityEditItem = null;
         if (_syncing || item is null) return;
         if (!int.TryParse(text, out int value) || value is < 0 or > 100) { ShowStatus("不透明度请输入 0–100。"); item.Changed(nameof(item.Opacity)); return; }
-        if (value != item.Opacity) QueueOpacity(item, value);
+        if (value != item.Opacity || item.IsBusy || _pendingOpacity.ContainsKey(item)) QueueOpacity(item, value);
     }
     private void OpacityBox_KeyDown(object sender, KeyEventArgs e)
     {
@@ -237,7 +240,6 @@ public partial class MainWindow : Window
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RunAsync(Manager.RefreshAsync);
     private async void WindowList_DoubleClick(object sender, MouseButtonEventArgs e) { if (Selected is { IsAvailable: true } item) await RunAsync(() => Manager.RestoreParkingAsync(item)); }
     private void CopyDetails_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) Run(() => { Clipboard.SetText($"{item.Title}\n{item.Details}\n{item.ProcessPath}"); ShowStatus("已复制窗口信息。"); }); }
-
     private void Picker_Down(object sender, MouseButtonEventArgs e)
     {
         _picking = true; PickerButton.CaptureMouse(); Mouse.OverrideCursor = Cursors.Cross; e.Handled = true;
@@ -262,7 +264,6 @@ public partial class MainWindow : Window
         if (_picking) { CancelPicker(); e.Handled = true; }
         else if (SettingsPage.Visibility == Visibility.Visible) { ShowSettings(false); e.Handled = true; }
     }
-
     private bool CanEnforceOwn() => !_quitting && _hwnd != 0 && OwnWindowPolicy.Enforce(IsVisible, WindowState == WindowState.Minimized, _store.Preferences.ManualTopmost, _compact, _store.Preferences.AbsoluteTopmost);
     internal void ApplyOwnPolicy()
     {
@@ -280,9 +281,7 @@ public partial class MainWindow : Window
         if (_quitting) return;
         if (!IsVisible) Show();
         if (WindowState == WindowState.Minimized) WindowState = _compact ? WindowState.Normal : _lastState;
-        // Explicit user wake is the only temporary raise. Clean up immediately,
-        // including when Windows refuses foreground activation; no idle callback
-        // or list refresh stands between the raise and its cleanup.
+        // Explicit wake alone may raise temporarily; always reconcile before refresh.
         try { Native.Raise(_hwnd); Activate(); Native.SetForegroundWindow(_hwnd); }
         finally { ApplyOwnPolicy(); }
         QueueRefresh();

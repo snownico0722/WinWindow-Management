@@ -10,7 +10,8 @@ internal sealed class WindowManager
 {
     private readonly StateStore _store;
     private readonly Dictionary<WindowItem, Task> _operations = new();
-    private bool _refreshing, _stopping;
+    private bool _refreshing;
+    private volatile bool _stopping;
     private Task<int>? _shutdown;
     public ObservableCollection<WindowItem> Items { get; } = new();
     public event Action<string>? Notice;

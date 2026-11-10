@@ -65,20 +65,20 @@
                     <TextBlock Text="{Binding Title}" FontSize="19" FontWeight="SemiBold" TextWrapping="Wrap" MaxHeight="80" TextTrimming="CharacterEllipsis"/>
                     <Button Grid.Column="1" Style="{StaticResource TitleButton}" Width="28" Content="&#xE8C8;" ToolTip="复制窗口信息" AutomationProperties.Name="复制窗口信息" Click="CopyDetails_Click"/>
                   </Grid>
-                  <StackPanel IsEnabled="{Binding CanOperate}">
-                    <CheckBox Content="保持置顶" IsChecked="{Binding Pinned, Mode=OneWay}" Click="Pin_Click"/>
-                    <CheckBox Content="鼠标穿透" IsChecked="{Binding ClickThrough, Mode=OneWay}" Click="ClickThrough_Click"/>
+                  <StackPanel IsEnabled="{Binding IsAvailable}">
+                    <CheckBox IsEnabled="{Binding CanOperate}" Content="保持置顶" IsChecked="{Binding Pinned, Mode=OneWay}" Click="Pin_Click"/>
+                    <CheckBox IsEnabled="{Binding CanOperate}" Content="鼠标穿透" IsChecked="{Binding ClickThrough, Mode=OneWay}" Click="ClickThrough_Click"/>
                     <Grid Margin="0,24,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="60"/><ColumnDefinition Width="20"/></Grid.ColumnDefinitions>
                       <TextBlock Text="不透明度" VerticalAlignment="Center"/>
-                      <TextBox x:Name="OpacityBox" Grid.Column="1" Text="{Binding Opacity, Mode=OneWay}" TextAlignment="Center" Padding="4,5" MinHeight="30" KeyDown="OpacityBox_KeyDown" LostKeyboardFocus="OpacityBox_LostFocus" AutomationProperties.Name="不透明度百分比"/>
+                      <TextBox x:Name="OpacityBox" Grid.Column="1" TextAlignment="Center" Padding="4,5" MinHeight="30" KeyDown="OpacityBox_KeyDown" LostKeyboardFocus="OpacityBox_LostFocus" AutomationProperties.Name="不透明度百分比"/>
                       <TextBlock Grid.Column="2" Text="%" VerticalAlignment="Center" HorizontalAlignment="Right"/>
                     </Grid>
-                    <Slider x:Name="OpacitySlider" Minimum="0" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding Opacity, Mode=OneWay}" ValueChanged="OpacitySlider_Changed" AutomationProperties.Name="不透明度 0 到 100"/>
-                    <UniformGrid Columns="2" Margin="0,24,0,20">
+                    <Slider x:Name="OpacitySlider" Minimum="0" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="OpacitySlider_Changed" AutomationProperties.Name="不透明度 0 到 100"/>
+                    <UniformGrid IsEnabled="{Binding CanOperate}" Columns="2" Margin="0,24,0,20">
                       <Button Content="强制最小化" Margin="0,0,4,0" Click="Park_Click"/>
                       <Button Content="恢复窗口" Margin="4,0,0,0" Click="RestoreWindow_Click" ToolTip="恢复收起的窗口，保留置顶和透明度"/>
                     </UniformGrid>
-                    <CheckBox Content="记住设置" IsChecked="{Binding Remembered, Mode=OneWay}" Click="Remember_Click" ToolTip="下次出现同一窗口时应用这些设置"/>
+                    <CheckBox IsEnabled="{Binding CanOperate}" Content="记住设置" IsChecked="{Binding Remembered, Mode=OneWay}" Click="Remember_Click" ToolTip="下次出现同一窗口时应用这些设置"/>
                   </StackPanel>
                   <UniformGrid Columns="2" Margin="0,24,0,0">
                     <Button Content="恢复原样" Style="{StaticResource QuietButton}" Margin="0,0,4,0" Click="RestoreOriginal_Click" ToolTip="撤销对这个窗口的修改"/>
