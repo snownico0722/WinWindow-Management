@@ -71,7 +71,6 @@ internal static class Native
     public static byte ToAlpha(int percent) => (byte)((Math.Clamp(percent, 0, 100) * 255 + 50) / 100);
     public static int ToPercent(byte alpha) => (alpha * 100 + 127) / 255;
     public static bool Overlaps(Rect a, Rect b) => a.Left < b.Right && a.Right > b.Left && a.Top < b.Bottom && a.Bottom > b.Top;
-
     public static bool IsTarget(nint hwnd)
     {
         if (!IsWindow(hwnd)) return false;
@@ -79,7 +78,6 @@ internal static class Native
         if (pid == Environment.ProcessId) return false;
         return ClassName(hwnd) is not ("Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or "DV2ControlHost");
     }
-
     public static WindowIdentity? Identity(nint hwnd)
     {
         GetWindowThreadProcessId(hwnd, out uint pid);
@@ -99,18 +97,16 @@ internal static class Native
         }
         catch (Exception e) when (e is ArgumentException or InvalidOperationException or Win32Exception) { return null; }
     }
-
     public static bool Matches(WindowIdentity identity)
     {
         if (!IsWindow(identity.Hwnd)) return false;
         var current = Identity(identity.Hwnd);
         return current is not null && current.ProcessId == identity.ProcessId && current.ProcessStarted == identity.ProcessStarted && current.ClassName == identity.ClassName;
     }
-
     public static List<WindowItem> Enumerate()
     {
         var result = new List<WindowItem>();
-        EnumWindows((hwnd, _) =>
+        EnumWindows((hwnd, data) =>
         {
             if (!IsTarget(hwnd) || !IsWindowVisible(hwnd)) return true;
             long style = Style(hwnd);
@@ -128,7 +124,6 @@ internal static class Native
         }, 0);
         return result;
     }
-
     public static WindowSnapshot Capture(WindowIdentity id)
     {
         EnsureIdentity(id);
@@ -140,7 +135,9 @@ internal static class Native
     private static void Check(bool ok, string action) { if (!ok) throw new Win32Exception(Marshal.GetLastPInvokeError(), $"{action}失败。目标可能以更高权限运行，或不支持此操作。"); }
     public static void SetStyleBits(nint hwnd, long mask, long bits)
     {
-        long value = (Style(hwnd) & ~mask) | (bits & mask);
+        long current = Style(hwnd);
+        long value = (current & ~mask) | (bits & mask);
+        if (current == value) return;
         Marshal.SetLastPInvokeError(0);
         nint previous = IntPtr.Size == 8 ? SetWindowLong64(hwnd, -20, (nint)value) : (nint)SetWindowLong32(hwnd, -20, (int)value);
         if (previous == 0 && Marshal.GetLastPInvokeError() != 0) Check(false, "修改窗口样式");
@@ -172,20 +169,23 @@ internal static class Native
     public static bool ApplyPlacement(nint hwnd, Placement placement)
     {
         placement.Length = (uint)Marshal.SizeOf<Placement>();
-        placement.Flags |= 4; // WPF_ASYNCWINDOWPLACEMENT: do not block on another UI thread.
+        placement.Flags |= 4;
         return SetWindowPlacement(hwnd, ref placement);
     }
     public static void RestoreStyles(WindowSnapshot snapshot)
     {
         EnsureIdentity(snapshot.Identity);
         nint hwnd = snapshot.Identity.Hwnd;
-        if (snapshot.EditedTopmost) SetTopmost(hwnd, snapshot.Topmost);
+        if (snapshot.EditedTopmost && IsTopmost(hwnd) != snapshot.Topmost) SetTopmost(hwnd, snapshot.Topmost);
         if (snapshot.EditedOpacity || snapshot.EditedClickThrough)
         {
             long mask = Layered | (snapshot.EditedClickThrough ? Transparent : 0);
             SetStyleBits(hwnd, mask, snapshot.ExtendedStyle);
             if (snapshot.EditedOpacity && (snapshot.ExtendedStyle & Layered) != 0 && snapshot.LayeredReadable)
-                Check(SetLayeredWindowAttributes(hwnd, snapshot.ColorKey, snapshot.Alpha, snapshot.LayeredFlags), "恢复透明状态");
+            {
+                bool unchanged = GetLayeredWindowAttributes(hwnd, out uint color, out byte alpha, out uint flags) && color == snapshot.ColorKey && alpha == snapshot.Alpha && flags == snapshot.LayeredFlags;
+                if (!unchanged) Check(SetLayeredWindowAttributes(hwnd, snapshot.ColorKey, snapshot.Alpha, snapshot.LayeredFlags), "恢复透明状态");
+            }
         }
     }
     public static nint TargetUnderPointer()
@@ -213,13 +213,15 @@ internal static class Native
         int y = Math.Clamp(r.Top, info.Work.Top, Math.Max(info.Work.Top, info.Work.Bottom - 80));
         SetWindowPos(hwnd, 0, x, y, 0, 0, NoSize | NoActivate | 4);
     }
-    public static void ConstrainMaximize(nint hwnd, nint data)
+    public static void ConstrainMaximize(nint hwnd, nint data, int minWidth = 0, int minHeight = 0)
     {
         var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
         if (!GetMonitorInfo(MonitorFromWindow(hwnd, 2), ref info)) return;
         var m = Marshal.PtrToStructure<MinMaxInfo>(data);
         m.MaxPosition = new() { X = info.Work.Left - info.Monitor.Left, Y = info.Work.Top - info.Monitor.Top };
         m.MaxSize = new() { X = info.Work.Right - info.Work.Left, Y = info.Work.Bottom - info.Work.Top };
+        if (minWidth > 0) m.MinTrack.X = minWidth;
+        if (minHeight > 0) m.MinTrack.Y = minHeight;
         Marshal.StructureToPtr(m, data, false);
     }
 }
