@@ -21,15 +21,17 @@ public partial class MainWindow : Window
     private readonly ICollectionView _view;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromMilliseconds(160) };
     private readonly DispatcherTimer _aggressiveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private readonly DispatcherTimer _opacityTimer = new() { Interval = TimeSpan.FromMilliseconds(70) };
+    private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(6) };
+    private readonly Dictionary<WindowItem, int> _pendingOpacity = new();
     private Dictionary<string, TextBox> _keyEditors = new();
     private DesktopIntegration? _desktop;
     private HwndSource? _source;
     private nint _hwnd;
     private string _filter = "all";
-    private bool _ready, _syncing, _picking, _compact, _quitting, _allowClose;
+    private bool _ready, _syncing, _picking, _compact, _quitting, _allowClose, _drainingOpacity;
     private Rect _expandedBounds;
-    private WindowState _expandedState = WindowState.Normal;
-    private WindowState _lastState = WindowState.Normal;
+    private WindowState _expandedState = WindowState.Normal, _lastState = WindowState.Normal;
     private Task? _initialization;
     private WindowItem? _opacityEditItem;
     private string _opacityEditText = "";
@@ -39,10 +41,8 @@ public partial class MainWindow : Window
     {
         _store = store; _testMode = testMode; Manager = new(store);
         InitializeComponent();
-        SelectHint.Text = "选择一个窗口\n在这里调整它的状态";
         _view = CollectionViewSource.GetDefaultView(Manager.Items);
-        _view.Filter = FilterItem;
-        WindowList.ItemsSource = _view;
+        _view.Filter = FilterItem; WindowList.ItemsSource = _view;
         _keyEditors = new() { ["show"] = ShowKeyBox, ["pin"] = PinKeyBox, ["park"] = ParkKeyBox, ["recover"] = RecoverKeyBox, ["opacityUp"] = UpKeyBox, ["opacityDown"] = DownKeyBox };
         OpacityBox.GotKeyboardFocus += (_, _) => { _opacityEditItem = Selected; _opacityEditText = OpacityBox.Text; };
         OpacityBox.TextChanged += (_, _) => { if (!_syncing && OpacityBox.IsKeyboardFocusWithin && _opacityEditItem is not null) _opacityEditText = OpacityBox.Text; };
@@ -56,11 +56,11 @@ public partial class MainWindow : Window
         AggressiveBox.IsEnabled = p.AbsoluteTopmost;
         foreach (var item in _keyEditors) item.Value.Text = p.Hotkeys.GetValueOrDefault(item.Key, "");
         Palette.Apply(p.Dark);
-        Manager.Notice += ShowStatus;
-        Manager.Changed += RefreshView;
-        store.Error += ShowStatus;
-        _refreshTimer.Tick += (_, _) => { _refreshTimer.Stop(); Run(Manager.Refresh); };
+        Manager.Changed += RefreshView; Manager.Notice += ShowStatus; store.Error += ShowStatus;
+        _refreshTimer.Tick += async (_, _) => { _refreshTimer.Stop(); await RunAsync(Manager.RefreshAsync); };
         _aggressiveTimer.Tick += (_, _) => { if (CanEnforceOwn() && Native.OverlappingTopmostAbove(_hwnd)) Native.Raise(_hwnd); };
+        _opacityTimer.Tick += async (_, _) => await DrainOpacityAsync();
+        _statusTimer.Tick += (_, _) => DismissStatus();
         SourceInitialized += OnSourceInitialized;
         Loaded += async (_, _) => await InitializeAsync();
         Activated += (_, _) => ApplyOwnPolicy();
@@ -73,19 +73,18 @@ public partial class MainWindow : Window
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
         _hwnd = new WindowInteropHelper(this).Handle;
-        _source = HwndSource.FromHwnd(_hwnd);
-        _source?.AddHook(WindowMessage);
+        _source = HwndSource.FromHwnd(_hwnd); _source?.AddHook(WindowMessage);
         int corners = 2; Native.DwmSetWindowAttribute(_hwnd, 33, ref corners, 4);
         Native.FitToWorkArea(_hwnd);
         if (_testMode) return;
         _desktop = new(this, Manager);
         _desktop.ActionRequested += async action => await OnDesktopActionAsync(action);
-        _desktop.RecoveryRequested += async item => await RunAsync(async () => { await Manager.ReleaseAsync(item); ShowStatus("已恢复窗口的原始状态。"); });
+        _desktop.RecoveryRequested += async item => await RunAsync(() => Manager.ReleaseAsync(item));
         _desktop.WindowsChanged += foreground =>
         {
             if (_quitting) return;
-            if (foreground && CanEnforceOwn()) Native.Raise(_hwnd);
-            if (((IsVisible && WindowState != WindowState.Minimized) || Manager.HasRules) && !_refreshTimer.IsEnabled) _refreshTimer.Start();
+            if (foreground) { ApplyOwnPolicy(); if (CanEnforceOwn()) Native.Raise(_hwnd); }
+            if ((IsVisible && WindowState != WindowState.Minimized) || Manager.HasRules) QueueRefresh();
         };
         Run(() => _desktop.ApplyHotkeys(_store.Preferences.Hotkeys));
     }
@@ -102,16 +101,25 @@ public partial class MainWindow : Window
     internal Task InitializeAsync() => _initialization ??= InitializeCoreAsync();
     private async Task InitializeCoreAsync()
     {
-        if (_testMode) { Run(Manager.Refresh); return; }
         await RunAsync(async () =>
         {
-            await Manager.RecoverPreviousSessionAsync();
-            Manager.Refresh();
+            if (!_testMode) await Manager.RecoverPreviousSessionAsync();
+            await Manager.RefreshAsync();
+            if (_quitting) return;
             if (_store.Preferences.Maximized) WindowState = WindowState.Maximized;
             if (_store.LoadWarning.Length != 0) ShowStatus(_store.LoadWarning);
         });
     }
-    internal void ShowStatus(string message) => StatusText.Text = message;
+    private void QueueRefresh() { if (!_quitting && !_refreshTimer.IsEnabled) _refreshTimer.Start(); }
+    internal void ShowStatus(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message) || _quitting) return;
+        StatusText.Text = message;
+        if (!_compact) StatusBar.Visibility = Visibility.Visible;
+        _statusTimer.Stop(); _statusTimer.Start();
+    }
+    private void DismissStatus() { _statusTimer.Stop(); StatusText.Text = ""; StatusBar.Visibility = Visibility.Collapsed; }
+    private void DismissStatus_Click(object sender, RoutedEventArgs e) => DismissStatus();
     private bool FilterItem(object value)
     {
         if (value is not WindowItem item) return false;
@@ -121,32 +129,26 @@ public partial class MainWindow : Window
     }
     private void RefreshView()
     {
-        if (!_ready) return;
-        _view.Refresh();
-        int count = _view.Cast<object>().Count();
-        CountText.Text = $"{count} 个窗口";
-        EmptyListText.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (!_ready || _quitting) return;
+        _view.Refresh(); EmptyListText.Visibility = _view.IsEmpty ? Visibility.Visible : Visibility.Collapsed;
     }
-    private void Navigation_Checked(object sender, RoutedEventArgs e)
+    private void Filter_Checked(object sender, RoutedEventArgs e)
     {
         if (!_ready || sender is not RadioButton button) return;
-        string mode = (string)button.Tag;
-        bool settings = mode == "settings";
-        SettingsPage.Visibility = settings ? Visibility.Visible : Visibility.Collapsed;
-        WindowPage.Visibility = settings ? Visibility.Collapsed : Visibility.Visible;
-        if (!settings)
-        {
-            _filter = mode;
-            PageTitle.Text = mode switch { "managed" => "已管理窗口", "parked" => "已收起窗口", _ => "窗口管理" };
-            Run(Manager.Refresh);
-        }
+        _filter = (string)button.Tag; RefreshView();
     }
     private void Search_Changed(object sender, TextChangedEventArgs e) { if (_ready) RefreshView(); }
+    private void ShowSettings(bool show)
+    {
+        WindowPage.Visibility = show ? Visibility.Collapsed : Visibility.Visible;
+        SettingsPage.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+    }
+    private void SettingsButton_Click(object sender, RoutedEventArgs e) => ShowSettings(SettingsPage.Visibility != Visibility.Visible);
+    private void Back_Click(object sender, RoutedEventArgs e) => ShowSettings(false);
     private void WindowList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_opacityEditItem is not null) ApplyOpacityText();
-        _opacityEditItem = null;
-        _syncing = true;
+        _opacityEditItem = null; _syncing = true;
         try
         {
             Inspector.DataContext = Selected;
@@ -163,90 +165,127 @@ public partial class MainWindow : Window
         try
         {
             item.Changed(nameof(item.Pinned)); item.Changed(nameof(item.ClickThrough)); item.NotifyState();
-            if (!OpacityBox.IsKeyboardFocusWithin) item.Changed(nameof(item.Opacity));
+            if (!OpacityBox.IsKeyboardFocusWithin && !_pendingOpacity.ContainsKey(item)) item.Changed(nameof(item.Opacity));
         }
         finally { _syncing = false; }
     }
     private void Run(Action action)
     {
-        try { action(); }
-        catch (Exception e) { ShowStatus(e.Message); }
+        if (_quitting) return;
+        try { action(); } catch (Exception e) { ShowStatus(e.Message); }
         finally { if (_ready) { SyncSelected(); RefreshView(); } }
     }
     private async Task RunAsync(Func<Task> action)
     {
-        try { await action(); }
-        catch (Exception e) { ShowStatus(e.Message); }
-        finally { if (_ready) { SyncSelected(); RefreshView(); } }
+        if (_quitting) return;
+        try { await action(); } catch (Exception e) { ShowStatus(e.Message); }
+        finally { if (_ready && !_quitting) { SyncSelected(); RefreshView(); } }
     }
-    private void Pin_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) Run(() => Manager.SetPin(item, ((CheckBox)sender).IsChecked == true)); }
-    private void ClickThrough_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) Run(() => Manager.SetClickThrough(item, ((CheckBox)sender).IsChecked == true)); }
+    private async void Pin_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) { bool on = ((CheckBox)sender).IsChecked == true; await RunAsync(() => Manager.SetPinAsync(item, on)); } }
+    private async void ClickThrough_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) { bool on = ((CheckBox)sender).IsChecked == true; await RunAsync(() => Manager.SetClickThroughAsync(item, on)); } }
     private void Remember_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) Run(() => Manager.SetRemembered(item, ((CheckBox)sender).IsChecked == true)); }
+    private void QueueOpacity(WindowItem item, int value)
+    {
+        if (_quitting) return;
+        _pendingOpacity[item] = value; _opacityTimer.Start();
+    }
+    private async Task DrainOpacityAsync()
+    {
+        if (_drainingOpacity || _quitting) return;
+        _drainingOpacity = true;
+        try
+        {
+            foreach (var pair in _pendingOpacity.ToArray())
+            {
+                if (_quitting) break;
+                if (pair.Key.IsBusy) continue;
+                _pendingOpacity.Remove(pair.Key);
+                if (Manager.Items.Contains(pair.Key)) await RunAsync(() => Manager.SetOpacityAsync(pair.Key, pair.Value));
+            }
+            if (_pendingOpacity.Count == 0) _opacityTimer.Stop();
+        }
+        finally { _drainingOpacity = false; }
+    }
     private void OpacitySlider_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (!_ready || _syncing || Selected is not { } item || !(OpacitySlider.IsMouseCaptureWithin || OpacitySlider.IsKeyboardFocusWithin)) return;
-        Run(() => Manager.SetOpacity(item, (int)Math.Round(e.NewValue)));
+        QueueOpacity(item, (int)Math.Round(e.NewValue));
     }
     private void ApplyOpacityText()
     {
-        var item = _opacityEditItem;
-        string text = _opacityEditText;
-        _opacityEditItem = null;
+        var item = _opacityEditItem; string text = _opacityEditText; _opacityEditItem = null;
         if (_syncing || item is null) return;
-        if (!int.TryParse(text, out int value) || value is < 0 or > 100) { ShowStatus("不透明度请输入 0–100。允许完全透明。"); item.Changed(nameof(item.Opacity)); return; }
-        if (value != item.Opacity) Run(() => Manager.SetOpacity(item, value));
-        if (OpacityBox.IsKeyboardFocusWithin && Selected == item) { _opacityEditItem = item; _opacityEditText = item.Opacity.ToString(); }
+        if (!int.TryParse(text, out int value) || value is < 0 or > 100) { ShowStatus("不透明度请输入 0–100。"); item.Changed(nameof(item.Opacity)); return; }
+        if (value != item.Opacity) QueueOpacity(item, value);
     }
-    private void OpacityBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) { ApplyOpacityText(); e.Handled = true; } }
+    private void OpacityBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        ApplyOpacityText(); _opacityEditItem = Selected; _opacityEditText = OpacityBox.Text; e.Handled = true;
+    }
     private void OpacityBox_LostFocus(object sender, KeyboardFocusChangedEventArgs e) { ApplyOpacityText(); _opacityEditItem = null; SyncSelected(); }
     private async void Park_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) await RunAsync(async () => ShowStatus(await Manager.ParkAsync(item))); }
-    private async void RestoreWindow_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) await RunAsync(async () => { await Manager.RestoreParkingAsync(item); ShowStatus("已恢复窗口；置顶、透明度设置保持不变。"); }); }
-    private async void RestoreOriginal_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) await RunAsync(async () => { await Manager.ReleaseAsync(item); ShowStatus("已恢复原始状态。"); }); }
-    private async void Forget_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) await RunAsync(async () => { await Manager.ReleaseAsync(item, true); ShowStatus("已移出管理并删除保存的规则。"); }); }
+    private async void RestoreWindow_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) await RunAsync(() => Manager.RestoreParkingAsync(item)); }
+    private async void RestoreOriginal_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) { _pendingOpacity.Remove(item); await RunAsync(() => Manager.ReleaseAsync(item)); } }
+    private async void Forget_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) { _pendingOpacity.Remove(item); await RunAsync(() => Manager.ReleaseAsync(item, true)); } }
     private async void RecoverAll_Click(object sender, RoutedEventArgs e) => await RecoverAllAsync();
-    private async Task RecoverAllAsync() => await RunAsync(async () => { int failures = await Manager.RestoreAllAsync(); ShowStatus(failures == 0 ? "所有被管理窗口已恢复原始状态。" : $"有 {failures} 个窗口未能恢复，恢复记录仍保留。"); });
-    private void Refresh_Click(object sender, RoutedEventArgs e) => Run(Manager.Refresh);
+    private Task RecoverAllAsync()
+    {
+        _pendingOpacity.Clear();
+        return RunAsync(async () => { int failures = await Manager.RestoreAllAsync(); ShowStatus(failures == 0 ? "已恢复全部窗口。" : $"{failures} 个窗口未恢复，记录已保留。"); });
+    }
+    private async void Refresh_Click(object sender, RoutedEventArgs e) => await RunAsync(Manager.RefreshAsync);
     private async void WindowList_DoubleClick(object sender, MouseButtonEventArgs e) { if (Selected is { IsAvailable: true } item) await RunAsync(() => Manager.RestoreParkingAsync(item)); }
+    private void CopyDetails_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) Run(() => { Clipboard.SetText($"{item.Title}\n{item.Details}\n{item.ProcessPath}"); ShowStatus("已复制窗口信息。"); }); }
 
     private void Picker_Down(object sender, MouseButtonEventArgs e)
     {
         _picking = true; PickerButton.CaptureMouse(); Mouse.OverrideCursor = Cursors.Cross; e.Handled = true;
-        ShowStatus("拖到目标窗口后松开，将其置顶；Esc 取消。");
     }
     private void Picker_Move(object sender, MouseEventArgs e) { if (_picking) e.Handled = true; }
     private void CancelPicker() { _picking = false; Mouse.OverrideCursor = null; if (PickerButton.IsMouseCaptured) PickerButton.ReleaseMouseCapture(); }
     private void Picker_LostCapture(object sender, MouseEventArgs e) { if (_picking) CancelPicker(); }
-    private void Picker_Up(object sender, MouseButtonEventArgs e)
+    private async void Picker_Up(object sender, MouseButtonEventArgs e)
     {
         if (!_picking) return;
-        nint target = Native.TargetUnderPointer();
-        CancelPicker(); e.Handled = true;
-        if (target == 0) { ShowStatus("没有选中其他应用的窗口。"); return; }
-        Run(() => { AllNav.IsChecked = true; SearchBox.Clear(); var item = Manager.SelectTarget(target); Manager.SetPin(item, true); SelectForTest(item); ShowStatus("已置顶选中的窗口。"); });
+        nint target = Native.TargetUnderPointer(); CancelPicker(); e.Handled = true;
+        if (target == 0) return;
+        await RunAsync(async () =>
+        {
+            AllFilter.IsChecked = true; SearchBox.Clear();
+            var item = Manager.SelectTarget(target); SelectForTest(item); await Manager.SetPinAsync(item, true);
+        });
     }
-    private void Window_PreviewKeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Escape && _picking) { CancelPicker(); ShowStatus("已取消选择。"); e.Handled = true; } }
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape) return;
+        if (_picking) { CancelPicker(); e.Handled = true; }
+        else if (SettingsPage.Visibility == Visibility.Visible) { ShowSettings(false); e.Handled = true; }
+    }
 
-    private bool CanEnforceOwn() => _hwnd != 0 && OwnWindowPolicy.Enforce(IsVisible, WindowState == WindowState.Minimized, _store.Preferences.ManualTopmost, _compact, _store.Preferences.AbsoluteTopmost);
-    private void ApplyOwnPolicy()
+    private bool CanEnforceOwn() => !_quitting && _hwnd != 0 && OwnWindowPolicy.Enforce(IsVisible, WindowState == WindowState.Minimized, _store.Preferences.ManualTopmost, _compact, _store.Preferences.AbsoluteTopmost);
+    internal void ApplyOwnPolicy()
     {
         if (!_ready || _hwnd == 0) return;
-        bool focused = IsVisible && WindowState != WindowState.Minimized && Native.GetForegroundWindow() == _hwnd;
-        bool topmost = OwnWindowPolicy.Topmost(_store.Preferences.ManualTopmost, _compact, _store.Preferences.PinWhenFocused, focused);
-        if (Topmost != topmost) Topmost = topmost;
-        else if (Native.IsTopmost(_hwnd) != topmost) Run(() => Native.SetTopmost(_hwnd, topmost));
-        OwnStateText.Text = _compact ? "小窗" : _store.Preferences.ManualTopmost ? "已置顶" : focused && _store.Preferences.PinWhenFocused ? "焦点临时置顶" : "窗口管理";
+        bool showing = !_quitting && IsVisible && WindowState != WindowState.Minimized;
+        bool focused = showing && IsActive && Native.GetForegroundWindow() == _hwnd;
+        bool wanted = showing && OwnWindowPolicy.Topmost(_store.Preferences.ManualTopmost, _compact, _store.Preferences.PinWhenFocused, focused);
+        Native.SetOwnTopmost(_hwnd, wanted);
         bool aggressive = CanEnforceOwn() && _store.Preferences.AggressiveTopmost;
         if (aggressive && !_aggressiveTimer.IsEnabled) _aggressiveTimer.Start();
         else if (!aggressive) _aggressiveTimer.Stop();
     }
     internal void ShowShell()
     {
+        if (_quitting) return;
         if (!IsVisible) Show();
         if (WindowState == WindowState.Minimized) WindowState = _compact ? WindowState.Normal : _lastState;
-        Topmost = true; Native.Raise(_hwnd);
-        Activate(); Native.SetForegroundWindow(_hwnd);
-        Dispatcher.BeginInvoke(new Action(ApplyOwnPolicy), DispatcherPriority.ContextIdle);
-        Run(Manager.Refresh);
+        // Explicit user wake is the only temporary raise. Clean up immediately,
+        // including when Windows refuses foreground activation; no idle callback
+        // or list refresh stands between the raise and its cleanup.
+        try { Native.Raise(_hwnd); Activate(); Native.SetForegroundWindow(_hwnd); }
+        finally { ApplyOwnPolicy(); }
+        QueueRefresh();
     }
     private void OwnPin_Click(object sender, RoutedEventArgs e) { _store.Preferences.ManualTopmost = OwnPinBox.IsChecked == true; _store.SaveSoon(); ApplyOwnPolicy(); }
     private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
@@ -255,21 +294,22 @@ public partial class MainWindow : Window
     private void Compact_Click(object sender, RoutedEventArgs e) => ToggleCompact();
     internal void ToggleCompact()
     {
+        if (_quitting) return;
         if (!_compact)
         {
             _expandedBounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
             _expandedState = WindowState == WindowState.Maximized ? WindowState.Maximized : WindowState.Normal;
-            WindowState = WindowState.Normal; _compact = true;
+            _compact = true; WindowState = WindowState.Normal;
             MinWidth = 360; MinHeight = 110; Width = 360; Height = 110;
-            Workspace.Visibility = StatusBar.Visibility = OwnPinBox.Visibility = OwnStateText.Visibility = MaximizeButton.Visibility = Visibility.Collapsed;
-            CompactPanel.Visibility = Visibility.Visible; ResizeMode = ResizeMode.NoResize;
+            Workspace.Visibility = OwnPinBox.Visibility = SettingsButton.Visibility = MaximizeButton.Visibility = Visibility.Collapsed;
+            CompactPanel.Visibility = Visibility.Visible; ResizeMode = ResizeMode.NoResize; DismissStatus();
         }
         else
         {
             _compact = false; ResizeMode = ResizeMode.CanResize;
             MinWidth = 880; MinHeight = 560;
             Left = _expandedBounds.Left; Top = _expandedBounds.Top; Width = _expandedBounds.Width; Height = _expandedBounds.Height;
-            Workspace.Visibility = StatusBar.Visibility = OwnPinBox.Visibility = OwnStateText.Visibility = MaximizeButton.Visibility = Visibility.Visible;
+            Workspace.Visibility = OwnPinBox.Visibility = SettingsButton.Visibility = MaximizeButton.Visibility = Visibility.Visible;
             CompactPanel.Visibility = Visibility.Collapsed; WindowState = _expandedState;
         }
         Native.FitToWorkArea(_hwnd); ApplyOwnPolicy();
@@ -291,8 +331,7 @@ public partial class MainWindow : Window
     private void Hotkey_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Tab) return;
-        e.Handled = true;
-        var box = (TextBox)sender;
+        e.Handled = true; var box = (TextBox)sender;
         Key key = e.Key == Key.System ? e.SystemKey : e.Key;
         if (key == Key.Escape) { string action = _keyEditors.First(x => x.Value == box).Key; box.Text = _store.Preferences.Hotkeys.GetValueOrDefault(action, ""); return; }
         if ((key is Key.Back or Key.Delete) && Keyboard.Modifiers == ModifierKeys.None) { box.Clear(); return; }
@@ -310,8 +349,7 @@ public partial class MainWindow : Window
     {
         var keys = _keyEditors.ToDictionary(x => x.Key, x => x.Value.Text.Trim());
         foreach (string value in keys.Values) DesktopIntegration.ParseHotkey(value);
-        _desktop?.ApplyHotkeys(keys);
-        _store.Preferences.Hotkeys = keys; _store.SavePreferences(); ShowStatus("快捷键已应用。");
+        _desktop?.ApplyHotkeys(keys); _store.Preferences.Hotkeys = keys; _store.SavePreferences(); ShowStatus("快捷键已应用。");
     });
     private async Task OnDesktopActionAsync(string action)
     {
@@ -324,13 +362,13 @@ public partial class MainWindow : Window
         {
             nint foreground = Native.GetForegroundWindow();
             var item = Native.IsTarget(foreground) ? Manager.SelectTarget(foreground) : Selected;
-            if (item is null || !item.IsAvailable) { ShowStatus("请先切到目标窗口，或在列表中选择它。"); return; }
+            if (item is null || !item.IsAvailable) return;
             switch (action)
             {
-                case "pin": Manager.SetPin(item, !Native.IsTopmost(item.Hwnd)); break;
+                case "pin": await Manager.SetPinAsync(item, !Native.IsTopmost(item.Hwnd)); break;
                 case "park": ShowStatus(await Manager.ParkAsync(item)); break;
-                case "opacityUp": Manager.SetOpacity(item, item.Opacity + 10); break;
-                case "opacityDown": Manager.SetOpacity(item, item.Opacity - 10); break;
+                case "opacityUp": QueueOpacity(item, _pendingOpacity.GetValueOrDefault(item, item.Opacity) + 10); break;
+                case "opacityDown": QueueOpacity(item, _pendingOpacity.GetValueOrDefault(item, item.Opacity) - 10); break;
             }
         });
     }
@@ -347,23 +385,23 @@ public partial class MainWindow : Window
         if (_allowClose || _testMode) return;
         e.Cancel = true;
         SaveGeometry(); CancelPicker();
-        if (_store.Preferences.CloseToTray && _desktop is not null) { Hide(); ApplyOwnPolicy(); return; }
+        if (!_quitting && _store.Preferences.CloseToTray && _desktop is not null) { Hide(); ApplyOwnPolicy(); return; }
         await QuitAsync();
     }
     internal async Task QuitAsync()
     {
         if (_quitting) return;
-        _quitting = true; _refreshTimer.Stop(); _aggressiveTimer.Stop(); CancelPicker(); SaveGeometry();
-        int failures = await Manager.RestoreAllAsync(false);
-        if (failures != 0)
-        {
-            _quitting = false; ShowShell(); ShowStatus($"还有 {failures} 个窗口未恢复，暂未退出。请先恢复或关闭这些目标窗口。"); return;
-        }
+        _quitting = true;
+        _refreshTimer.Stop(); _aggressiveTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
+        CancelPicker(); SaveGeometry(); ApplyOwnPolicy();
+        int failures = await Manager.ShutdownAsync();
+        if (failures != 0) _desktop?.Notify($"{failures} 个窗口未恢复，记录已保留，下次启动继续恢复。");
         _allowClose = true; Cleanup(); Application.Current.Shutdown();
     }
     internal void Cleanup()
     {
-        _refreshTimer.Stop(); _aggressiveTimer.Stop(); _desktop?.Dispose(); _desktop = null;
+        _refreshTimer.Stop(); _aggressiveTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
+        _desktop?.Dispose(); _desktop = null;
         _source?.RemoveHook(WindowMessage); _source = null;
         _store.Error -= ShowStatus; Manager.Notice -= ShowStatus; Manager.Changed -= RefreshView;
     }

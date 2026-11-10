@@ -5,8 +5,11 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -21,22 +24,40 @@ internal static class SmokeTests
         if (!condition) throw new InvalidOperationException("FAIL: " + name);
         Results.Add("PASS: " + name);
     }
-    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject)
+    private static async Task WaitAsync(string name, Func<bool> condition, int milliseconds = 3000)
     {
-        string file = Path.Combine(directory, (reject ? "reject-" : "normal-") + Guid.NewGuid().ToString("N") + ".hwnd");
+        var clock = Stopwatch.StartNew();
+        while (!condition())
+        {
+            if (clock.ElapsedMilliseconds > milliseconds) throw new TimeoutException(name);
+            await Task.Delay(25);
+        }
+    }
+    private static Process Start(params string[] args)
+    {
         var start = new ProcessStartInfo("dotnet") { UseShellExecute = false };
         start.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
-        start.ArgumentList.Add("--fixture"); start.ArgumentList.Add(file);
-        if (reject) start.ArgumentList.Add("reject");
-        var process = Process.Start(start) ?? throw new InvalidOperationException("无法启动测试窗口。");
+        foreach (string arg in args) start.ArgumentList.Add(arg);
+        return Process.Start(start) ?? throw new InvalidOperationException("无法启动测试进程。");
+    }
+    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject, string? stall = null)
+    {
+        string file = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".hwnd");
+        var args = new List<string> { "--fixture", file };
+        if (reject) args.Add("reject");
+        if (stall is not null) { args.Add("stall"); args.Add(stall); }
+        var process = Start(args.ToArray());
         for (int i = 0; i < 100; i++)
         {
             if (File.Exists(file) && long.TryParse(await File.ReadAllTextAsync(file), out long hwnd)) return (process, (nint)hwnd);
             if (process.HasExited) throw new InvalidOperationException("测试窗口提前退出。");
             await Task.Delay(100);
         }
-        process.Kill(true); process.Dispose();
-        throw new TimeoutException("测试窗口没有就绪。");
+        process.Kill(true); process.Dispose(); throw new TimeoutException("测试窗口没有就绪。");
+    }
+    private static void Stop(Process process)
+    {
+        try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { }
     }
     public static async Task<int> RunAsync(string output)
     {
@@ -53,87 +74,198 @@ internal static class SmokeTests
             Assert(!OwnWindowPolicy.Enforce(false, false, true, false, true) && !OwnWindowPolicy.Enforce(true, true, true, false, true) && !OwnWindowPolicy.Enforce(true, false, false, false, true), "hidden, minimized and focus-only windows never enforce absolute topmost");
             Assert(DesktopIntegration.ParseHotkey("Win+Ctrl+Shift+R") == (14u, 82u) && DesktopIntegration.ParseHotkey("") == (0u, 0u), "hotkey parsing and disabled bindings");
             var store = new StateStore(data);
-            store.Preferences.Rules.Add(new() { Title = "roundtrip", Opacity = 0, ClickThrough = true });
-            store.SavePreferences();
-            var reload = new StateStore(data);
-            Assert(reload.Preferences.Rules.Single().Opacity == 0, "settings preserve zero opacity");
+            store.Preferences.Rules.Add(new() { Title = "roundtrip", Opacity = 0, ClickThrough = true }); store.SavePreferences();
+            Assert(new StateStore(data).Preferences.Rules.Single().Opacity == 0, "settings preserve zero opacity");
             store.Preferences.Rules.Clear(); store.SavePreferences();
             var normal = await FixtureAsync(output, false); processes.Add(normal.Process);
             manager = new WindowManager(store);
             var item = manager.SelectTarget(normal.Hwnd);
-            long originalStyle = Native.Style(item.Hwnd);
-            bool originalPin = Native.IsTopmost(item.Hwnd);
+            long originalStyle = Native.Style(item.Hwnd); bool originalPin = Native.IsTopmost(item.Hwnd);
             Assert(item.Identity is not null && !Native.Matches(item.Identity with { ProcessStarted = item.Identity.ProcessStarted + 1 }), "recovery rejects a different process lifetime");
-            manager.SetPin(item, true);
+            await manager.SetPinAsync(item, true);
             Assert(Native.IsTopmost(item.Hwnd), "native topmost is actually applied");
-            manager.SetOpacity(item, 0);
+            await manager.SetOpacityAsync(item, 0);
             Assert(Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte alpha, out _) && alpha == 0, "native opacity really reaches zero");
-            manager.SetClickThrough(item, true);
+            await manager.SetClickThroughAsync(item, true);
             Assert((Native.Style(item.Hwnd) & Native.Transparent) != 0, "native click-through is applied");
             Assert(store.ReadRecovery().Count == 1, "restorable snapshot is durable before mutations");
             await manager.ReleaseAsync(item);
             Assert(Native.IsTopmost(item.Hwnd) == originalPin && (Native.Style(item.Hwnd) & (Native.Layered | Native.Transparent)) == (originalStyle & (Native.Layered | Native.Transparent)), "release restores original style bits and pin state");
             Native.ShowWindowAsync(item.Hwnd, Native.Maximized); await Task.Delay(250);
             var before = Native.GetPlacement(item.Hwnd);
-            string parked = await manager.ParkAsync(item);
-            Assert(Native.IsIconic(item.Hwnd) && item.IsParked, "force minimize produces a real iconic window: " + parked);
+            await manager.ParkAsync(item);
+            Assert(Native.IsIconic(item.Hwnd) && item.IsParked, "force minimize produces a real iconic window");
             await manager.RestoreParkingAsync(item, false);
             Assert(Native.IsWindowVisible(item.Hwnd) && !Native.IsIconic(item.Hwnd) && Native.GetPlacement(item.Hwnd).ShowCmd == before.ShowCmd, "restore preserves pre-minimize maximized state");
             await manager.ReleaseAsync(item);
             var rejected = await FixtureAsync(output, true); processes.Add(rejected.Process);
             var stubborn = manager.SelectTarget(rejected.Hwnd);
             bool rejectedOpacity = false;
-            try { manager.SetOpacity(stubborn, 0); }
+            try { await manager.SetOpacityAsync(stubborn, 0); }
             catch (Exception e) when (e is Win32Exception or InvalidOperationException) { rejectedOpacity = true; }
             Assert(rejectedOpacity && stubborn.Opacity == 100 && (Native.Style(stubborn.Hwnd) & Native.Layered) == 0, "WPF opacity veto is reported without claiming success");
             await manager.ReleaseAsync(stubborn);
             Assert(stubborn.Original is null, "an unchanged unsupported window does not block release");
-            string hidden = await manager.ParkAsync(stubborn);
-            Assert(!Native.IsWindowVisible(stubborn.Hwnd) && stubborn.IsHidden && stubborn.IsParked, "refused minimization falls back to hidden, not fake success: " + hidden);
+            await manager.ParkAsync(stubborn);
+            Assert(!Native.IsWindowVisible(stubborn.Hwnd) && stubborn.IsHidden && stubborn.IsParked, "refused minimization falls back to hidden");
             await manager.RestoreParkingAsync(stubborn, false);
             Assert(Native.IsWindowVisible(stubborn.Hwnd), "hidden fallback can be restored");
             await manager.ReleaseAsync(stubborn);
-            manager.SetOpacity(item, 0);
+            await manager.SetOpacityAsync(item, 0);
             var recovered = new WindowManager(store);
             await recovered.RecoverPreviousSessionAsync();
-            Assert((Native.Style(item.Hwnd) & Native.Layered) == (originalStyle & Native.Layered) && store.ReadRecovery().Count == 0, "startup recovery restores a surviving invisible window");
+            await WaitAsync("startup recovery", () => store.ReadRecovery().Count == 0);
+            Assert((Native.Style(item.Hwnd) & Native.Layered) == (originalStyle & Native.Layered), "startup recovery restores a surviving invisible window");
             await manager.ReleaseAsync(item);
             Native.ShowWindowAsync(item.Hwnd, Native.Normal);
-            shell = new MainWindow(store, true);
-            Application.Current.MainWindow = shell;
+            shell = new MainWindow(store, true); Application.Current.MainWindow = shell;
             shell.Show(); await shell.InitializeAsync(); await Task.Delay(150);
-            shell.Manager.Refresh();
+            await shell.Manager.RefreshAsync();
             var chosen = shell.Manager.Items.First(x => x.Hwnd == item.Hwnd);
-            shell.Manager.SetPin(chosen, true);
-            shell.Manager.SetOpacity(chosen, 68);
+            await shell.Manager.SetPinAsync(chosen, true); await shell.Manager.SetOpacityAsync(chosen, 68);
             shell.SelectForTest(chosen);
-            shell.ShowStatus("自动验证窗口 · 0–100% 不透明度 / 强制最小化 / 一键恢复");
             await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
-            shell.UpdateLayout();
-            Capture(shell, Path.Combine(output, "workbench-light.png"));
+            shell.UpdateLayout(); Capture(shell, Path.Combine(output, "workbench-light.png"));
             Palette.Apply(true); shell.UpdateLayout(); await Task.Delay(100);
             Capture(shell, Path.Combine(output, "workbench-dark.png"));
             shell.ToggleCompact(); await Task.Delay(100);
-            Assert(shell.Width == 360 && shell.Topmost, "compact mode is separate from the full workbench");
+            nint own = new WindowInteropHelper(shell).Handle;
+            Assert(shell.Width == 360 && Native.IsTopmost(own), "compact mode pins the native HWND, independently of WPF Topmost");
             Capture(shell, Path.Combine(output, "compact-dark.png"));
             shell.ToggleCompact();
-            Assert(shell.Width >= 880 && shell.MinWidth == 880 && double.IsPositiveInfinity(shell.MaxWidth), "full workbench is spacious, resizable and has no maximum width");
+            Assert(shell.Width >= 880 && shell.MinWidth == 880 && double.IsPositiveInfinity(shell.MaxWidth), "workbench remains spacious and has no maximum width");
+            Palette.Apply(false); shell.Width = 880; shell.Height = 560; shell.UpdateLayout();
+            Capture(shell, Path.Combine(output, "workbench-minimum.png"));
+            ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            shell.UpdateLayout(); Capture(shell, Path.Combine(output, "settings-minimum.png"));
+            ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await shell.Manager.RestoreAllAsync();
             Assert(store.ReadRecovery().Count == 0, "normal recovery clears the journal");
+
+            shell.ShowShell(); await WaitAsync("own activation", () => Native.GetForegroundWindow() == own);
+            Assert(Native.IsTopmost(own), "actual focus temporarily pins the workbench");
+            Native.SetForegroundWindow(normal.Hwnd);
+            await WaitAsync("focus-only pin must yield", () => Native.GetForegroundWindow() == normal.Hwnd && !Native.IsTopmost(own) && Native.IsAbove(normal.Hwnd, own));
+            await Task.Delay(250);
+            Assert(Native.GetForegroundWindow() == normal.Hwnd && Native.IsAbove(normal.Hwnd, own), "losing focus neither reactivates nor covers the new foreground app");
+            store.Preferences.ManualTopmost = true; shell.ApplyOwnPolicy();
+            Assert(Native.IsTopmost(own) && Native.GetForegroundWindow() == normal.Hwnd, "manual topmost does not steal keyboard focus");
+            store.Preferences.ManualTopmost = false; shell.ApplyOwnPolicy();
+            shell.WindowState = WindowState.Minimized; await Task.Delay(150);
+            Assert(Native.IsIconic(own) && !Native.IsTopmost(own), "minimized workbench is not raised by policy");
+            shell.ShowShell(); await WaitAsync("minimized wake", () => !Native.IsIconic(own) && Native.GetForegroundWindow() == own);
+            shell.Hide(); shell.ShowShell();
+            Assert(Native.IsWindowVisible(own), "hidden workbench can be explicitly shown");
+            store.Preferences.PinWhenFocused = false; shell.ShowShell();
+            Assert(!Native.IsTopmost(own), "wake raise is cleaned up immediately with focus policy off");
+            shell.Cleanup(); shell.Close(); shell = null;
+            await manager.RestoreAllAsync(); manager = null;
+            foreach (var p in processes) { Stop(p); await p.WaitForExitAsync(); }
+            await DesktopRegressionAsync(output, processes);
         }
         catch (Exception e) { Results.Add(e.ToString()); exit = 1; }
         finally
         {
-            if (shell is not null) { await shell.Manager.RestoreAllAsync(); shell.Cleanup(); shell.Close(); }
-            if (manager is not null) await manager.RestoreAllAsync();
-            foreach (var process in processes)
-            {
-                try { if (!process.HasExited) { process.CloseMainWindow(); if (!process.WaitForExit(1500)) process.Kill(true); } } catch (InvalidOperationException) { }
-                process.Dispose();
-            }
+            if (shell is not null) { await shell.Manager.ShutdownAsync(); shell.Cleanup(); shell.Close(); }
+            if (manager is not null) await manager.ShutdownAsync();
+            foreach (var process in processes) { Stop(process); process.Dispose(); }
             await File.WriteAllLinesAsync(Path.Combine(output, "smoke-tests.txt"), Results);
         }
         return exit;
+    }
+    private static StateStore ChildStore(string output, bool tray)
+    {
+        var store = new StateStore(Path.Combine(output, "desktop-" + Guid.NewGuid().ToString("N")));
+        store.Preferences.CloseToTray = tray;
+        store.Preferences.Hotkeys = new()
+        {
+            ["show"] = "Ctrl+Alt+Shift+F5", ["pin"] = "Ctrl+Alt+Shift+F6", ["park"] = "Ctrl+Alt+Shift+F7",
+            ["recover"] = "Ctrl+Alt+Shift+F8", ["opacityUp"] = "Ctrl+Alt+Shift+F9", ["opacityDown"] = "Ctrl+Alt+Shift+F10"
+        };
+        store.SavePreferences(); return store;
+    }
+    private static async Task<(Process Process, nint Hwnd)> StartMainAsync(StateStore store, List<Process> processes)
+    {
+        Assert(Native.FindWindow(null, "WinWindow Management · Dev") == 0, "test will not use an existing development instance");
+        var process = Start("--dev", "--data-dir", store.DirectoryPath); processes.Add(process);
+        nint hwnd = 0;
+        await WaitAsync("real desktop integration startup", () =>
+        {
+            hwnd = Native.FindWindow(null, "WinWindow Management · Dev");
+            Native.GetWindowThreadProcessId(hwnd, out uint pid);
+            return hwnd != 0 && pid == process.Id;
+        }, 6000);
+        return (process, hwnd);
+    }
+    private static async Task WakeAsync(StateStore store, nint hwnd)
+    {
+        using var second = Start("--dev", "--data-dir", store.DirectoryPath);
+        try
+        {
+            await WaitAsync("second launch exits", () => second.HasExited);
+            Assert(second.ExitCode == 0, "single-instance handoff reports success");
+            await WaitAsync("second launch wakes existing instance", () => Native.IsWindowVisible(hwnd) && !Native.IsIconic(hwnd) && Native.GetForegroundWindow() == hwnd);
+        }
+        finally { Stop(second); }
+    }
+    private static WindowRule Rule(nint hwnd)
+    {
+        var id = Native.Identity(hwnd)!;
+        return new() { ProcessPath = id.ProcessPath, ClassName = id.ClassName, Title = Native.Title(hwnd), Pinned = true };
+    }
+    private static async Task DesktopRegressionAsync(string output, List<Process> processes)
+    {
+        // Unlike the visual fixture above, these are full production startup
+        // paths, with the real mutex, message hook, tray and hotkey registration.
+        var trayStore = ChildStore(output, true);
+        var tray = await StartMainAsync(trayStore, processes);
+        await WakeAsync(trayStore, tray.Hwnd);
+        Native.PostMessage(tray.Hwnd, 0x10, 0, 0);
+        await WaitAsync("close to tray", () => !Native.IsWindowVisible(tray.Hwnd));
+        await WakeAsync(trayStore, tray.Hwnd);
+        Assert(Native.IsWindowVisible(tray.Hwnd), "real close-to-tray and second-launch wake");
+        Native.PostMessage(tray.Hwnd, 0x112, 0xF020, 0);
+        await WaitAsync("native minimize", () => Native.IsIconic(tray.Hwnd));
+        await WakeAsync(trayStore, tray.Hwnd);
+        Assert(!Native.IsIconic(tray.Hwnd), "real desktop entry wakes a minimized workbench");
+        Stop(tray.Process); await tray.Process.WaitForExitAsync();
+
+        string name = @"Local\WinWindow.Stall." + Guid.NewGuid().ToString("N");
+        using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, name + ".entered");
+        using var release = new EventWaitHandle(false, EventResetMode.ManualReset, name + ".release");
+        try
+        {
+            var stuck = await FixtureAsync(output, false, name); processes.Add(stuck.Process);
+            var healthy = await FixtureAsync(output, true); processes.Add(healthy.Process);
+            var store = ChildStore(output, false);
+            store.Preferences.Rules.Add(Rule(stuck.Hwnd)); store.Preferences.Rules.Add(Rule(healthy.Hwnd)); store.SavePreferences();
+            Native.PostMessage(stuck.Hwnd, 0x8014, 0, 0);
+            // This is setup only: success below requires the actual native call
+            // to enter the target WndProc and signal the named event.
+            await Task.Delay(100);
+            var app = await StartMainAsync(store, processes);
+            await WaitAsync("worker entered blocked foreign WndProc", () => entered.WaitOne(0));
+            await WaitAsync("independent healthy target still operates", () => Native.IsTopmost(healthy.Hwnd));
+            Assert(!release.WaitOne(0), "foreign WndProc remains blocked during responsiveness checks");
+            await WakeAsync(store, app.Hwnd);
+            Native.PostMessage(app.Hwnd, 0x112, 0xF020, 0);
+            await WaitAsync("minimize while target blocked", () => Native.IsIconic(app.Hwnd));
+            await WakeAsync(store, app.Hwnd);
+            var clock = Stopwatch.StartNew(); Native.PostMessage(app.Hwnd, 0x10, 0, 0);
+            await WaitAsync("quit cannot wait indefinitely for another process", () => app.Process.HasExited);
+            Assert(app.Process.ExitCode == 0 && clock.ElapsedMilliseconds < 3000, "actual application exits with a blocked foreign operation");
+            Assert(!Native.IsTopmost(healthy.Hwnd), "exit restores healthy windows despite a blocked target");
+            Assert(store.ReadRecovery().Any(s => s.Identity.Hwnd == stuck.Hwnd), "unfinished operation remains durably recoverable after exit");
+            Assert(store.ReadRecovery().All(s => s.Identity.Hwnd != healthy.Hwnd), "successful exit recovery is removed from journal");
+            Assert(!release.WaitOne(0), "quit did not require releasing the hung target");
+            release.Set(); await Task.Delay(150);
+            var recovered = await StartMainAsync(store, processes);
+            await WaitAsync("unfinished journal recovered on next launch", () => store.ReadRecovery().All(s => s.Identity.Hwnd != stuck.Hwnd) && !Native.IsTopmost(stuck.Hwnd));
+            Assert(!Native.IsTopmost(stuck.Hwnd), "next launch restores the formerly blocked target");
+            Native.PostMessage(recovered.Hwnd, 0x10, 0, 0);
+            await WaitAsync("recovered app exits", () => recovered.Process.HasExited);
+        }
+        finally { release.Set(); }
     }
     private static void Capture(Window window, string path)
     {

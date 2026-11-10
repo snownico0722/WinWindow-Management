@@ -23,7 +23,6 @@ internal static class Native
     [StructLayout(LayoutKind.Sequential)] internal struct MinMaxInfo { public Point Reserved; public Point MaxSize; public Point MaxPosition; public Point MinTrack; public Point MaxTrack; }
     internal delegate bool EnumProc(nint hwnd, nint data);
     internal delegate void EventProc(nint hook, uint eventType, nint hwnd, int objectId, int childId, uint threadId, uint time);
-
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc callback, nint data);
     [DllImport("user32.dll")] internal static extern bool IsWindow(nint hwnd);
     [DllImport("user32.dll")] internal static extern bool IsWindowVisible(nint hwnd);
@@ -55,7 +54,9 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern bool UnregisterHotKey(nint hwnd, int id);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern uint RegisterWindowMessage(string name);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint FindWindow(string? className, string title);
-    [DllImport("user32.dll")] internal static extern bool PostMessage(nint hwnd, uint message, nint wp, nint lp);
+    [DllImport("user32.dll", SetLastError = true)] internal static extern bool PostMessage(nint hwnd, uint message, nint wp, nint lp);
+    [DllImport("user32.dll", SetLastError = true)] internal static extern bool ChangeWindowMessageFilterEx(nint hwnd, uint message, uint action, nint filter);
+    [DllImport("user32.dll")] internal static extern uint InSendMessageEx(nint reserved);
     [DllImport("user32.dll")] internal static extern nint SetWinEventHook(uint first, uint last, nint module, EventProc callback, uint process, uint thread, uint flags);
     [DllImport("user32.dll")] internal static extern bool UnhookWinEvent(nint hook);
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(nint hwnd, int attribute, out int value, int size);
@@ -63,7 +64,6 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(uint access, bool inherit, uint id);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageName(nint process, uint flags, StringBuilder name, ref uint size);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
-
     public static string Title(nint hwnd) { var b = new StringBuilder(2048); GetWindowText(hwnd, b, b.Capacity); return b.ToString(); }
     public static string ClassName(nint hwnd) { var b = new StringBuilder(256); GetClassName(hwnd, b, b.Capacity); return b.ToString(); }
     public static long Style(nint hwnd) => IntPtr.Size == 8 ? GetWindowLong64(hwnd, -20).ToInt64() : GetWindowLong32(hwnd, -20);
@@ -71,12 +71,12 @@ internal static class Native
     public static byte ToAlpha(int percent) => (byte)((Math.Clamp(percent, 0, 100) * 255 + 50) / 100);
     public static int ToPercent(byte alpha) => (alpha * 100 + 127) / 255;
     public static bool Overlaps(Rect a, Rect b) => a.Left < b.Right && a.Right > b.Left && a.Top < b.Bottom && a.Bottom > b.Top;
+    private static bool IsShell(nint hwnd) => ClassName(hwnd) is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or "DV2ControlHost";
     public static bool IsTarget(nint hwnd)
     {
         if (!IsWindow(hwnd)) return false;
         GetWindowThreadProcessId(hwnd, out uint pid);
-        if (pid == Environment.ProcessId) return false;
-        return ClassName(hwnd) is not ("Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or "DV2ControlHost");
+        return pid != Environment.ProcessId && !IsShell(hwnd);
     }
     public static WindowIdentity? Identity(nint hwnd)
     {
@@ -131,28 +131,52 @@ internal static class Native
         bool readable = GetLayeredWindowAttributes(id.Hwnd, out uint color, out byte alpha, out uint flags);
         return new() { Identity = id, Title = Title(id.Hwnd), ExtendedStyle = style, Topmost = (style & TopmostStyle) != 0, LayeredReadable = readable, ColorKey = color, Alpha = readable ? alpha : (byte)255, LayeredFlags = flags };
     }
-    public static void EnsureIdentity(WindowIdentity id) { if (!Matches(id)) throw new InvalidOperationException("目标窗口已关闭或已被替换，请刷新窗口列表。"); }
-    private static void Check(bool ok, string action) { if (!ok) throw new Win32Exception(Marshal.GetLastPInvokeError(), $"{action}失败。目标可能以更高权限运行，或不支持此操作。"); }
+    public static void EnsureIdentity(WindowIdentity id) { if (!Matches(id)) throw new InvalidOperationException("目标窗口已关闭或已被替换。"); }
+    private static void Check(bool ok, string action) { if (!ok) throw new Win32Exception(Marshal.GetLastPInvokeError(), $"{action}失败，请检查目标权限或兼容性。"); }
     public static void SetStyleBits(nint hwnd, long mask, long bits)
     {
-        long current = Style(hwnd);
-        long value = (current & ~mask) | (bits & mask);
+        long current = Style(hwnd), value = (current & ~mask) | (bits & mask);
         if (current == value) return;
         Marshal.SetLastPInvokeError(0);
         nint previous = IntPtr.Size == 8 ? SetWindowLong64(hwnd, -20, (nint)value) : (nint)SetWindowLong32(hwnd, -20, (int)value);
         if (previous == 0 && Marshal.GetLastPInvokeError() != 0) Check(false, "修改窗口样式");
+        if ((Style(hwnd) & mask) != (value & mask)) throw new InvalidOperationException("目标未接受窗口样式修改。");
     }
-    public static void SetTopmost(nint hwnd, bool value) => Check(SetWindowPos(hwnd, value ? (nint)(-1) : (nint)(-2), 0, 0, 0, 0, NoMove | NoSize | NoActivate), "切换置顶");
-    public static void Raise(nint hwnd) => SetWindowPos(hwnd, (nint)(-1), 0, 0, 0, 0, NoMove | NoSize | NoActivate);
+    // Foreign HWNDs run on workers and are verified before reporting success.
+    public static void SetTopmost(nint hwnd, bool value)
+    {
+        Check(SetWindowPos(hwnd, value ? (nint)(-1) : (nint)(-2), 0, 0, 0, 0, NoMove | NoSize | NoActivate), "切换置顶");
+        if (IsTopmost(hwnd) != value) throw new InvalidOperationException("窗口未接受置顶设置。");
+    }
+    // Own HWND has one native owner, never mixed with WPF's Topmost property.
+    public static bool SetOwnTopmost(nint hwnd, bool value)
+    {
+        if (IsTopmost(hwnd) == value) return true;
+        nint foreground = GetForegroundWindow();
+        nint after = value ? (nint)(-1) : (nint)(-2);
+        if (!value && foreground != hwnd && IsWindowVisible(foreground) && !IsIconic(foreground) && !IsTopmost(foreground) && !IsShell(foreground)) after = foreground;
+        return SetWindowPos(hwnd, after, 0, 0, 0, 0, NoMove | NoSize | NoActivate) && IsTopmost(hwnd) == value;
+    }
+    public static bool Raise(nint hwnd) => SetWindowPos(hwnd, (nint)(-1), 0, 0, 0, 0, NoMove | NoSize | NoActivate);
     public static void SetOpacity(WindowSnapshot original, int percent)
     {
         nint hwnd = original.Identity.Hwnd;
-        if ((original.ExtendedStyle & Layered) != 0 && !original.LayeredReadable)
-            throw new InvalidOperationException("该窗口使用逐像素透明，不能安全改写它的不透明度；其他操作仍可使用。");
-        SetStyleBits(hwnd, Layered, Layered);
-        uint color = original.LayeredReadable ? original.ColorKey : 0;
-        uint flags = 2 | (original.LayeredReadable ? original.LayeredFlags & 1 : 0);
-        Check(SetLayeredWindowAttributes(hwnd, color, ToAlpha(percent), flags), "调整不透明度");
+        if ((original.ExtendedStyle & Layered) != 0 && !original.LayeredReadable) throw new InvalidOperationException("该窗口使用逐像素透明，不支持修改不透明度。");
+        bool added = (Style(hwnd) & Layered) == 0;
+        try
+        {
+            SetStyleBits(hwnd, Layered, Layered);
+            uint color = original.LayeredReadable ? original.ColorKey : 0;
+            uint flags = 2 | (original.LayeredReadable ? original.LayeredFlags & 1 : 0);
+            byte wanted = ToAlpha(percent);
+            Check(SetLayeredWindowAttributes(hwnd, color, wanted, flags), "调整不透明度");
+            if (!GetLayeredWindowAttributes(hwnd, out _, out byte actual, out uint applied) || (applied & 2) == 0 || actual != wanted) throw new InvalidOperationException("窗口未接受不透明度设置。");
+        }
+        catch
+        {
+            if (added) { try { SetStyleBits(hwnd, Layered, 0); } catch (Win32Exception) { } catch (InvalidOperationException) { } }
+            throw;
+        }
     }
     public static void SetClickThrough(WindowSnapshot original, bool value, int opacity)
     {
@@ -163,36 +187,36 @@ internal static class Native
     public static Placement GetPlacement(nint hwnd)
     {
         var p = new Placement { Length = (uint)Marshal.SizeOf<Placement>() };
-        Check(GetWindowPlacement(hwnd, ref p), "读取窗口位置");
-        return p;
+        Check(GetWindowPlacement(hwnd, ref p), "读取窗口位置"); return p;
     }
     public static bool ApplyPlacement(nint hwnd, Placement placement)
     {
-        placement.Length = (uint)Marshal.SizeOf<Placement>();
-        placement.Flags |= 4;
+        placement.Length = (uint)Marshal.SizeOf<Placement>(); placement.Flags |= 4;
         return SetWindowPlacement(hwnd, ref placement);
     }
     public static void RestoreStyles(WindowSnapshot snapshot)
     {
         EnsureIdentity(snapshot.Identity);
         nint hwnd = snapshot.Identity.Hwnd;
-        if (snapshot.EditedTopmost && IsTopmost(hwnd) != snapshot.Topmost) SetTopmost(hwnd, snapshot.Topmost);
+        var errors = new List<string>();
+        void Attempt(Action action) { try { action(); } catch (Exception e) when (e is Win32Exception or InvalidOperationException) { errors.Add(e.Message); } }
+        if (snapshot.EditedTopmost && IsTopmost(hwnd) != snapshot.Topmost) Attempt(() => SetTopmost(hwnd, snapshot.Topmost));
         if (snapshot.EditedOpacity || snapshot.EditedClickThrough)
         {
             long mask = Layered | (snapshot.EditedClickThrough ? Transparent : 0);
-            SetStyleBits(hwnd, mask, snapshot.ExtendedStyle);
+            Attempt(() => SetStyleBits(hwnd, mask, snapshot.ExtendedStyle));
             if (snapshot.EditedOpacity && (snapshot.ExtendedStyle & Layered) != 0 && snapshot.LayeredReadable)
-            {
-                bool unchanged = GetLayeredWindowAttributes(hwnd, out uint color, out byte alpha, out uint flags) && color == snapshot.ColorKey && alpha == snapshot.Alpha && flags == snapshot.LayeredFlags;
-                if (!unchanged) Check(SetLayeredWindowAttributes(hwnd, snapshot.ColorKey, snapshot.Alpha, snapshot.LayeredFlags), "恢复透明状态");
-            }
+                Attempt(() =>
+                {
+                    bool unchanged = GetLayeredWindowAttributes(hwnd, out uint color, out byte alpha, out uint flags) && color == snapshot.ColorKey && alpha == snapshot.Alpha && flags == snapshot.LayeredFlags;
+                    if (!unchanged) Check(SetLayeredWindowAttributes(hwnd, snapshot.ColorKey, snapshot.Alpha, snapshot.LayeredFlags), "恢复透明状态");
+                });
         }
+        if (errors.Count != 0) throw new InvalidOperationException(string.Join(" ", errors));
     }
     public static nint TargetUnderPointer()
     {
-        GetCursorPos(out Point p);
-        nint hwnd = GetAncestor(WindowFromPoint(p), 2);
-        return IsTarget(hwnd) ? hwnd : 0;
+        GetCursorPos(out Point p); nint hwnd = GetAncestor(WindowFromPoint(p), 2); return IsTarget(hwnd) ? hwnd : 0;
     }
     public static bool OverlappingTopmostAbove(nint hwnd)
     {
@@ -200,10 +224,17 @@ internal static class Native
         for (nint next = GetWindow(hwnd, 3); next != 0; next = GetWindow(next, 3))
         {
             GetWindowThreadProcessId(next, out uint pid);
-            if (pid == Environment.ProcessId || !IsWindowVisible(next) || IsIconic(next) || !IsTopmost(next)) continue;
+            if (pid == Environment.ProcessId || !IsWindowVisible(next) || IsIconic(next) || !IsTopmost(next) || IsShell(next)) continue;
+            if (DwmGetWindowAttribute(next, 14, out int cloaked, 4) == 0 && cloaked != 0) continue;
             if (GetWindowRect(next, out Rect r) && Overlaps(own, r)) return true;
         }
         return false;
+    }
+    internal static bool IsAbove(nint front, nint back)
+    {
+        bool found = false;
+        EnumWindows((hwnd, data) => { if (hwnd == front) { found = true; return false; } return hwnd != back; }, 0);
+        return found;
     }
     public static void FitToWorkArea(nint hwnd)
     {
