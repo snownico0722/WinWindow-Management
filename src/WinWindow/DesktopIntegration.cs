@@ -1,8 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
-using System.Windows;
+using System.Reflection;
 using System.Windows.Input;
 using System.Windows.Interop;
 using Microsoft.Win32;
@@ -70,7 +71,11 @@ internal sealed class DesktopIntegration : IDisposable
     private nint Message(nint hwnd, int msg, nint wp, nint lp, ref bool handled)
     {
         if ((uint)msg == WakeMessage) { Dispatch("show"); handled = true; }
-        else if (msg == 0x0312 && _actions.TryGetValue(wp.ToInt32(), out string? action)) { Dispatch(action); handled = true; }
+        else if (msg == 0x0312 && _actions.TryGetValue(wp.ToInt32(), out string? action))
+        {
+            if (!_window.IsEditingHotkey) Dispatch(action);
+            handled = true;
+        }
         return 0;
     }
     public static (uint Modifiers, uint Key) ParseHotkey(string text)
@@ -106,17 +111,22 @@ internal sealed class DesktopIntegration : IDisposable
     {
         foreach (int id in _actions.Keys) Native.UnregisterHotKey(_hwnd, id);
         try { _actions = Register(settings); _hotkeys = new(settings); }
-        catch
-        {
-            _actions = Register(_hotkeys);
-            throw;
-        }
+        catch { _actions = Register(_hotkeys); throw; }
     }
     public static void SetAutostart(bool enabled)
     {
+        bool dev = Environment.GetCommandLineArgs().Contains("--dev");
+        string name = dev ? "WinWindowManagement-dev" : "WinWindowManagement";
         using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-        if (enabled) key.SetValue("WinWindowManagement", $"\"{Environment.ProcessPath}\" --minimized");
-        else key.DeleteValue("WinWindowManagement", false);
+        if (enabled)
+        {
+            string exe = Environment.ProcessPath ?? throw new InvalidOperationException("无法获取程序路径。");
+            string command = $"\"{exe}\"";
+            if (string.Equals(Path.GetFileNameWithoutExtension(exe), "dotnet", StringComparison.OrdinalIgnoreCase))
+                command += $" \"{Assembly.GetExecutingAssembly().Location}\"";
+            key.SetValue(name, command + (dev ? " --dev" : "") + " --minimized");
+        }
+        else key.DeleteValue(name, false);
     }
     public void Dispose()
     {

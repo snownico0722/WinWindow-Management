@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Threading;
 
 namespace WinWindow;
@@ -29,7 +30,11 @@ public partial class MainWindow : Window
     private Rect _expandedBounds;
     private WindowState _expandedState = WindowState.Normal;
     private WindowState _lastState = WindowState.Normal;
+    private Task? _initialization;
+    private WindowItem? _opacityEditItem;
+    private string _opacityEditText = "";
     internal WindowItem? Selected => WindowList.SelectedItem as WindowItem;
+    internal bool IsEditingHotkey => _keyEditors.Values.Any(x => x.IsKeyboardFocusWithin);
     internal MainWindow(StateStore store, bool testMode = false)
     {
         _store = store; _testMode = testMode; Manager = new(store);
@@ -39,6 +44,8 @@ public partial class MainWindow : Window
         _view.Filter = FilterItem;
         WindowList.ItemsSource = _view;
         _keyEditors = new() { ["show"] = ShowKeyBox, ["pin"] = PinKeyBox, ["park"] = ParkKeyBox, ["recover"] = RecoverKeyBox, ["opacityUp"] = UpKeyBox, ["opacityDown"] = DownKeyBox };
+        OpacityBox.GotKeyboardFocus += (_, _) => { _opacityEditItem = Selected; _opacityEditText = OpacityBox.Text; };
+        OpacityBox.TextChanged += (_, _) => { if (!_syncing && OpacityBox.IsKeyboardFocusWithin && _opacityEditItem is not null) _opacityEditText = OpacityBox.Text; };
         var p = store.Preferences;
         if (double.IsFinite(p.Width)) Width = Math.Max(MinWidth, p.Width);
         if (double.IsFinite(p.Height)) Height = Math.Max(MinHeight, p.Height);
@@ -55,7 +62,7 @@ public partial class MainWindow : Window
         _refreshTimer.Tick += (_, _) => { _refreshTimer.Stop(); Run(Manager.Refresh); };
         _aggressiveTimer.Tick += (_, _) => { if (CanEnforceOwn() && Native.OverlappingTopmostAbove(_hwnd)) Native.Raise(_hwnd); };
         SourceInitialized += OnSourceInitialized;
-        Loaded += OnLoaded;
+        Loaded += async (_, _) => await InitializeAsync();
         Activated += (_, _) => ApplyOwnPolicy();
         Deactivated += (_, _) => ApplyOwnPolicy();
         IsVisibleChanged += (_, _) => ApplyOwnPolicy();
@@ -63,7 +70,6 @@ public partial class MainWindow : Window
         Closing += OnClosing;
         _ready = true;
     }
-
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
         _hwnd = new WindowInteropHelper(this).Handle;
@@ -79,19 +85,22 @@ public partial class MainWindow : Window
         {
             if (_quitting) return;
             if (foreground && CanEnforceOwn()) Native.Raise(_hwnd);
-            if ((IsVisible && WindowState != WindowState.Minimized) || Manager.HasRules)
-            {
-                if (!_refreshTimer.IsEnabled) _refreshTimer.Start();
-            }
+            if (((IsVisible && WindowState != WindowState.Minimized) || Manager.HasRules) && !_refreshTimer.IsEnabled) _refreshTimer.Start();
         };
         Run(() => _desktop.ApplyHotkeys(_store.Preferences.Hotkeys));
     }
     private nint WindowMessage(nint hwnd, int msg, nint wp, nint lp, ref bool handled)
     {
-        if (msg == 0x0024) { Native.ConstrainMaximize(hwnd, lp); handled = true; }
+        if (msg == 0x0024)
+        {
+            var dpi = VisualTreeHelper.GetDpi(this);
+            Native.ConstrainMaximize(hwnd, lp, (int)Math.Ceiling(MinWidth * dpi.DpiScaleX), (int)Math.Ceiling(MinHeight * dpi.DpiScaleY));
+            handled = true;
+        }
         return 0;
     }
-    private async void OnLoaded(object sender, RoutedEventArgs e)
+    internal Task InitializeAsync() => _initialization ??= InitializeCoreAsync();
+    private async Task InitializeCoreAsync()
     {
         if (_testMode) { Run(Manager.Refresh); return; }
         await RunAsync(async () =>
@@ -135,6 +144,8 @@ public partial class MainWindow : Window
     private void Search_Changed(object sender, TextChangedEventArgs e) { if (_ready) RefreshView(); }
     private void WindowList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_opacityEditItem is not null) ApplyOpacityText();
+        _opacityEditItem = null;
         _syncing = true;
         try
         {
@@ -149,7 +160,11 @@ public partial class MainWindow : Window
     {
         if (Selected is not { } item) return;
         _syncing = true;
-        try { item.Changed(nameof(item.Pinned)); item.Changed(nameof(item.Opacity)); item.Changed(nameof(item.ClickThrough)); item.NotifyState(); }
+        try
+        {
+            item.Changed(nameof(item.Pinned)); item.Changed(nameof(item.ClickThrough)); item.NotifyState();
+            if (!OpacityBox.IsKeyboardFocusWithin) item.Changed(nameof(item.Opacity));
+        }
         finally { _syncing = false; }
     }
     private void Run(Action action)
@@ -174,12 +189,16 @@ public partial class MainWindow : Window
     }
     private void ApplyOpacityText()
     {
-        if (_syncing || Selected is not { } item) return;
-        if (!int.TryParse(OpacityBox.Text, out int value) || value is < 0 or > 100) { ShowStatus("不透明度请输入 0–100。允许完全透明。"); SyncSelected(); return; }
+        var item = _opacityEditItem;
+        string text = _opacityEditText;
+        _opacityEditItem = null;
+        if (_syncing || item is null) return;
+        if (!int.TryParse(text, out int value) || value is < 0 or > 100) { ShowStatus("不透明度请输入 0–100。允许完全透明。"); item.Changed(nameof(item.Opacity)); return; }
         if (value != item.Opacity) Run(() => Manager.SetOpacity(item, value));
+        if (OpacityBox.IsKeyboardFocusWithin && Selected == item) { _opacityEditItem = item; _opacityEditText = item.Opacity.ToString(); }
     }
     private void OpacityBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) { ApplyOpacityText(); e.Handled = true; } }
-    private void OpacityBox_LostFocus(object sender, KeyboardFocusChangedEventArgs e) => ApplyOpacityText();
+    private void OpacityBox_LostFocus(object sender, KeyboardFocusChangedEventArgs e) { ApplyOpacityText(); _opacityEditItem = null; SyncSelected(); }
     private async void Park_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) await RunAsync(async () => ShowStatus(await Manager.ParkAsync(item))); }
     private async void RestoreWindow_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) await RunAsync(async () => { await Manager.RestoreParkingAsync(item); ShowStatus("已恢复窗口；置顶、透明度设置保持不变。"); }); }
     private async void RestoreOriginal_Click(object sender, RoutedEventArgs e) { if (Selected is { } item) await RunAsync(async () => { await Manager.ReleaseAsync(item); ShowStatus("已恢复原始状态。"); }); }
@@ -187,10 +206,7 @@ public partial class MainWindow : Window
     private async void RecoverAll_Click(object sender, RoutedEventArgs e) => await RecoverAllAsync();
     private async Task RecoverAllAsync() => await RunAsync(async () => { int failures = await Manager.RestoreAllAsync(); ShowStatus(failures == 0 ? "所有被管理窗口已恢复原始状态。" : $"有 {failures} 个窗口未能恢复，恢复记录仍保留。"); });
     private void Refresh_Click(object sender, RoutedEventArgs e) => Run(Manager.Refresh);
-    private async void WindowList_DoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (Selected is { IsAvailable: true } item) await RunAsync(() => Manager.RestoreParkingAsync(item));
-    }
+    private async void WindowList_DoubleClick(object sender, MouseButtonEventArgs e) { if (Selected is { IsAvailable: true } item) await RunAsync(() => Manager.RestoreParkingAsync(item)); }
 
     private void Picker_Down(object sender, MouseButtonEventArgs e)
     {
@@ -299,7 +315,7 @@ public partial class MainWindow : Window
     });
     private async Task OnDesktopActionAsync(string action)
     {
-        if (_quitting || _keyEditors.Values.Any(x => x.IsKeyboardFocusWithin)) return;
+        if (_quitting) return;
         if (action == "show") { ShowShell(); return; }
         if (action == "compact") { ShowShell(); ToggleCompact(); return; }
         if (action == "quit") { await QuitAsync(); return; }
@@ -323,7 +339,7 @@ public partial class MainWindow : Window
         Rect bounds = _compact ? _expandedBounds : WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
         var p = _store.Preferences;
         if (!bounds.IsEmpty) { p.Left = bounds.Left; p.Top = bounds.Top; p.Width = bounds.Width; p.Height = bounds.Height; }
-        p.Maximized = (_compact ? _expandedState : WindowState) == WindowState.Maximized;
+        p.Maximized = (_compact ? _expandedState : WindowState == WindowState.Minimized ? _lastState : WindowState) == WindowState.Maximized;
         _store.SavePreferences();
     }
     private async void OnClosing(object? sender, CancelEventArgs e)

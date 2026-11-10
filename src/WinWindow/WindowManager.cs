@@ -22,7 +22,10 @@ internal sealed class WindowManager
         foreach (var snapshot in _store.ReadRecovery())
         {
             if (!Native.Matches(snapshot.Identity)) continue;
-            Items.Add(new() { Identity = snapshot.Identity, Title = snapshot.Title, Original = snapshot, IsHidden = !Native.IsWindowVisible(snapshot.Identity.Hwnd), IsMinimized = Native.IsIconic(snapshot.Identity.Hwnd) });
+            var item = new WindowItem { Identity = snapshot.Identity, Title = snapshot.Title, Original = snapshot, IsHidden = !Native.IsWindowVisible(snapshot.Identity.Hwnd), IsMinimized = Native.IsIconic(snapshot.Identity.Hwnd) };
+            // A recovery must not immediately reapply a saved invisible state to this same survivor.
+            item.RuleId = _store.Preferences.Rules.FirstOrDefault(r => r.Matches(item))?.Id;
+            Items.Add(item);
         }
         if (Items.Count != 0)
         {
@@ -80,16 +83,16 @@ internal sealed class WindowManager
             {
                 if (placeholder is not null) Items.Remove(placeholder);
                 var item = matches[0];
-                if (item.RuleId == rule.Id) continue;
+                if (item.RuleId == rule.Id || item.IsBusy) continue;
                 item.RuleId = rule.Id;
-                // Mark association before applying. A failed rule is reported, not retried on every event.
                 try
                 {
                     bool pin = rule.Pinned, through = rule.ClickThrough;
-                    int opacity = rule.Opacity;
-                    SetPin(item, pin, false);
-                    if (opacity != 100) SetOpacity(item, opacity, false);
-                    if (through) SetClickThrough(item, true, false);
+                    int opacity = Math.Clamp(rule.Opacity, 0, 100);
+                    Manage(item);
+                    if (pin != item.Pinned) SetPin(item, pin, false);
+                    if (opacity != item.Opacity) SetOpacity(item, opacity, false);
+                    if (through != item.ClickThrough) SetClickThrough(item, through, false);
                 }
                 catch (Exception e) { Notice?.Invoke($"未能完整应用“{item.Title}”的规则：{e.Message}"); }
                 item.NotifyState();
@@ -107,12 +110,15 @@ internal sealed class WindowManager
         var id = Native.Identity(hwnd) ?? throw new InvalidOperationException("无法读取目标窗口身份，请检查权限。");
         var existing = Items.FirstOrDefault(x => Same(x.Identity, id));
         if (existing is not null) return existing;
-        var item = new WindowItem { Identity = id, Title = Native.Title(hwnd), Pinned = Native.IsTopmost(hwnd), IsMinimized = Native.IsIconic(hwnd) };
+        long style = Native.Style(hwnd);
+        int opacity = (style & Native.Layered) != 0 && Native.GetLayeredWindowAttributes(hwnd, out _, out byte alpha, out uint flags) && (flags & 2) != 0 ? Native.ToPercent(alpha) : 100;
+        var item = new WindowItem { Identity = id, Title = Native.Title(hwnd), Pinned = Native.IsTopmost(hwnd), IsMinimized = Native.IsIconic(hwnd), ClickThrough = (style & Native.Transparent) != 0, Opacity = opacity };
         Items.Add(item);
         Changed?.Invoke();
         return item;
     }
 
+    private static void EnsureIdle(WindowItem item) { if (item.IsBusy) throw new InvalidOperationException("请等待该窗口的当前操作结束。"); }
     private WindowSnapshot Manage(WindowItem item)
     {
         if (item.Identity is null) throw new InvalidOperationException("该窗口尚未出现。");
@@ -144,6 +150,7 @@ internal sealed class WindowManager
     }
     public void SetPin(WindowItem item, bool value, bool updateRule = true)
     {
+        EnsureIdle(item);
         Track(item, s => s.EditedTopmost = true);
         Native.SetTopmost(item.Hwnd, value);
         item.Pinned = Native.IsTopmost(item.Hwnd);
@@ -152,6 +159,7 @@ internal sealed class WindowManager
     }
     public void SetOpacity(WindowItem item, int value, bool updateRule = true)
     {
+        EnsureIdle(item);
         value = Math.Clamp(value, 0, 100);
         Track(item, s => s.EditedOpacity = true);
         Native.SetOpacity(item.Original!, value);
@@ -160,9 +168,11 @@ internal sealed class WindowManager
     }
     public void SetClickThrough(WindowItem item, bool value, bool updateRule = true)
     {
+        EnsureIdle(item);
         Track(item, s => s.EditedClickThrough = true);
         Native.SetClickThrough(item.Original!, value, item.Opacity);
         item.ClickThrough = (Native.Style(item.Hwnd) & Native.Transparent) != 0;
+        if (item.ClickThrough != value) throw new InvalidOperationException("窗口未接受鼠标穿透设置。");
         Finish(item, updateRule);
     }
     public void SetRemembered(WindowItem item, bool remember)
@@ -175,7 +185,9 @@ internal sealed class WindowManager
         }
         else
         {
+            EnsureIdle(item);
             Manage(item);
+            if (item.RuleId is not null) return;
             var rule = new WindowRule { ProcessPath = item.ProcessPath, ClassName = item.Identity!.ClassName, Title = item.Title, Pinned = item.Pinned, Opacity = item.Opacity, ClickThrough = item.ClickThrough };
             _store.Preferences.Rules.Add(rule);
             item.RuleId = rule.Id;
@@ -192,10 +204,12 @@ internal sealed class WindowManager
 
     private static async Task<bool> WaitForAsync(WindowIdentity id, Func<nint, bool> predicate)
     {
+        int stable = 0;
         for (int i = 0; i < 8; i++)
         {
             if (!Native.Matches(id)) throw new InvalidOperationException("操作期间目标窗口已关闭。");
-            if (predicate(id.Hwnd)) return true;
+            stable = predicate(id.Hwnd) ? stable + 1 : 0;
+            if (stable >= 2) return true;
             await Task.Delay(60);
         }
         return false;
@@ -203,7 +217,7 @@ internal sealed class WindowManager
 
     public async Task<string> ParkAsync(WindowItem item)
     {
-        if (item.IsBusy) return "该窗口正在处理中。";
+        EnsureIdle(item);
         var snapshot = Manage(item);
         if (Native.IsIconic(item.Hwnd) || !Native.IsWindowVisible(item.Hwnd)) return "窗口已经最小化或隐藏。";
         item.IsBusy = true;
@@ -216,7 +230,7 @@ internal sealed class WindowManager
             if (!minimized)
             {
                 var fallback = placement;
-                fallback.ShowCmd = 7; // SW_SHOWMINNOACTIVE; async placement avoids cross-thread hangs.
+                fallback.ShowCmd = 7;
                 Native.ApplyPlacement(item.Hwnd, fallback);
                 minimized = await WaitForAsync(snapshot.Identity, Native.IsIconic);
             }
@@ -248,7 +262,7 @@ internal sealed class WindowManager
     }
     public async Task RestoreParkingAsync(WindowItem item, bool activate = true)
     {
-        if (item.IsBusy) return;
+        EnsureIdle(item);
         item.IsBusy = true;
         try
         {
@@ -266,7 +280,7 @@ internal sealed class WindowManager
     }
     public async Task ReleaseAsync(WindowItem item, bool forgetRule = false, bool updateRule = true)
     {
-        if (item.IsBusy) throw new InvalidOperationException("请等待该窗口的当前操作结束。");
+        EnsureIdle(item);
         if (item.Original is null) { if (forgetRule) SetRemembered(item, false); return; }
         item.IsBusy = true;
         try
@@ -299,7 +313,6 @@ internal sealed class WindowManager
     }
     public void RestoreForSessionEnd()
     {
-        // Windows shutdown cannot await the UI loop. Keep the recovery journal until next launch.
         foreach (var s in Items.Where(x => x.Original is not null).Select(x => x.Original!))
         {
             if (!Native.Matches(s.Identity)) continue;

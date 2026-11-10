@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -22,7 +23,7 @@ internal static class SmokeTests
     }
     private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject)
     {
-        string file = Path.Combine(directory, reject ? "reject.hwnd" : "normal.hwnd");
+        string file = Path.Combine(directory, (reject ? "reject-" : "normal-") + Guid.NewGuid().ToString("N") + ".hwnd");
         var start = new ProcessStartInfo("dotnet") { UseShellExecute = false };
         start.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
         start.ArgumentList.Add("--fixture"); start.ArgumentList.Add(file);
@@ -77,11 +78,16 @@ internal static class SmokeTests
             string parked = await manager.ParkAsync(item);
             Assert(Native.IsIconic(item.Hwnd) && item.IsParked, "force minimize produces a real iconic window: " + parked);
             await manager.RestoreParkingAsync(item, false);
-            await Task.Delay(150);
             Assert(Native.IsWindowVisible(item.Hwnd) && !Native.IsIconic(item.Hwnd) && Native.GetPlacement(item.Hwnd).ShowCmd == before.ShowCmd, "restore preserves pre-minimize maximized state");
             await manager.ReleaseAsync(item);
             var rejected = await FixtureAsync(output, true); processes.Add(rejected.Process);
             var stubborn = manager.SelectTarget(rejected.Hwnd);
+            bool rejectedOpacity = false;
+            try { manager.SetOpacity(stubborn, 0); }
+            catch (Exception e) when (e is Win32Exception or InvalidOperationException) { rejectedOpacity = true; }
+            Assert(rejectedOpacity && stubborn.Opacity == 100 && (Native.Style(stubborn.Hwnd) & Native.Layered) == 0, "WPF opacity veto is reported without claiming success");
+            await manager.ReleaseAsync(stubborn);
+            Assert(stubborn.Original is null, "an unchanged unsupported window does not block release");
             string hidden = await manager.ParkAsync(stubborn);
             Assert(!Native.IsWindowVisible(stubborn.Hwnd) && stubborn.IsHidden && stubborn.IsParked, "refused minimization falls back to hidden, not fake success: " + hidden);
             await manager.RestoreParkingAsync(stubborn, false);
@@ -95,20 +101,21 @@ internal static class SmokeTests
             Native.ShowWindowAsync(item.Hwnd, Native.Normal);
             shell = new MainWindow(store, true);
             Application.Current.MainWindow = shell;
-            shell.Show(); await Task.Delay(200);
+            shell.Show(); await shell.InitializeAsync(); await Task.Delay(150);
             shell.Manager.Refresh();
             var chosen = shell.Manager.Items.First(x => x.Hwnd == item.Hwnd);
             shell.Manager.SetPin(chosen, true);
+            shell.Manager.SetOpacity(chosen, 68);
             shell.SelectForTest(chosen);
             shell.ShowStatus("自动验证窗口 · 0–100% 不透明度 / 强制最小化 / 一键恢复");
             await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             shell.UpdateLayout();
             Capture(shell, Path.Combine(output, "workbench-light.png"));
-            Palette.Apply(true); shell.UpdateLayout();
-            await Task.Delay(100);
+            Palette.Apply(true); shell.UpdateLayout(); await Task.Delay(100);
             Capture(shell, Path.Combine(output, "workbench-dark.png"));
             shell.ToggleCompact(); await Task.Delay(100);
             Assert(shell.Width == 360 && shell.Topmost, "compact mode is separate from the full workbench");
+            Capture(shell, Path.Combine(output, "compact-dark.png"));
             shell.ToggleCompact();
             Assert(shell.Width >= 880 && shell.MinWidth == 880 && double.IsPositiveInfinity(shell.MaxWidth), "full workbench is spacious, resizable and has no maximum width");
             await shell.Manager.RestoreAllAsync();
