@@ -1,22 +1,60 @@
 # WinWindow Management
 
-面向 Windows 的独立窗口管理工作台，以 C# / WPF 重新实现，不移植 Pin-It 的 Rust / Slint 源码。
+**Windows 窗口管理工作台 · C# / WPF 独立实现 · PaperTodo 暖纸视觉语言**
 
-## 产品决定
+不是把 Pin-It 的狭小面板换一种语言，而是以窗口管理系统为目标重新设计交互。默认 1180×760 DIP，支持自由缩放、最大化；小窗只是可选入口。
 
-- 目标是 Windows 窗口管理系统，不是把 Pin-It 换一个名字。第一版聚焦真实窗口管理，不预建插件平台、数据库或规则引擎。
-- 视觉语言采用 PaperTodo 暖纸配色、轻描边、圆角、自绘控件与克制的状态色。参考 PaperTodo `32bfe9e0533c704d07691a50a00f8b5345dc9a2e` 的 `src/Theme.cs` 与 `App.xaml`；不引入其运行时或整套代码架构。
-- 主界面默认约 1180×760 DIP，可缩放、可最大化，无最大尺寸限制。窗口列表与操作详情分离，不能用逼仄界面体现“小工具”。
-- 不透明度范围 **0–100%**，允许完全透明，不设人为下限；管理列表、托盘和恢复快捷键必须始终可恢复目标。
-- 强制最小化是一次性操作：记录原状态 → 请求最小化 → 验证 `IsIconic` → 未成功时隐藏 → 显示真实结果 → 一键恢复。不是“锁后台”，不监听后反复压制游戏，不注入进程。
-- 保留窗口置顶、点击穿透、快捷键、托盘、开机启动、窗口规则保存及小窗入口。自身窗口置顶与被管理窗口状态必须分开。
-- 不保证游戏在最小化/隐藏后继续渲染或正常挂机；管理员权限边界与游戏显示模式仍需真实 Windows 实机验证。
-- 先完成可构建、可运行、可恢复的首版，再扩展更多窗口管理能力。
+## 首版功能
 
-## 实现结构
+- 浏览与搜索当前应用窗口，分为全部窗口、已管理、已收起。
+- 窗口置顶、拖拽置顶、不透明度 **0–100%**、鼠标点击穿透。
+- **强制最小化 → 检查真实最小化状态 → 隐藏兜底 → 一键恢复**。单次操作，不反复压后台、不注入游戏。
+- 恢复窗口保留管理设置；恢复原始状态撤销本程序的修改。隐藏与完全透明的窗口仍可从列表、托盘和恢复快捷键找回。
+- 保存窗口设置，按程序路径、窗口类、标题精确匹配；同名多窗口不猜测。
+- 托盘、全局快捷键、开机启动、关闭藏托盘或直接退出。
+- 主程序长期置顶、焦点临时置顶、可选小窗及可选激进置顶；与被管理窗口状态分开。
+- 浅色 / 深色暖纸主题；JSON 设置与异常中断恢复记录。
 
-使用 .NET 10 WPF。`Native` 封装 Win32，`WindowManager` 负责目标身份与可恢复操作，`DesktopIntegration` 负责托盘/快捷键/单实例，主窗口负责工作台交互，资源字典集中定义视觉语言。JSON 保存设置与恢复记录，不引入数据库。
+## 使用
 
-## 开发状态
+从 Actions 的 `WinWindow-preview-and-tests` 制品取得 `WinWindow-win-x64.zip`，解压运行 `WinWindow.exe`。自包含构建不要求另装 .NET；未签名版本可能显示 SmartScreen 提示。
 
-本提交先固定设计与范围；应用实现和 Windows 构建验证将在功能分支提交。
+| 默认快捷键 | 操作 |
+|---|---|
+| Win + Ctrl + Space | 唤出工作台 |
+| Win + Ctrl + T | 切换当前窗口置顶 |
+| Win + Ctrl + M | 强制最小化当前窗口 |
+| Win + Ctrl + Shift + R | 恢复全部窗口原始状态 |
+| Win + Ctrl + OemPlus / OemMinus | 增加 / 降低不透明度 |
+
+设置页可重新录入组合键或留空停用。配置位于 `%LOCALAPPDATA%\WinWindow-Management`；`--dev` 使用单独的数据目录与单实例锁。
+
+## 构建
+
+Windows + .NET 10 SDK：
+
+```powershell
+dotnet build src/WinWindow/WinWindow.csproj -c Release
+dotnet run --project src/WinWindow/WinWindow.csproj -- --dev
+dotnet src/WinWindow/bin/Release/net10.0-windows/WinWindow.dll --self-test TestResults
+dotnet publish src/WinWindow/WinWindow.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/WinWindow
+```
+
+自动测试使用独立原生测试窗口，检查透明度、置顶、穿透、真实最小化、隐藏兜底、恢复与界面布局，并输出浅色/深色 WPF 截图。实机游戏验收见 [MANUAL_TESTS.md](docs/MANUAL_TESTS.md)。
+
+## 边界
+
+最小化/隐藏不保证游戏继续渲染或正常挂机；权限限制、独占全屏和逐像素透明窗口仍受 Windows / 应用行为约束。失败会报告并保留恢复入口，不能把“已发送 API 请求”当作“操作成功”。
+
+这是可审查的 **0.1 开发首版**，不是已完成所有游戏兼容性验证的正式发布。当前不预建自动布局引擎、插件平台或数据库。
+
+## 结构
+
+- `Native.cs`：Win32 与窗口身份校验。
+- `WindowManager.cs`：被管理窗口、可恢复操作、精确保存规则。
+- `DesktopIntegration.cs`：托盘、快捷键、窗口事件与单实例唤醒消息。
+- `MainWindow.xaml` / `.cs`：宽松工作台与交互。
+- `Theme.xaml` / `Palette.cs`：统一控件和暖纸配色。
+- `StateStore.cs`：设置与操作前恢复记录。
+
+产品决定见 [DECISIONS.md](docs/DECISIONS.md)，维护约束见 [AGENTS.md](AGENTS.md)。配色参考 PaperTodo `32bfe9e0533c704d07691a50a00f8b5345dc9a2e`；未移植 Pin-It 的 Rust / Slint 代码。此仓库尚未选择开源许可证。
