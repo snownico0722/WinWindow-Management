@@ -12,18 +12,12 @@ internal abstract class Observable : INotifyPropertyChanged
     protected bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
-        field = value;
-        Changed(name);
-        return true;
+        field = value; Changed(name); return true;
     }
     public void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));
 }
-
 internal sealed record WindowIdentity(long Handle, int ProcessId, long ProcessStarted, string ProcessPath, string ClassName)
-{
-    [JsonIgnore] public nint Hwnd => (nint)Handle;
-}
-
+{ [JsonIgnore] public nint Hwnd => (nint)Handle; }
 internal sealed class WindowSnapshot
 {
     public WindowIdentity Identity { get; set; } = new(0, 0, 0, "", "");
@@ -40,7 +34,6 @@ internal sealed class WindowSnapshot
     public bool Parked { get; set; }
     public Native.Placement BeforeParking { get; set; }
 }
-
 internal sealed class WindowRule
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -55,7 +48,6 @@ internal sealed class WindowRule
         string.Equals(ClassName, id.ClassName, StringComparison.Ordinal) &&
         string.Equals(Title, item.Title, StringComparison.Ordinal);
 }
-
 internal sealed class WindowItem : Observable
 {
     public WindowIdentity? Identity { get; init; }
@@ -69,7 +61,9 @@ internal sealed class WindowItem : Observable
     public string Title { get => _title; set => Set(ref _title, value); }
     private bool _available = true;
     public bool IsAvailable { get => _available; set { if (Set(ref _available, value)) NotifyState(); } }
-    public bool IsManaged => Original is not null;
+    // Membership is independent from TOPMOST and the recovery snapshot.
+    public bool Listed { get; set; }
+    public bool IsManaged => Listed || Original is not null;
     public bool Remembered => RuleId is not null;
     private bool _pinned;
     public bool Pinned { get => _pinned; set { if (Set(ref _pinned, value)) NotifyState(); } }
@@ -92,7 +86,6 @@ internal sealed class WindowItem : Observable
         Changed(nameof(Remembered)); Changed(nameof(CanOperate));
     }
 }
-
 internal sealed class Preferences
 {
     public bool Dark { get; set; }
@@ -111,12 +104,10 @@ internal sealed class Preferences
     public Dictionary<string, string> Hotkeys { get; set; } = DefaultHotkeys();
     public static Dictionary<string, string> DefaultHotkeys() => new()
     {
-        ["show"] = "Win+Ctrl+Space", ["pin"] = "Win+Ctrl+T",
-        ["park"] = "Win+Ctrl+M", ["recover"] = "Win+Ctrl+Shift+R",
-        ["opacityUp"] = "Win+Ctrl+OemPlus", ["opacityDown"] = "Win+Ctrl+OemMinus"
+        ["show"] = "Win+Ctrl+Space", ["pin"] = "Win+Ctrl+T", ["park"] = "Win+Ctrl+M",
+        ["recover"] = "Win+Ctrl+Shift+R", ["opacityUp"] = "Win+Ctrl+OemPlus", ["opacityDown"] = "Win+Ctrl+OemMinus"
     };
 }
-
 internal static class OwnWindowPolicy
 {
     public static bool Topmost(bool manual, bool compact, bool focusPolicy, bool focused) => manual || compact || (focusPolicy && focused);

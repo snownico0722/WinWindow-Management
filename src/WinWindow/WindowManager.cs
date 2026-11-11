@@ -19,10 +19,7 @@ internal sealed class WindowManager
     public bool HasRules => _store.Preferences.Rules.Count != 0;
     public WindowManager(StateStore store) => _store = store;
     private static bool Same(WindowIdentity? a, WindowIdentity? b) => a is not null && b is not null && a.Handle == b.Handle && a.ProcessId == b.ProcessId && a.ProcessStarted == b.ProcessStarted && a.ClassName == b.ClassName;
-
-    // State and the journal stay on the dispatcher. Only native work leaves it.
-    // Each target has at most one in-flight operation; a hung target does not
-    // hold a global lock or prevent operations on another target.
+    // State and journal stay on the dispatcher; foreign HWND work does not.
     private async Task OperateAsync(WindowItem item, Func<Task> action)
     {
         if (_stopping) return;
@@ -33,26 +30,20 @@ internal sealed class WindowManager
         try { await action(); }
         finally
         {
-            item.IsBusy = false;
-            _operations.Remove(item);
-            completion.TrySetResult();
+            item.IsBusy = false; _operations.Remove(item); completion.TrySetResult();
             if (!_stopping) Changed?.Invoke();
         }
     }
-
     public async Task RecoverPreviousSessionAsync()
     {
         foreach (var snapshot in _store.ReadRecovery())
         {
             if (!Native.Matches(snapshot.Identity)) continue;
-            var item = new WindowItem { Identity = snapshot.Identity, Title = snapshot.Title, Original = snapshot, IsHidden = !Native.IsWindowVisible(snapshot.Identity.Hwnd), IsMinimized = Native.IsIconic(snapshot.Identity.Hwnd) };
+            var item = new WindowItem { Identity = snapshot.Identity, Title = snapshot.Title, Original = snapshot, Listed = true, IsHidden = !Native.IsWindowVisible(snapshot.Identity.Hwnd), IsMinimized = Native.IsIconic(snapshot.Identity.Hwnd) };
             item.RuleId = _store.Preferences.Rules.FirstOrDefault(r => r.Matches(item))?.Id;
             Items.Add(item);
         }
         Journal();
-        // Do not make startup wait indefinitely for one old hung window.
-        // Busy recovery entries stay usable for identity/status display, and
-        // retain their journal until their actual native restore completes.
         foreach (var item in Items.ToArray()) _ = RecoverOneAsync(item);
         await Task.CompletedTask;
     }
@@ -61,7 +52,6 @@ internal sealed class WindowManager
         try { await ReleaseAsync(item); }
         catch (Exception e) { if (!_stopping) Notice?.Invoke($"“{item.Title}”未恢复：{e.Message}"); }
     }
-
     public async Task RefreshAsync()
     {
         if (_refreshing || _stopping) return;
@@ -76,25 +66,20 @@ internal sealed class WindowManager
                 if (item.IsBusy) continue;
                 if (!Native.Matches(item.Identity!))
                 {
-                    removed |= item.Original is not null;
-                    Items.Remove(item);
-                    continue;
+                    removed |= item.Original is not null; Items.Remove(item); continue;
                 }
                 var live = found.FirstOrDefault(x => Same(x.Identity, item.Identity));
                 if (live is null && !item.IsManaged) { Items.Remove(item); continue; }
                 item.Title = live?.Title ?? Native.Title(item.Hwnd);
-                item.IsMinimized = Native.IsIconic(item.Hwnd);
-                item.IsHidden = !Native.IsWindowVisible(item.Hwnd);
+                item.IsMinimized = Native.IsIconic(item.Hwnd); item.IsHidden = !Native.IsWindowVisible(item.Hwnd);
                 item.Pinned = Native.IsTopmost(item.Hwnd);
                 item.ClickThrough = (Native.Style(item.Hwnd) & Native.Transparent) != 0;
                 if (Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte alpha, out uint flags) && (flags & 2) != 0) item.Opacity = Native.ToPercent(alpha);
                 else if ((Native.Style(item.Hwnd) & Native.Layered) == 0) item.Opacity = 100;
             }
-            foreach (var item in found)
-                if (!Items.Any(x => Same(x.Identity, item.Identity))) Items.Add(item);
+            foreach (var item in found) if (!Items.Any(x => Same(x.Identity, item.Identity))) Items.Add(item);
             if (removed) Journal();
-            ApplyRules();
-            Changed?.Invoke();
+            ApplyRules(); Changed?.Invoke();
         }
         finally { _refreshing = false; }
     }
@@ -109,8 +94,7 @@ internal sealed class WindowManager
                 if (placeholder is not null) Items.Remove(placeholder);
                 var item = matches[0];
                 if (item.RuleId == rule.Id || item.IsBusy) continue;
-                item.RuleId = rule.Id;
-                _ = ApplyRuleAsync(item, rule);
+                item.RuleId = rule.Id; _ = ApplyRuleAsync(item, rule);
             }
             else if (placeholder is null && !Items.Any(x => x.RuleId == rule.Id))
                 Items.Add(new() { Title = rule.Title, RuleId = rule.Id, IsAvailable = false, Pinned = rule.Pinned, Opacity = rule.Opacity, ClickThrough = rule.ClickThrough });
@@ -135,14 +119,11 @@ internal sealed class WindowManager
                     if (!_stopping && through != item.ClickThrough) Native.SetClickThrough(original, through, opacity);
                 });
                 if (_stopping) return;
-                item.Pinned = Native.IsTopmost(item.Hwnd);
-                item.Opacity = opacity; item.ClickThrough = through;
-                item.NotifyState();
+                item.Pinned = Native.IsTopmost(item.Hwnd); item.Opacity = opacity; item.ClickThrough = through; item.NotifyState();
             });
         }
         catch (Exception e) { if (!_stopping) Notice?.Invoke($"“{item.Title}”的规则未完全应用：{e.Message}"); }
     }
-
     public WindowItem SelectTarget(nint hwnd)
     {
         hwnd = Native.GetAncestor(hwnd, 2);
@@ -153,17 +134,15 @@ internal sealed class WindowManager
         long style = Native.Style(hwnd);
         int opacity = (style & Native.Layered) != 0 && Native.GetLayeredWindowAttributes(hwnd, out _, out byte alpha, out uint flags) && (flags & 2) != 0 ? Native.ToPercent(alpha) : 100;
         var item = new WindowItem { Identity = id, Title = Native.Title(hwnd), Pinned = Native.IsTopmost(hwnd), IsMinimized = Native.IsIconic(hwnd), ClickThrough = (style & Native.Transparent) != 0, Opacity = opacity };
-        Items.Add(item); Changed?.Invoke();
-        return item;
+        Items.Add(item); Changed?.Invoke(); return item;
     }
     private static void EnsureIdle(WindowItem item) { if (item.IsBusy) throw new InvalidOperationException("该窗口的操作尚未完成。"); }
     private WindowSnapshot Manage(WindowItem item)
     {
         if (item.Identity is null) throw new InvalidOperationException("该窗口尚未出现。");
         Native.EnsureIdentity(item.Identity);
-        item.Original ??= Native.Capture(item.Identity);
-        item.NotifyState();
-        return item.Original;
+        item.Original ??= Native.Capture(item.Identity); item.Listed = true;
+        item.NotifyState(); return item.Original;
     }
     private void Track(WindowItem item, Action<WindowSnapshot> edit)
     {
@@ -177,10 +156,7 @@ internal sealed class WindowManager
     }
     private void Journal() => _store.WriteRecovery(Items.Where(x => x.Original is not null).Select(x => x.Original!));
     private void Finish(WindowItem item, bool updateRule)
-    {
-        item.NotifyState();
-        if (!_stopping && updateRule) UpdateRule(item);
-    }
+    { item.NotifyState(); if (!_stopping && updateRule) UpdateRule(item); }
     public Task SetPinAsync(WindowItem item, bool value, bool updateRule = true) => OperateAsync(item, async () =>
     {
         Track(item, s => s.EditedTopmost = true);
@@ -191,8 +167,7 @@ internal sealed class WindowManager
     });
     public Task SetOpacityAsync(WindowItem item, int value, bool updateRule = true) => OperateAsync(item, async () =>
     {
-        value = Math.Clamp(value, 0, 100);
-        Track(item, s => s.EditedOpacity = true);
+        value = Math.Clamp(value, 0, 100); Track(item, s => s.EditedOpacity = true);
         var original = item.Original!;
         await Task.Run(() => { Native.EnsureIdentity(original.Identity); Native.SetOpacity(original, value); });
         item.Opacity = value; Finish(item, updateRule);
@@ -200,12 +175,50 @@ internal sealed class WindowManager
     public Task SetClickThroughAsync(WindowItem item, bool value, bool updateRule = true) => OperateAsync(item, async () =>
     {
         Track(item, s => s.EditedClickThrough = true);
-        var original = item.Original!;
-        int opacity = item.Opacity;
+        var original = item.Original!; int opacity = item.Opacity;
         await Task.Run(() => { Native.EnsureIdentity(original.Identity); Native.SetClickThrough(original, value, opacity); });
         item.ClickThrough = (Native.Style(item.Hwnd) & Native.Transparent) != 0;
         if (item.ClickThrough != value) throw new InvalidOperationException("窗口未接受鼠标穿透设置。");
         Finish(item, updateRule);
+    });
+    public Task SetListedPinAsync(WindowItem item, bool value)
+    {
+        if (item.Identity is not null) return SetPinAsync(item, value);
+        if (_stopping) return Task.CompletedTask;
+        var rule = _store.Preferences.Rules.FirstOrDefault(r => r.Id == item.RuleId);
+        if (rule is not null) { rule.Pinned = item.Pinned = value; _store.SaveSoon(); Changed?.Invoke(); }
+        return Task.CompletedTask;
+    }
+    public async Task UnpinAllAsync()
+    {
+        var attempts = Items.Where(x => (x.IsManaged || x.Remembered) && x.Pinned).ToArray().Select(async item =>
+        {
+            try { await SetListedPinAsync(item, false); return 0; }
+            catch (Exception) { return 1; }
+        });
+        int failures = (await Task.WhenAll(attempts)).Sum();
+        if (failures != 0) Notice?.Invoke($"{failures} 个窗口未能取消置顶。");
+    }
+    public Task ActivateAsync(WindowItem item)
+    {
+        if (item.Identity is null) return Task.CompletedTask;
+        // Covered/maximized targets only move forward, not back to normal size.
+        if (Native.IsIconic(item.Hwnd) || !Native.IsWindowVisible(item.Hwnd)) return RestoreParkingAsync(item);
+        return OperateAsync(item, () => Task.Run(() =>
+        { Native.EnsureIdentity(item.Identity); Native.SetForegroundWindow(item.Hwnd); }));
+    }
+    public Task RemoveAsync(WindowItem item) => OperateAsync(item, async () =>
+    {
+        if (item.Original is not null) await RestoreSnapshotAsync(item.Original, true);
+        else if (item.Identity is not null && Native.Matches(item.Identity))
+        {
+            Track(item, s => s.EditedTopmost = true);
+            await Task.Run(() => { Native.EnsureIdentity(item.Identity); Native.SetTopmost(item.Hwnd, false); });
+        }
+        // X unpins and removes. It never sends WM_CLOSE or restores TOPMOST=true.
+        _store.Preferences.Rules.RemoveAll(r => r.Id == item.RuleId);
+        item.RuleId = null; item.Original = null; item.Listed = false;
+        Items.Remove(item); Journal(); _store.SaveSoon();
     });
     public void SetRemembered(WindowItem item, bool remember)
     {
@@ -257,8 +270,7 @@ internal sealed class WindowManager
             bool minimized = await WaitForAsync(snapshot.Identity, Native.IsIconic);
             if (!minimized && !_stopping)
             {
-                var fallback = placement; fallback.ShowCmd = 7;
-                Native.ApplyPlacement(item.Hwnd, fallback);
+                var fallback = placement; fallback.ShowCmd = 7; Native.ApplyPlacement(item.Hwnd, fallback);
                 minimized = await WaitForAsync(snapshot.Identity, Native.IsIconic);
             }
             if (!minimized && !_stopping)
@@ -268,12 +280,11 @@ internal sealed class WindowManager
                 { result = "窗口未接受收起操作，恢复记录已保留。"; return; }
             }
             item.IsMinimized = Native.IsIconic(item.Hwnd); item.IsHidden = !Native.IsWindowVisible(item.Hwnd);
-            result = item.IsHidden ? "已隐藏，可从列表恢复。" : "已最小化。";
-            Finish(item, false);
+            result = item.IsHidden ? "已隐藏，可从列表恢复。" : "已最小化。"; Finish(item, false);
         });
         return result;
     }
-    private static async Task RestoreSnapshotAsync(WindowSnapshot s)
+    private static async Task RestoreSnapshotAsync(WindowSnapshot s, bool unpin = false)
     {
         if (!Native.Matches(s.Identity)) return;
         if (s.Parked)
@@ -283,15 +294,14 @@ internal sealed class WindowManager
             if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h)))
                 throw new InvalidOperationException("窗口尚未恢复，记录已保留。");
         }
-        await Task.Run(() => { if (Native.Matches(s.Identity)) Native.RestoreStyles(s); });
+        await Task.Run(() => { if (Native.Matches(s.Identity)) Native.RestoreStyles(s, unpin); });
     }
     public Task RestoreParkingAsync(WindowItem item, bool activate = true) => OperateAsync(item, async () =>
     {
         var s = Manage(item);
         if (s.Parked) Native.ApplyPlacement(item.Hwnd, s.BeforeParking);
         Native.ShowWindowAsync(item.Hwnd, s.Parked ? (int)s.BeforeParking.ShowCmd : Native.Restore);
-        if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h)))
-            throw new InvalidOperationException("窗口未接受恢复操作。");
+        if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h))) throw new InvalidOperationException("窗口未接受恢复操作。");
         s.Parked = false; item.IsHidden = false; item.IsMinimized = false; Journal();
         if (activate && !_stopping) Native.SetForegroundWindow(item.Hwnd);
         Finish(item, false);
@@ -325,8 +335,7 @@ internal sealed class WindowManager
     {
         _stopping = true;
         var attempts = Items.Where(x => x.Original is not null).ToArray().Select(RestoreOnExitAsync).ToArray();
-        // Native calls cannot be cancelled. Never claim that a timeout restored
-        // a target; leave unfinished originals in recovery.json for next launch.
+        // Timeout is not success: incomplete originals stay in recovery.json.
         await Task.WhenAny(Task.WhenAll(attempts), Task.Delay(900));
         return Items.Count(x => x.Original is not null);
     }
@@ -343,8 +352,6 @@ internal sealed class WindowManager
     }
     public void RestoreForSessionEnd()
     {
-        // Windows' session-end callback cannot wait for foreign WndProcs.
-        // The existing durable journal remains available if shutdown interrupts us.
         foreach (var item in Items.Where(x => x.Original is not null).ToArray()) _ = RestoreOnExitAsync(item);
     }
 }

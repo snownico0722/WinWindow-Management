@@ -12,14 +12,14 @@
   <Style x:Key="MutedText" TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource Muted}"/><Setter Property="FontSize" Value="12"/></Style>
   <Style x:Key="SectionTitle" TargetType="TextBlock"><Setter Property="FontSize" Value="16"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Margin" Value="0,0,0,18"/></Style>
   <Style TargetType="Button">
-    <Setter Property="FontSize" Value="14"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+    <Setter Property="HorizontalContentAlignment" Value="Center"/><Setter Property="FontSize" Value="14"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/>
     <Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/>
     <Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="12,8"/>
     <Setter Property="MinHeight" Value="36"/><Setter Property="Cursor" Value="Hand"/>
     <Setter Property="Template"><Setter.Value>
       <ControlTemplate TargetType="Button">
         <Border x:Name="Frame" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7" Padding="{TemplateBinding Padding}">
-          <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+          <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" RecognizesAccessKey="True"/>
         </Border>
         <ControlTemplate.Triggers>
           <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource Selection}"/></Trigger>
@@ -47,8 +47,7 @@
     <Setter Property="SelectionBrush" Value="{DynamicResource Selection}"/>
     <Setter Property="Template"><Setter.Value>
       <ControlTemplate TargetType="TextBox">
-        <!-- TextBoxBase applies Padding to its text host. Do not apply it a
-             second time on the border: fixed-height editors would clip text. -->
+        <!-- TextBoxBase already applies Padding to its text host. -->
         <Border x:Name="Frame" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7">
           <Grid><ScrollViewer x:Name="PART_ContentHost"/><TextBlock x:Name="Hint" Text="{TemplateBinding Tag}" Margin="{TemplateBinding Padding}" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed"/></Grid>
         </Border>
@@ -76,20 +75,6 @@
           <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Box" Property="BorderThickness" Value="2"/></Trigger>
           <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Box" Property="BorderThickness" Value="2"/></Trigger>
           <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
-        </ControlTemplate.Triggers>
-      </ControlTemplate>
-    </Setter.Value></Setter>
-  </Style>
-  <Style x:Key="FilterChip" TargetType="RadioButton">
-    <Setter Property="FontSize" Value="13"/><Setter Property="Foreground" Value="{DynamicResource Muted}"/><Setter Property="Cursor" Value="Hand"/>
-    <Setter Property="VerticalContentAlignment" Value="Center"/>
-    <Setter Property="Template"><Setter.Value>
-      <ControlTemplate TargetType="RadioButton">
-        <Border x:Name="Frame" CornerRadius="6" Padding="10,8" Background="Transparent"><ContentPresenter VerticalAlignment="Center"/></Border>
-        <ControlTemplate.Triggers>
-          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource Surface}"/></Trigger>
-          <Trigger Property="IsChecked" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource Selection}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Trigger>
-          <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter TargetName="Frame" Property="BorderThickness" Value="1"/></Trigger>
         </ControlTemplate.Triggers>
       </ControlTemplate>
     </Setter.Value></Setter>
@@ -126,7 +111,7 @@
     <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/><Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/><Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
   </Style>
   <Style TargetType="ListBoxItem">
-    <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Margin" Value="0,1,6,1"/><Setter Property="Padding" Value="14,14"/>
+    <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Margin" Value="0,1,6,1"/><Setter Property="Padding" Value="12,4"/>
     <Setter Property="Template"><Setter.Value>
       <ControlTemplate TargetType="ListBoxItem">
         <Border x:Name="Frame" Background="Transparent" CornerRadius="8" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border>
@@ -139,4 +124,48 @@
     </Setter.Value></Setter>
   </Style>
   <Style TargetType="ToolTip"><Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="Padding" Value="10,7"/></Style>
+  <Style x:Key="RowTitleButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+    <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0"/>
+    <Setter Property="Background" Value="Transparent"/><Setter Property="BorderThickness" Value="0"/>
+  </Style>
+  <Style x:Key="RowIconButton" TargetType="Button" BasedOn="{StaticResource TitleButton}">
+    <Setter Property="Width" Value="32"/><Setter Property="Height" Value="32"/><Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
+  <Style x:Key="IconToggle" TargetType="ToggleButton">
+    <Setter Property="Width" Value="32"/><Setter Property="Height" Value="32"/>
+    <Setter Property="VerticalAlignment" Value="Center"/><Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="Foreground" Value="{DynamicResource Muted}"/>
+    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton">
+      <Border x:Name="Frame" Background="Transparent" CornerRadius="6"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource Surface}"/></Trigger>
+        <Trigger Property="IsChecked" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource Selection}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Trigger>
+        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter TargetName="Frame" Property="BorderThickness" Value="1"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style TargetType="ContextMenu">
+    <Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontSize" Value="14"/>
+    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ContextMenu">
+      <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="5"><ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/></Border>
+    </ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style TargetType="MenuItem">
+    <Setter Property="Padding" Value="10,8"/><Setter Property="MinWidth" Value="150"/>
+    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="MenuItem">
+      <Border x:Name="Frame" Background="Transparent" CornerRadius="5" Padding="{TemplateBinding Padding}">
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Path x:Name="Check" Data="M2,7 L6,11 L13,3" Stroke="{DynamicResource Ink}" StrokeThickness="1.5" Visibility="Collapsed" VerticalAlignment="Center"/>
+          <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="True"/>
+        </Grid>
+      </Border>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource Selection}"/></Trigger>
+        <Trigger Property="IsChecked" Value="True"><Setter TargetName="Check" Property="Visibility" Value="Visible"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style TargetType="Separator"><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Separator"><Border Height="1" Margin="10,4" Background="{DynamicResource Line}"/></ControlTemplate></Setter.Value></Setter></Style>
 </ResourceDictionary>

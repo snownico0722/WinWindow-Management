@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -35,8 +36,6 @@ internal static class SmokeTests
     }
     private static Process Start(params string[] args)
     {
-        // Exercise the GUI apphost, not the console dotnet host. Windows only
-        // supports WaitForInputIdle for a process with the GUI subsystem.
         string executable = Path.ChangeExtension(Assembly.GetExecutingAssembly().Location, ".exe");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         foreach (string arg in args) start.ArgumentList.Add(arg);
@@ -66,8 +65,7 @@ internal static class SmokeTests
         output = Path.GetFullPath(output); Directory.CreateDirectory(output);
         string data = Path.Combine(output, "isolated-state-" + Guid.NewGuid().ToString("N"));
         var processes = new List<Process>();
-        WindowManager? manager = null;
-        MainWindow? shell = null;
+        WindowManager? manager = null; MainWindow? shell = null;
         int exit = 0;
         try
         {
@@ -130,11 +128,11 @@ internal static class SmokeTests
             shell.UpdateLayout(); Capture(shell, Path.Combine(output, "workbench-light.png"));
             Palette.Apply(true); shell.UpdateLayout(); await Task.Delay(100);
             Capture(shell, Path.Combine(output, "workbench-dark.png"));
-            shell.ToggleCompact(); await Task.Delay(100);
+            ((Button)shell.FindName("BrandArea")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Task.Delay(100);
             nint own = new WindowInteropHelper(shell).Handle;
-            Assert(shell.Width == 360 && Native.IsTopmost(own), "compact mode pins the native HWND, independently of WPF Topmost");
+            Assert(shell.Width == 180 && Native.IsTopmost(own), "compact mode pins the native HWND, independently of WPF Topmost");
             Capture(shell, Path.Combine(output, "compact-dark.png"));
-            shell.ToggleCompact();
+            ((Button)shell.FindName("BrandArea")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert(shell.Width >= 880 && shell.MinWidth == 880 && double.IsPositiveInfinity(shell.MaxWidth), "workbench remains spacious and has no maximum width");
             Palette.Apply(false); shell.Width = 880; shell.Height = 560; shell.UpdateLayout();
             Capture(shell, Path.Combine(output, "workbench-minimum.png"));
@@ -144,11 +142,40 @@ internal static class SmokeTests
             Assert(((TextBox)shell.FindName("ShowKeyBox")).Text == "Win+Ctrl+Space", "settings retain the actual hotkey text");
             Capture(shell, Path.Combine(output, "settings-minimum.png"));
             ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            var slider = (Slider)shell.FindName("OpacitySlider");
+            var row = FindRow(shell, chosen);
+            var slider = (Slider)row.FindName("OpacitySlider");
             slider.Focus(); slider.Value = 25; slider.Value = 73;
             await WaitAsync("coalesced slider edit", () => Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(73));
             Assert(slider.IsEnabled && slider.Value == 73, "slider keeps accepting input and applies the latest value");
             await WaitAsync("slider completion", () => !chosen.IsBusy);
+            await shell.AddTargetAsync(chosen.Hwnd); await shell.AddTargetAsync(chosen.Hwnd);
+            Assert(chosen.Pinned && shell.Manager.Items.Count(x => x.Hwnd == chosen.Hwnd) == 1, "adding an existing row never unpins or duplicates it");
+            row = FindRow(shell, chosen);
+            ((ToggleButton)row.FindName("PinButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await WaitAsync("inline unpin", () => !chosen.Pinned && !chosen.IsBusy);
+            Assert(chosen.IsManaged && ((ListBox)shell.FindName("WindowList")).Items.Contains(chosen) && chosen.Opacity == 73, "row pin toggles only topmost, retaining membership and opacity");
+            ((Button)row.FindName("ParkButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await WaitAsync("inline minimize", () => Native.IsIconic(chosen.Hwnd) && !chosen.IsBusy);
+            Assert((string)((Button)row.FindName("ParkButton")).ToolTip == "恢复窗口", "same row action changes from minimize to restore");
+            ((Button)row.FindName("ParkButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await WaitAsync("inline restore", () => !Native.IsIconic(chosen.Hwnd) && !chosen.IsBusy);
+            Native.ShowWindowAsync(chosen.Hwnd, Native.Maximized); await Task.Delay(200);
+            shell.ShowShell();
+            ((Button)row.FindName("TitleButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await WaitAsync("single-click target activation", () => Native.GetForegroundWindow() == chosen.Hwnd && !chosen.IsBusy);
+            Assert(Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized, "title brings a covered maximized target forward without resizing it");
+            await shell.Manager.ReleaseAsync(chosen);
+            Assert(chosen.IsManaged && chosen.Original is null, "restoring original settings preserves explicit list membership");
+            await shell.AddTargetAsync(chosen.Hwnd); await shell.Manager.SetOpacityAsync(chosen, 41);
+            await shell.Manager.UnpinAllAsync();
+            Assert(!chosen.Pinned && chosen.IsManaged && chosen.Opacity == 41, "unpin all is not restore all or remove all");
+            await Task.Run(() => Native.SetTopmost(stubborn.Hwnd, true));
+            await shell.AddTargetAsync(stubborn.Hwnd);
+            var extra = shell.Manager.Items.Single(x => x.Hwnd == stubborn.Hwnd);
+            var extraRow = FindRow(shell, extra);
+            ((Button)extraRow.FindName("RemoveButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await WaitAsync("inline remove", () => !shell.Manager.Items.Contains(extra));
+            Assert(Native.IsWindow(stubborn.Hwnd) && !Native.IsTopmost(stubborn.Hwnd), "row X unpins and removes, never closes or re-pins the target");
             await shell.Manager.RestoreAllAsync();
             Assert(store.ReadRecovery().Count == 0, "normal recovery clears the journal");
             shell.ShowShell(); await WaitAsync("own activation", () => Native.GetForegroundWindow() == own);
@@ -205,7 +232,6 @@ internal static class SmokeTests
             return hwnd != 0 && pid == process.Id;
         }, 6000);
         if (!await Task.Run(() => process.WaitForInputIdle(6000))) throw new TimeoutException("Desktop process did not enter its message loop.");
-        // An already foreground window is not evidence that a queued wake ran.
         await WaitAsync("startup finished hiding to tray", () => !Native.IsWindowVisible(hwnd), 6000);
         return (process, hwnd);
     }
@@ -248,8 +274,7 @@ internal static class SmokeTests
             var healthy = await FixtureAsync(output, true); processes.Add(healthy.Process);
             var store = ChildStore(output, false);
             store.Preferences.Rules.Add(Rule(stuck.Hwnd)); store.Preferences.Rules.Add(Rule(healthy.Hwnd)); store.SavePreferences();
-            Native.PostMessage(stuck.Hwnd, 0x8014, 0, 0);
-            await Task.Delay(100);
+            Native.PostMessage(stuck.Hwnd, 0x8014, 0, 0); await Task.Delay(100);
             var app = await StartMainAsync(store, processes);
             await WaitAsync("worker entered blocked foreign WndProc", () => entered.WaitOne(0));
             await WaitAsync("independent healthy target still operates", () => Native.IsTopmost(healthy.Hwnd));
@@ -273,6 +298,18 @@ internal static class SmokeTests
             await WaitAsync("recovered app exits", () => recovered.Process.HasExited);
         }
         finally { release.Set(); }
+    }
+    private static WindowRow FindRow(MainWindow shell, WindowItem item)
+    {
+        shell.SelectForTest(item); shell.UpdateLayout();
+        static WindowRow? Walk(DependencyObject node, WindowItem target)
+        {
+            if (node is WindowRow row && ReferenceEquals(row.DataContext, target)) return row;
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++)
+                if (Walk(VisualTreeHelper.GetChild(node, i), target) is { } found) return found;
+            return null;
+        }
+        return Walk(shell, item) ?? throw new InvalidOperationException("Managed row not realized.");
     }
     private static void Capture(Window window, string path)
     {

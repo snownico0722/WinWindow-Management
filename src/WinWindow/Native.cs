@@ -142,13 +142,11 @@ internal static class Native
         if (previous == 0 && Marshal.GetLastPInvokeError() != 0) Check(false, "修改窗口样式");
         if ((Style(hwnd) & mask) != (value & mask)) throw new InvalidOperationException("目标未接受窗口样式修改。");
     }
-    // Foreign HWNDs run on workers and are verified before reporting success.
     public static void SetTopmost(nint hwnd, bool value)
     {
         Check(SetWindowPos(hwnd, value ? (nint)(-1) : (nint)(-2), 0, 0, 0, 0, NoMove | NoSize | NoActivate), "切换置顶");
         if (IsTopmost(hwnd) != value) throw new InvalidOperationException("窗口未接受置顶设置。");
     }
-    // Own HWND has one native owner, never mixed with WPF's Topmost property.
     public static bool SetOwnTopmost(nint hwnd, bool value)
     {
         if (IsTopmost(hwnd) == value) return true;
@@ -194,13 +192,14 @@ internal static class Native
         placement.Length = (uint)Marshal.SizeOf<Placement>(); placement.Flags |= 4;
         return SetWindowPlacement(hwnd, ref placement);
     }
-    public static void RestoreStyles(WindowSnapshot snapshot)
+    public static void RestoreStyles(WindowSnapshot snapshot, bool unpin = false)
     {
         EnsureIdentity(snapshot.Identity);
         nint hwnd = snapshot.Identity.Hwnd;
         var errors = new List<string>();
         void Attempt(Action action) { try { action(); } catch (Exception e) when (e is Win32Exception or InvalidOperationException) { errors.Add(e.Message); } }
-        if (snapshot.EditedTopmost && IsTopmost(hwnd) != snapshot.Topmost) Attempt(() => SetTopmost(hwnd, snapshot.Topmost));
+        bool topmost = !unpin && snapshot.Topmost;
+        if ((snapshot.EditedTopmost || unpin) && IsTopmost(hwnd) != topmost) Attempt(() => SetTopmost(hwnd, topmost));
         if (snapshot.EditedOpacity || snapshot.EditedClickThrough)
         {
             long mask = Layered | (snapshot.EditedClickThrough ? Transparent : 0);
