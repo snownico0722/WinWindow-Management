@@ -267,7 +267,7 @@ internal static class SmokeTests
         Stop(tray.Process); await tray.Process.WaitForExitAsync();
         string name = @"Local\WinWindow.Stall." + Guid.NewGuid().ToString("N");
         using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, name + ".entered");
-        using var release = new EventWaitHandle(false, EventResetMode.ManReset, name + ".release");
+        using var release = new EventWaitHandle(false, EventResetMode.ManualReset, name + ".release");
         try
         {
             var stuck = await FixtureAsync(output, false, name); processes.Add(stuck.Process);
