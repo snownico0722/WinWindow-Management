@@ -142,7 +142,7 @@ internal static class SmokeTests
             Assert(((TextBox)shell.FindName("ShowKeyBox")).Text == "Win+Ctrl+Space", "settings retain the actual hotkey text");
             Capture(shell, Path.Combine(output, "settings-minimum.png"));
             ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            var row = FindRow(shell, chosen);
+            var row = await FindRowAsync(shell, chosen);
             var slider = (Slider)row.FindName("OpacitySlider");
             slider.Focus(); slider.Value = 25; slider.Value = 73;
             await WaitAsync("coalesced slider edit", () => Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(73));
@@ -150,7 +150,7 @@ internal static class SmokeTests
             await WaitAsync("slider completion", () => !chosen.IsBusy);
             await shell.AddTargetAsync(chosen.Hwnd); await shell.AddTargetAsync(chosen.Hwnd);
             Assert(chosen.Pinned && shell.Manager.Items.Count(x => x.Hwnd == chosen.Hwnd) == 1, "adding an existing row never unpins or duplicates it");
-            row = FindRow(shell, chosen);
+            row = await FindRowAsync(shell, chosen);
             ((ToggleButton)row.FindName("PinButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await WaitAsync("inline unpin", () => !chosen.Pinned && !chosen.IsBusy);
             Assert(chosen.IsManaged && ((ListBox)shell.FindName("WindowList")).Items.Contains(chosen) && chosen.Opacity == 73, "row pin toggles only topmost, retaining membership and opacity");
@@ -172,7 +172,7 @@ internal static class SmokeTests
             await Task.Run(() => Native.SetTopmost(stubborn.Hwnd, true));
             await shell.AddTargetAsync(stubborn.Hwnd);
             var extra = shell.Manager.Items.Single(x => x.Hwnd == stubborn.Hwnd);
-            var extraRow = FindRow(shell, extra);
+            var extraRow = await FindRowAsync(shell, extra);
             ((Button)extraRow.FindName("RemoveButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await WaitAsync("inline remove", () => !shell.Manager.Items.Contains(extra));
             Assert(Native.IsWindow(stubborn.Hwnd) && !Native.IsTopmost(stubborn.Hwnd), "row X unpins and removes, never closes or re-pins the target");
@@ -267,7 +267,7 @@ internal static class SmokeTests
         Stop(tray.Process); await tray.Process.WaitForExitAsync();
         string name = @"Local\WinWindow.Stall." + Guid.NewGuid().ToString("N");
         using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, name + ".entered");
-        using var release = new EventWaitHandle(false, EventResetMode.ManualReset, name + ".release");
+        using var release = new EventWaitHandle(false, EventResetMode.ManReset, name + ".release");
         try
         {
             var stuck = await FixtureAsync(output, false, name); processes.Add(stuck.Process);
@@ -299,9 +299,12 @@ internal static class SmokeTests
         }
         finally { release.Set(); }
     }
-    private static WindowRow FindRow(MainWindow shell, WindowItem item)
+    private static async Task<WindowRow> FindRowAsync(MainWindow shell, WindowItem item)
     {
         shell.SelectForTest(item); shell.UpdateLayout();
+        // UpdateLayout realizes the template before WPF dispatches Loaded.
+        // Let the row attach its model before sending synthetic button input.
+        await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
         static WindowRow? Walk(DependencyObject node, WindowItem target)
         {
             if (node is WindowRow row && ReferenceEquals(row.DataContext, target)) return row;
@@ -309,7 +312,9 @@ internal static class SmokeTests
                 if (Walk(VisualTreeHelper.GetChild(node, i), target) is { } found) return found;
             return null;
         }
-        return Walk(shell, item) ?? throw new InvalidOperationException("Managed row not realized.");
+        var row = Walk(shell, item) ?? throw new InvalidOperationException("Managed row not realized.");
+        if (!row.IsLoaded) throw new InvalidOperationException("Managed row has not completed Loaded.");
+        return row;
     }
     private static void Capture(Window window, string path)
     {
