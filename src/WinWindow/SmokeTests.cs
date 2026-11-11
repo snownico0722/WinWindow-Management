@@ -35,8 +35,10 @@ internal static class SmokeTests
     }
     private static Process Start(params string[] args)
     {
-        var start = new ProcessStartInfo("dotnet") { UseShellExecute = false };
-        start.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
+        // Exercise the GUI apphost, not the console dotnet host. Windows only
+        // supports WaitForInputIdle for a process with the GUI subsystem.
+        string executable = Path.ChangeExtension(Assembly.GetExecutingAssembly().Location, ".exe");
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         foreach (string arg in args) start.ArgumentList.Add(arg);
         return Process.Start(start) ?? throw new InvalidOperationException("无法启动测试进程。");
     }
@@ -202,10 +204,8 @@ internal static class SmokeTests
             Native.GetWindowThreadProcessId(hwnd, out uint pid);
             return hwnd != 0 && pid == process.Id;
         }, 6000);
-        if (!await Task.Run(() => process.WaitForInputIdle(6000)))
-            throw new TimeoutException("Desktop process did not enter its message loop.");
-        // Prove wake completion by a hidden-to-visible transition. An already
-        // foreground window is not evidence that the queued wake was processed.
+        if (!await Task.Run(() => process.WaitForInputIdle(6000))) throw new TimeoutException("Desktop process did not enter its message loop.");
+        // An already foreground window is not evidence that a queued wake ran.
         await WaitAsync("startup finished hiding to tray", () => !Native.IsWindowVisible(hwnd), 6000);
         return (process, hwnd);
     }
@@ -227,7 +227,6 @@ internal static class SmokeTests
     }
     private static async Task DesktopRegressionAsync(string output, List<Process> processes)
     {
-        // Full production startup: real mutex, message hook, tray and hotkeys.
         var trayStore = ChildStore(output, true);
         var tray = await StartMainAsync(trayStore, processes);
         await WakeAsync(trayStore, tray.Hwnd);
@@ -250,7 +249,6 @@ internal static class SmokeTests
             var store = ChildStore(output, false);
             store.Preferences.Rules.Add(Rule(stuck.Hwnd)); store.Preferences.Rules.Add(Rule(healthy.Hwnd)); store.SavePreferences();
             Native.PostMessage(stuck.Hwnd, 0x8014, 0, 0);
-            // Success requires the actual native call to enter the target WndProc.
             await Task.Delay(100);
             var app = await StartMainAsync(store, processes);
             await WaitAsync("worker entered blocked foreign WndProc", () => entered.WaitOne(0));
