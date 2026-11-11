@@ -47,8 +47,10 @@
     <Setter Property="SelectionBrush" Value="{DynamicResource Selection}"/>
     <Setter Property="Template"><Setter.Value>
       <ControlTemplate TargetType="TextBox">
-        <Border x:Name="Frame" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7" Padding="{TemplateBinding Padding}">
-          <Grid><ScrollViewer x:Name="PART_ContentHost"/><TextBlock x:Name="Hint" Text="{TemplateBinding Tag}" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed"/></Grid>
+        <!-- TextBoxBase applies Padding to its text host. Do not apply it a
+             second time on the border: fixed-height editors would clip text. -->
+        <Border x:Name="Frame" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7">
+          <Grid><ScrollViewer x:Name="PART_ContentHost"/><TextBlock x:Name="Hint" Text="{TemplateBinding Tag}" Margin="{TemplateBinding Padding}" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed"/></Grid>
         </Border>
         <ControlTemplate.Triggers>
           <Trigger Property="Text" Value=""><Setter TargetName="Hint" Property="Visibility" Value="Visible"/></Trigger>
