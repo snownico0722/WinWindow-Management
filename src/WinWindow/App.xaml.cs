@@ -50,16 +50,18 @@ public partial class App : Application
                 Shutdown(); return;
             }
             string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), dev ? "WinWindow-Management-dev" : "WinWindow-Management");
-            // Isolated state is a development/test option, not a production override.
             int dataIndex = Array.IndexOf(e.Args, "--data-dir");
             if (dev && dataIndex >= 0 && dataIndex + 1 < e.Args.Length) directory = Path.GetFullPath(e.Args[dataIndex + 1]);
             var store = new StateStore(directory);
             var window = new MainWindow(store) { Title = title };
             MainWindow = window;
             SessionEnding += (_, _) => { window.SaveGeometry(); window.Manager.RestoreForSessionEnd(); };
-            window.Show();
+            // A tray launch creates the native message endpoint without showing
+            // and later hiding it. Otherwise initialization can hide a window
+            // that the user has already woken, or briefly expose a false wake.
+            if (e.Args.Contains("--minimized")) new WindowInteropHelper(window).EnsureHandle();
+            else window.Show();
             await window.InitializeAsync();
-            if (e.Args.Contains("--minimized")) window.Hide();
         }
         catch (Exception exception)
         {
@@ -91,8 +93,7 @@ public partial class App : Application
         };
         window.Show(); File.WriteAllText(args[1], new WindowInteropHelper(window).Handle.ToInt64().ToString());
     }
-    // The regression target blocks in a real cross-thread window operation,
-    // not in a mocked manager. Named events keep the test deterministic.
+    // Block a real cross-thread native operation for the regression test.
     private sealed class StalledTarget : Forms.Form
     {
         private readonly EventWaitHandle _entered, _release;

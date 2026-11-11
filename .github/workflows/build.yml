@@ -30,7 +30,6 @@ jobs:
         run: |
           $p = Start-Process dotnet -ArgumentList 'src/WinWindow/bin/Release/net10.0-windows/WinWindow.dll --self-test TestResults' -Wait -PassThru
           if (Test-Path TestResults/smoke-tests.txt) { Get-Content TestResults/smoke-tests.txt }
-          Get-ChildItem TestResults/lifecycle-*.log -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name; Get-Content $_.FullName }
           if ($p.ExitCode -ne 0) { throw "Smoke tests failed ($($p.ExitCode))" }
       - name: Publish portable Windows x64
         run: dotnet publish src/WinWindow/WinWindow.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/WinWindow
@@ -48,7 +47,6 @@ jobs:
           path: |
             artifacts/*.zip
             TestResults/*.png
-            TestResults/*.log
             TestResults/smoke-tests.txt
           if-no-files-found: warn
           retention-days: 14
