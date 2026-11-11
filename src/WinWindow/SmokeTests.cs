@@ -194,7 +194,7 @@ internal static class SmokeTests
     private static async Task<(Process Process, nint Hwnd)> StartMainAsync(StateStore store, List<Process> processes)
     {
         Assert(Native.FindWindow(null, "WinWindow Management · Dev") == 0, "test will not use an existing development instance");
-        var process = Start("--dev", "--data-dir", store.DirectoryPath); processes.Add(process);
+        var process = Start("--dev", "--data-dir", store.DirectoryPath, "--minimized"); processes.Add(process);
         nint hwnd = 0;
         await WaitAsync("real desktop integration startup", () =>
         {
@@ -202,6 +202,11 @@ internal static class SmokeTests
             Native.GetWindowThreadProcessId(hwnd, out uint pid);
             return hwnd != 0 && pid == process.Id;
         }, 6000);
+        if (!await Task.Run(() => process.WaitForInputIdle(6000)))
+            throw new TimeoutException("Desktop process did not enter its message loop.");
+        // Prove wake completion by a hidden-to-visible transition. An already
+        // foreground window is not evidence that the queued wake was processed.
+        await WaitAsync("startup finished hiding to tray", () => !Native.IsWindowVisible(hwnd), 6000);
         return (process, hwnd);
     }
     private static async Task WakeAsync(StateStore store, nint hwnd)
