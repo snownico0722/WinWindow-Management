@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -147,7 +146,7 @@ internal sealed class DesktopIntegration : IDisposable
         {
             string exe = Environment.ProcessPath ?? throw new InvalidOperationException("无法获取程序路径。");
             string command = $"\"{exe}\"";
-            if (string.Equals(Path.GetFileNameWithoutExtension(exe), "dotnet", StringComparison.OrdinalIgnoreCase)) command += $" \"{Assembly.GetExecutingAssembly().Location}\"";
+            if (string.Equals(Path.GetFileNameWithoutExtension(exe), "dotnet", StringComparison.OrdinalIgnoreCase)) command += $" \"{Environment.GetCommandLineArgs()[0]}\"";
             key.SetValue(name, command + (dev ? " --dev" : "") + " --minimized");
         }
         else key.DeleteValue(name, false);

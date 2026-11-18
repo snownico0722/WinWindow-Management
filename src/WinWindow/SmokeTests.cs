@@ -4,7 +4,6 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -36,7 +35,7 @@ internal static class SmokeTests
     }
     private static Process Start(params string[] args)
     {
-        string executable = Path.ChangeExtension(Assembly.GetExecutingAssembly().Location, ".exe");
+        string executable = Path.Combine(AppContext.BaseDirectory, typeof(App).Assembly.GetName().Name + ".exe");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         foreach (string arg in args) start.ArgumentList.Add(arg);
         return Process.Start(start) ?? throw new InvalidOperationException("无法启动测试进程。");
@@ -147,7 +146,8 @@ internal static class SmokeTests
                 shell.ShowShell();
                 await WaitAsync("fixture pauses when another window is active", () => Native.Title(game.Hwnd).StartsWith("activity:paused:"));
                 var gameRow = await FindRowAsync(shell, gameItem);
-                ((ToggleButton)gameRow.FindName("BackgroundToggle")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                var keepRunning = (ToggleButton)gameRow.FindName("BackgroundToggle");
+                keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 await WaitAsync("row toggle resumes a background fixture", () => Native.Title(game.Hwnd).StartsWith("activity:running:"));
                 Native.SetForegroundWindow(game.Hwnd);
                 await WaitAsync("fixture becomes foreground", () => Native.GetForegroundWindow() == game.Hwnd);
@@ -158,6 +158,10 @@ internal static class SmokeTests
                 await WaitAsync("background fixture heartbeat advances after switching away",
                     () => Native.Title(game.Hwnd).StartsWith("activity:running:") && Native.Title(game.Hwnd) != title);
                 Assert(Native.GetForegroundWindow() != game.Hwnd && !Native.IsTopmost(game.Hwnd), "background keep leaves keyboard focus and z-order alone");
+                keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("turning off the row toggle restores the background pause", () => !gameItem.BackgroundEnabled && Native.Title(game.Hwnd).StartsWith("activity:paused:"));
+                keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("enabling the row toggle again resumes the same window", () => gameItem.BackgroundEnabled && Native.Title(game.Hwnd).StartsWith("activity:running:"));
                 await shell.Manager.RemoveAsync(gameItem);
                 await WaitAsync("removal restores the fixture's background pause", () => Native.Title(game.Hwnd).StartsWith("activity:paused:"));
             }
@@ -203,9 +207,9 @@ internal static class SmokeTests
             await WaitAsync("layout edit persists through unified UI", () => layoutSettings.LoadTidyOptions().SmartStrength == NeatWin.Core.SmartTidyStrength.Assertive);
             shell.UpdateLayout(); Capture(shell, Path.Combine(output, "settings-layout.png"));
             nav.SelectedIndex = 3;
-            Assert(((CheckBox)shell.FindName("RecordSwitch")).IsVisible && !layoutPage.IsVisible, "recorder shares the same settings window");
+            await WaitAsync("recorder shares the same settings window", () => ((CheckBox)shell.FindName("RecordSwitch")).IsVisible && !layoutPage.IsVisible);
             nav.SelectedIndex = 2;
-            Assert(((TextBox)shell.FindName("ShowKeyBox")).IsVisible, "hotkeys are reachable from the same sidebar");
+            await WaitAsync("hotkeys are reachable from the same sidebar", () => ((TextBox)shell.FindName("ShowKeyBox")).IsVisible);
             ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             var row = await FindRowAsync(shell, chosen);
             var slider = (Slider)row.FindName("OpacitySlider");
