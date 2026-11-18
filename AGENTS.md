@@ -14,5 +14,6 @@
 - 关闭可留托盘；真正退出尽力恢复，但不能因某个目标失败或卡住而拒绝退出。未完成记录留下供下次启动恢复，不假报成功，不清空用户规则。
 - 跨权限只放行无参数的专用 Show 消息，检查发送结果；不自动提权。
 - 少量有价值的真实 Windows 状态转换测试优先，不堆源码字符串断言。编译通过不等于游戏或跨权限兼容认证。
+- 打包统一使用 `scripts/package.ps1`。日常构建、PR、测试版和预发布版只出依赖系统 .NET 的标准包。仅在用户明确要求或发布正式版时，额外提供一份内置 .NET 的自包含包，标准包始终保留。
 - 验证：`dotnet build src/WinWindow/WinWindow.csproj -c Release`；`dotnet src/WinWindow/bin/Release/net10.0-windows/WinWindow.dll --self-test TestResults`。
 - 左上角品牌点击切换小窗，拖动移动；标题栏中间只拖动。图钉只切换置顶且保留管理；行尾 × 取消置顶并移出，不关闭目标。选择置顶和拖动置顶分开，重复添加不取消置顶。

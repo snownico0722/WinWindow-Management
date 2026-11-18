@@ -4,7 +4,9 @@ C# / WPF / .NET 10 窗口管理工具，采用 PaperTodo 暖纸配色。默认 1
 
 ## 使用
 
-从 Actions 的 `WinWindow-preview-and-tests` 制品取得 `WinWindow-win-x64.zip`，解压运行 `WinWindow.exe`。自包含构建无需另装 .NET；未签名版本可能显示 SmartScreen 提示。
+日常测试和预发布版使用标准包 `WinWindow-win-x64.zip`。安装 **.NET 10 Desktop Runtime x64（Windows 桌面运行时）** 后，解压并运行 `WinWindow.exe`。正式版还提供 `WinWindow-win-x64-self-contained.zip`，适合没有安装运行时的电脑。[下载 .NET 10](https://dotnet.microsoft.com/download/dotnet/10.0)
+
+在 GitHub Releases 下载发布包，在 Actions 的 `WinWindow-preview-and-tests` 制品中下载开发包。
 
 “置顶窗口”选择目标，或从“拖动置顶”拖到目标。每行直接调整 0–100% 不透明度、鼠标穿透和置顶；单击标题唤回目标，收起按钮随状态变为恢复。图钉关闭仍保留管理，行尾 × 取消置顶并移出，不关闭目标程序。右键提供记住设置、恢复原样和复制信息。
 
@@ -28,8 +30,10 @@ C# / WPF / .NET 10 窗口管理工具，采用 PaperTodo 暖纸配色。默认 1
 dotnet build src/WinWindow/WinWindow.csproj -c Release
 dotnet run --project src/WinWindow/WinWindow.csproj -- --dev
 dotnet src/WinWindow/bin/Release/net10.0-windows/WinWindow.dll --self-test TestResults
-dotnet publish src/WinWindow/WinWindow.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/WinWindow
+./scripts/package.ps1
 ```
+
+默认打包命令在 `artifacts/` 生成标准 ZIP。正式发版时，工作流自动将两份 ZIP 附到 Release。用户明确要求额外打包时，本地使用 `./scripts/package.ps1 -IncludeRuntime`，或手动运行 Actions 并勾选「额外打包一份内置 .NET 的 Windows x64 版本」。
 
 自动测试使用真实 WinForms/WPF 目标及完整主程序，验证原生状态、行内操作、收起/恢复、小窗、失焦退让、单实例唤醒、阻塞目标下的退出及恢复日志，并输出实际界面截图。
 
