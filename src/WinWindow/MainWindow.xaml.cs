@@ -31,6 +31,7 @@ public partial class MainWindow : Window
     private Dictionary<string, TextBox> _keyEditors = new();
     private DesktopIntegration? _desktop;
     private DesktopLayout? _layout;
+    private Process? _backgroundTool;
     private string LayoutDirectory => Path.Combine(_store.DirectoryPath, "Layout");
     private HwndSource? _source;
     private nint _hwnd;
@@ -274,7 +275,21 @@ public partial class MainWindow : Window
         var path = _store.Preferences.NoFocusLossPath;
         if (!File.Exists(path)) path = ChooseNoFocusLoss();
         if (path is null) return;
-        using var process = Process.Start(new ProcessStartInfo(path)
+        if (_backgroundTool is { HasExited: false } existing &&
+            string.Equals(existing.StartInfo.FileName, path, StringComparison.OrdinalIgnoreCase))
+        {
+            existing.Refresh();
+            var handle = existing.MainWindowHandle;
+            if (handle != 0)
+            {
+                if (Native.IsIconic(handle)) Native.ShowWindowAsync(handle, Native.Restore);
+                Native.SetForegroundWindow(handle);
+            }
+            return;
+        }
+        _backgroundTool?.Dispose();
+        _backgroundTool = null;
+        _backgroundTool = Process.Start(new ProcessStartInfo(path)
         {
             UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(path)!
         });
@@ -451,6 +466,7 @@ public partial class MainWindow : Window
     {
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
         _layout?.Dispose(); _layout = null;
+        _backgroundTool?.Dispose(); _backgroundTool = null;
         _desktop?.Dispose(); _desktop = null;
         _source?.RemoveHook(WindowMessage); _source = null;
         _store.Error -= ShowStatus; Manager.Notice -= ShowStatus; Manager.Changed -= RefreshView;

@@ -83,7 +83,17 @@ internal static class SmokeTests
             long originalStyle = Native.Style(item.Hwnd); bool originalPin = Native.IsTopmost(item.Hwnd);
             Assert(item.Identity is not null && !Native.Matches(item.Identity with { ProcessStarted = item.Identity.ProcessStarted + 1 }), "recovery rejects a different process lifetime");
             var layoutWindows = new NeatWin.Windows.WindowManager();
-            Assert(layoutWindows.Capture().Any(w => w.Handle == item.Hwnd && w.IsManageable), "layout sees the normal fixture");
+            var source = layoutWindows.Capture().Single(w => w.Handle == item.Hwnd);
+            Assert(source.IsManageable, "layout sees the normal fixture");
+            var target = source.VisualRect with { X = source.VisualRect.X + (source.VisualRect.X > source.WorkArea.X + 40 ? -32 : 32) };
+            var applied = layoutWindows.ApplyLayout(new([new(source, target)], [], []));
+            Assert(applied.Plan.Moves.Count == 1, "ordinary fixture is accepted for layout");
+            bool Reached(NeatWin.Core.RectI rect) => layoutWindows.Capture().Any(w => w.Handle == item.Hwnd &&
+                NeatWin.Core.WindowStateRules.Near(w.VisualRect, rect));
+            await WaitAsync("fixture reaches layout target", () => Reached(target));
+            var undo = NeatWin.Core.LayoutUndoPlanner.Create(applied.Plan, layoutWindows.Capture());
+            Assert(layoutWindows.ApplyLayout(undo).Plan.Moves.Count == 1, "verified layout can be undone");
+            await WaitAsync("layout undo restores fixture geometry", () => Reached(source.VisualRect));
             await manager.SetPinAsync(item, true);
             Assert(!layoutWindows.Capture().Single(w => w.Handle == item.Hwnd).IsManageable, "layout protects a WinWindow-pinned target");
             Assert(Native.IsTopmost(item.Hwnd), "native topmost is actually applied");

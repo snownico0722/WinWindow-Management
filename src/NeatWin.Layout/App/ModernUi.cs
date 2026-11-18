@@ -5,16 +5,16 @@ namespace NeatWin.App;
 
 internal static class UiTheme
 {
-    internal static readonly Color Page = Color.FromArgb(246, 247, 249);
-    internal static readonly Color Surface = Color.White;
-    internal static readonly Color SurfaceMuted = Color.FromArgb(237, 240, 244);
-    internal static readonly Color Border = Color.FromArgb(198, 205, 215);
-    internal static readonly Color Divider = Color.FromArgb(220, 224, 230);
-    internal static readonly Color Text = Color.FromArgb(18, 21, 25);
-    internal static readonly Color TextMuted = Color.FromArgb(72, 79, 89);
-    internal static readonly Color Accent = Color.FromArgb(43, 103, 222);
-    internal static readonly Color AccentHover = Color.FromArgb(35, 87, 190);
-    internal static readonly Color Danger = Color.FromArgb(180, 45, 45);
+    internal static readonly Color Page = Color.FromArgb(255, 249, 234);
+    internal static readonly Color Surface = Color.FromArgb(255, 252, 244);
+    internal static readonly Color SurfaceMuted = Color.FromArgb(247, 237, 210);
+    internal static readonly Color Border = Color.FromArgb(224, 206, 167);
+    internal static readonly Color Divider = Color.FromArgb(237, 224, 194);
+    internal static readonly Color Text = Color.FromArgb(51, 41, 30);
+    internal static readonly Color TextMuted = Color.FromArgb(101, 87, 66);
+    internal static readonly Color Accent = Color.FromArgb(126, 99, 64);
+    internal static readonly Color AccentHover = Color.FromArgb(105, 81, 54);
+    internal static readonly Color Danger = Color.FromArgb(176, 90, 70);
 
     internal static Font Semibold(float size) => new("Segoe UI Semibold", size, FontStyle.Regular);
 
@@ -22,7 +22,7 @@ internal static class UiTheme
     {
         button.FlatStyle = FlatStyle.Flat;
         button.FlatAppearance.BorderSize = 1;
-        button.FlatAppearance.BorderColor = Color.FromArgb(31, 83, 185);
+        button.FlatAppearance.BorderColor = AccentHover;
         button.BackColor = Accent;
         button.ForeColor = Color.White;
         button.Font = Semibold(Math.Max(10F, button.Font.Size + 0.5F));
@@ -171,8 +171,8 @@ internal sealed class ModernToggle : CheckBox
 
         var track = new Rectangle(1, 2, Width - 2, Height - 4);
         var trackColor = !Enabled
-            ? Color.FromArgb(209, 214, 222)
-            : Checked ? UiTheme.Accent : Color.FromArgb(166, 173, 184);
+            ? UiTheme.Divider
+            : Checked ? UiTheme.Accent : UiTheme.TextMuted;
         using (var trackBrush = new SolidBrush(trackColor))
         using (var trackPath = RoundedRect(track, track.Height / 2F))
         {

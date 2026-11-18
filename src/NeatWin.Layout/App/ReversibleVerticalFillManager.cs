@@ -62,6 +62,7 @@ internal sealed class ReversibleVerticalFillManager : IDisposable
                     if (window.IsResizable && targetFillsVertically && !originalAlreadyFilled)
                     {
                         _entries[window.Handle] = new RestoreEntry(
+                            window.ProcessId,
                             window.VisualRect,
                             target,
                             workArea,
@@ -191,6 +192,15 @@ internal sealed class ReversibleVerticalFillManager : IDisposable
             {
                 return false;
             }
+        }
+
+        NativeMethods.GetWindowThreadProcessId(hwnd, out var owner);
+        var style = NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GwlExStyle).ToInt64();
+        if (owner != entry.ProcessId || (style & (NativeMethods.WsExTopmost | NativeMethods.WsExTransparent)) != 0 ||
+            NativeMethods.IsIconic(hwnd) || !NativeMethods.IsWindowVisible(hwnd))
+        {
+            RemoveEntry(hwnd);
+            return false;
         }
 
         if (!TryGetVisualRect(hwnd, out var currentVisual))
@@ -374,6 +384,7 @@ internal sealed class ReversibleVerticalFillManager : IDisposable
             visualRect.Bottom + insets.Bottom);
 
     private readonly record struct RestoreEntry(
+        uint ProcessId,
         RectI OriginalVisualRect,
         RectI TargetVisualRect,
         RectI WorkArea,
