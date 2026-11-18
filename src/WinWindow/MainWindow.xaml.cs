@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
+using System.IO;
+using System.Diagnostics;
+using NeatWin.App;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -27,6 +30,8 @@ public partial class MainWindow : Window
     private readonly Dictionary<WindowItem, int> _pendingOpacity = new();
     private Dictionary<string, TextBox> _keyEditors = new();
     private DesktopIntegration? _desktop;
+    private DesktopLayout? _layout;
+    private string LayoutDirectory => Path.Combine(_store.DirectoryPath, "Layout");
     private HwndSource? _source;
     private nint _hwnd;
     private bool _ready, _picking, _compact, _quitting, _allowClose;
@@ -43,11 +48,12 @@ public partial class MainWindow : Window
         _view = new ListCollectionView(Manager.Items) { Filter = FilterManaged };
         _pickView = new ListCollectionView(Manager.Items) { Filter = FilterAvailable };
         WindowList.ItemsSource = _view; PickList.ItemsSource = _pickView;
-        _keyEditors = new() { ["show"] = ShowKeyBox, ["pin"] = PinKeyBox, ["park"] = ParkKeyBox, ["recover"] = RecoverKeyBox, ["opacityUp"] = UpKeyBox, ["opacityDown"] = DownKeyBox };
+        _keyEditors = new() { ["arrange"] = ArrangeKeyBox, ["show"] = ShowKeyBox, ["pin"] = PinKeyBox, ["park"] = ParkKeyBox, ["recover"] = RecoverKeyBox, ["opacityUp"] = UpKeyBox, ["opacityDown"] = DownKeyBox };
         var p = store.Preferences;
         if (double.IsFinite(p.Width)) Width = Math.Max(MinWidth, p.Width);
         if (double.IsFinite(p.Height)) Height = Math.Max(MinHeight, p.Height);
         if (p.Left is double left && p.Top is double top && double.IsFinite(left) && double.IsFinite(top)) { WindowStartupLocation = WindowStartupLocation.Manual; Left = left; Top = top; }
+        UpdateNoFocusLossLocation();
         OwnPinBox.IsChecked = p.ManualTopmost;
         DarkBox.IsChecked = p.Dark; TrayBox.IsChecked = !p.CloseToTray; StartupBox.IsChecked = p.StartWithWindows;
         FocusPinBox.IsChecked = p.PinWhenFocused; AbsoluteBox.IsChecked = p.AbsoluteTopmost; AggressiveBox.IsChecked = p.AggressiveTopmost;
@@ -102,6 +108,7 @@ public partial class MainWindow : Window
         if (!_testMode) await Manager.RecoverPreviousSessionAsync();
         await Manager.RefreshAsync();
         if (_quitting) return;
+        if (!_testMode && DesktopLayout.NeedsBackgroundSession(LayoutDirectory)) EnsureLayout();
         if (_store.Preferences.Maximized && !_compact) WindowState = WindowState.Maximized;
         if (_store.LoadWarning.Length != 0) ShowStatus(_store.LoadWarning);
     });
@@ -229,6 +236,50 @@ public partial class MainWindow : Window
         return RunAsync(async () => { int failures = await Manager.RestoreAllAsync(); ShowStatus(failures == 0 ? "已恢复全部窗口。" : $"{failures} 个窗口未恢复，记录已保留。"); });
     }
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RunAsync(Manager.RefreshAsync);
+    private DesktopLayout EnsureLayout() => _layout ??= new DesktopLayout(LayoutDirectory, message =>
+    {
+        if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(new Action(() => ShowStatus(message)));
+    });
+    private async void Arrange_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().ArrangeAsync());
+    private async void UndoLayout_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().UndoAsync());
+    private async void LayoutSettings_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().OpenSettingsAsync());
+
+    private void UpdateNoFocusLossLocation()
+    {
+        string? path = _store.Preferences.NoFocusLossPath;
+        NoFocusLossLocation.Text = path ?? "首次打开时选择 NoFocusLossGUI.exe";
+        NoFocusLossLocation.ToolTip = path;
+    }
+
+    private string? ChooseNoFocusLoss()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "选择已安装的 NoFocusLossGUI.exe",
+            Filter = "NoFocusLoss 程序|NoFocusLossGUI.exe",
+            FileName = "NoFocusLossGUI.exe"
+        };
+        if (dialog.ShowDialog(this) != true) return null;
+        if (!string.Equals(Path.GetFileName(dialog.FileName), "NoFocusLossGUI.exe", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("请选择 NoFocusLossGUI.exe。");
+        _store.Preferences.NoFocusLossPath = dialog.FileName;
+        _store.SavePreferences();
+        UpdateNoFocusLossLocation();
+        return dialog.FileName;
+    }
+
+    private void ChooseNoFocusLoss_Click(object sender, RoutedEventArgs e) => Run(() => ChooseNoFocusLoss());
+    private void NoFocusLoss_Click(object sender, RoutedEventArgs e) => Run(() =>
+    {
+        var path = _store.Preferences.NoFocusLossPath;
+        if (!File.Exists(path)) path = ChooseNoFocusLoss();
+        if (path is null) return;
+        using var process = Process.Start(new ProcessStartInfo(path)
+        {
+            UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(path)!
+        });
+    });
+
     private void More_Click(object sender, RoutedEventArgs e)
     { var button = (Button)sender; button.ContextMenu.PlacementTarget = button; button.ContextMenu.Placement = PlacementMode.Bottom; button.ContextMenu.IsOpen = true; }
     private void ShowSettings(bool show)
@@ -354,6 +405,8 @@ public partial class MainWindow : Window
         if (action == "show") { ShowShell(); return; }
         if (action == "compact") { ShowShell(); ToggleCompact(); return; }
         if (action == "quit") { await QuitAsync(); return; }
+        if (action == "arrange") { await RunAsync(() => EnsureLayout().ArrangeAsync()); return; }
+        if (action == "undoLayout") { await RunAsync(() => EnsureLayout().UndoAsync()); return; }
         if (action == "recover") { await RecoverAllAsync(); return; }
         await RunAsync(async () =>
         {
@@ -387,7 +440,7 @@ public partial class MainWindow : Window
     internal async Task QuitAsync()
     {
         if (_quitting) return;
-        _quitting = true; AddPopup.IsOpen = false;
+        _quitting = true; _layout?.Dispose(); AddPopup.IsOpen = false;
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
         CancelPicker(); SaveGeometry(); ApplyOwnPolicy();
         int failures = await Manager.ShutdownAsync();
@@ -397,6 +450,7 @@ public partial class MainWindow : Window
     internal void Cleanup()
     {
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
+        _layout?.Dispose(); _layout = null;
         _desktop?.Dispose(); _desktop = null;
         _source?.RemoveHook(WindowMessage); _source = null;
         _store.Error -= ShowStatus; Manager.Notice -= ShowStatus; Manager.Changed -= RefreshView;

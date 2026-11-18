@@ -22,6 +22,14 @@ C# / WPF / .NET 10 窗口管理工具，采用 PaperTodo 暖纸配色。默认 1
 
 “全部取消置顶”保留列表和其他设置；“恢复全部原样”撤销管理修改。真正退出最多等待 900ms 的恢复工作，未完成记录保留在 `recovery.json`，下次启动继续恢复，不因其他程序卡住而锁住退出。
 
+## 桌面整理与游戏后台保持
+
+单击 **整理桌面**，或在托盘中选择同名命令。**更多 → 撤销上次整理** 可以还原上一轮调整。范围是整个桌面的可见普通窗口。已置顶、穿透、最大化和全屏窗口保留位置。
+
+**更多 → 桌面整理设置** 可以切换 Smart / Classic 算法，选择自动关、轻度辅助、完整辅助或自动完整辅助，调整人因排布偏好，管理本地记录。默认只手动整理，记录器默认暂停。整理快捷键在 WinWindow 设置中绑定。数据位于当前 WinWindow 数据目录下的 `Layout`。
+
+**更多 → 打开后台保持工具（NoFocusLoss）** 首次会请你选择单独安装的 `NoFocusLossGUI.exe`。在原工具里选择游戏、开启或解除后台保持。回到 WinWindow，兼容版本会在该进程的管理行显示“后台保持已标记”。实际后台音频、暂停和手柄行为取决于游戏。可在设置中重新选择工具路径。[NoFocusLoss 项目](https://github.com/snownico0722/NoFocusLoss)
+
 ## 构建与验证
 
 ```powershell
@@ -39,4 +47,4 @@ dotnet publish src/WinWindow/WinWindow.csproj -c Release -r win-x64 --self-conta
 
 `Native` 封装 Win32；`WindowManager` 管理操作与恢复；`WindowRow` 维护单行直接交互与编辑状态；`DesktopIntegration` 管理托盘、快捷键和唤醒；`StateStore` 负责持久化。外部窗口修改不在 UI 线程同步等待。
 
-产品决定见 [DECISIONS.md](docs/DECISIONS.md)，维护规则见 [AGENTS.md](AGENTS.md)。未移植 Pin-It 源码，不预建插件平台、布局引擎或数据库，尚未选择开源许可证。
+产品决定见 [DECISIONS.md](docs/DECISIONS.md)，维护规则见 [AGENTS.md](AGENTS.md)。未移植 Pin-It 源码，布局程序集沿用 NeatWin 源码，不预建插件平台或数据库，尚未选择开源许可证。

@@ -35,15 +35,20 @@
     <Grid x:Name="WindowPage">
      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="16"/><RowDefinition Height="*"/></Grid.RowDefinitions>
      <Grid x:Name="Toolbar">
-      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
       <Button x:Name="AddButton" Content="＋  置顶窗口" Click="Add_Click"/>
       <Button x:Name="PickerButton" Grid.Column="1" Content="拖动置顶" Margin="8,0,20,0" Cursor="Hand"
        PreviewMouseLeftButtonDown="Picker_Down" PreviewMouseMove="Picker_Move" PreviewMouseLeftButtonUp="Picker_Up"
        LostMouseCapture="Picker_LostCapture" Click="DragPicker_Click" ToolTip="拖到目标窗口后松开，只置顶，不切换"/>
       <TextBox x:Name="SearchBox" Grid.Column="2" Tag="搜索已管理窗口" TextChanged="Search_Changed" Margin="0,0,16,0" AutomationProperties.Name="搜索已管理窗口"/>
-      <Button x:Name="UnpinAllButton" Grid.Column="3" Content="全部取消置顶" Style="{StaticResource QuietButton}" Click="UnpinAll_Click" ToolTip="保留管理列表、不透明度和穿透设置"/>
-      <Button x:Name="MoreButton" Grid.Column="4" Style="{StaticResource TitleButton}" Content="&#xE712;" ToolTip="更多" Click="More_Click">
+      <Button x:Name="ArrangeButton" Grid.Column="3" Content="整理桌面" Margin="0,0,8,0" Click="Arrange_Click" ToolTip="按当前整理设置调整可见窗口"/>
+      <Button x:Name="UnpinAllButton" Grid.Column="4" Content="全部取消置顶" Style="{StaticResource QuietButton}" Click="UnpinAll_Click" ToolTip="保留管理列表、不透明度和穿透设置"/>
+      <Button x:Name="MoreButton" Grid.Column="5" Style="{StaticResource TitleButton}" Content="&#xE712;" ToolTip="更多" Click="More_Click">
        <Button.ContextMenu><ContextMenu>
+        <MenuItem Header="撤销上次整理" Click="UndoLayout_Click"/>
+        <MenuItem Header="桌面整理设置…" Click="LayoutSettings_Click"/>
+        <MenuItem Header="打开后台保持工具（NoFocusLoss）…" Click="NoFocusLoss_Click"/>
+        <Separator/>
         <MenuItem Header="恢复全部原样" Click="RecoverAll_Click"/>
         <MenuItem Header="刷新窗口" Click="Refresh_Click"/>
         <Separator/><MenuItem Header="退出" Click="Quit_Click"/>
@@ -73,17 +78,23 @@
                 <CheckBox x:Name="FocusPinBox" Content="焦点临时置顶" Click="Settings_Click" ToolTip="失焦后恢复长期置顶选择"/>
                 <CheckBox x:Name="AbsoluteBox" Content="保持绝对置顶" Click="Settings_Click" ToolTip="仅在手动置顶或小窗时提高层级，不抢焦点"/>
                 <CheckBox x:Name="AggressiveBox" Content="激进置顶" Click="Settings_Click" ToolTip="绝对置顶开启时，每 500 毫秒检查遮挡"/>
+                <TextBlock Text="桌面整理" Style="{StaticResource SectionTitle}" Margin="0,18,0,8"/>
+                <Button Content="整理模式与记录器…" HorizontalAlignment="Left" Click="LayoutSettings_Click"/>
+                <TextBlock Text="后台保持" Style="{StaticResource SectionTitle}" Margin="0,18,0,8"/>
+                <Button Content="选择 NoFocusLoss 程序…" HorizontalAlignment="Left" Click="ChooseNoFocusLoss_Click"/>
+                <TextBlock x:Name="NoFocusLossLocation" Style="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" Margin="0,6,0,0"/>
               </StackPanel>
               <StackPanel Grid.Column="2">
                 <TextBlock Text="快捷键" Style="{StaticResource SectionTitle}"/>
                 <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="190"/></Grid.ColumnDefinitions>
-                  <Grid.RowDefinitions><RowDefinition Height="46"/><RowDefinition Height="46"/><RowDefinition Height="46"/><RowDefinition Height="46"/><RowDefinition Height="46"/><RowDefinition Height="46"/></Grid.RowDefinitions>
+                  <Grid.RowDefinitions><RowDefinition Height="46"/><RowDefinition Height="46"/><RowDefinition Height="46"/><RowDefinition Height="46"/><RowDefinition Height="46"/><RowDefinition Height="46"/><RowDefinition Height="46"/></Grid.RowDefinitions>
                   <TextBlock Text="唤出主窗口" VerticalAlignment="Center"/><TextBox x:Name="ShowKeyBox" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
                   <TextBlock Grid.Row="1" Text="切换置顶" VerticalAlignment="Center"/><TextBox x:Name="PinKeyBox" Grid.Row="1" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
                   <TextBlock Grid.Row="2" Text="强制最小化" VerticalAlignment="Center"/><TextBox x:Name="ParkKeyBox" Grid.Row="2" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
                   <TextBlock Grid.Row="3" Text="恢复全部" VerticalAlignment="Center"/><TextBox x:Name="RecoverKeyBox" Grid.Row="3" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
                   <TextBlock Grid.Row="4" Text="增加不透明度" VerticalAlignment="Center"/><TextBox x:Name="UpKeyBox" Grid.Row="4" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
                   <TextBlock Grid.Row="5" Text="降低不透明度" VerticalAlignment="Center"/><TextBox x:Name="DownKeyBox" Grid.Row="5" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
+                  <TextBlock Grid.Row="6" Text="整理桌面" VerticalAlignment="Center"/><TextBox x:Name="ArrangeKeyBox" Grid.Row="6" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
                 </Grid>
                 <Button Content="应用" HorizontalAlignment="Right" Margin="0,16,0,0" Click="ApplyHotkeys_Click" ToolTip="点击输入框录入组合键，Delete 清空"/>
               </StackPanel>

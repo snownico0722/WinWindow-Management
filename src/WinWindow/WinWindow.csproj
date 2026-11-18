@@ -14,4 +14,7 @@
     <Description>Windows 窗口管理工作台</Description>
     <Authors>snownico0722</Authors>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../NeatWin.Layout/NeatWin.Layout.csproj" />
+  </ItemGroup>
 </Project>

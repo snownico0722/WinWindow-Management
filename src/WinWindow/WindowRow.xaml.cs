@@ -48,6 +48,7 @@ public partial class WindowRow : UserControl
             ParkButton.ToolTip = restore ? "恢复窗口" : "强制最小化";
             System.Windows.Automation.AutomationProperties.SetName(ParkButton, restore ? "恢复窗口" : "强制最小化");
             RowState.Text = item.IsBusy ? "处理中" : item.IsHidden ? "已隐藏" : item.IsMinimized ? "已最小化" : item.Opacity == 0 ? "完全透明" : "";
+            if (item.BackgroundMarked) RowState.Text = RowState.Text.Length == 0 ? "后台保持已标记" : RowState.Text + " · 后台保持已标记";
             int value = Owner?.DesiredOpacity(item) ?? item.Opacity;
             if (!OpacitySlider.IsMouseCaptureWithin) OpacitySlider.Value = value;
             if (!_dirty) OpacityNumber.Text = value.ToString();

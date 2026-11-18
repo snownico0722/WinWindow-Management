@@ -42,6 +42,8 @@ internal sealed class DesktopIntegration : IDisposable
         _tray.DoubleClick += (_, _) => Dispatch("show");
         _menu.Items.Add("打开", null, (_, _) => Dispatch("show"));
         _menu.Items.Add("切换小窗", null, (_, _) => Dispatch("compact"));
+        _menu.Items.Add("整理桌面", null, (_, _) => Dispatch("arrange"));
+        _menu.Items.Add("撤销上次整理", null, (_, _) => Dispatch("undoLayout"));
         var recover = new Forms.ToolStripMenuItem("找回窗口");
         _menu.Items.Add(recover);
         _menu.Opening += (_, _) =>

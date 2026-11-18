@@ -59,6 +59,8 @@ internal sealed class WindowItem : Observable
     public string Details => Identity is null ? "保存的窗口规则" : $"PID {Identity.ProcessId}  ·  HWND 0x{Identity.Handle:X}  ·  {Identity.ClassName}";
     private string _title = "";
     public string Title { get => _title; set => Set(ref _title, value); }
+    private bool _backgroundMarked;
+    public bool BackgroundMarked { get => _backgroundMarked; set => Set(ref _backgroundMarked, value); }
     private bool _available = true;
     public bool IsAvailable { get => _available; set { if (Set(ref _available, value)) NotifyState(); } }
     // Membership is independent from TOPMOST and the recovery snapshot.
@@ -89,6 +91,7 @@ internal sealed class WindowItem : Observable
 internal sealed class Preferences
 {
     public bool Dark { get; set; }
+    public string? NoFocusLossPath { get; set; }
     public bool CloseToTray { get; set; } = true;
     public bool StartWithWindows { get; set; }
     public bool PinWhenFocused { get; set; } = true;
@@ -105,7 +108,7 @@ internal sealed class Preferences
     public static Dictionary<string, string> DefaultHotkeys() => new()
     {
         ["show"] = "Win+Ctrl+Space", ["pin"] = "Win+Ctrl+T", ["park"] = "Win+Ctrl+M",
-        ["recover"] = "Win+Ctrl+Shift+R", ["opacityUp"] = "Win+Ctrl+OemPlus", ["opacityDown"] = "Win+Ctrl+OemMinus"
+        ["arrange"] = "", ["recover"] = "Win+Ctrl+Shift+R", ["opacityUp"] = "Win+Ctrl+OemPlus", ["opacityDown"] = "Win+Ctrl+OemMinus"
     };
 }
 internal static class OwnWindowPolicy

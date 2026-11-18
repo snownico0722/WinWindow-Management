@@ -103,11 +103,24 @@ internal static class Native
         var current = Identity(identity.Hwnd);
         return current is not null && current.ProcessId == identity.ProcessId && current.ProcessStarted == identity.ProcessStarted && current.ClassName == identity.ClassName;
     }
-    public static List<WindowItem> Enumerate()
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    internal static extern bool SetPropW(nint hwnd, string name, nint value);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    internal static extern nint RemovePropW(nint hwnd, string name);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern nint GetPropW(nint hwnd, string name);
+    public static (List<WindowItem> Windows, HashSet<int> BackgroundProcesses) Enumerate()
     {
         var result = new List<WindowItem>();
+        var marked = new HashSet<int>();
         EnumWindows((hwnd, data) =>
         {
+            // NoFocusLoss can mark a different (even hidden) top-level window of the same process.
+            if (GetPropW(hwnd, "NoFocusLoss_Injected_8A11C8C7") != 0)
+            {
+                GetWindowThreadProcessId(hwnd, out uint pid);
+                marked.Add((int)pid);
+            }
             if (!IsTarget(hwnd) || !IsWindowVisible(hwnd)) return true;
             long style = Style(hwnd);
             if ((style & 0x80) != 0 && (style & 0x40000) == 0) return true;
@@ -122,7 +135,8 @@ internal static class Native
             }
             return true;
         }, 0);
-        return result;
+        foreach (var item in result) item.BackgroundMarked = marked.Contains(item.Identity!.ProcessId);
+        return (result, marked);
     }
     public static WindowSnapshot Capture(WindowIdentity id)
     {

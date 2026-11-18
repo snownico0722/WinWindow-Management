@@ -58,7 +58,7 @@ internal sealed class WindowManager
         _refreshing = true;
         try
         {
-            var found = await Task.Run(Native.Enumerate);
+            var (found, marked) = await Task.Run(Native.Enumerate);
             if (_stopping) return;
             bool removed = false;
             foreach (var item in Items.Where(x => x.Identity is not null).ToArray())
@@ -70,6 +70,7 @@ internal sealed class WindowManager
                 }
                 var live = found.FirstOrDefault(x => Same(x.Identity, item.Identity));
                 if (live is null && !item.IsManaged) { Items.Remove(item); continue; }
+                item.BackgroundMarked = marked.Contains(item.Identity!.ProcessId);
                 item.Title = live?.Title ?? Native.Title(item.Hwnd);
                 item.IsMinimized = Native.IsIconic(item.Hwnd); item.IsHidden = !Native.IsWindowVisible(item.Hwnd);
                 item.Pinned = Native.IsTopmost(item.Hwnd);

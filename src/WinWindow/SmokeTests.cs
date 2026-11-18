@@ -82,10 +82,14 @@ internal static class SmokeTests
             var item = manager.SelectTarget(normal.Hwnd);
             long originalStyle = Native.Style(item.Hwnd); bool originalPin = Native.IsTopmost(item.Hwnd);
             Assert(item.Identity is not null && !Native.Matches(item.Identity with { ProcessStarted = item.Identity.ProcessStarted + 1 }), "recovery rejects a different process lifetime");
+            var layoutWindows = new NeatWin.Windows.WindowManager();
+            Assert(layoutWindows.Capture().Any(w => w.Handle == item.Hwnd && w.IsManageable), "layout sees the normal fixture");
             await manager.SetPinAsync(item, true);
+            Assert(!layoutWindows.Capture().Single(w => w.Handle == item.Hwnd).IsManageable, "layout protects a WinWindow-pinned target");
             Assert(Native.IsTopmost(item.Hwnd), "native topmost is actually applied");
             await manager.SetOpacityAsync(item, 0);
             Assert(Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte alpha, out _) && alpha == 0, "native opacity really reaches zero");
+            Assert(layoutWindows.Capture().All(w => w.Handle != item.Hwnd), "a fully transparent window does not obstruct layout");
             await manager.SetClickThroughAsync(item, true);
             Assert((Native.Style(item.Hwnd) & Native.Transparent) != 0, "native click-through is applied");
             Assert(store.ReadRecovery().Count == 1, "restorable snapshot is durable before mutations");
@@ -108,6 +112,16 @@ internal static class SmokeTests
             Assert(stubborn.Original is null, "an unchanged unsupported window does not block release");
             await manager.ParkAsync(stubborn);
             Assert(!Native.IsWindowVisible(stubborn.Hwnd) && stubborn.IsHidden && stubborn.IsParked, "refused minimization falls back to hidden");
+            const string marker = "NoFocusLoss_Injected_8A11C8C7";
+            Assert(Native.SetPropW(stubborn.Hwnd, marker, 1), "set test marker on the hidden fixture");
+            try
+            {
+                await manager.RefreshAsync();
+                Assert(stubborn.BackgroundMarked && stubborn.IsHidden, "external marker remains visible in the list while parked");
+            }
+            finally { Native.RemovePropW(stubborn.Hwnd, marker); }
+            await manager.RefreshAsync();
+            Assert(!stubborn.BackgroundMarked, "removing the external marker clears its status");
             await manager.RestoreParkingAsync(stubborn, false);
             Assert(Native.IsWindowVisible(stubborn.Hwnd), "hidden fallback can be restored");
             await manager.ReleaseAsync(stubborn);
@@ -123,6 +137,15 @@ internal static class SmokeTests
             await shell.Manager.RefreshAsync();
             var chosen = shell.Manager.Items.First(x => x.Hwnd == item.Hwnd);
             await shell.Manager.SetPinAsync(chosen, true); await shell.Manager.SetOpacityAsync(chosen, 68);
+            string layoutData = Path.Combine(data, "layout-check");
+            var notice = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (var layout = new NeatWin.App.DesktopLayout(layoutData, message => notice.TrySetResult(message)))
+            {
+                await layout.OpenSettingsAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                await layout.UndoAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                Assert(await notice.Task.WaitAsync(TimeSpan.FromSeconds(5)) == "没有可撤销的整理。", "embedded layout accepts commands on its own message loop");
+                Assert(!Directory.Exists(Path.Combine(layoutData, "Recorder")), "opening layout settings leaves recording off");
+            }
             shell.SelectForTest(chosen);
             await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             shell.UpdateLayout(); Capture(shell, Path.Combine(output, "workbench-light.png"));
