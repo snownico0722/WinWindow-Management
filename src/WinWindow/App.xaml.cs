@@ -74,7 +74,8 @@ public partial class App : Application
         bool reject = args.Contains("reject");
         if (!reject)
         {
-            Forms.Form form = args.Contains("stall") ? new StalledTarget(args[3]) : new Forms.Form();
+            Forms.Form form = args.Contains("stall") ? new StalledTarget(args[3])
+                : args.Contains("activity") ? new ActivityTarget() : new Forms.Form();
             form.Text = "窗口测试 · 文档工作区"; form.Width = 640; form.Height = 420;
             form.Controls.Add(new Forms.Label { Text = "WinWindow 原生窗口验证", Dock = Forms.DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleCenter });
             form.FormClosed += (_, _) => Shutdown();
@@ -93,6 +94,35 @@ public partial class App : Application
         };
         window.Show(); File.WriteAllText(args[1], new WindowInteropHelper(window).Handle.ToInt64().ToString());
     }
+    // Standalone fixture with an application-controlled pause and a measurable heartbeat.
+    private sealed class ActivityTarget : Forms.Form
+    {
+        private readonly Forms.Timer _clock = new() { Interval = 50 };
+        private bool _running;
+        private int _ticks;
+
+        public ActivityTarget()
+        {
+            _clock.Tick += (_, _) =>
+            {
+                if (_running) _ticks++;
+                Text = $"activity:{(_running ? "running" : "paused")}:{_ticks}";
+            };
+            _clock.Start();
+        }
+
+        protected override void WndProc(ref Forms.Message message)
+        {
+            if (message.Msg == Native.AppActivationMessage) _running = message.WParam != 0;
+            base.WndProc(ref message);
+        }
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _clock.Dispose();
+            base.Dispose(disposing);
+        }
+    }
+
     // Block a real cross-thread native operation for the regression test.
     private sealed class StalledTarget : Forms.Form
     {

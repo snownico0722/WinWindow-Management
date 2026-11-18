@@ -19,6 +19,7 @@ internal sealed class DesktopIntegration : IDisposable
     private readonly nint _hwnd;
     private readonly HwndSource _source;
     private readonly Forms.NotifyIcon _tray;
+    private readonly Forms.ToolStripItem _undo;
     private readonly Forms.ContextMenuStrip _menu = new();
     private readonly Native.EventProc _eventCallback;
     private readonly List<nint> _hooks = new();
@@ -43,7 +44,8 @@ internal sealed class DesktopIntegration : IDisposable
         _menu.Items.Add("打开", null, (_, _) => Dispatch("show"));
         _menu.Items.Add("切换小窗", null, (_, _) => Dispatch("compact"));
         _menu.Items.Add("整理桌面", null, (_, _) => Dispatch("arrange"));
-        _menu.Items.Add("撤销上次整理", null, (_, _) => Dispatch("undoLayout"));
+        _undo = _menu.Items.Add("撤销上次整理", null, (_, _) => Dispatch("undoLayout"));
+        _undo.Enabled = false;
         var recover = new Forms.ToolStripMenuItem("找回窗口");
         _menu.Items.Add(recover);
         _menu.Opening += (_, _) =>
@@ -60,10 +62,19 @@ internal sealed class DesktopIntegration : IDisposable
         _menu.Items.Add("恢复全部", null, (_, _) => Dispatch("recover"));
         _menu.Items.Add(new Forms.ToolStripSeparator());
         _menu.Items.Add("退出", null, (_, _) => Dispatch("quit"));
+        Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint lastForegroundProcess);
         _eventCallback = (_, ev, hwnd, objectId, childId, _, _) =>
         {
             if (_disposed || hwnd == 0 || (ev >= 0x8000 && (objectId != 0 || childId != 0)) || _window.Dispatcher.HasShutdownStarted) return;
-            _foregroundPending |= ev == 3;
+            if (ev == 3)
+            {
+                Native.GetWindowThreadProcessId(hwnd, out var current);
+                var previous = lastForegroundProcess;
+                lastForegroundProcess = current;
+                if (previous != 0 && current != previous)
+                    _window.Dispatcher.BeginInvoke(new Action(() => { if (!_disposed) manager.OnApplicationDeactivated(previous); }));
+                _foregroundPending = true;
+            }
             if (_eventQueued) return;
             _eventQueued = true;
             _window.Dispatcher.BeginInvoke(new Action(() =>
@@ -75,6 +86,7 @@ internal sealed class DesktopIntegration : IDisposable
         };
         AddHook(3, 3); AddHook(0x16, 0x17); AddHook(0x8000, 0x8003); AddHook(0x800C, 0x800C);
     }
+    internal void SetUndoAvailable(bool available) => _undo.Enabled = available;
     private void AddHook(uint first, uint last)
     {
         nint hook = Native.SetWinEventHook(first, last, 0, _eventCallback, 0, 0, 0);

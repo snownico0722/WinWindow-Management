@@ -93,7 +93,7 @@ internal sealed class SettingsStore
     internal void SaveAutoTidyEnabled(bool enabled) =>
         SaveAutomaticLayoutMode(enabled ? AutomaticLayoutMode.LightAssist : AutomaticLayoutMode.Off);
 
-    internal void SaveTidyOptions(TidyOptions options)
+    internal void SaveLayoutOptions(TidyOptions options, SmartBehaviorOptions behavior)
     {
         var settings = LoadStoredSettings();
         settings.AlgorithmMode = (int)options.AlgorithmMode;
@@ -112,16 +112,10 @@ internal sealed class SettingsStore
         settings.MaximumSizeChangeRatio = options.MaximumSizeChangeRatio;
         settings.RescueOffscreenWindows = options.RescueOffscreenWindows;
         settings.Passes = options.Passes;
-        WriteStoredSettings(settings);
-    }
-
-    internal void SaveSmartBehaviorOptions(SmartBehaviorOptions options)
-    {
-        var settings = LoadStoredSettings();
-        settings.PreferReversibleVerticalFill = options.PreferReversibleVerticalFill;
+        settings.PreferReversibleVerticalFill = behavior.PreferReversibleVerticalFill;
         settings.SmartOverlapAvoidance = (int)SmartOverlapAvoidance.Balanced;
-        settings.RemoveVideoBlackBars = options.RemoveVideoBlackBars;
-        settings.VideoBlackBarTendency = (int)options.VideoBlackBarTendency;
+        settings.RemoveVideoBlackBars = behavior.RemoveVideoBlackBars;
+        settings.VideoBlackBarTendency = (int)behavior.VideoBlackBarTendency;
         WriteStoredSettings(settings);
     }
 

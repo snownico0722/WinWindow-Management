@@ -28,6 +28,7 @@ internal sealed class WindowSnapshot
     public uint ColorKey { get; set; }
     public byte Alpha { get; set; } = 255;
     public uint LayeredFlags { get; set; }
+    public bool RestoreActivation { get; set; }
     public bool EditedTopmost { get; set; }
     public bool EditedOpacity { get; set; }
     public bool EditedClickThrough { get; set; }
@@ -43,6 +44,7 @@ internal sealed class WindowRule
     public bool Pinned { get; set; }
     public int Opacity { get; set; } = 100;
     public bool ClickThrough { get; set; }
+    public bool KeepRunning { get; set; }
     public bool Matches(WindowItem item) => item.Identity is { } id &&
         string.Equals(ProcessPath, id.ProcessPath, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(ClassName, id.ClassName, StringComparison.Ordinal) &&
@@ -59,8 +61,8 @@ internal sealed class WindowItem : Observable
     public string Details => Identity is null ? "保存的窗口规则" : $"PID {Identity.ProcessId}  ·  HWND 0x{Identity.Handle:X}  ·  {Identity.ClassName}";
     private string _title = "";
     public string Title { get => _title; set => Set(ref _title, value); }
-    private bool _backgroundMarked;
-    public bool BackgroundMarked { get => _backgroundMarked; set => Set(ref _backgroundMarked, value); }
+    private bool _backgroundEnabled;
+    public bool BackgroundEnabled { get => _backgroundEnabled; set => Set(ref _backgroundEnabled, value); }
     private bool _available = true;
     public bool IsAvailable { get => _available; set { if (Set(ref _available, value)) NotifyState(); } }
     // Membership is independent from TOPMOST and the recovery snapshot.
@@ -91,7 +93,6 @@ internal sealed class WindowItem : Observable
 internal sealed class Preferences
 {
     public bool Dark { get; set; }
-    public string? NoFocusLossPath { get; set; }
     public bool CloseToTray { get; set; } = true;
     public bool StartWithWindows { get; set; }
     public bool PinWhenFocused { get; set; } = true;

@@ -1,8 +1,6 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using NeatWin.Reference;
 using NeatWin.Recording;
-using System.Runtime.InteropServices;
 using NeatWin.Core;
 using NeatWin.Windows;
 
@@ -17,7 +15,10 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private readonly string _preferencesPath;
     private readonly CancellationToken _stopping;
     private readonly BrowserVideoBlackBarDetector _videoBlackBarDetector = new();
-    private readonly MainWindow _mainWindow;
+    private readonly Control _dispatch = new();
+    private readonly Action<string> _report;
+    private readonly Action<bool>? _undoChanged;
+    private readonly Action<RecorderStatus>? _recorderChanged;
     private readonly ReversibleVerticalFillManager _verticalFillManager;
     private readonly AutoTidyManager _autoTidyManager;
     private readonly RecorderSession _recorder;
@@ -34,9 +35,13 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private readonly WorkspaceAutoTidyMonitor _workspaceMonitor;
     private bool _tidyRunning;
 
-    internal NeatWinApplicationContext(string directory, Action<string> report, CancellationToken stopping)
+    internal NeatWinApplicationContext(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged, Action<bool>? undoChanged, CancellationToken stopping)
     {
         _stopping = stopping;
+        _report = report;
+        _undoChanged = undoChanged;
+        _recorderChanged = recorderChanged;
+        _ = _dispatch.Handle; // Own the WinForms message queue without creating a settings form.
         _settingsStore = new SettingsStore(Path.Combine(directory, "settings.json"));
         _preferencesPath = Path.Combine(directory, "human-factors.json");
         _taskPreferences = TaskPreferences.Load(_preferencesPath);
@@ -69,34 +74,10 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         if (!ConfigureAutomation(_automaticMode)) _automaticMode = AutomaticLayoutMode.Off;
         _workspaceMonitor.Requested += OnAutomaticLayoutRequested;
         _autoTidyManager.TidyRequested += OnFollowHandRequested;
-        _mainWindow = new MainWindow(_referenceStore.Enabled, _tidyOptions, _smartBehaviorOptions, _automaticMode);
-        _mainWindow.Activity += report;
-        _mainWindow.PreferencesRequested += EditTaskPreferences;
-        _mainWindow.ReferenceChanged += enabled =>
-        {
-            try { _referenceStore.SetEnabled(enabled); _taskSession.Invalidate(); }
-            catch (Exception ex) { _mainWindow.SetActivity($"参考开关保存失败：{ex.Message}", error: true); }
-        };
-        _mainWindow.TidyRequested += (_, _) => RunTidy();
-        _mainWindow.UndoRequested += (_, _) => UndoTidy();
-        _mainWindow.RecorderPauseRequested += (_, _) =>
-        {
-            _recorder.TogglePause();
-            try { _settingsStore.RecordingEnabled = !_recorder.Status.IsPaused; }
-            catch (IOException ex) { _mainWindow.SetActivity($"记录开关保存失败：{ex.Message}", error: true); }
-            catch (UnauthorizedAccessException ex) { _mainWindow.SetActivity($"记录开关保存失败：{ex.Message}", error: true); }
-        };
-        _mainWindow.RecorderOpenDataRequested += (_, _) => OpenRecorderData();
-        _mainWindow.RecorderExportRequested += (_, _) => ExportRecorderData();
-        _mainWindow.RecorderClearRequested += (_, _) => ClearRecorderData();
-        _mainWindow.TidyOptionsChangeRequested += OnTidyOptionsChangeRequested;
-        _mainWindow.AutoTidyChangeRequested += OnAutoTidyChangeRequested;
-        _mainWindow.HandleCreated += (_, _) => AutomationGuard.MarkUtility(_mainWindow.Handle);
-        AutomationGuard.MarkUtility(_mainWindow.Handle);
         _journal.Completed += OnLayoutVerified;
-        _workspaceMonitor.Failed += ex => _mainWindow.SetActivity($"自动整理观察失败：{ex.Message}", error: true);
+        _workspaceMonitor.Failed += ex => _report($"自动整理观察失败：{ex.Message}");
         _recorder.StatusChanged += OnRecorderStatusChanged;
-        _mainWindow.SetRecorderStatus(_recorder.Status);
+
 
     }
 
@@ -107,37 +88,62 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _autoTidyManager.TidyRequested -= OnFollowHandRequested;
             _workspaceMonitor.Dispose(); _autoTidyManager.Dispose(); _journal.Dispose();
             _recorder.StatusChanged -= OnRecorderStatusChanged; _recorder.Dispose();
-            _verticalFillManager.Dispose(); _mainWindow.Dispose();
+            _verticalFillManager.Dispose(); _dispatch.Dispose();
         }
         base.Dispose(disposing);
     }
 
-    protected override void ExitThreadCore()
-    {
-        _mainWindow.AllowCloseAndClose();
-        base.ExitThreadCore();
-    }
+    internal Task DispatchAsync(Action action) => _dispatch.InvokeAsync(action);
+    internal Task<T> ReadAsync<T>(Func<T> read) => _dispatch.InvokeAsync(read);
 
-    internal Task DispatchAsync(Action action) => _mainWindow.InvokeAsync(action);
-    internal void ShowSettings() => _mainWindow.BringToFrontFromTray();
+    internal LayoutPreferences Preferences => new(_automaticMode, _tidyOptions, _smartBehaviorOptions,
+        _taskPreferences, _referenceStore.Enabled);
+    internal RecorderStatus Recorder => _recorder.Status;
 
-    private void OnTidyOptionsChangeRequested(object? sender, TidyOptionsChangeEventArgs eventArgs)
+    internal void ApplyPreferences(LayoutPreferences value)
     {
+        if (value.Options != _tidyOptions || value.Behavior != _smartBehaviorOptions)
+        {
+            _settingsStore.SaveLayoutOptions(value.Options, value.Behavior);
+            _tidyOptions = value.Options;
+            _smartBehaviorOptions = value.Behavior;
+            if (!_smartBehaviorOptions.PreferReversibleVerticalFill) _verticalFillManager.Track([], false);
+        }
+        if (value.Task != _taskPreferences)
+        {
+            value.Task.Save(_preferencesPath);
+            _taskPreferences = value.Task;
+        }
+        if (value.UseReference != _referenceStore.Enabled) _referenceStore.SetEnabled(value.UseReference);
         _taskSession.Invalidate();
-        _tidyOptions = eventArgs.Options; _smartBehaviorOptions = eventArgs.BehaviorOptions;
-        if (!_smartBehaviorOptions.PreferReversibleVerticalFill) _verticalFillManager.Track([], false);
-        try
+        if (value.Mode == _automaticMode) return;
+        var previous = _automaticMode;
+        if (!ConfigureAutomation(value.Mode, arrangeNow: true))
         {
-            _settingsStore.SaveTidyOptions(_tidyOptions);
-            _settingsStore.SaveSmartBehaviorOptions(_smartBehaviorOptions);
-            _mainWindow.SetTidyOptionsStatus(_tidyOptions, _smartBehaviorOptions, success: true, string.Empty);
+            if (!ConfigureAutomation(previous)) _automaticMode = AutomaticLayoutMode.Off;
+            throw new InvalidOperationException("无法启用自动整理监听。");
         }
-        catch (Exception exception)
+        try { _settingsStore.SaveAutomaticLayoutMode(value.Mode); }
+        catch
         {
-            _mainWindow.SetTidyOptionsStatus(_tidyOptions, _smartBehaviorOptions, success: false,
-                $"设置已在本次运行中生效，但保存失败：{exception.Message}");
+            if (!ConfigureAutomation(previous)) _automaticMode = AutomaticLayoutMode.Off;
+            throw;
         }
+        _automaticMode = value.Mode;
     }
+
+    internal void SetRecording(bool enabled)
+    {
+        if (!_recorder.Status.IsAvailable) throw new InvalidOperationException(_recorder.Status.Error ?? "记录器不可用。");
+        if (enabled == !_recorder.Status.IsPaused) return;
+        _settingsStore.RecordingEnabled = enabled;
+        _recorder.TogglePause();
+    }
+
+    internal void OpenRecorderData() => _recorder.OpenDataDirectory();
+    internal void ExportRecorderData(string path) => _recorder.ExportRecords(path);
+    internal void ClearRecorderData() { _recorder.Clear(); _taskSession.Invalidate(); }
+    private void OnRecorderStatusChanged(RecorderStatus status) => _recorderChanged?.Invoke(status);
 
     private bool ConfigureAutomation(AutomaticLayoutMode mode, bool arrangeNow = false)
     {
@@ -150,27 +156,6 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         // Only the legacy light mode needs pointer sampling; full Smart does not.
         _autoTidyManager.Enabled = mode == AutomaticLayoutMode.LightAssist;
         return true;
-    }
-
-    private void OnAutoTidyChangeRequested(object? sender, AutoTidyChangeEventArgs eventArgs)
-    {
-        try
-        {
-            var mode = AutomaticLayoutPolicy.Read((int)eventArgs.Mode, false);
-            if (!ConfigureAutomation(mode, arrangeNow: true))
-            {
-                ConfigureAutomation(AutomaticLayoutMode.Off);
-                _automaticMode = AutomaticLayoutMode.Off;
-                _mainWindow.SetAutomaticLayoutMode(_automaticMode);
-                _mainWindow.SetActivity("自动整理监听不可用，已关闭自动模式；手动整理仍可用。", error: true);
-                return;
-            }
-            _automaticMode = mode;
-            _taskSession.Invalidate();
-            _settingsStore.SaveAutomaticLayoutMode(mode);
-            _mainWindow.SetActivity(AutomaticLayoutPolicy.Description(mode));
-        }
-        catch (Exception exception) { _mainWindow.SetActivity($"自动档位保存失败：{exception.Message}", error: true); }
     }
 
     private void OnAutomaticLayoutRequested(AutomaticLayoutRequest request)
@@ -272,7 +257,11 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             detailed = application.Plan; plan = detailed.Moves;
             _verticalFillManager.Track(plan, smart && _smartBehaviorOptions.PreferReversibleVerticalFill);
             var layerOrders = detailed.Layers;
-            if (plan.Count > 0 || layerOrders.Count > 0) { _undoPlan = plan; _undoLayers = layerOrders; _undoWasSmart = smart; }
+            if (plan.Count > 0 || layerOrders.Count > 0)
+            {
+                _undoPlan = plan; _undoLayers = layerOrders; _undoWasSmart = smart;
+                _undoChanged?.Invoke(true);
+            }
             if (smart)
                 _taskSession.Requested(snapshot, detailed, DateTimeOffset.UtcNow);
             _journal.Record(snapshot, detailed, trigger, application.Notes);
@@ -282,12 +271,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 var message = plan.Count == 0 && layerOrders.Count == 0
                     ? $"已检查 {visibleWorkingSet.Count} 个当前可见窗口，本次保留原状，未找到更合适的可执行方案。"
                     : $"{kinds}：已请求调整 {plan.Count} 个窗口、{layerOrders.Count} 组层级。";
-                _mainWindow.SetActivity(application.Notes.Any(n => n.Contains("未")) ? message + " " + string.Join(" ", application.Notes) : message);
+                _report(application.Notes.Any(n => n.Contains("未")) ? message + " " + string.Join(" ", application.Notes) : message);
             }
         }
         catch (Exception exception)
         {
-            _mainWindow.SetActivity($"整理失败：{exception.Message}", error: true);
+            _report($"整理失败：{exception.Message}");
         }
         finally { _tidyRunning = false; }
     }
@@ -299,7 +288,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     internal void UndoTidy()
     {
         if (_stopping.IsCancellationRequested || _tidyRunning || (_autoTidyManager.IsGestureActive || NativeWindowActivity.IsMoving) || (_undoPlan.Count == 0 && _undoLayers.Count == 0))
-        { _mainWindow.SetActivity("没有可撤销的整理。"); return; }
+        { _report("没有可撤销的整理。"); return; }
         try
         {
             var current = _windowManager.Capture().ToDictionary(w => w.Handle);
@@ -314,9 +303,10 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _journal.Record(current.Values.ToArray(), application.Plan, "undo", application.Notes);
             var skipped = _undoPlan.Count - application.Plan.Moves.Count;
             _undoPlan = []; _undoLayers = []; _undoWasSmart = false;
-            _mainWindow.SetActivity($"已请求还原 {application.Plan.Moves.Count} 个窗口；跳过 {skipped} 个已再次调整、关闭或状态改变的窗口。");
+            _undoChanged?.Invoke(false);
+            _report($"已请求还原 {application.Plan.Moves.Count} 个窗口；跳过 {skipped} 个已再次调整、关闭或状态改变的窗口。");
         }
-        catch (Exception ex) { _mainWindow.SetActivity($"撤销失败：{ex.Message}", error: true); }
+        catch (Exception ex) { _report($"撤销失败：{ex.Message}"); }
     }
 
     private static string KindName(string kind) => kind switch
@@ -341,11 +331,11 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         var actual = observation.Actual.Windows;
         var matched = observation.Targets.Count(t => actual.Any(w => w.Id == t.Id && SameRect(w.Rect, t.Target)));
         var description = string.Join("、", observation.Groups.Select(g => KindName(g.Selected)).Distinct());
-        _mainWindow.SetActivity(observation.Outcome == "observed-match"
+        _report(observation.Outcome == "observed-match"
             ? $"{description}：已确认 {matched} 个窗口的目标位置；层级已核对。"
             : $"{description}：{matched}/{observation.Targets.Length} 个位置匹配；其余可能被应用限制，诊断已记录。");
         if (observation.ApplyNotes.Any(n => n.Contains("未执行") || n.Contains("未套用") || n.Contains("未覆盖")))
-            _mainWindow.SetActivity(string.Join(" ", observation.ApplyNotes));
+            _report(string.Join(" ", observation.ApplyNotes));
     }
 
     private static TaskDisplay[] Displays(IReadOnlyList<WindowSnapshot> snapshot) =>
@@ -356,47 +346,4 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var monitor = snapshot.FirstOrDefault(w => w.WorkArea == area)?.MonitorHandle ?? (nint)(-index - 1);
             return new TaskDisplay(monitor, area, new(bounds.X, bounds.Y, bounds.Width, bounds.Height));
         }).ToArray();
-
-    private void EditTaskPreferences()
-    {
-        var work = Screen.FromControl(_mainWindow).WorkingArea;
-        using var dialog = new TaskPreferencesDialog(_taskPreferences,
-            new(work.X, work.Y, work.Width, work.Height), (uint)_mainWindow.DeviceDpi);
-        if (dialog.ShowDialog(_mainWindow) != DialogResult.OK) return;
-        try
-        {
-            var value = dialog.Value; value.Save(_preferencesPath); _taskPreferences = value;
-            _taskSession.Invalidate();
-            _mainWindow.SetActivity("人因偏好已保存；下一次主动整理使用新偏好。");
-        }
-        catch (Exception ex) { _mainWindow.SetActivity($"保存失败：{ex.Message}", error: true); }
-    }
-
-    private void OnRecorderStatusChanged(RecorderStatus status) => _mainWindow.SetRecorderStatus(status);
-
-    private void OpenRecorderData()
-    {
-        try { _recorder.OpenDataDirectory(); }
-        catch (Exception ex) { _mainWindow.SetActivity($"无法打开记录目录：{ex.Message}", error: true); }
-    }
-
-    private void ExportRecorderData()
-    {
-        using var dialog = new SaveFileDialog
-        {
-            FileName = $"NeatWin-window-observations-{DateTime.Now:yyyyMMdd-HHmmss}.zip",
-            Filter = "窗口几何记录（ZIP）|*.zip",
-        };
-        if (dialog.ShowDialog(_mainWindow) != DialogResult.OK) return;
-        try { _recorder.ExportRecords(dialog.FileName); _mainWindow.SetActivity("记录已导出。"); }
-        catch (Exception ex) { _mainWindow.SetActivity($"导出失败：{ex.Message}", error: true); }
-    }
-
-    private void ClearRecorderData()
-    {
-        if (MessageBox.Show(_mainWindow, "清空本机窗口记录和弱参考？保留其他整理设置。", "清空记录",
-            MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
-        try { _recorder.Clear(); _taskSession.Invalidate(); _mainWindow.SetActivity("记录和弱参考已清空。"); }
-        catch (Exception ex) { _mainWindow.SetActivity($"清空失败：{ex.Message}", error: true); }
-    }
 }

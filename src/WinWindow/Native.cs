@@ -103,24 +103,25 @@ internal static class Native
         var current = Identity(identity.Hwnd);
         return current is not null && current.ProcessId == identity.ProcessId && current.ProcessStarted == identity.ProcessStarted && current.ClassName == identity.ClassName;
     }
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-    internal static extern bool SetPropW(nint hwnd, string name, nint value);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-    internal static extern nint RemovePropW(nint hwnd, string name);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-    private static extern nint GetPropW(nint hwnd, string name);
-    public static (List<WindowItem> Windows, HashSet<int> BackgroundProcesses) Enumerate()
+    internal const uint AppActivationMessage = 0x001C;
+
+    internal static void SetBackgroundActivity(WindowIdentity identity, bool enabled)
+    {
+        EnsureIdentity(identity);
+        var foreground = GetForegroundWindow();
+        uint thread = GetWindowThreadProcessId(foreground, out uint pid);
+        // Windows already supplies the real activation for the foreground process.
+        // WM_ACTIVATEAPP has no default focus-transfer behavior.
+        if (pid == identity.ProcessId) return;
+        if (!PostMessage(identity.Hwnd, AppActivationMessage, enabled ? 1 : 0, (nint)thread))
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "窗口未接受后台保持通知，请检查目标权限。");
+    }
+
+    public static List<WindowItem> Enumerate()
     {
         var result = new List<WindowItem>();
-        var marked = new HashSet<int>();
         EnumWindows((hwnd, data) =>
         {
-            // NoFocusLoss can mark a different (even hidden) top-level window of the same process.
-            if (GetPropW(hwnd, "NoFocusLoss_Injected_8A11C8C7") != 0)
-            {
-                GetWindowThreadProcessId(hwnd, out uint pid);
-                marked.Add((int)pid);
-            }
             if (!IsTarget(hwnd) || !IsWindowVisible(hwnd)) return true;
             long style = Style(hwnd);
             if ((style & 0x80) != 0 && (style & 0x40000) == 0) return true;
@@ -135,8 +136,7 @@ internal static class Native
             }
             return true;
         }, 0);
-        foreach (var item in result) item.BackgroundMarked = marked.Contains(item.Identity!.ProcessId);
-        return (result, marked);
+        return result;
     }
     public static WindowSnapshot Capture(WindowIdentity id)
     {

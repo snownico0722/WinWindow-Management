@@ -1,20 +1,26 @@
+using NeatWin.Core;
+using NeatWin.Recording;
+
 namespace NeatWin.App;
 
+internal sealed record LayoutPreferences(AutomaticLayoutMode Mode, TidyOptions Options,
+    SmartBehaviorOptions Behavior, TaskPreferences Task, bool UseReference);
+
 // WinForms timers and out-of-context window events need a message pump. Keep
-// layout planning, foreign-window calls and the settings dialog off the WPF UI.
+// layout planning and foreign-window calls off the WPF UI.
 internal sealed class DesktopLayout : IDisposable
 {
     private readonly CancellationTokenSource _stop = new();
     private readonly TaskCompletionSource<NeatWinApplicationContext> _ready =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    internal DesktopLayout(string directory, Action<string> report)
+    internal DesktopLayout(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged = null, Action<bool>? undoChanged = null)
     {
         var thread = new Thread(() =>
         {
             try
             {
-                using var context = new NeatWinApplicationContext(directory, report, _stop.Token);
+                using var context = new NeatWinApplicationContext(directory, report, recorderChanged, undoChanged, _stop.Token);
                 _ready.SetResult(context);
                 Application.Run(context);
             }
@@ -42,7 +48,16 @@ internal sealed class DesktopLayout : IDisposable
 
     internal Task ArrangeAsync() => RunAsync(context => context.RunTidy());
     internal Task UndoAsync() => RunAsync(context => context.UndoTidy());
-    internal Task OpenSettingsAsync() => RunAsync(context => context.ShowSettings());
+    internal async Task<(LayoutPreferences Preferences, RecorderStatus Recorder)> ReadSettingsAsync()
+    {
+        var context = await _ready.Task.ConfigureAwait(false);
+        return await context.ReadAsync(() => (context.Preferences, context.Recorder)).ConfigureAwait(false);
+    }
+    internal Task ApplyAsync(LayoutPreferences value) => RunAsync(context => context.ApplyPreferences(value));
+    internal Task SetRecordingAsync(bool value) => RunAsync(context => context.SetRecording(value));
+    internal Task OpenDataAsync() => RunAsync(context => context.OpenRecorderData());
+    internal Task ExportAsync(string path) => RunAsync(context => context.ExportRecorderData(path));
+    internal Task ClearAsync() => RunAsync(context => context.ClearRecorderData());
 
     public void Dispose()
     {

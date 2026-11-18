@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using System.IO;
-using System.Diagnostics;
 using NeatWin.App;
 using System.Threading.Tasks;
 using System.Windows;
@@ -31,7 +30,6 @@ public partial class MainWindow : Window
     private Dictionary<string, TextBox> _keyEditors = new();
     private DesktopIntegration? _desktop;
     private DesktopLayout? _layout;
-    private Process? _backgroundTool;
     private string LayoutDirectory => Path.Combine(_store.DirectoryPath, "Layout");
     private HwndSource? _source;
     private nint _hwnd;
@@ -54,7 +52,6 @@ public partial class MainWindow : Window
         if (double.IsFinite(p.Width)) Width = Math.Max(MinWidth, p.Width);
         if (double.IsFinite(p.Height)) Height = Math.Max(MinHeight, p.Height);
         if (p.Left is double left && p.Top is double top && double.IsFinite(left) && double.IsFinite(top)) { WindowStartupLocation = WindowStartupLocation.Manual; Left = left; Top = top; }
-        UpdateNoFocusLossLocation();
         OwnPinBox.IsChecked = p.ManualTopmost;
         DarkBox.IsChecked = p.Dark; TrayBox.IsChecked = !p.CloseToTray; StartupBox.IsChecked = p.StartWithWindows;
         FocusPinBox.IsChecked = p.PinWhenFocused; AbsoluteBox.IsChecked = p.AbsoluteTopmost; AggressiveBox.IsChecked = p.AggressiveTopmost;
@@ -160,6 +157,7 @@ public partial class MainWindow : Window
             case "activate": await Manager.ActivateAsync(item); break;
             case "pin": await Manager.SetListedPinAsync(item, !item.Pinned); break;
             case "through": await Manager.SetClickThroughAsync(item, !item.ClickThrough); break;
+            case "background": Manager.SetBackgroundEnabled(item, !item.BackgroundEnabled); break;
             case "park":
                 if (item.IsMinimized || item.IsHidden) await Manager.RestoreParkingAsync(item);
                 else ShowStatus(await Manager.ParkAsync(item));
@@ -201,18 +199,21 @@ public partial class MainWindow : Window
     }
     private void PickSearch_Changed(object sender, TextChangedEventArgs e) { if (_ready) _pickView.Refresh(); }
     private async void Pick_Click(object sender, RoutedEventArgs e)
-    { if ((sender as FrameworkElement)?.DataContext is WindowItem item) await AddTargetAsync(item.Hwnd); }
+    { if ((sender as FrameworkElement)?.DataContext is WindowItem item) await AddTargetAsync(item.Hwnd, pin: false); }
     private async void AddPopup_Key(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape) { AddPopup.IsOpen = false; AddButton.Focus(); e.Handled = true; }
         else if (e.Key == Key.Enter && (PickList.SelectedItem as WindowItem ?? _pickView.Cast<WindowItem>().FirstOrDefault()) is { } item)
-        { e.Handled = true; await AddTargetAsync(item.Hwnd); }
+        { e.Handled = true; await AddTargetAsync(item.Hwnd, pin: false); }
     }
-    internal Task AddTargetAsync(nint hwnd) => RunAsync(async () =>
+    private async void PickPinned_Click(object sender, RoutedEventArgs e)
+    { if ((sender as FrameworkElement)?.DataContext is WindowItem item) await AddTargetAsync(item.Hwnd); }
+    internal Task AddTargetAsync(nint hwnd, bool pin = true) => RunAsync(async () =>
     {
         AddPopup.IsOpen = false;
         var item = Manager.SelectTarget(hwnd);
-        await Manager.SetPinAsync(item, true);
+        if (pin) await Manager.SetPinAsync(item, true);
+        else Manager.AddToList(item);
         SearchBox.Clear(); RefreshView(); WindowList.ScrollIntoView(item);
     });
     private void Picker_Down(object sender, MouseButtonEventArgs e)
@@ -240,65 +241,28 @@ public partial class MainWindow : Window
     private DesktopLayout EnsureLayout() => _layout ??= new DesktopLayout(LayoutDirectory, message =>
     {
         if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(new Action(() => ShowStatus(message)));
+    }, status =>
+    {
+        if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(new Action(() => { if (!_quitting) DisplayRecorder(status); }));
+    }, available =>
+    {
+        if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(new Action(() =>
+        {
+            UndoArrangeButton.IsEnabled = available;
+            _desktop?.SetUndoAvailable(available);
+        }));
     });
     private async void Arrange_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().ArrangeAsync());
     private async void UndoLayout_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().UndoAsync());
-    private async void LayoutSettings_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().OpenSettingsAsync());
-
-    private void UpdateNoFocusLossLocation()
-    {
-        string? path = _store.Preferences.NoFocusLossPath;
-        NoFocusLossLocation.Text = path ?? "首次打开时选择 NoFocusLossGUI.exe";
-        NoFocusLossLocation.ToolTip = path;
-    }
-
-    private string? ChooseNoFocusLoss()
-    {
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Title = "选择已安装的 NoFocusLossGUI.exe",
-            Filter = "NoFocusLoss 程序|NoFocusLossGUI.exe",
-            FileName = "NoFocusLossGUI.exe"
-        };
-        if (dialog.ShowDialog(this) != true) return null;
-        if (!string.Equals(Path.GetFileName(dialog.FileName), "NoFocusLossGUI.exe", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("请选择 NoFocusLossGUI.exe。");
-        _store.Preferences.NoFocusLossPath = dialog.FileName;
-        _store.SavePreferences();
-        UpdateNoFocusLossLocation();
-        return dialog.FileName;
-    }
-
-    private void ChooseNoFocusLoss_Click(object sender, RoutedEventArgs e) => Run(() => ChooseNoFocusLoss());
-    private void NoFocusLoss_Click(object sender, RoutedEventArgs e) => Run(() =>
-    {
-        var path = _store.Preferences.NoFocusLossPath;
-        if (!File.Exists(path)) path = ChooseNoFocusLoss();
-        if (path is null) return;
-        if (_backgroundTool is { HasExited: false } existing &&
-            string.Equals(existing.StartInfo.FileName, path, StringComparison.OrdinalIgnoreCase))
-        {
-            existing.Refresh();
-            var handle = existing.MainWindowHandle;
-            if (handle != 0)
-            {
-                if (Native.IsIconic(handle)) Native.ShowWindowAsync(handle, Native.Restore);
-                Native.SetForegroundWindow(handle);
-            }
-            return;
-        }
-        _backgroundTool?.Dispose();
-        _backgroundTool = null;
-        _backgroundTool = Process.Start(new ProcessStartInfo(path)
-        {
-            UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(path)!
-        });
-    });
-
     private void More_Click(object sender, RoutedEventArgs e)
     { var button = (Button)sender; button.ContextMenu.PlacementTarget = button; button.ContextMenu.Placement = PlacementMode.Bottom; button.ContextMenu.IsOpen = true; }
     private void ShowSettings(bool show)
-    { AddPopup.IsOpen = false; WindowPage.Visibility = show ? Visibility.Collapsed : Visibility.Visible; SettingsPage.Visibility = show ? Visibility.Visible : Visibility.Collapsed; }
+    {
+        AddPopup.IsOpen = false;
+        WindowPage.Visibility = show ? Visibility.Collapsed : Visibility.Visible;
+        SettingsPage.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (show) SelectSettingsSection();
+    }
     private void SettingsButton_Click(object sender, RoutedEventArgs e) => ShowSettings(SettingsPage.Visibility != Visibility.Visible);
     private void Back_Click(object sender, RoutedEventArgs e) => ShowSettings(false);
     private void CompactSettings_Click(object sender, RoutedEventArgs e) { if (_compact) ToggleCompact(); ShowSettings(true); }
@@ -466,7 +430,6 @@ public partial class MainWindow : Window
     {
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
         _layout?.Dispose(); _layout = null;
-        _backgroundTool?.Dispose(); _backgroundTool = null;
         _desktop?.Dispose(); _desktop = null;
         _source?.RemoveHook(WindowMessage); _source = null;
         _store.Error -= ShowStatus; Manager.Notice -= ShowStatus; Manager.Changed -= RefreshView;
