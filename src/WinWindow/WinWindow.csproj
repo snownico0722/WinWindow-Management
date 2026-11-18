@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>WinWindow</AssemblyName>
+    <RootNamespace>WinWindow</RootNamespace>
+    <Version>0.1.0</Version>
+    <Description>Windows 窗口管理工作台</Description>
+    <Authors>snownico0722</Authors>
+  </PropertyGroup>
+</Project>

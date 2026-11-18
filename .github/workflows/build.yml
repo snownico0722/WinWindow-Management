@@ -1,0 +1,52 @@
+name: Windows build and native smoke tests
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Archive source snapshot
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          git archive --format=zip --output=artifacts/WinWindow-source.zip HEAD
+      - name: Build WPF
+        run: dotnet build src/WinWindow/WinWindow.csproj -c Release
+      - name: Native window and UI smoke tests
+        shell: pwsh
+        run: |
+          $p = Start-Process dotnet -ArgumentList 'src/WinWindow/bin/Release/net10.0-windows/WinWindow.dll --self-test TestResults' -Wait -PassThru
+          if (Test-Path TestResults/smoke-tests.txt) { Get-Content TestResults/smoke-tests.txt }
+          if ($p.ExitCode -ne 0) { throw "Smoke tests failed ($($p.ExitCode))" }
+      - name: Publish portable Windows x64
+        run: dotnet publish src/WinWindow/WinWindow.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/WinWindow
+      - name: Package portable
+        shell: pwsh
+        run: |
+          Copy-Item README.md artifacts/WinWindow/README.md
+          Copy-Item docs/MANUAL_TESTS.md artifacts/WinWindow/MANUAL_TESTS.md
+          Remove-Item artifacts/WinWindow/*.pdb -ErrorAction SilentlyContinue
+          Compress-Archive -Path artifacts/WinWindow/* -DestinationPath artifacts/WinWindow-win-x64.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: WinWindow-preview-and-tests
+          path: |
+            artifacts/*.zip
+            TestResults/*.png
+            TestResults/smoke-tests.txt
+          if-no-files-found: warn
+          retention-days: 14
