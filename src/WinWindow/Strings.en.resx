@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
+  <data name="ActivityRecords" xml:space="preserve"><value>Window activity</value></data>
+  <data name="AddAndPin" xml:space="preserve"><value>Add &amp; pin</value></data>
+  <data name="AddAndPinHint" xml:space="preserve"><value>Add to the list and pin immediately</value></data>
+  <data name="AddWindow" xml:space="preserve"><value>Add window</value></data>
+  <data name="AddWindowHint" xml:space="preserve"><value>Choose Add window to manage an application.</value></data>
+  <data name="AdvancedSnap" xml:space="preserve"><value>Advanced snapping and passes</value></data>
+  <data name="AdvancedViewing" xml:space="preserve"><value>Advanced layout and viewing calibration</value></data>
+  <data name="AggressiveCheck" xml:space="preserve"><value>Check for obscuring windows</value></data>
+  <data name="AggressiveHint" xml:space="preserve"><value>While on top, check every 500 ms for other pinned windows</value></data>
+  <data name="AllRestored" xml:space="preserve"><value>All windows restored.</value></data>
+  <data name="AllowBleed" xml:space="preserve"><value>Allow slight overflow at screen edges</value></data>
+  <data name="AllowResize" xml:space="preserve"><value>Allow window resizing</value></data>
+  <data name="AlreadyParked" xml:space="preserve"><value>Window already minimized or hidden.</value></data>
+  <data name="AppearanceStartup" xml:space="preserve"><value>Appearance and startup</value></data>
+  <data name="Apply" xml:space="preserve"><value>Apply</value></data>
+  <data name="Arrange" xml:space="preserve"><value>Arrange</value></data>
+  <data name="ArrangeHint" xml:space="preserve"><value>Arrange visible windows using the current layout preferences</value></data>
+  <data name="ArrangeMode" xml:space="preserve"><value>Arrangement mode</value></data>
+  <data name="Assertive" xml:space="preserve"><value>Assertive</value></data>
+  <data name="Auto" xml:space="preserve"><value>Auto</value></data>
+  <data name="AutoArrange" xml:space="preserve"><value>Automatic arrangement</value></data>
+  <data name="AutoHint" xml:space="preserve"><value>Arrange when windows open, close, move, or change focus</value></data>
+  <data name="AwaitLaunch" xml:space="preserve"><value>Waiting</value></data>
+  <data name="Back" xml:space="preserve"><value>Back</value></data>
+  <data name="BackToList" xml:space="preserve"><value>Back to windows</value></data>
+  <data name="BackgroundActivity" xml:space="preserve"><value>Keep active</value></data>
+  <data name="BackgroundActivityHint" xml:space="preserve"><value>Send an activation notice when you switch away</value></data>
+  <data name="BackgroundRejected" xml:space="preserve"><value>The window rejected the activation notice. Check its permissions.</value></data>
+  <data name="BackgroundStopped" xml:space="preserve"><value>Background activity stopped for “{0}”. {1}</value></data>
+  <data name="Balanced" xml:space="preserve"><value>Balanced</value></data>
+  <data name="Busy" xml:space="preserve"><value>Working</value></data>
+  <data name="Calibrate" xml:space="preserve"><value>Use physical display dimensions</value></data>
+  <data name="ChangeOpacity" xml:space="preserve"><value>Change opacity</value></data>
+  <data name="ChangeStyle" xml:space="preserve"><value>Change window style</value></data>
+  <data name="ChooseOpenWindow" xml:space="preserve"><value>Choose an open window to manage</value></data>
+  <data name="ChooseOther" xml:space="preserve"><value>Choose a window from another application.</value></data>
+  <data name="ChooseWindow" xml:space="preserve"><value>Choose a window to manage</value></data>
+  <data name="Classic" xml:space="preserve"><value>Classic snap</value></data>
+  <data name="ClearQuestion" xml:space="preserve"><value>Clear local layout records and the window habits learned from them?</value></data>
+  <data name="ClearRecords" xml:space="preserve"><value>Clear records</value></data>
+  <data name="ClearRecordsEllipsis" xml:space="preserve"><value>Clear records…</value></data>
+  <data name="ClickThrough" xml:space="preserve"><value>Click-through</value></data>
+  <data name="Close" xml:space="preserve"><value>Close</value></data>
+  <data name="ClosedDuringOperation" xml:space="preserve"><value>The target window closed during the operation.</value></data>
+  <data name="CollapseHint" xml:space="preserve"><value>Click to collapse, drag to move</value></data>
+  <data name="ComfortHeight" xml:space="preserve"><value>Reference height (DIP)</value></data>
+  <data name="ComfortWidth" xml:space="preserve"><value>Reference width (DIP)</value></data>
+  <data name="CopyWindowInfo" xml:space="preserve"><value>Copy window details</value></data>
+  <data name="DarkTheme" xml:space="preserve"><value>Dark theme</value></data>
+  <data name="DataAndRecords" xml:space="preserve"><value>Data &amp; records</value></data>
+  <data name="DecreaseOpacity" xml:space="preserve"><value>Decrease opacity (-)</value></data>
+  <data name="DesktopLayout" xml:space="preserve"><value>Desktop layout</value></data>
+  <data name="DesktopScope" xml:space="preserve"><value>Desktop</value></data>
+  <data name="DisplayWidth" xml:space="preserve"><value>Display width (mm)</value></data>
+  <data name="DragAndRelease" xml:space="preserve"><value>Drag onto a window and release to add and pin it</value></data>
+  <data name="DragInstructions" xml:space="preserve"><value>Hold Drag to pin, drag onto a window, and release to pin it.</value></data>
+  <data name="DragToPin" xml:space="preserve"><value>Drag to pin</value></data>
+  <data name="DragToPinHint" xml:space="preserve"><value>Drag onto a window to pin it</value></data>
+  <data name="EdgeAdjust" xml:space="preserve"><value>Maximum edge adjustment (px)</value></data>
+  <data name="EdgeAlignment" xml:space="preserve"><value>Edge alignment distance (px)</value></data>
+  <data name="EditOpacity" xml:space="preserve"><value>Edit opacity percentage</value></data>
+  <data name="EnableClickThrough" xml:space="preserve"><value>Enable click-through</value></data>
+  <data name="ExactOpacity" xml:space="preserve"><value>Enter an exact percentage</value></data>
+  <data name="ExitOnClose" xml:space="preserve"><value>Exit when the window closes</value></data>
+  <data name="ExpandHint" xml:space="preserve"><value>Click to expand, drag to move</value></data>
+  <data name="ExportFile" xml:space="preserve"><value>WinWindow-layout-{0:yyyyMMdd}.zip</value></data>
+  <data name="ExportRecords" xml:space="preserve"><value>Export records…</value></data>
+  <data name="Exported" xml:space="preserve"><value>Records exported.</value></data>
+  <data name="Feedback" xml:space="preserve"><value>Feedback</value></data>
+  <data name="FillDefaults" xml:space="preserve"><value>Use defaults</value></data>
+  <data name="FilterEscape" xml:space="preserve"><value>Filter windows (Esc to close)</value></data>
+  <data name="FilterShortcut" xml:space="preserve"><value>Filter windows (Ctrl+F)</value></data>
+  <data name="FindHidden" xml:space="preserve"><value>Find hidden or transparent windows</value></data>
+  <data name="FollowSystem" xml:space="preserve"><value>System default</value></data>
+  <data name="ForceMinimize" xml:space="preserve"><value>Force minimize</value></data>
+  <data name="Full" xml:space="preserve"><value>Full</value></data>
+  <data name="FullAssist" xml:space="preserve"><value>Full assist</value></data>
+  <data name="FullHint" xml:space="preserve"><value>Arrange the group after you move or resize a window</value></data>
+  <data name="General" xml:space="preserve"><value>General</value></data>
+  <data name="Gentle" xml:space="preserve"><value>Gentle</value></data>
+  <data name="GlobalShortcuts" xml:space="preserve"><value>Global shortcuts</value></data>
+  <data name="Hidden" xml:space="preserve"><value>Hidden</value></data>
+  <data name="HiddenRecoverable" xml:space="preserve"><value>Hidden · recoverable</value></data>
+  <data name="HiddenRestoreList" xml:space="preserve"><value>Hidden. Restore it from the window list.</value></data>
+  <data name="IdentityUnavailable" xml:space="preserve"><value>Could not identify the window. Check its permissions.</value></data>
+  <data name="IncreaseOpacity" xml:space="preserve"><value>Increase opacity (=)</value></data>
+  <data name="InfoCopied" xml:space="preserve"><value>Window details copied.</value></data>
+  <data name="IntegerRange" xml:space="preserve"><value>Enter a whole number from {0} to {1}.</value></data>
+  <data name="InvalidModifier" xml:space="preserve"><value>Use Win, Ctrl, Alt, or Shift as the modifier.</value></data>
+  <data name="InvalidSettings" xml:space="preserve"><value>Could not read {0}. The original was kept and defaults are in use.</value></data>
+  <data name="KeepAbove" xml:space="preserve"><value>Keep the pinned manager or capsule on top</value></data>
+  <data name="KeepAboveHint" xml:space="preserve"><value>Raise the pinned manager or capsule without taking keyboard focus</value></data>
+  <data name="Language" xml:space="preserve"><value>Language</value></data>
+  <data name="LayoutAlgorithm" xml:space="preserve"><value>Layout algorithm</value></data>
+  <data name="LayoutStrength" xml:space="preserve"><value>Arrangement strength</value></data>
+  <data name="Light" xml:space="preserve"><value>Light</value></data>
+  <data name="LightAssist" xml:space="preserve"><value>Light assist</value></data>
+  <data name="LightHint" xml:space="preserve"><value>Adjust the window you just moved or resized</value></data>
+  <data name="Managed" xml:space="preserve"><value>Managed</value></data>
+  <data name="ManagedAndPinned" xml:space="preserve"><value>{0} managed · {1} pinned</value></data>
+  <data name="ManagedCount" xml:space="preserve"><value>{0} managed</value></data>
+  <data name="ManagedWindows" xml:space="preserve"><value>Managed windows</value></data>
+  <data name="ManagerZOrder" xml:space="preserve"><value>Manager window</value></data>
+  <data name="Manual" xml:space="preserve"><value>Manual</value></data>
+  <data name="ManualArrange" xml:space="preserve"><value>Manual arrangement</value></data>
+  <data name="ManualHint" xml:space="preserve"><value>Arrange only when you click Arrange or use its shortcut</value></data>
+  <data name="MaxBleed" xml:space="preserve"><value>Maximum overflow (DIP)</value></data>
+  <data name="MaximizeOrRestore" xml:space="preserve"><value>Maximize / restore</value></data>
+  <data name="Minimize" xml:space="preserve"><value>Minimize</value></data>
+  <data name="Minimized" xml:space="preserve"><value>Minimized</value></data>
+  <data name="MinimizedStatus" xml:space="preserve"><value>Window minimized.</value></data>
+  <data name="MissingExePath" xml:space="preserve"><value>Could not find the application path.</value></data>
+  <data name="MissingShortcutKey" xml:space="preserve"><value>Choose a modifier and a regular key.</value></data>
+  <data name="MoreActions" xml:space="preserve"><value>More actions</value></data>
+  <data name="NativeFailed" xml:space="preserve"><value>{0} failed. Check the target's permissions and compatibility.</value></data>
+  <data name="NeighborSnap" xml:space="preserve"><value>Neighbor snap distance (px)</value></data>
+  <data name="NoManagedWindows" xml:space="preserve"><value>No managed windows</value></data>
+  <data name="NoMatches" xml:space="preserve"><value>No matching windows</value></data>
+  <data name="Normal" xml:space="preserve"><value>Normal</value></data>
+  <data name="Opacity" xml:space="preserve"><value>Opacity</value></data>
+  <data name="OpacityHint" xml:space="preserve"><value>Drag to adjust opacity, or focus the slider and scroll</value></data>
+  <data name="OpacityPercent" xml:space="preserve"><value>Opacity percentage</value></data>
+  <data name="OpacityRange" xml:space="preserve"><value>Enter an opacity from 0 to 100.</value></data>
+  <data name="OpacityRejected" xml:space="preserve"><value>The window rejected the opacity change.</value></data>
+  <data name="OpenDataFolder" xml:space="preserve"><value>Open data folder</value></data>
+  <data name="OpenFilter" xml:space="preserve"><value>Open filter</value></data>
+  <data name="OpenPanel" xml:space="preserve"><value>Open main window</value></data>
+  <data name="ParkRejected" xml:space="preserve"><value>The window could not be minimized. Recovery records were kept.</value></data>
+  <data name="Passes" xml:space="preserve"><value>Passes</value></data>
+  <data name="PendingWindow" xml:space="preserve"><value>Waiting</value></data>
+  <data name="PerPixelOpacity" xml:space="preserve"><value>This window uses per-pixel transparency and does not support opacity changes.</value></data>
+  <data name="PinHint" xml:space="preserve"><value>Unpinned. Click to pin.</value></data>
+  <data name="PinManager" xml:space="preserve"><value>Pin the manager</value></data>
+  <data name="PinNotifications" xml:space="preserve"><value>Show a notification when pinning or unpinning</value></data>
+  <data name="PinOnFocus" xml:space="preserve"><value>Pin temporarily while focused</value></data>
+  <data name="PinOnFocusHint" xml:space="preserve"><value>Return to the previous pin state when focus moves away</value></data>
+  <data name="PinRejected" xml:space="preserve"><value>The window rejected the pin change.</value></data>
+  <data name="PinSound" xml:space="preserve"><value>Play a sound when pinning or unpinning</value></data>
+  <data name="PinThisWindow" xml:space="preserve"><value>Pin this window</value></data>
+  <data name="PinWindow" xml:space="preserve"><value>Pin window</value></data>
+  <data name="Pinned" xml:space="preserve"><value>Pinned</value></data>
+  <data name="PinnedAndHidden" xml:space="preserve"><value>{0} pinned · {1} hidden</value></data>
+  <data name="PinnedCount" xml:space="preserve"><value>{0} pinned</value></data>
+  <data name="PinnedNotice" xml:space="preserve"><value>Pinned: {0}</value></data>
+  <data name="PreferEnlarge" xml:space="preserve"><value>Prefer enlarging</value></data>
+  <data name="PreferShrink" xml:space="preserve"><value>Prefer shrinking</value></data>
+  <data name="ProtectEdges" xml:space="preserve"><value>Protect all four window edges</value></data>
+  <data name="Quit" xml:space="preserve"><value>Quit</value></data>
+  <data name="ReadPlacement" xml:space="preserve"><value>Read window position</value></data>
+  <data name="RecordActivity" xml:space="preserve"><value>Record window activity</value></data>
+  <data name="RecordPrivacy" xml:space="preserve"><value>Records window positions and stacking order locally. Titles, keystrokes, and screen contents are excluded.</value></data>
+  <data name="RecorderCounts" xml:space="preserve"><value>{0} · {1} gestures, {2} window changes</value></data>
+  <data name="RecordsCleared" xml:space="preserve"><value>Records cleared.</value></data>
+  <data name="RefreshWindows" xml:space="preserve"><value>Refresh windows</value></data>
+  <data name="ReinforceError" xml:space="preserve"><value>Could not restore the pin on “{0}”. {1}</value></data>
+  <data name="RememberWindow" xml:space="preserve"><value>Remember settings for next time</value></data>
+  <data name="Remembered" xml:space="preserve"><value>Remembered</value></data>
+  <data name="RemoveHint" xml:space="preserve"><value>Unpin and remove from the list. The application stays open.</value></data>
+  <data name="RemoveWindow" xml:space="preserve"><value>Remove window</value></data>
+  <data name="RescueOffscreen" xml:space="preserve"><value>Bring partially off-screen windows back</value></data>
+  <data name="ResetLayout" xml:space="preserve"><value>Reset layout preferences</value></data>
+  <data name="ResetWindow" xml:space="preserve"><value>Restore original settings</value></data>
+  <data name="ResizeLimit" xml:space="preserve"><value>Maximum size change (%)</value></data>
+  <data name="RestoreAll" xml:space="preserve"><value>Restore all</value></data>
+  <data name="RestoreError" xml:space="preserve"><value>Could not restore “{0}”. {1}</value></data>
+  <data name="RestoreIncomplete" xml:space="preserve"><value>Could not restore {0} windows. Recovery records were kept.</value></data>
+  <data name="RestoreOpacity" xml:space="preserve"><value>Restore transparency</value></data>
+  <data name="RestorePending" xml:space="preserve"><value>The window has not been restored yet. Recovery records were kept.</value></data>
+  <data name="RestoreRejected" xml:space="preserve"><value>The window rejected the restore request.</value></data>
+  <data name="RestoreWindow" xml:space="preserve"><value>Restore window</value></data>
+  <data name="RetryNextLaunch" xml:space="preserve"><value>Could not restore {0} windows. Recovery will continue on the next launch.</value></data>
+  <data name="RuleError" xml:space="preserve"><value>Could not apply all settings for “{0}”. {1}</value></data>
+  <data name="RunningNotFound" xml:space="preserve"><value>WinWindow is running but its window is not available yet.</value></data>
+  <data name="SaveFailed" xml:space="preserve"><value>Could not save settings: </value></data>
+  <data name="SavedRule" xml:space="preserve"><value>Saved window rule</value></data>
+  <data name="ScreenSnap" xml:space="preserve"><value>Screen snap distance (px)</value></data>
+  <data name="SearchManaged" xml:space="preserve"><value>Search managed windows</value></data>
+  <data name="SearchOpenWindows" xml:space="preserve"><value>Search open windows…</value></data>
+  <data name="Settings" xml:space="preserve"><value>Settings</value></data>
+  <data name="SettingsCategories" xml:space="preserve"><value>Settings categories</value></data>
+  <data name="ShortcutConflict" xml:space="preserve"><value>Two actions use {0}. Choose a different shortcut before applying.</value></data>
+  <data name="ShortcutHint" xml:space="preserve"><value>Select a box and press a shortcut. Delete clears it, Esc reverts it, and Apply saves your changes.</value></data>
+  <data name="ShortcutRegistrationFailed" xml:space="preserve"><value>Could not register {0}. It may already be in use.</value></data>
+  <data name="Shortcuts" xml:space="preserve"><value>Shortcuts</value></data>
+  <data name="ShortcutsApplied" xml:space="preserve"><value>Shortcuts applied.</value></data>
+  <data name="ShowMainWindow" xml:space="preserve"><value>Show main window</value></data>
+  <data name="Smart" xml:space="preserve"><value>Smart</value></data>
+  <data name="StartWithWindows" xml:space="preserve"><value>Start with Windows</value></data>
+  <data name="StyleRejected" xml:space="preserve"><value>The window rejected the style change.</value></data>
+  <data name="TargetReplaced" xml:space="preserve"><value>The target window closed or was replaced.</value></data>
+  <data name="ThroughRejected" xml:space="preserve"><value>The window rejected the click-through setting.</value></data>
+  <data name="ToggleActivePin" xml:space="preserve"><value>Pin or unpin active window</value></data>
+  <data name="ToggleCapsule" xml:space="preserve"><value>Toggle capsule</value></data>
+  <data name="ToggleMaximize" xml:space="preserve"><value>Maximize or restore</value></data>
+  <data name="TogglePin" xml:space="preserve"><value>Toggle always on top</value></data>
+  <data name="Transparent" xml:space="preserve"><value>Transparent</value></data>
+  <data name="TransparentHint" xml:space="preserve"><value>Let clicks pass through this nearly invisible window</value></data>
+  <data name="TransparentRecoverable" xml:space="preserve"><value>Transparent · recoverable</value></data>
+  <data name="TrayManaged" xml:space="preserve"><value>Managed windows</value></data>
+  <data name="TurnOffThrough" xml:space="preserve"><value>Turn click-through off</value></data>
+  <data name="TurnOnThrough" xml:space="preserve"><value>Turn click-through on</value></data>
+  <data name="UndoArrange" xml:space="preserve"><value>Undo</value></data>
+  <data name="UndoArrangeHint" xml:space="preserve"><value>Undo the last arrangement</value></data>
+  <data name="UndoLast" xml:space="preserve"><value>Undo last arrangement</value></data>
+  <data name="UnpinAll" xml:space="preserve"><value>Unpin all</value></data>
+  <data name="UnpinFailed" xml:space="preserve"><value>Could not unpin {0} windows.</value></data>
+  <data name="UnpinHint" xml:space="preserve"><value>Pinned. Click to unpin.</value></data>
+  <data name="UnpinKeepListed" xml:space="preserve"><value>Unpin and keep in list</value></data>
+  <data name="UnpinnedNotice" xml:space="preserve"><value>Unpinned: {0}</value></data>
+  <data name="Unset" xml:space="preserve"><value>Unassigned</value></data>
+  <data name="UseRecordedHabits" xml:space="preserve"><value>Use recorded habits in smart layout</value></data>
+  <data name="VerticalFill" xml:space="preserve"><value>Fill near-full-height windows and restore on drag</value></data>
+  <data name="VideoBars" xml:space="preserve"><value>Adjust video windows to reduce black bars</value></data>
+  <data name="ViewingDistance" xml:space="preserve"><value>Viewing distance (mm)</value></data>
+  <data name="WaitingForWindow" xml:space="preserve"><value>Waiting for window</value></data>
+  <data name="WakeFailed" xml:space="preserve"><value>Could not show the running WinWindow instance.</value></data>
+  <data name="WakePermission" xml:space="preserve"><value>Cross-privilege activation is unavailable ({0}).</value></data>
+  <data name="WakeUnavailable" xml:space="preserve"><value>Could not create the window activation message.</value></data>
+  <data name="WindowBusy" xml:space="preserve"><value>A window operation is still in progress.</value></data>
+  <data name="WindowPending" xml:space="preserve"><value>The window has not appeared yet.</value></data>
+  <data name="WindowPin" xml:space="preserve"><value>Always on top</value></data>
+  <data name="Working" xml:space="preserve"><value>Working</value></data>
+  <data name="ZipFilter" xml:space="preserve"><value>ZIP archive|*.zip</value></data>
+</root>

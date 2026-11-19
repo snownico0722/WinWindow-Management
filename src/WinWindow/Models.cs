@@ -58,7 +58,7 @@ internal sealed class WindowItem : Observable
     public WindowSnapshot? Original { get; set; }
     public string? RuleId { get; set; }
     public nint Hwnd => Identity?.Hwnd ?? 0;
-    public string ProcessName => Identity is null ? "等待窗口出现" : Path.GetFileName(Identity.ProcessPath);
+    public string ProcessName => Identity is null ? UiText.Get("WaitingForWindow") : Path.GetFileName(Identity.ProcessPath);
     public string ProcessPath => Identity?.ProcessPath ?? "";
     public ImageSource? Icon => Identity is null ? null : Native.AppIcon(ProcessPath);
     public string Initial
@@ -71,7 +71,7 @@ internal sealed class WindowItem : Observable
             return "W";
         }
     }
-    public string Details => Identity is null ? "保存的窗口规则" : $"PID {Identity.ProcessId}  ·  HWND 0x{Identity.Handle:X}  ·  {Identity.ClassName}";
+    public string Details => Identity is null ? UiText.Get("SavedRule") : $"PID {Identity.ProcessId}  ·  HWND 0x{Identity.Handle:X}  ·  {Identity.ClassName}";
     private string _title = "";
     public string Title
     {
@@ -102,7 +102,12 @@ internal sealed class WindowItem : Observable
     public bool IsBusy { get => _busy; set { if (Set(ref _busy, value)) { Changed(nameof(CanOperate)); NotifyState(); } } }
     public bool CanOperate => IsAvailable && !IsBusy;
     public bool IsParked => Original?.Parked == true;
-    public string StateText => !IsAvailable ? "等待窗口" : IsBusy ? "正在处理" : IsHidden ? "已隐藏 · 可恢复" : IsMinimized ? "已最小化" : Opacity == 0 ? "完全透明 · 可恢复" : Pinned ? "已置顶" : IsManaged ? "管理中" : "正常";
+    public string StateText => !IsAvailable ? UiText.Get("PendingWindow") : IsBusy ? UiText.Get("Working") : IsHidden ? UiText.Get("HiddenRecoverable") : IsMinimized ? UiText.Get("Minimized") : Opacity == 0 ? UiText.Get("TransparentRecoverable") : Pinned ? UiText.Get("Pinned") : IsManaged ? UiText.Get("Managed") : UiText.Get("Normal");
+    public void NotifyLanguage()
+    {
+        Changed(nameof(ProcessName)); Changed(nameof(Details)); Changed(nameof(StateText));
+    }
+
     public void NotifyState()
     {
         Changed(nameof(StateText)); Changed(nameof(IsManaged)); Changed(nameof(IsParked));
@@ -111,6 +116,7 @@ internal sealed class WindowItem : Observable
 }
 internal sealed class Preferences
 {
+    public string Language { get; set; } = "system";
     public bool Dark { get; set; }
     public bool CloseToTray { get; set; } = true;
     public bool StartWithWindows { get; set; }

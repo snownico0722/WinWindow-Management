@@ -42,11 +42,11 @@ public partial class App : Application
                     existing = Native.FindWindow(null, title);
                     if (existing == 0) await Task.Delay(80);
                 }
-                if (existing == 0) throw new InvalidOperationException("程序已在运行，但尚未找到窗口。");
+                if (existing == 0) throw new InvalidOperationException(UiText.Get("RunningNotFound"));
                 Native.GetWindowThreadProcessId(existing, out uint pid);
                 Native.AllowSetForegroundWindow(pid);
                 if (!Native.PostMessage(existing, DesktopIntegration.WakeMessage, 0, 0))
-                    throw new Win32Exception(Marshal.GetLastPInvokeError(), "未能唤醒正在运行的 WinWindow。");
+                    throw new Win32Exception(Marshal.GetLastPInvokeError(), UiText.Get("WakeFailed"));
                 Shutdown(); return;
             }
             string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), dev ? "WinWindow-Management-dev" : "WinWindow-Management");

@@ -80,6 +80,7 @@ internal static class SmokeTests
             Assert(DesktopIntegration.ParseHotkey("Win+Ctrl+Shift+R") == (14u, 82u) && DesktopIntegration.ParseHotkey("") == (0u, 0u), "hotkey parsing and disabled bindings");
             CheckSmartArrangeScenarios();
             var store = new StateStore(data);
+            store.Preferences.Language = "zh-CN";
             store.Preferences.Rules.Add(new() { Title = "roundtrip", Opacity = 0, ClickThrough = true }); store.SavePreferences();
             Assert(new StateStore(data).Preferences.Rules.Single().Opacity == 0, "settings preserve zero opacity");
             store.Preferences.Rules.Clear(); store.SavePreferences();
@@ -152,6 +153,16 @@ internal static class SmokeTests
             Native.ShowWindowAsync(item.Hwnd, Native.Normal);
             shell = new MainWindow(store, true); Application.Current.MainWindow = shell;
             shell.Show(); await shell.InitializeAsync(); await Task.Delay(150);
+            var language = (ComboBox)shell.FindName("LanguageBox");
+            var arrange = (Button)shell.FindName("ArrangeButton");
+            language.SelectedValue = "en";
+            await WaitAsync("English applies to the visible workbench", () => Equals(arrange.Content, "Arrange"));
+            Assert(NeatWin.App.LayoutStrings.LayoutText.Get("NothingToUndo") == "No arrangement to undo.",
+                "the layout worker uses the workbench language");
+            store.SavePreferences();
+            Assert(new StateStore(data).Preferences.Language == "en", "the display language survives a restart");
+            language.SelectedValue = "zh-CN";
+            await WaitAsync("Chinese applies without restarting", () => Equals(arrange.Content, "整理桌面"));
             await CheckArrangeButtonAsync(shell, layoutWindows, item.Hwnd, stubborn.Hwnd);
             await shell.Manager.RefreshAsync();
             var chosen = shell.Manager.Items.First(x => x.Hwnd == item.Hwnd);

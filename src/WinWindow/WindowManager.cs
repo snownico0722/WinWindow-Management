@@ -49,7 +49,7 @@ internal sealed class WindowManager
     private async Task RecoverOneAsync(WindowItem item)
     {
         try { await ReleaseAsync(item, updateRule: false); }
-        catch (Exception e) { if (!_stopping) Notice?.Invoke($"“{item.Title}”未恢复：{e.Message}"); }
+        catch (Exception e) { if (!_stopping) Notice?.Invoke(UiText.Format("RestoreError", item.Title, e.Message)); }
     }
     public async Task RefreshAsync()
     {
@@ -114,7 +114,7 @@ internal sealed class WindowManager
             catch (Exception e)
             {
                 item.WantsPin = false;
-                if (!_stopping) Notice?.Invoke($"“{item.Title}”置顶状态未能恢复：{e.Message}");
+                if (!_stopping) Notice?.Invoke(UiText.Format("ReinforceError", item.Title, e.Message));
             }
         }));
     }
@@ -143,13 +143,13 @@ internal sealed class WindowManager
                 item.Pinned = Native.IsTopmost(item.Hwnd); item.Opacity = opacity; item.ClickThrough = through; item.NotifyState();
             });
         }
-        catch (Exception e) { if (!_stopping) Notice?.Invoke($"“{item.Title}”的规则未完全应用：{e.Message}"); }
+        catch (Exception e) { if (!_stopping) Notice?.Invoke(UiText.Format("RuleError", item.Title, e.Message)); }
     }
     public WindowItem SelectTarget(nint hwnd)
     {
         hwnd = Native.GetAncestor(hwnd, 2);
-        if (!Native.IsTarget(hwnd)) throw new InvalidOperationException("请选择其他应用的窗口。");
-        var id = Native.Identity(hwnd) ?? throw new InvalidOperationException("无法读取窗口身份，请检查权限。");
+        if (!Native.IsTarget(hwnd)) throw new InvalidOperationException(UiText.Get("ChooseOther"));
+        var id = Native.Identity(hwnd) ?? throw new InvalidOperationException(UiText.Get("IdentityUnavailable"));
         var existing = Items.FirstOrDefault(x => Same(x.Identity, id));
         if (existing is not null) return existing;
         long style = Native.Style(hwnd);
@@ -157,10 +157,10 @@ internal sealed class WindowManager
         var item = new WindowItem { Identity = id, Title = Native.Title(hwnd), Pinned = Native.IsTopmost(hwnd), IsMinimized = Native.IsIconic(hwnd), ClickThrough = (style & Native.Transparent) != 0, Opacity = opacity };
         Items.Add(item); Changed?.Invoke(); return item;
     }
-    private static void EnsureIdle(WindowItem item) { if (item.IsBusy) throw new InvalidOperationException("该窗口的操作尚未完成。"); }
+    private static void EnsureIdle(WindowItem item) { if (item.IsBusy) throw new InvalidOperationException(UiText.Get("WindowBusy")); }
     private WindowSnapshot Manage(WindowItem item)
     {
-        if (item.Identity is null) throw new InvalidOperationException("该窗口尚未出现。");
+        if (item.Identity is null) throw new InvalidOperationException(UiText.Get("WindowPending"));
         Native.EnsureIdentity(item.Identity);
         item.Original ??= Native.Capture(item.Identity); item.Listed = true;
         item.NotifyState(); return item.Original;
@@ -218,7 +218,7 @@ internal sealed class WindowManager
             catch (Exception e)
             {
                 item.BackgroundEnabled = false;
-                Notice?.Invoke($"“{item.Title}”后台保持已停止：{e.Message}");
+                Notice?.Invoke(UiText.Format("BackgroundStopped", item.Title, e.Message));
             }
         }
     }
@@ -228,7 +228,7 @@ internal sealed class WindowManager
         Track(item, s => s.EditedTopmost = true);
         await Task.Run(() => { Native.EnsureIdentity(item.Identity!); Native.SetTopmost(item.Hwnd, value); });
         item.Pinned = Native.IsTopmost(item.Hwnd);
-        if (item.Pinned != value) throw new InvalidOperationException("窗口未接受置顶设置。");
+        if (item.Pinned != value) throw new InvalidOperationException(UiText.Get("PinRejected"));
         item.WantsPin = value;
         if (updateRule && value) AutoRemember(item);
         Finish(item, updateRule);
@@ -248,7 +248,7 @@ internal sealed class WindowManager
         var original = item.Original!; int opacity = item.Opacity;
         await Task.Run(() => { Native.EnsureIdentity(original.Identity); Native.SetClickThrough(original, value, opacity); });
         item.ClickThrough = (Native.Style(item.Hwnd) & Native.Transparent) != 0;
-        if (item.ClickThrough != value) throw new InvalidOperationException("窗口未接受鼠标穿透设置。");
+        if (item.ClickThrough != value) throw new InvalidOperationException(UiText.Get("ThroughRejected"));
         if (updateRule && value) AutoRemember(item);
         Finish(item, updateRule);
     });
@@ -268,7 +268,7 @@ internal sealed class WindowManager
             catch (Exception) { return 1; }
         });
         int failures = (await Task.WhenAll(attempts)).Sum();
-        if (failures != 0) Notice?.Invoke($"{failures} 个窗口未能取消置顶。");
+        if (failures != 0) Notice?.Invoke(UiText.Format("UnpinFailed", failures));
     }
     public Task ActivateAsync(WindowItem item)
     {
@@ -336,7 +336,7 @@ internal sealed class WindowManager
         int stable = 0;
         for (int i = 0; i < 8; i++)
         {
-            if (!Native.Matches(id)) throw new InvalidOperationException("操作期间目标窗口已关闭。");
+            if (!Native.Matches(id)) throw new InvalidOperationException(UiText.Get("ClosedDuringOperation"));
             stable = predicate(id.Hwnd) ? stable + 1 : 0;
             if (stable >= 2) return true;
             await Task.Delay(60);
@@ -349,7 +349,7 @@ internal sealed class WindowManager
         await OperateAsync(item, async () =>
         {
             var snapshot = Manage(item);
-            if (Native.IsIconic(item.Hwnd) || !Native.IsWindowVisible(item.Hwnd)) { result = "窗口已收起。"; return; }
+            if (Native.IsIconic(item.Hwnd) || !Native.IsWindowVisible(item.Hwnd)) { result = UiText.Get("AlreadyParked"); return; }
             var placement = Native.GetPlacement(item.Hwnd);
             Track(item, s => { s.BeforeParking = placement; s.Parked = true; });
             Native.ShowWindowAsync(item.Hwnd, Native.ForceMinimize);
@@ -363,10 +363,10 @@ internal sealed class WindowManager
             {
                 Native.ShowWindowAsync(item.Hwnd, Native.Hide);
                 if (!await WaitForAsync(snapshot.Identity, h => !Native.IsWindowVisible(h) || Native.IsIconic(h)))
-                { result = "窗口未接受收起操作，恢复记录已保留。"; return; }
+                { result = UiText.Get("ParkRejected"); return; }
             }
             item.IsMinimized = Native.IsIconic(item.Hwnd); item.IsHidden = !Native.IsWindowVisible(item.Hwnd);
-            result = item.IsHidden ? "已隐藏，可从列表恢复。" : "已最小化。"; Finish(item, false);
+            result = item.IsHidden ? UiText.Get("HiddenRestoreList") : UiText.Get("MinimizedStatus"); Finish(item, false);
         });
         return result;
     }
@@ -379,7 +379,7 @@ internal sealed class WindowManager
             Native.ApplyPlacement(s.Identity.Hwnd, s.BeforeParking);
             Native.ShowWindowAsync(s.Identity.Hwnd, (int)s.BeforeParking.ShowCmd);
             if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h)))
-                throw new InvalidOperationException("窗口尚未恢复，记录已保留。");
+                throw new InvalidOperationException(UiText.Get("RestorePending"));
         }
         await Task.Run(() => { if (Native.Matches(s.Identity)) Native.RestoreStyles(s, unpin); });
     }
@@ -388,7 +388,7 @@ internal sealed class WindowManager
         var s = Manage(item);
         if (s.Parked) Native.ApplyPlacement(item.Hwnd, s.BeforeParking);
         Native.ShowWindowAsync(item.Hwnd, s.Parked ? (int)s.BeforeParking.ShowCmd : Native.Restore);
-        if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h))) throw new InvalidOperationException("窗口未接受恢复操作。");
+        if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h))) throw new InvalidOperationException(UiText.Get("RestoreRejected"));
         s.Parked = false; item.IsHidden = false; item.IsMinimized = false; Journal();
         if (activate && !_stopping) Native.SetForegroundWindow(item.Hwnd);
         Finish(item, false);
@@ -415,7 +415,7 @@ internal sealed class WindowManager
         var attempts = Items.Where(x => x.IsManaged).ToArray().Select(async item =>
         {
             try { await ReleaseAsync(item, false, updateRules); return 0; }
-            catch (Exception e) { if (!_stopping) Notice?.Invoke($"“{item.Title}”未恢复：{e.Message}"); return 1; }
+            catch (Exception e) { if (!_stopping) Notice?.Invoke(UiText.Format("RestoreError", item.Title, e.Message)); return 1; }
         });
         return (await Task.WhenAll(attempts)).Sum();
     }

@@ -38,30 +38,32 @@ internal sealed class DesktopIntegration : IDisposable
         _hwnd = new WindowInteropHelper(window).Handle;
         _source = HwndSource.FromHwnd(_hwnd)!;
         _source.AddHook(Message);
-        if (WakeMessage == 0) throw new Win32Exception("无法创建单实例唤醒消息。");
+        if (WakeMessage == 0) throw new Win32Exception(UiText.Get("WakeUnavailable"));
         // Only this parameterless Show request is permitted across UIPI.
         if (!Native.ChangeWindowMessageFilterEx(_hwnd, WakeMessage, 1, 0))
-            window.ShowStatus($"跨权限唤醒未启用（{Marshal.GetLastPInvokeError()}）。");
+            window.ShowStatus(UiText.Format("WakePermission", Marshal.GetLastPInvokeError()));
         _trayIcon = LoadTrayIcon();
         _tray = new Forms.NotifyIcon { Text = "WinWindow", Icon = _trayIcon, Visible = true, ContextMenuStrip = _menu };
         _tray.DoubleClick += (_, _) => Dispatch("show");
-        _menu.Items.Add("打开主面板", null, (_, _) => Dispatch("show"));
-        _menu.Items.Add("切换悬浮胶囊", null, (_, _) => Dispatch("compact"));
-        _menu.Items.Add("整理桌面", null, (_, _) => Dispatch("arrange"));
-        _undo = _menu.Items.Add("撤销上次整理", null, (_, _) => Dispatch("undoLayout"));
+        AddTrayAction("OpenPanel", "show");
+        AddTrayAction("ToggleCapsule", "compact");
+        AddTrayAction("Arrange", "arrange");
+        _undo = AddTrayAction("UndoLast", "undoLayout");
         _undo.Enabled = false;
-        var managed = new Forms.ToolStripMenuItem("管理的窗口");
+        var managed = new Forms.ToolStripMenuItem { Tag = "TrayManaged" };
         _menu.Items.Add(managed);
-        var recover = new Forms.ToolStripMenuItem("找回隐藏 / 透明窗口");
+        var recover = new Forms.ToolStripMenuItem { Tag = "FindHidden" };
         _menu.Items.Add(recover);
         _menu.Opening += (_, _) =>
         {
+            foreach (Forms.ToolStripItem option in _menu.Items)
+                if (option.Tag is string key) option.Text = UiText.Get(key);
             managed.DropDownItems.Clear();
             foreach (var item in manager.Items.Where(x => x.IsManaged || x.Remembered).OrderBy(x => x.Title, StringComparer.CurrentCultureIgnoreCase).ToArray())
             {
                 var captured = item;
                 string title = item.Title.Length > 44 ? item.Title[..44] + "…" : item.Title;
-                var entry = new Forms.ToolStripMenuItem(title) { Checked = item.Pinned, CheckOnClick = false, ToolTipText = item.Pinned ? "已置顶，点击取消置顶" : "未置顶，点击置顶" };
+                var entry = new Forms.ToolStripMenuItem(title) { Checked = item.Pinned, CheckOnClick = false, ToolTipText = item.Pinned ? UiText.Get("UnpinHint") : UiText.Get("PinHint") };
                 entry.Click += (_, _) => _window.Dispatcher.BeginInvoke(new Action(async () =>
                 {
                     if (!_disposed) await _window.ExecuteRowAsync(captured, "pin");
@@ -78,9 +80,9 @@ internal sealed class DesktopIntegration : IDisposable
             }
             recover.Enabled = recover.DropDownItems.Count != 0;
         };
-        _menu.Items.Add("恢复全部原样", null, (_, _) => Dispatch("recover"));
+        AddTrayAction("RestoreAll", "recover");
         _menu.Items.Add(new Forms.ToolStripSeparator());
-        _menu.Items.Add("退出", null, (_, _) => Dispatch("quit"));
+        AddTrayAction("Quit", "quit");
         Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint lastForegroundProcess);
         _eventCallback = (_, ev, hwnd, objectId, childId, _, _) =>
         {
@@ -104,6 +106,13 @@ internal sealed class DesktopIntegration : IDisposable
             }));
         };
         AddHook(3, 3); AddHook(0x16, 0x17); AddHook(0x8000, 0x8003); AddHook(0x800C, 0x800C);
+    }
+
+    private Forms.ToolStripItem AddTrayAction(string textKey, string action)
+    {
+        var item = _menu.Items.Add(UiText.Get(textKey), null, (_, _) => Dispatch(action));
+        item.Tag = textKey;
+        return item;
     }
 
     private static Icon LoadTrayIcon()
@@ -150,9 +159,9 @@ internal sealed class DesktopIntegration : IDisposable
         string[] parts = text.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         uint mods = 0;
         for (int i = 0; i < parts.Length - 1; i++)
-            mods |= parts[i].ToLowerInvariant() switch { "win" => 8u, "ctrl" => 2u, "alt" => 1u, "shift" => 4u, _ => throw new ArgumentException("修饰键应为 Win、Ctrl、Alt 或 Shift。") };
+            mods |= parts[i].ToLowerInvariant() switch { "win" => 8u, "ctrl" => 2u, "alt" => 1u, "shift" => 4u, _ => throw new ArgumentException(UiText.Get("InvalidModifier")) };
         if (mods == 0 || !Enum.TryParse(parts.LastOrDefault(), true, out Key key) || key is Key.None or Key.System or Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin)
-            throw new ArgumentException("快捷键需要修饰键和普通按键。");
+            throw new ArgumentException(UiText.Get("MissingShortcutKey"));
         return (mods, (uint)KeyInterop.VirtualKeyFromKey(key));
     }
 
@@ -166,7 +175,7 @@ internal sealed class DesktopIntegration : IDisposable
             {
                 var key = ParseHotkey(entry.Value);
                 if (key.Key == 0) continue;
-                if (!Native.RegisterHotKey(_hwnd, id, key.Modifiers | 0x4000, key.Key)) throw new Win32Exception($"快捷键 {entry.Value} 无法注册，可能已被占用。");
+                if (!Native.RegisterHotKey(_hwnd, id, key.Modifiers | 0x4000, key.Key)) throw new Win32Exception(UiText.Format("ShortcutRegistrationFailed", entry.Value));
                 result.Add(id++, entry.Key);
             }
             return result;
@@ -188,7 +197,7 @@ internal sealed class DesktopIntegration : IDisposable
         using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
         if (enabled)
         {
-            string exe = Environment.ProcessPath ?? throw new InvalidOperationException("无法获取程序路径。");
+            string exe = Environment.ProcessPath ?? throw new InvalidOperationException(UiText.Get("MissingExePath"));
             string command = $"\"{exe}\"";
             if (string.Equals(Path.GetFileNameWithoutExtension(exe), "dotnet", StringComparison.OrdinalIgnoreCase)) command += $" \"{Environment.GetCommandLineArgs()[0]}\"";
             key.SetValue(name, command + (dev ? " --dev" : "") + " --minimized");

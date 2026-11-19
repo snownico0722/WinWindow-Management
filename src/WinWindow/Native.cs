@@ -166,7 +166,7 @@ internal static class Native
         // WM_ACTIVATEAPP has no default focus-transfer behavior.
         if (pid == identity.ProcessId) return;
         if (!PostMessage(identity.Hwnd, AppActivationMessage, enabled ? 1 : 0, (nint)thread))
-            throw new Win32Exception(Marshal.GetLastPInvokeError(), "窗口未接受后台保持通知，请检查目标权限。");
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), UiText.Get("BackgroundRejected"));
     }
 
     public static List<WindowItem> Enumerate()
@@ -197,21 +197,21 @@ internal static class Native
         bool readable = GetLayeredWindowAttributes(id.Hwnd, out uint color, out byte alpha, out uint flags);
         return new() { Identity = id, Title = Title(id.Hwnd), ExtendedStyle = style, Topmost = (style & TopmostStyle) != 0, LayeredReadable = readable, ColorKey = color, Alpha = readable ? alpha : (byte)255, LayeredFlags = flags };
     }
-    public static void EnsureIdentity(WindowIdentity id) { if (!Matches(id)) throw new InvalidOperationException("目标窗口已关闭或已被替换。"); }
-    private static void Check(bool ok, string action) { if (!ok) throw new Win32Exception(Marshal.GetLastPInvokeError(), $"{action}失败，请检查目标权限或兼容性。"); }
+    public static void EnsureIdentity(WindowIdentity id) { if (!Matches(id)) throw new InvalidOperationException(UiText.Get("TargetReplaced")); }
+    private static void Check(bool ok, string action) { if (!ok) throw new Win32Exception(Marshal.GetLastPInvokeError(), UiText.Format("NativeFailed", action)); }
     public static void SetStyleBits(nint hwnd, long mask, long bits)
     {
         long current = Style(hwnd), value = (current & ~mask) | (bits & mask);
         if (current == value) return;
         Marshal.SetLastPInvokeError(0);
         nint previous = IntPtr.Size == 8 ? SetWindowLong64(hwnd, -20, (nint)value) : (nint)SetWindowLong32(hwnd, -20, (int)value);
-        if (previous == 0 && Marshal.GetLastPInvokeError() != 0) Check(false, "修改窗口样式");
-        if ((Style(hwnd) & mask) != (value & mask)) throw new InvalidOperationException("目标未接受窗口样式修改。");
+        if (previous == 0 && Marshal.GetLastPInvokeError() != 0) Check(false, UiText.Get("ChangeStyle"));
+        if ((Style(hwnd) & mask) != (value & mask)) throw new InvalidOperationException(UiText.Get("StyleRejected"));
     }
     public static void SetTopmost(nint hwnd, bool value)
     {
-        Check(SetWindowPos(hwnd, value ? (nint)(-1) : (nint)(-2), 0, 0, 0, 0, NoMove | NoSize | NoActivate), "切换置顶");
-        if (IsTopmost(hwnd) != value) throw new InvalidOperationException("窗口未接受置顶设置。");
+        Check(SetWindowPos(hwnd, value ? (nint)(-1) : (nint)(-2), 0, 0, 0, 0, NoMove | NoSize | NoActivate), UiText.Get("TogglePin"));
+        if (IsTopmost(hwnd) != value) throw new InvalidOperationException(UiText.Get("PinRejected"));
     }
     public static bool SetOwnTopmost(nint hwnd, bool value)
     {
@@ -225,7 +225,7 @@ internal static class Native
     public static void SetOpacity(WindowSnapshot original, int percent)
     {
         nint hwnd = original.Identity.Hwnd;
-        if ((original.ExtendedStyle & Layered) != 0 && !original.LayeredReadable) throw new InvalidOperationException("该窗口使用逐像素透明，不支持修改不透明度。");
+        if ((original.ExtendedStyle & Layered) != 0 && !original.LayeredReadable) throw new InvalidOperationException(UiText.Get("PerPixelOpacity"));
         bool added = (Style(hwnd) & Layered) == 0;
         try
         {
@@ -233,8 +233,8 @@ internal static class Native
             uint color = original.LayeredReadable ? original.ColorKey : 0;
             uint flags = 2 | (original.LayeredReadable ? original.LayeredFlags & 1 : 0);
             byte wanted = ToAlpha(percent);
-            Check(SetLayeredWindowAttributes(hwnd, color, wanted, flags), "调整不透明度");
-            if (!GetLayeredWindowAttributes(hwnd, out _, out byte actual, out uint applied) || (applied & 2) == 0 || actual != wanted) throw new InvalidOperationException("窗口未接受不透明度设置。");
+            Check(SetLayeredWindowAttributes(hwnd, color, wanted, flags), UiText.Get("ChangeOpacity"));
+            if (!GetLayeredWindowAttributes(hwnd, out _, out byte actual, out uint applied) || (applied & 2) == 0 || actual != wanted) throw new InvalidOperationException(UiText.Get("OpacityRejected"));
         }
         catch
         {
@@ -251,7 +251,7 @@ internal static class Native
     public static Placement GetPlacement(nint hwnd)
     {
         var p = new Placement { Length = (uint)Marshal.SizeOf<Placement>() };
-        Check(GetWindowPlacement(hwnd, ref p), "读取窗口位置"); return p;
+        Check(GetWindowPlacement(hwnd, ref p), UiText.Get("ReadPlacement")); return p;
     }
     public static bool ApplyPlacement(nint hwnd, Placement placement)
     {
@@ -274,7 +274,7 @@ internal static class Native
                 Attempt(() =>
                 {
                     bool unchanged = GetLayeredWindowAttributes(hwnd, out uint color, out byte alpha, out uint flags) && color == snapshot.ColorKey && alpha == snapshot.Alpha && flags == snapshot.LayeredFlags;
-                    if (!unchanged) Check(SetLayeredWindowAttributes(hwnd, snapshot.ColorKey, snapshot.Alpha, snapshot.LayeredFlags), "恢复透明状态");
+                    if (!unchanged) Check(SetLayeredWindowAttributes(hwnd, snapshot.ColorKey, snapshot.Alpha, snapshot.LayeredFlags), UiText.Get("RestoreOpacity"));
                 });
         }
         if (errors.Count != 0) throw new InvalidOperationException(string.Join(" ", errors));

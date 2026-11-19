@@ -1,3 +1,4 @@
+using static NeatWin.App.LayoutStrings;
 using NeatWin.Core;
 using NeatWin.Reference;
 using NeatWin.Windows;
@@ -12,7 +13,7 @@ internal sealed record RecorderStatus(
     int Excluded,
     string? Error)
 {
-    internal string StateText => !IsAvailable ? "不可用" : IsPaused ? "已暂停" : "正在记录";
+    internal string StateText => !IsAvailable ? LayoutText.Get("Unavailable") : IsPaused ? LayoutText.Get("Paused") : LayoutText.Get("Recording");
 }
 
 /// <summary>
@@ -65,7 +66,7 @@ internal sealed class RecorderSession : IDisposable
         if (!_ownsSingleton)
         {
             _paused = true;
-            _error = "当前数据目录已有记录器运行；当前实例不会重复记录。";
+            _error = LayoutText.Get("RecorderInUse");
             _timer = new System.Windows.Forms.Timer { Interval = 250 };
             PublishStatus();
             return;
@@ -82,11 +83,11 @@ internal sealed class RecorderSession : IDisposable
         try { _lastContext = _identity.Capture(_manager.Capture()); }
         catch (Exception ex) { _error = ex.Message; }
         if (_contextHook == nint.Zero || _foregroundHook == nint.Zero)
-            _error = "层级／前台监听不可用，仍可记录拖动；请重启检查。";
+            _error = LayoutText.Get("MonitorPartial");
         if (_moveHook == nint.Zero)
         {
             _paused = true;
-            _error = "窗口事件监听失败，未开始记录。请重新启动 NeatWin。";
+            _error = LayoutText.Get("MonitorFailed");
         }
 
         _timer = new System.Windows.Forms.Timer { Interval = 250 };
@@ -164,7 +165,7 @@ internal sealed class RecorderSession : IDisposable
         {
             _lastMaintenanceTick = Environment.TickCount64;
             try { _store.Prune(); }
-            catch (Exception ex) { _error = $"清理旧记录失败：{ex.Message}"; }
+            catch (Exception ex) { _error = LayoutText.Format("RecordCleanupFailed", ex.Message); }
         }
         FlushPending();
         CaptureContextChange();
@@ -216,7 +217,7 @@ internal sealed class RecorderSession : IDisposable
                 _contextDirty = true;
             }
         }
-        catch (Exception ex) { _error = $"捕获失败：{ex.Message}"; PublishStatus(); }
+        catch (Exception ex) { _error = LayoutText.Format("CaptureFailed", ex.Message); PublishStatus(); }
         finally { _handlingEvent = false; }
     }
 
@@ -252,10 +253,10 @@ internal sealed class RecorderSession : IDisposable
                     _recorded++;
                     _error = null;
                 }
-                catch (Exception ex) { _error = $"写入失败（本条未计入）：{ex.Message}"; }
+                catch (Exception ex) { _error = LayoutText.Format("RecordWriteFailed", ex.Message); }
             }
         }
-        catch (Exception ex) { _error = $"确认窗口状态失败：{ex.Message}"; }
+        catch (Exception ex) { _error = LayoutText.Format("ConfirmationFailed", ex.Message); }
         PublishStatus();
     }
 
@@ -289,7 +290,7 @@ internal sealed class RecorderSession : IDisposable
             }
             _lastContext = after;
         }
-        catch (Exception ex) { _error = $"状态记录失败：{ex.Message}"; }
+        catch (Exception ex) { _error = LayoutText.Format("RecordStateFailed", ex.Message); }
         PublishStatus();
     }
 

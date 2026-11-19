@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
+  <data name="ArrangeFailed" xml:space="preserve"><value>Arrangement failed. {0}</value></data>
+  <data name="CaptureFailed" xml:space="preserve"><value>Could not capture window state. {0}</value></data>
+  <data name="Columns" xml:space="preserve"><value>Columns</value></data>
+  <data name="ConfirmationFailed" xml:space="preserve"><value>Could not verify the window state. {0}</value></data>
+  <data name="ContentFit" xml:space="preserve"><value>Fit to content</value></data>
+  <data name="DesktopChanged" xml:space="preserve"><value>The desktop changed after planning. No changes were made.</value></data>
+  <data name="DesktopLayout" xml:space="preserve"><value>Desktop layout</value></data>
+  <data name="EdgeBleed" xml:space="preserve"><value>Edge overflow adjustment</value></data>
+  <data name="EdgeRow" xml:space="preserve"><value>Side by side</value></data>
+  <data name="Grid" xml:space="preserve"><value>Grid</value></data>
+  <data name="InsufficientSpace" xml:space="preserve"><value>Not enough space to tile</value></data>
+  <data name="KeepColumns" xml:space="preserve"><value>Preserve columns</value></data>
+  <data name="LayerIncomplete" xml:space="preserve"><value>Stacking was incomplete. The original order was restored where possible.</value></data>
+  <data name="LayerPlacementFailed" xml:space="preserve"><value>The stacking order was unavailable. Dependent moves were skipped.</value></data>
+  <data name="LayerSkipped" xml:space="preserve"><value>Stacking was skipped because the group changed.</value></data>
+  <data name="LayerVerified" xml:space="preserve"><value>The group order was verified without pinning windows.</value></data>
+  <data name="LayoutKept" xml:space="preserve"><value>Checked {0} eligible windows. The current layout fits your preferences.</value></data>
+  <data name="LayoutRequested" xml:space="preserve"><value>{0}: adjusting {1} windows and {2} stacking groups. {3}</value></data>
+  <data name="LayoutStopped" xml:space="preserve"><value>Desktop arrangement stopped. {0}</value></data>
+  <data name="LocalAdjust" xml:space="preserve"><value>Local adjustment</value></data>
+  <data name="ManualMoveDetected" xml:space="preserve"><value>A manual adjustment was detected and preserved.</value></data>
+  <data name="MonitorFailed" xml:space="preserve"><value>Window tracking failed. Restart the application to resume recording.</value></data>
+  <data name="MonitorPartial" xml:space="preserve"><value>Stacking and focus tracking are unavailable. Drag tracking is active.</value></data>
+  <data name="MonitorUnavailable" xml:space="preserve"><value>Could not monitor windows for automatic arrangement.</value></data>
+  <data name="NoWindows" xml:space="preserve"><value>No eligible windows. Pinned, maximized, and full-screen windows keep their position.</value></data>
+  <data name="NothingToUndo" xml:space="preserve"><value>No arrangement to undo.</value></data>
+  <data name="ObservationFailed" xml:space="preserve"><value>Could not monitor desktop changes. {0}</value></data>
+  <data name="Paused" xml:space="preserve"><value>Paused</value></data>
+  <data name="PositionsPartial" xml:space="preserve"><value>{0}: {1} of {2} positions matched. The affected apps may restrict movement. Diagnostics recorded.</value></data>
+  <data name="PositionsVerified" xml:space="preserve"><value>{0}: confirmed {1} window positions and verified stacking order.</value></data>
+  <data name="PreservePlacement" xml:space="preserve"><value>Preserve current placement</value></data>
+  <data name="RecordCleanupFailed" xml:space="preserve"><value>Could not clean up old records. {0}</value></data>
+  <data name="RecordStateFailed" xml:space="preserve"><value>Could not record window state. {0}</value></data>
+  <data name="RecordWriteFailed" xml:space="preserve"><value>Could not save this record. {0}</value></data>
+  <data name="RecorderInUse" xml:space="preserve"><value>Another recorder is already using this data folder.</value></data>
+  <data name="RecorderUnavailable" xml:space="preserve"><value>Recorder unavailable.</value></data>
+  <data name="Recording" xml:space="preserve"><value>Recording</value></data>
+  <data name="RescueArea" xml:space="preserve"><value>Restore accessible area</value></data>
+  <data name="Restack" xml:space="preserve"><value>Adjust stacking order</value></data>
+  <data name="ReversibleFill" xml:space="preserve"><value>Reversible vertical fill</value></data>
+  <data name="Rows" xml:space="preserve"><value>Rows</value></data>
+  <data name="SharedEdge" xml:space="preserve"><value>Shared viewing edge</value></data>
+  <data name="Stack" xml:space="preserve"><value>Group stack</value></data>
+  <data name="Tiled" xml:space="preserve"><value>Full tiling</value></data>
+  <data name="Unavailable" xml:space="preserve"><value>Unavailable</value></data>
+  <data name="UndoFailed" xml:space="preserve"><value>Undo failed. {0}</value></data>
+  <data name="UndoRequested" xml:space="preserve"><value>Restoring {0} windows. Skipped {1} windows that were moved, closed, or changed.</value></data>
+</root>

@@ -1,3 +1,4 @@
+using static NeatWin.App.LayoutStrings;
 using System.Diagnostics;
 using NeatWin.Reference;
 using NeatWin.Recording;
@@ -75,7 +76,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _workspaceMonitor.Requested += OnAutomaticLayoutRequested;
         _autoTidyManager.TidyRequested += OnFollowHandRequested;
         _journal.Completed += OnLayoutVerified;
-        _workspaceMonitor.Failed += ex => _report($"自动整理观察失败：{ex.Message}");
+        _workspaceMonitor.Failed += ex => _report(LayoutText.Format("ObservationFailed", ex.Message));
         _recorder.StatusChanged += OnRecorderStatusChanged;
 
 
@@ -121,7 +122,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         if (!ConfigureAutomation(value.Mode, arrangeNow: true))
         {
             if (!ConfigureAutomation(previous)) _automaticMode = AutomaticLayoutMode.Off;
-            throw new InvalidOperationException("无法启用自动整理监听。");
+            throw new InvalidOperationException(LayoutText.Get("MonitorUnavailable"));
         }
         try { _settingsStore.SaveAutomaticLayoutMode(value.Mode); }
         catch
@@ -134,7 +135,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
 
     internal void SetRecording(bool enabled)
     {
-        if (!_recorder.Status.IsAvailable) throw new InvalidOperationException(_recorder.Status.Error ?? "记录器不可用。");
+        if (!_recorder.Status.IsAvailable) throw new InvalidOperationException(_recorder.Status.Error ?? LayoutText.Get("RecorderUnavailable"));
         if (enabled == !_recorder.Status.IsPaused) return;
         _settingsStore.RecordingEnabled = enabled;
         _recorder.TogglePause();
@@ -269,20 +270,21 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _journal.Record(snapshot, detailed, trigger, application.Notes);
             if (showActivity)
             {
-                var kinds = string.Join("、", detailed.Groups.Select(g => KindName(g.Selected)).Distinct());
-                var notes = string.Join(" ", application.Notes.Where(n => n.Contains("未")));
+                var kinds = string.Join(TextCatalog.Culture.TwoLetterISOLanguageName == "zh" ? "、" : ", ", detailed.Groups.Select(g => KindName(g.Selected)).Distinct());
+                var notes = string.Join(" ", application.Notes.Where(n => n.Contains("未")).Select(DisplayNote));
                 if (plan.Count != 0 || layerOrders.Count != 0)
-                    _report($"{(kinds.Length > 0 ? kinds : "桌面整理")}：已请求调整 {plan.Count} 个窗口、{layerOrders.Count} 组层级。 {notes}".TrimEnd());
+                    _report(LayoutText.Format("LayoutRequested", kinds.Length > 0 ? kinds : LayoutText.Get("DesktopLayout"),
+                        plan.Count, layerOrders.Count, notes).TrimEnd());
                 else if (notes.Length > 0) _report(notes);
                 else if (visibleWorkingSet.Count == 0)
-                    _report("当前没有可整理的普通窗口。置顶、最大化和全屏窗口会保留位置。");
+                    _report(LayoutText.Get("NoWindows"));
                 else
-                    _report($"已检查 {visibleWorkingSet.Count} 个可整理窗口，按当前偏好保留现有布局。");
+                    _report(LayoutText.Format("LayoutKept", visibleWorkingSet.Count));
             }
         }
         catch (Exception exception)
         {
-            _report($"整理失败：{exception.Message}");
+            _report(LayoutText.Format("ArrangeFailed", exception.Message));
         }
         finally { _tidyRunning = false; }
     }
@@ -294,7 +296,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     internal void UndoTidy()
     {
         if (_stopping.IsCancellationRequested || _tidyRunning || (_autoTidyManager.IsGestureActive || NativeWindowActivity.IsMoving) || (_undoPlan.Count == 0 && _undoLayers.Count == 0))
-        { _report("没有可撤销的整理。"); return; }
+        { _report(LayoutText.Get("NothingToUndo")); return; }
         try
         {
             var current = _windowManager.Capture().ToDictionary(w => w.Handle);
@@ -310,19 +312,30 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var skipped = _undoPlan.Count - application.Plan.Moves.Count;
             _undoPlan = []; _undoLayers = []; _undoWasSmart = false;
             _undoChanged?.Invoke(false);
-            _report($"已请求还原 {application.Plan.Moves.Count} 个窗口；跳过 {skipped} 个已再次调整、关闭或状态改变的窗口。");
+            _report(LayoutText.Format("UndoRequested", application.Plan.Moves.Count, skipped));
         }
-        catch (Exception ex) { _report($"撤销失败：{ex.Message}"); }
+        catch (Exception ex) { _report(LayoutText.Format("UndoFailed", ex.Message)); }
     }
+
+    private static string DisplayNote(string note) => note switch
+    {
+        "桌面在规划后发生变化，本次未执行。" => LayoutText.Get("DesktopChanged"),
+        "指定层级未实现，未套用依赖该层级的窗口位置。" => LayoutText.Get("LayerPlacementFailed"),
+        "检测到新的手动调整，未覆盖窗口位置。" => LayoutText.Get("ManualMoveDetected"),
+        "层级未执行：窗口状态改变或被其他窗口隔开。" => LayoutText.Get("LayerSkipped"),
+        "层级调用未全部成功，已在安全条件允许时恢复原顺序。" => LayoutText.Get("LayerIncomplete"),
+        "组内层级已核对，未设置永久置顶。" => LayoutText.Get("LayerVerified"),
+        _ => note
+    };
 
     private static string KindName(string kind) => kind switch
     {
-        "full-tiling" => "完整平铺", "tiling-insufficient-space" => "可平铺空间不足，保留原状",
-        "task-vertical-fill" => "可逆纵向填满",
-        "task-edge" => "共同观看贴边", "task-fit" => "内容尺度调整", "task-bleed" => "边缘空间交换",
-        "task-columns" => "保留列关系重排", "rescue" => "恢复可操作区域",
-        "edge-row" => "叠边并排", "stack" => "成组叠放", "restack" => "调整前后层级",
-        "columns" => "左右排布", "rows" => "上下排布", "grid" => "多行排布", "local" => "局部微调", _ => "保留当前关系",
+        "full-tiling" => LayoutText.Get("Tiled"), "tiling-insufficient-space" => LayoutText.Get("InsufficientSpace"),
+        "task-vertical-fill" => LayoutText.Get("ReversibleFill"),
+        "task-edge" => LayoutText.Get("SharedEdge"), "task-fit" => LayoutText.Get("ContentFit"), "task-bleed" => LayoutText.Get("EdgeBleed"),
+        "task-columns" => LayoutText.Get("KeepColumns"), "rescue" => LayoutText.Get("RescueArea"),
+        "edge-row" => LayoutText.Get("EdgeRow"), "stack" => LayoutText.Get("Stack"), "restack" => LayoutText.Get("Restack"),
+        "columns" => LayoutText.Get("Columns"), "rows" => LayoutText.Get("Rows"), "grid" => LayoutText.Get("Grid"), "local" => LayoutText.Get("LocalAdjust"), _ => LayoutText.Get("PreservePlacement"),
     };
 
     private void OnLayoutVerified(LayoutRunObservation observation)
@@ -338,12 +351,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         if (observation.Targets.Length == 0 && observation.Layers.Length == 0) return;
         var actual = observation.Actual.Windows;
         var matched = observation.Targets.Count(t => actual.Any(w => w.Id == t.Id && SameRect(w.Rect, t.Target)));
-        var description = string.Join("、", observation.Groups.Select(g => KindName(g.Selected)).Distinct());
+        var description = string.Join(TextCatalog.Culture.TwoLetterISOLanguageName == "zh" ? "、" : ", ", observation.Groups.Select(g => KindName(g.Selected)).Distinct());
         _report(observation.Outcome == "observed-match"
-            ? $"{description}：已确认 {matched} 个窗口的目标位置；层级已核对。"
-            : $"{description}：{matched}/{observation.Targets.Length} 个位置匹配；其余可能被应用限制，诊断已记录。");
+            ? LayoutText.Format("PositionsVerified", description, matched)
+            : LayoutText.Format("PositionsPartial", description, matched, observation.Targets.Length));
         if (observation.ApplyNotes.Any(n => n.Contains("未执行") || n.Contains("未套用") || n.Contains("未覆盖")))
-            _report(string.Join(" ", observation.ApplyNotes));
+            _report(string.Join(" ", observation.ApplyNotes.Select(DisplayNote)));
     }
 
     private static TaskDisplay[] Displays(IReadOnlyList<WindowSnapshot> snapshot) =>

@@ -18,6 +18,18 @@ public partial class MainWindow
     private bool _displayingMode;
     private long _layoutEdit;
 
+    private void Language_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_ready || LanguageBox.SelectedValue is not string language) return;
+        _store.Preferences.Language = language;
+        ApplyLanguage(language);
+        foreach (var item in Manager.Items) item.NotifyLanguage();
+        if (_lastRecorderStatus is { } recorder) DisplayRecorder(recorder);
+        DismissStatus();
+        RefreshView();
+        _store.SaveSoon();
+    }
+
     private void SettingsNav_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_ready) SelectSettingsSection();
@@ -184,7 +196,7 @@ public partial class MainWindow
         if (!int.TryParse(box.Text, out var n) || n < int.Parse(limits[0]) || n > int.Parse(limits[1]))
         {
             DisplayPreferences(v);
-            ShowStatus($"请输入 {limits[0]} 到 {limits[1]} 之间的整数。");
+            ShowStatus(UiText.Format("IntegerRange", limits[0], limits[1]));
             return;
         }
         var o = v.Options;
@@ -230,11 +242,14 @@ public partial class MainWindow
         if (_layoutPreferences is { } current) DisplayPreferences(current);
     }
 
+    private RecorderStatus? _lastRecorderStatus;
+
     private void DisplayRecorder(RecorderStatus status)
     {
+        _lastRecorderStatus = status;
         RecordSwitch.IsEnabled = status.IsAvailable;
         RecordSwitch.IsChecked = status.IsAvailable && !status.IsPaused;
-        RecordStatus.Text = status.Error ?? $"{status.StateText} · 已记录 {status.RecordedGestures} 次手势、{status.ContextRecords} 次窗口变化";
+        RecordStatus.Text = status.Error ?? UiText.Format("RecorderCounts", status.StateText, status.RecordedGestures, status.ContextRecords);
     }
 
     private async void RecordSwitch_Click(object sender, RoutedEventArgs e)
@@ -247,12 +262,12 @@ public partial class MainWindow
     private async void OpenData_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().OpenDataAsync());
     private async void ExportData_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new Microsoft.Win32.SaveFileDialog { Filter = "ZIP 压缩包|*.zip", FileName = $"WinWindow-布局记录-{DateTime.Now:yyyyMMdd}.zip" };
-        if (dialog.ShowDialog(this) == true) await RunAsync(async () => { await EnsureLayout().ExportAsync(dialog.FileName); ShowStatus("记录已导出。"); });
+        var dialog = new Microsoft.Win32.SaveFileDialog { Filter = UiText.Get("ZipFilter"), FileName = UiText.Format("ExportFile", DateTime.Now) };
+        if (dialog.ShowDialog(this) == true) await RunAsync(async () => { await EnsureLayout().ExportAsync(dialog.FileName); ShowStatus(UiText.Get("Exported")); });
     }
     private async void ClearData_Click(object sender, RoutedEventArgs e)
     {
-        if (MessageBox.Show(this, "清空本机布局记录和从中学习的窗口习惯？", "清空记录", MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK)
-            await RunAsync(async () => { await EnsureLayout().ClearAsync(); ShowStatus("记录已清空。"); });
+        if (MessageBox.Show(this, UiText.Get("ClearQuestion"), UiText.Get("ClearRecords"), MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK)
+            await RunAsync(async () => { await EnsureLayout().ClearAsync(); ShowStatus(UiText.Get("RecordsCleared")); });
     }
 }

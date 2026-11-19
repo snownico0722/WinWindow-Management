@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
+  <data name="ArrangeFailed" xml:space="preserve"><value>整理失败：{0}</value></data>
+  <data name="CaptureFailed" xml:space="preserve"><value>捕获失败：{0}</value></data>
+  <data name="Columns" xml:space="preserve"><value>左右排布</value></data>
+  <data name="ConfirmationFailed" xml:space="preserve"><value>确认窗口状态失败：{0}</value></data>
+  <data name="ContentFit" xml:space="preserve"><value>内容尺度调整</value></data>
+  <data name="DesktopChanged" xml:space="preserve"><value>桌面在规划后发生变化，本次未执行。</value></data>
+  <data name="DesktopLayout" xml:space="preserve"><value>桌面整理</value></data>
+  <data name="EdgeBleed" xml:space="preserve"><value>边缘空间交换</value></data>
+  <data name="EdgeRow" xml:space="preserve"><value>叠边并排</value></data>
+  <data name="Grid" xml:space="preserve"><value>多行排布</value></data>
+  <data name="InsufficientSpace" xml:space="preserve"><value>可平铺空间不足，保留原状</value></data>
+  <data name="KeepColumns" xml:space="preserve"><value>保留列关系重排</value></data>
+  <data name="LayerIncomplete" xml:space="preserve"><value>层级调用未全部成功，已在安全条件允许时恢复原顺序。</value></data>
+  <data name="LayerPlacementFailed" xml:space="preserve"><value>指定层级未实现，未套用依赖该层级的窗口位置。</value></data>
+  <data name="LayerSkipped" xml:space="preserve"><value>层级未执行：窗口状态改变或被其他窗口隔开。</value></data>
+  <data name="LayerVerified" xml:space="preserve"><value>组内层级已核对，未设置永久置顶。</value></data>
+  <data name="LayoutKept" xml:space="preserve"><value>已检查 {0} 个可整理窗口，按当前偏好保留现有布局。</value></data>
+  <data name="LayoutRequested" xml:space="preserve"><value>{0}：已请求调整 {1} 个窗口、{2} 组层级。 {3}</value></data>
+  <data name="LayoutStopped" xml:space="preserve"><value>桌面整理已停止：{0}</value></data>
+  <data name="LocalAdjust" xml:space="preserve"><value>局部微调</value></data>
+  <data name="ManualMoveDetected" xml:space="preserve"><value>检测到新的手动调整，未覆盖窗口位置。</value></data>
+  <data name="MonitorFailed" xml:space="preserve"><value>窗口事件监听失败，未开始记录。请重新启动 NeatWin。</value></data>
+  <data name="MonitorPartial" xml:space="preserve"><value>层级／前台监听不可用，仍可记录拖动；请重启检查。</value></data>
+  <data name="MonitorUnavailable" xml:space="preserve"><value>无法启用自动整理监听。</value></data>
+  <data name="NoWindows" xml:space="preserve"><value>当前没有可整理的普通窗口。置顶、最大化和全屏窗口会保留位置。</value></data>
+  <data name="NothingToUndo" xml:space="preserve"><value>没有可撤销的整理。</value></data>
+  <data name="ObservationFailed" xml:space="preserve"><value>自动整理观察失败：{0}</value></data>
+  <data name="Paused" xml:space="preserve"><value>已暂停</value></data>
+  <data name="PositionsPartial" xml:space="preserve"><value>{0}：{1}/{2} 个位置匹配；其余可能被应用限制，诊断已记录。</value></data>
+  <data name="PositionsVerified" xml:space="preserve"><value>{0}：已确认 {1} 个窗口的目标位置；层级已核对。</value></data>
+  <data name="PreservePlacement" xml:space="preserve"><value>保留当前关系</value></data>
+  <data name="RecordCleanupFailed" xml:space="preserve"><value>清理旧记录失败：{0}</value></data>
+  <data name="RecordStateFailed" xml:space="preserve"><value>状态记录失败：{0}</value></data>
+  <data name="RecordWriteFailed" xml:space="preserve"><value>写入失败（本条未计入）：{0}</value></data>
+  <data name="RecorderInUse" xml:space="preserve"><value>当前数据目录已有记录器运行；当前实例不会重复记录。</value></data>
+  <data name="RecorderUnavailable" xml:space="preserve"><value>记录器不可用。</value></data>
+  <data name="Recording" xml:space="preserve"><value>正在记录</value></data>
+  <data name="RescueArea" xml:space="preserve"><value>恢复可操作区域</value></data>
+  <data name="Restack" xml:space="preserve"><value>调整前后层级</value></data>
+  <data name="ReversibleFill" xml:space="preserve"><value>可逆纵向填满</value></data>
+  <data name="Rows" xml:space="preserve"><value>上下排布</value></data>
+  <data name="SharedEdge" xml:space="preserve"><value>共同观看贴边</value></data>
+  <data name="Stack" xml:space="preserve"><value>成组叠放</value></data>
+  <data name="Tiled" xml:space="preserve"><value>完整平铺</value></data>
+  <data name="Unavailable" xml:space="preserve"><value>不可用</value></data>
+  <data name="UndoFailed" xml:space="preserve"><value>撤销失败：{0}</value></data>
+  <data name="UndoRequested" xml:space="preserve"><value>已请求还原 {0} 个窗口；跳过 {1} 个已再次调整、关闭或状态改变的窗口。</value></data>
+</root>
