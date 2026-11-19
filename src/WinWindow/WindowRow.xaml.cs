@@ -53,25 +53,25 @@ public partial class WindowRow : UserControl
 
             PinButton.IsChecked = item.Pinned;
             PinButton.IsEnabled = !item.IsBusy;
-            PinButton.ToolTip = item.Pinned ? "取消置顶（保留在列表中）" : "置顶窗口";
+            PinButton.ToolTip = item.Pinned ? UiText.Get("UnpinKeepListed") : UiText.Get("PinWindow");
             PinIcon.Data = System.Windows.Media.Geometry.Parse(item.Pinned ? PinActiveGeometry : PinInactiveGeometry);
 
             ThroughButton.IsChecked = item.ClickThrough;
-            ThroughButton.ToolTip = item.ClickThrough ? "关闭鼠标穿透" : "开启鼠标穿透";
+            ThroughButton.ToolTip = item.ClickThrough ? UiText.Get("TurnOffThrough") : UiText.Get("TurnOnThrough");
             RemoveButton.IsEnabled = !item.IsBusy;
 
             bool restore = item.IsHidden || item.IsMinimized;
             ParkIcon.Data = System.Windows.Media.Geometry.Parse(restore ? ParkRestoreGeometry : ParkMinimizeGeometry);
             ParkButton.SetResourceReference(Control.ForegroundProperty, restore ? "Accent" : "Muted");
-            ParkButton.ToolTip = restore ? "恢复窗口" : "强制最小化";
-            System.Windows.Automation.AutomationProperties.SetName(ParkButton, restore ? "恢复窗口" : "强制最小化");
+            ParkButton.ToolTip = restore ? UiText.Get("RestoreWindow") : UiText.Get("ForceMinimize");
+            System.Windows.Automation.AutomationProperties.SetName(ParkButton, restore ? UiText.Get("RestoreWindow") : UiText.Get("ForceMinimize"));
 
-            RowState.Text = !item.IsAvailable ? "等待启动"
-                : item.IsBusy ? "处理中"
-                : item.IsHidden ? "已隐藏"
-                : item.IsMinimized ? "已最小化"
-                : item.Opacity == 0 ? "完全透明"
-                : item.Remembered ? "已记住"
+            RowState.Text = !item.IsAvailable ? UiText.Get("AwaitLaunch")
+                : item.IsBusy ? UiText.Get("Busy")
+                : item.IsHidden ? UiText.Get("Hidden")
+                : item.IsMinimized ? UiText.Get("Minimized")
+                : item.Opacity == 0 ? UiText.Get("Transparent")
+                : item.Remembered ? UiText.Get("Remembered")
                 : "";
 
             BackgroundToggle.IsChecked = item.BackgroundEnabled;
@@ -162,7 +162,7 @@ public partial class WindowRow : UserControl
         if (!_dirty || _item is not { IsAvailable: true } item) return;
         _dirty = false;
         if (int.TryParse(OpacityNumber.Text, out int value) && value is >= 0 and <= 100) Owner?.QueueOpacity(item, value);
-        else Owner?.ShowStatus("不透明度请输入 0–100。");
+        else Owner?.ShowStatus(UiText.Get("OpacityRange"));
         Sync();
     }
 

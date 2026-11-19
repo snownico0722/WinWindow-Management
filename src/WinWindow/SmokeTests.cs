@@ -22,14 +22,16 @@ namespace WinWindow;
 
 internal static class SmokeTests
 {
-    private static readonly List<string> Results = new();
+    private static StreamWriter? _results;
+    private static void Report(string message) => _results!.WriteLine(message);
     private static void Assert(bool condition, string name)
     {
         if (!condition) throw new InvalidOperationException("FAIL: " + name);
-        Results.Add("PASS: " + name);
+        Report("PASS: " + name);
     }
     private static async Task WaitAsync(string name, Func<bool> condition, int milliseconds = 3000)
     {
+        Report("CHECK: " + name);
         var clock = Stopwatch.StartNew();
         while (!condition())
         {
@@ -44,12 +46,13 @@ internal static class SmokeTests
         foreach (string arg in args) start.ArgumentList.Add(arg);
         return Process.Start(start) ?? throw new InvalidOperationException("无法启动测试进程。");
     }
-    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject, string? stall = null, bool activity = false)
+    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject, string? stall = null, bool activity = false, bool twins = false)
     {
         string file = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".hwnd");
         var args = new List<string> { "--fixture", file };
         if (reject) args.Add("reject");
         if (activity) args.Add("activity");
+        if (twins) args.Add("twins");
         if (stall is not null) { args.Add("stall"); args.Add(stall); }
         var process = Start(args.ToArray());
         for (int i = 0; i < 100; i++)
@@ -67,6 +70,8 @@ internal static class SmokeTests
     public static async Task<int> RunAsync(string output)
     {
         output = Path.GetFullPath(output); Directory.CreateDirectory(output);
+        using var report = new StreamWriter(Path.Combine(output, "smoke-tests.txt")) { AutoFlush = true };
+        _results = report;
         string data = Path.Combine(output, "isolated-state-" + Guid.NewGuid().ToString("N"));
         var processes = new List<Process>();
         WindowManager? manager = null; MainWindow? shell = null;
@@ -79,9 +84,15 @@ internal static class SmokeTests
             Assert(DesktopIntegration.ParseHotkey("Win+Ctrl+Shift+R") == (14u, 82u) && DesktopIntegration.ParseHotkey("") == (0u, 0u), "hotkey parsing and disabled bindings");
             CheckSmartArrangeScenarios();
             var store = new StateStore(data);
+            store.Preferences.Language = "zh-CN";
             store.Preferences.Rules.Add(new() { Title = "roundtrip", Opacity = 0, ClickThrough = true }); store.SavePreferences();
             Assert(new StateStore(data).Preferences.Rules.Single().Opacity == 0, "settings preserve zero opacity");
             store.Preferences.Rules.Clear(); store.SavePreferences();
+            var twins = await FixtureAsync(output, false, twins: true);
+            processes.Add(twins.Process);
+            await CheckDuplicateRulesAsync(twins.Hwnd, data);
+            Stop(twins.Process);
+            await twins.Process.WaitForExitAsync();
             var normal = await FixtureAsync(output, false); processes.Add(normal.Process);
             manager = new WindowManager(store);
             var item = manager.SelectTarget(normal.Hwnd);
@@ -100,6 +111,10 @@ internal static class SmokeTests
             Assert(layoutWindows.ApplyLayout(undo).Plan.Moves.Count == 1, "verified layout can be undone");
             await WaitAsync("layout undo restores fixture geometry", () => Reached(source.VisualRect));
             await manager.SetPinAsync(item, true);
+            Assert(store.Preferences.Rules.Single().Pinned, "pinning automatically persists a rule");
+            Native.SetTopmost(item.Hwnd, false);
+            await manager.ReinforcePinnedAsync();
+            Assert(Native.IsTopmost(item.Hwnd), "restore a managed pin after TOPMOST is lost");
             Assert(!layoutWindows.Capture().Single(w => w.Handle == item.Hwnd).IsManageable, "layout protects a WinWindow-pinned target");
             Assert(Native.IsTopmost(item.Hwnd), "native topmost is actually applied");
             await manager.SetOpacityAsync(item, 0);
@@ -107,6 +122,8 @@ internal static class SmokeTests
             Assert(layoutWindows.Capture().All(w => w.Handle != item.Hwnd), "a fully transparent window does not obstruct layout");
             await manager.SetClickThroughAsync(item, true);
             Assert((Native.Style(item.Hwnd) & Native.Transparent) != 0, "native click-through is applied");
+            Assert(store.Preferences.Rules.Single().ClickThrough && store.Preferences.Rules.Single().Opacity == 0,
+                "remembered styles include zero opacity and click-through");
             Assert(store.ReadRecovery().Count == 1, "restorable snapshot is durable before mutations");
             await manager.ReleaseAsync(item);
             Assert(Native.IsTopmost(item.Hwnd) == originalPin && (Native.Style(item.Hwnd) & (Native.Layered | Native.Transparent)) == (originalStyle & (Native.Layered | Native.Transparent)), "release restores original style bits and pin state");
@@ -135,10 +152,33 @@ internal static class SmokeTests
             await recovered.RecoverPreviousSessionAsync();
             await WaitAsync("startup recovery", () => store.ReadRecovery().Count == 0);
             Assert((Native.Style(item.Hwnd) & Native.Layered) == (originalStyle & Native.Layered), "startup recovery restores a surviving invisible window");
+            Assert(store.Preferences.Rules.Single().Opacity == 0, "crash recovery preserves the saved opacity rule");
+            await recovered.RefreshAsync();
+            await WaitAsync("reapply saved opacity after crash recovery", () =>
+                Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte opacity, out _) && opacity == 0 &&
+                !recovered.Items.Single(x => x.Hwnd == item.Hwnd).IsBusy);
+            await recovered.ShutdownAsync();
             await manager.ReleaseAsync(item);
+            manager.SetRemembered(item, false);
             Native.ShowWindowAsync(item.Hwnd, Native.Normal);
             shell = new MainWindow(store, true); Application.Current.MainWindow = shell;
             shell.Show(); await shell.InitializeAsync(); await Task.Delay(150);
+            shell.ShowShell();
+            await WaitAsync("foreground before toggling the workbench", () => Native.GetForegroundWindow() == new WindowInteropHelper(shell).Handle);
+            await shell.OnDesktopActionAsync("togglePanel");
+            Assert(!shell.IsVisible, "the workbench shortcut hides the foreground workbench");
+            await shell.OnDesktopActionAsync("togglePanel");
+            Assert(shell.IsVisible, "the same shortcut shows the hidden workbench");
+            var language = (ComboBox)shell.FindName("LanguageBox");
+            var arrange = (Button)shell.FindName("ArrangeButton");
+            language.SelectedValue = "en";
+            await WaitAsync("English applies to the visible workbench", () => Equals(arrange.Content, "Arrange"));
+            Assert(NeatWin.App.LayoutStrings.LayoutText.Get("NothingToUndo") == "No arrangement to undo.",
+                "the layout worker uses the workbench language");
+            store.SavePreferences();
+            Assert(new StateStore(data).Preferences.Language == "en", "the display language survives a restart");
+            language.SelectedValue = "zh-CN";
+            await WaitAsync("Chinese applies without restarting", () => Equals(arrange.Content, "整理桌面"));
             await CheckArrangeButtonAsync(shell, layoutWindows, item.Hwnd, stubborn.Hwnd);
             await shell.Manager.RefreshAsync();
             var chosen = shell.Manager.Items.First(x => x.Hwnd == item.Hwnd);
@@ -307,13 +347,13 @@ internal static class SmokeTests
             foreach (var p in processes) { Stop(p); await p.WaitForExitAsync(); }
             await DesktopRegressionAsync(output, processes);
         }
-        catch (Exception e) { Results.Add(e.ToString()); exit = 1; }
+        catch (Exception e) { Report(e.ToString()); exit = 1; }
         finally
         {
             if (shell is not null) { await shell.Manager.ShutdownAsync(); shell.Cleanup(); shell.Close(); }
             if (manager is not null) await manager.ShutdownAsync();
             foreach (var process in processes) { Stop(process); process.Dispose(); }
-            await File.WriteAllLinesAsync(Path.Combine(output, "smoke-tests.txt"), Results);
+            _results = null;
         }
         return exit;
     }
@@ -359,6 +399,44 @@ internal static class SmokeTests
         var id = Native.Identity(hwnd)!;
         return new() { ProcessPath = id.ProcessPath, ClassName = id.ClassName, Title = Native.Title(hwnd), Pinned = true };
     }
+    private static async Task CheckDuplicateRulesAsync(nint hwnd, string data)
+    {
+        var store = new StateStore(Path.Combine(data, "duplicates"));
+        var manager = new WindowManager(store);
+        var identity = manager.SelectTarget(hwnd).Identity!;
+        WindowRule Rule(int opacity) => new() { ProcessPath = identity.ProcessPath, ClassName = identity.ClassName,
+            Title = Native.Title(hwnd), Opacity = opacity };
+        var first = Rule(62);
+        store.Preferences.Rules.Add(first);
+        await manager.RefreshAsync();
+        await WaitAsync("restore first duplicate rule", () => manager.Items.Any(x => x.RuleId == first.Id && !x.IsBusy && x.Opacity == 62));
+        var pair = manager.Items.Where(x => x.Identity?.ProcessId == identity.ProcessId && first.Matches(x)).ToArray();
+        Assert(pair.Length == 2 && pair.Count(x => x.RuleId == first.Id) == 1 && pair.Count(x => x.Opacity == 100) == 1,
+            "one saved rule claims exactly one of two identically titled windows");
+        await WaitAsync("duplicate windows load their own icons", () => pair.All(x => x.Icon is not null));
+        byte[] Pixels(WindowItem window)
+        {
+            var bitmap = new System.Windows.Media.Imaging.FormatConvertedBitmap(
+                (System.Windows.Media.Imaging.BitmapSource)window.Icon!, System.Windows.Media.PixelFormats.Bgra32, null, 0);
+            var stride = bitmap.PixelWidth * 4;
+            var pixels = new byte[stride * bitmap.PixelHeight];
+            bitmap.CopyPixels(pixels, stride, 0);
+            return pixels;
+        }
+        Assert(!Pixels(pair[0]).SequenceEqual(Pixels(pair[1])), "window-specific icons distinguish windows from one executable");
+        var second = Rule(83);
+        store.Preferences.Rules.Add(second);
+        await manager.RefreshAsync();
+        await WaitAsync("restore the other duplicate", () => pair.Any(x => x.RuleId == second.Id && !x.IsBusy && x.Opacity == 83));
+        await manager.RefreshAsync();
+        Assert(pair.Any(x => x.RuleId == first.Id && x.Opacity == 62), "later refreshes preserve both assignments");
+        var forgotten = pair.Single(x => x.RuleId == first.Id);
+        manager.SetRemembered(forgotten, false);
+        await manager.SetOpacityAsync(forgotten, 54);
+        Assert(forgotten.RuleId is null && store.Preferences.Rules.Count == 1, "explicitly forgotten windows stay forgotten after an edit");
+        await manager.ShutdownAsync();
+    }
+
     private static void CheckSmartArrangeScenarios()
     {
         var area = new RectI(0, 0, 1920, 1040);
@@ -409,6 +487,14 @@ internal static class SmokeTests
         Assert(first.Intersect(second).IsEmpty && mixed.Skip(2).Take(2).All(w =>
             moves.TryGetValue(w.Handle, out var dest) && dest.Intersect(smallArea) == dest),
             "one arrange uncovers the front pair and rescues the larger background windows");
+
+        // Removing one of the larger background windows used to leave 78 px of overlap.
+        var four = new[] { mixed[0], mixed[1], mixed[3], mixed[4] };
+        var fourMoves = Manual(four).Moves.ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
+        var left = fourMoves.GetValueOrDefault(four[0].Handle, four[0].VisualRect);
+        var right = fourMoves.GetValueOrDefault(four[1].Handle, four[1].VisualRect);
+        Assert(left.Intersect(right).IsEmpty && left.Intersect(smallArea) == left && right.Intersect(smallArea) == right,
+            "a fully stacked pair separates on the four-window desktop without pushing either window off screen");
     }
 
     private static async Task CheckArrangeButtonAsync(MainWindow shell, NeatWin.Windows.WindowManager layout, nint first, nint second)
@@ -417,7 +503,7 @@ internal static class SmokeTests
         if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" &&
             desktop.Any(w => w.IsManageable && w.Handle != first && w.Handle != second))
         {
-            Results.Add("SKIP: desktop-wide button test found other applications on the local desktop");
+            Report("SKIP: desktop-wide button test found other applications on the local desktop");
             return;
         }
         var area = desktop.Single(w => w.Handle == first).WorkArea;
@@ -456,7 +542,7 @@ internal static class SmokeTests
         undo.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
         await WaitAsync("footer undo restores both overlapping windows", () => !undo.IsEnabled && before.All(w =>
             Pair().Any(a => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))), 8000);
-        Results.Add("PASS: the arrange and undo buttons separate overlapping native windows and restore their positions");
+        Report("PASS: the arrange and undo buttons separate overlapping native windows and restore their positions");
     }
 
     private static async Task CheckFooterModesAsync(MainWindow shell, StateStore store, string output)
@@ -595,10 +681,15 @@ internal static class SmokeTests
             Assert(!release.WaitOne(0), "quit did not require releasing the hung target");
             release.Set(); await Task.Delay(150);
             var recovered = await StartMainAsync(store, processes);
-            await WaitAsync("unfinished journal recovered on next launch", () => store.ReadRecovery().All(s => s.Identity.Hwnd != stuck.Hwnd) && !Native.IsTopmost(stuck.Hwnd));
-            Assert(!Native.IsTopmost(stuck.Hwnd), "next launch restores the formerly blocked target");
+            // The previous session must restore the original, then the saved pin applies again.
+            // An unpinned window between these operations is transient and may never reach the test thread.
+            await WaitAsync("saved pins reapplied after recovery", () =>
+                Native.IsTopmost(stuck.Hwnd) && Native.IsTopmost(healthy.Hwnd) &&
+                store.ReadRecovery().Any(s => s.Identity.Hwnd == stuck.Hwnd && !s.Topmost && s.EditedTopmost));
             Native.PostMessage(recovered.Hwnd, 0x10, 0, 0);
             await WaitAsync("recovered app exits", () => recovered.Process.HasExited);
+            Assert(!Native.IsTopmost(stuck.Hwnd) && !Native.IsTopmost(healthy.Hwnd) && store.ReadRecovery().Count == 0,
+                "recovering a blocked target preserves its original state through the next pin and clean exit");
         }
         finally { release.Set(); }
     }

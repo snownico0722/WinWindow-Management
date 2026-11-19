@@ -203,6 +203,11 @@ internal static partial class IntentLayoutPlanner
         {
             var a = candidate.Rects[r.First]; var b = candidate.Rects[r.Second];
             var oa = original[r.First]; var ob = original[r.Second];
+            // Manual arrange treats a heavily stacked pair as a request to see both windows.
+            // A larger window behind the pair can otherwise make a partly overlapped row score better.
+            if (context.ExplicitArrange && r.Joint > r.Parked &&
+                oa.Intersect(ob).Area >= .5 * Math.Max(oa.Area, ob.Area))
+                information += 3.4 * r.Joint * a.Intersect(b).Area / Math.Max(1d, Math.Min(a.Area, b.Area));
             var dx = CenterX(oa) - CenterX(ob); var dy = CenterY(oa) - CenterY(ob);
             // Inside a larger background window, a smaller window's center can be to either
             // side without establishing a reading order. Penalize reversals only for distinct positions.

@@ -42,11 +42,11 @@ public partial class App : Application
                     existing = Native.FindWindow(null, title);
                     if (existing == 0) await Task.Delay(80);
                 }
-                if (existing == 0) throw new InvalidOperationException("程序已在运行，但尚未找到窗口。");
+                if (existing == 0) throw new InvalidOperationException(UiText.Get("RunningNotFound"));
                 Native.GetWindowThreadProcessId(existing, out uint pid);
                 Native.AllowSetForegroundWindow(pid);
                 if (!Native.PostMessage(existing, DesktopIntegration.WakeMessage, 0, 0))
-                    throw new Win32Exception(Marshal.GetLastPInvokeError(), "未能唤醒正在运行的 WinWindow。");
+                    throw new Win32Exception(Marshal.GetLastPInvokeError(), UiText.Get("WakeFailed"));
                 Shutdown(); return;
             }
             string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), dev ? "WinWindow-Management-dev" : "WinWindow-Management");
@@ -69,6 +69,14 @@ public partial class App : Application
             Shutdown(1);
         }
     }
+    private static void PublishFixtureHandle(string path, nint hwnd)
+    {
+        // Readers treat the marker's existence as readiness. Publish it only after its writer closes.
+        var pending = path + ".tmp";
+        File.WriteAllText(pending, hwnd.ToInt64().ToString());
+        File.Move(pending, path);
+    }
+
     private void OpenFixture(string[] args)
     {
         bool reject = args.Contains("reject");
@@ -79,7 +87,13 @@ public partial class App : Application
             form.Text = "窗口测试 · 文档工作区"; form.Width = 640; form.Height = 420;
             form.Controls.Add(new Forms.Label { Text = "WinWindow 原生窗口验证", Dock = Forms.DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleCenter });
             form.FormClosed += (_, _) => Shutdown();
-            form.Show(); File.WriteAllText(args[1], form.Handle.ToInt64().ToString());
+            if (args.Contains("twins"))
+            {
+                form.Text = "WinWindow duplicate fixture";
+                form.Icon = System.Drawing.SystemIcons.Information;
+                new Forms.Form { Text = form.Text, Icon = System.Drawing.SystemIcons.Warning }.Show();
+            }
+            form.Show(); PublishFixtureHandle(args[1], form.Handle);
             return;
         }
         var window = new Window
@@ -92,7 +106,7 @@ public partial class App : Application
         {
             if (window.WindowState == WindowState.Minimized) window.Dispatcher.BeginInvoke(new Action(() => window.WindowState = WindowState.Normal), DispatcherPriority.Send);
         };
-        window.Show(); File.WriteAllText(args[1], new WindowInteropHelper(window).Handle.ToInt64().ToString());
+        window.Show(); PublishFixtureHandle(args[1], new WindowInteropHelper(window).Handle);
     }
     // Standalone fixture with an application-controlled pause and a measurable heartbeat.
     private sealed class ActivityTarget : Forms.Form

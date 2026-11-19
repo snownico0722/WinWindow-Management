@@ -1,3 +1,4 @@
+using static NeatWin.App.LayoutStrings;
 using NeatWin.Core;
 using NeatWin.Recording;
 
@@ -26,7 +27,7 @@ internal sealed class DesktopLayout : IDisposable
             }
             catch (Exception ex)
             {
-                if (!_ready.TrySetException(ex)) report($"桌面整理已停止：{ex.Message}");
+                if (!_ready.TrySetException(ex)) report(LayoutText.Format("LayoutStopped", ex.Message));
             }
         }) { Name = "WinWindow desktop layout", IsBackground = true };
         thread.SetApartmentState(ApartmentState.STA);

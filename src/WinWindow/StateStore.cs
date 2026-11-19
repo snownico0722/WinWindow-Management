@@ -33,7 +33,7 @@ internal sealed class StateStore
         catch (JsonException)
         {
             File.Move(path, path + ".invalid-" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff"));
-            LoadWarning = $"{name} 无法解析，原文件已保留，正在使用默认设置。";
+            LoadWarning = UiText.Format("InvalidSettings", name);
             return default;
         }
     }
@@ -51,6 +51,6 @@ internal sealed class StateStore
     {
         _saveTimer.Stop();
         try { Write("settings.json", Preferences); }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Error?.Invoke("设置未能保存：" + e.Message); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Error?.Invoke(UiText.Get("SaveFailed") + e.Message); }
     }
 }

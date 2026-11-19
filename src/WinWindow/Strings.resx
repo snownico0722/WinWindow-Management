@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
+  <data name="ActivityRecords" xml:space="preserve"><value>窗口活动记录</value></data>
+  <data name="AddAndPin" xml:space="preserve"><value>添加并置顶</value></data>
+  <data name="AddAndPinHint" xml:space="preserve"><value>加入列表并立即置顶</value></data>
+  <data name="AddWindow" xml:space="preserve"><value>添加窗口</value></data>
+  <data name="AddWindowHint" xml:space="preserve"><value>点击「添加窗口」，选择要管理的应用。</value></data>
+  <data name="AdvancedSnap" xml:space="preserve"><value>高级吸附与迭代参数</value></data>
+  <data name="AdvancedViewing" xml:space="preserve"><value>高级空间与观看校准</value></data>
+  <data name="AggressiveCheck" xml:space="preserve"><value>激进防遮挡检查</value></data>
+  <data name="AggressiveHint" xml:space="preserve"><value>开启最高层时，每 500 毫秒检查其他置顶窗口遮挡</value></data>
+  <data name="AllRestored" xml:space="preserve"><value>已恢复全部窗口原样。</value></data>
+  <data name="AllowBleed" xml:space="preserve"><value>允许窗口略微超出屏幕外缘</value></data>
+  <data name="AllowResize" xml:space="preserve"><value>允许调整窗口大小</value></data>
+  <data name="AlreadyParked" xml:space="preserve"><value>窗口已收起。</value></data>
+  <data name="AppearanceStartup" xml:space="preserve"><value>外观与启动</value></data>
+  <data name="Apply" xml:space="preserve"><value>应用</value></data>
+  <data name="Arrange" xml:space="preserve"><value>整理桌面</value></data>
+  <data name="ArrangeHint" xml:space="preserve"><value>按当前整理偏好排布整个桌面的普通可见窗口</value></data>
+  <data name="ArrangeMode" xml:space="preserve"><value>自动整理档位</value></data>
+  <data name="Assertive" xml:space="preserve"><value>积极</value></data>
+  <data name="Auto" xml:space="preserve"><value>自动</value></data>
+  <data name="AutoArrange" xml:space="preserve"><value>自动整理</value></data>
+  <data name="AutoHint" xml:space="preserve"><value>随窗口打开、关闭、移动或前后台变化自动整理桌面</value></data>
+  <data name="AwaitLaunch" xml:space="preserve"><value>等待启动</value></data>
+  <data name="Back" xml:space="preserve"><value>返回</value></data>
+  <data name="BackToList" xml:space="preserve"><value>返回窗口列表</value></data>
+  <data name="BackgroundActivity" xml:space="preserve"><value>后台保持</value></data>
+  <data name="BackgroundActivityHint" xml:space="preserve"><value>后台保持：切到其他应用后继续维持窗口激活通知</value></data>
+  <data name="BackgroundRejected" xml:space="preserve"><value>窗口未接受后台保持通知，请检查目标权限。</value></data>
+  <data name="BackgroundStopped" xml:space="preserve"><value>“{0}”后台保持已停止：{1}</value></data>
+  <data name="Balanced" xml:space="preserve"><value>平衡</value></data>
+  <data name="Busy" xml:space="preserve"><value>处理中</value></data>
+  <data name="Calibrate" xml:space="preserve"><value>使用当前显示器的实际观看尺寸</value></data>
+  <data name="ChangeOpacity" xml:space="preserve"><value>调整不透明度</value></data>
+  <data name="ChangeStyle" xml:space="preserve"><value>修改窗口样式</value></data>
+  <data name="ChooseOpenWindow" xml:space="preserve"><value>从当前打开的窗口中选择加入管理</value></data>
+  <data name="ChooseOther" xml:space="preserve"><value>请选择其他应用的窗口。</value></data>
+  <data name="ChooseWindow" xml:space="preserve"><value>选择要管理的窗口</value></data>
+  <data name="Classic" xml:space="preserve"><value>经典吸附</value></data>
+  <data name="ClearQuestion" xml:space="preserve"><value>清空本机布局记录和从中学习的窗口习惯？</value></data>
+  <data name="ClearRecords" xml:space="preserve"><value>清空记录</value></data>
+  <data name="ClearRecordsEllipsis" xml:space="preserve"><value>清空记录…</value></data>
+  <data name="ClickThrough" xml:space="preserve"><value>鼠标穿透</value></data>
+  <data name="Close" xml:space="preserve"><value>关闭</value></data>
+  <data name="ClosedDuringOperation" xml:space="preserve"><value>操作期间目标窗口已关闭。</value></data>
+  <data name="CollapseHint" xml:space="preserve"><value>点击收起为悬浮胶囊，按住拖动窗口</value></data>
+  <data name="ComfortHeight" xml:space="preserve"><value>参考窗口高度（DIP）</value></data>
+  <data name="ComfortWidth" xml:space="preserve"><value>参考窗口宽度（DIP）</value></data>
+  <data name="CopyWindowInfo" xml:space="preserve"><value>复制窗口信息</value></data>
+  <data name="DarkTheme" xml:space="preserve"><value>深色主题</value></data>
+  <data name="DataAndRecords" xml:space="preserve"><value>数据与记录</value></data>
+  <data name="DecreaseOpacity" xml:space="preserve"><value>降低不透明度（-）</value></data>
+  <data name="DesktopLayout" xml:space="preserve"><value>桌面整理</value></data>
+  <data name="DesktopScope" xml:space="preserve"><value>整个桌面</value></data>
+  <data name="DisplayWidth" xml:space="preserve"><value>屏幕物理宽度（毫米）</value></data>
+  <data name="DragAndRelease" xml:space="preserve"><value>按住并拖到目标窗口松开，立即置顶并加入管理</value></data>
+  <data name="DragInstructions" xml:space="preserve"><value>按住「拖拽置顶」并拖向目标窗口后松开即可置顶。</value></data>
+  <data name="DragToPin" xml:space="preserve"><value>拖拽置顶</value></data>
+  <data name="DragToPinHint" xml:space="preserve"><value>按住拖到目标窗口置顶</value></data>
+  <data name="EdgeAdjust" xml:space="preserve"><value>单边最大调整量（px）</value></data>
+  <data name="EdgeAlignment" xml:space="preserve"><value>边缘对齐距离（px）</value></data>
+  <data name="EditOpacity" xml:space="preserve"><value>编辑不透明度百分比</value></data>
+  <data name="EnableClickThrough" xml:space="preserve"><value>启用鼠标穿透</value></data>
+  <data name="ExactOpacity" xml:space="preserve"><value>点击输入精确百分比</value></data>
+  <data name="ExitOnClose" xml:space="preserve"><value>关闭时退出程序（不留驻托盘）</value></data>
+  <data name="ExpandHint" xml:space="preserve"><value>点击展开主面板，按住拖动胶囊</value></data>
+  <data name="ExportFile" xml:space="preserve"><value>WinWindow-布局记录-{0:yyyyMMdd}.zip</value></data>
+  <data name="ExportRecords" xml:space="preserve"><value>导出记录…</value></data>
+  <data name="Exported" xml:space="preserve"><value>记录已导出。</value></data>
+  <data name="Feedback" xml:space="preserve"><value>操作反馈</value></data>
+  <data name="FillDefaults" xml:space="preserve"><value>填入默认值</value></data>
+  <data name="FilterEscape" xml:space="preserve"><value>筛选已管理窗口 (Esc 收起)</value></data>
+  <data name="FilterShortcut" xml:space="preserve"><value>筛选已管理窗口 (Ctrl+F)</value></data>
+  <data name="FindHidden" xml:space="preserve"><value>找回隐藏 / 透明窗口</value></data>
+  <data name="FollowSystem" xml:space="preserve"><value>跟随系统</value></data>
+  <data name="ForceMinimize" xml:space="preserve"><value>强制最小化</value></data>
+  <data name="Full" xml:space="preserve"><value>完整</value></data>
+  <data name="FullAssist" xml:space="preserve"><value>完整辅助</value></data>
+  <data name="FullHint" xml:space="preserve"><value>拖动或缩放结束后，智能整理同组窗口</value></data>
+  <data name="General" xml:space="preserve"><value>常规</value></data>
+  <data name="Gentle" xml:space="preserve"><value>保守</value></data>
+  <data name="GlobalShortcuts" xml:space="preserve"><value>全局快捷键</value></data>
+  <data name="Hidden" xml:space="preserve"><value>已隐藏</value></data>
+  <data name="HiddenRecoverable" xml:space="preserve"><value>已隐藏 · 可恢复</value></data>
+  <data name="HiddenRestoreList" xml:space="preserve"><value>已隐藏，可从列表恢复。</value></data>
+  <data name="IdentityUnavailable" xml:space="preserve"><value>无法读取窗口身份，请检查权限。</value></data>
+  <data name="IncreaseOpacity" xml:space="preserve"><value>增加不透明度（=）</value></data>
+  <data name="InfoCopied" xml:space="preserve"><value>窗口信息已复制。</value></data>
+  <data name="IntegerRange" xml:space="preserve"><value>请输入 {0} 到 {1} 之间的整数。</value></data>
+  <data name="InvalidModifier" xml:space="preserve"><value>修饰键应为 Win、Ctrl、Alt 或 Shift。</value></data>
+  <data name="InvalidSettings" xml:space="preserve"><value>{0} 无法解析，原文件已保留，正在使用默认设置。</value></data>
+  <data name="KeepAbove" xml:space="preserve"><value>手动置顶或小窗时保持最高层</value></data>
+  <data name="KeepAboveHint" xml:space="preserve"><value>仅在手动置顶或悬浮胶囊模式下提高层级，不抢键盘焦点</value></data>
+  <data name="Language" xml:space="preserve"><value>界面语言</value></data>
+  <data name="LayoutAlgorithm" xml:space="preserve"><value>整理算法</value></data>
+  <data name="LayoutStrength" xml:space="preserve"><value>整理幅度</value></data>
+  <data name="Light" xml:space="preserve"><value>轻度</value></data>
+  <data name="LightAssist" xml:space="preserve"><value>轻度辅助</value></data>
+  <data name="LightHint" xml:space="preserve"><value>拖动或缩放结束后，微调刚操作的窗口</value></data>
+  <data name="Managed" xml:space="preserve"><value>管理中</value></data>
+  <data name="ManagedAndPinned" xml:space="preserve"><value>已管理 {0} · {1} 置顶</value></data>
+  <data name="ManagedCount" xml:space="preserve"><value>已管理 {0}</value></data>
+  <data name="ManagedWindows" xml:space="preserve"><value>已管理窗口</value></data>
+  <data name="ManagerZOrder" xml:space="preserve"><value>管理器窗口层级</value></data>
+  <data name="Manual" xml:space="preserve"><value>手动</value></data>
+  <data name="ManualArrange" xml:space="preserve"><value>手动整理</value></data>
+  <data name="ManualHint" xml:space="preserve"><value>仅点击整理桌面或按快捷键时整理</value></data>
+  <data name="MaxBleed" xml:space="preserve"><value>外缘最大超出距离（DIP）</value></data>
+  <data name="MaximizeOrRestore" xml:space="preserve"><value>最大化 / 还原</value></data>
+  <data name="Minimize" xml:space="preserve"><value>最小化</value></data>
+  <data name="Minimized" xml:space="preserve"><value>已最小化</value></data>
+  <data name="MinimizedStatus" xml:space="preserve"><value>已最小化。</value></data>
+  <data name="MissingExePath" xml:space="preserve"><value>无法获取程序路径。</value></data>
+  <data name="MissingShortcutKey" xml:space="preserve"><value>快捷键需要修饰键和普通按键。</value></data>
+  <data name="MoreActions" xml:space="preserve"><value>更多操作</value></data>
+  <data name="NativeFailed" xml:space="preserve"><value>{0}失败，请检查目标权限或兼容性。</value></data>
+  <data name="NeighborSnap" xml:space="preserve"><value>相邻窗口吸附距离（px）</value></data>
+  <data name="NoManagedWindows" xml:space="preserve"><value>暂无管理的窗口</value></data>
+  <data name="NoMatches" xml:space="preserve"><value>没有匹配的窗口</value></data>
+  <data name="Normal" xml:space="preserve"><value>正常</value></data>
+  <data name="Opacity" xml:space="preserve"><value>不透明度</value></data>
+  <data name="OpacityHint" xml:space="preserve"><value>拖动调整不透明度，选中滑块后可用滚轮微调</value></data>
+  <data name="OpacityPercent" xml:space="preserve"><value>不透明度百分比</value></data>
+  <data name="OpacityRange" xml:space="preserve"><value>不透明度请输入 0–100。</value></data>
+  <data name="OpacityRejected" xml:space="preserve"><value>窗口未接受不透明度设置。</value></data>
+  <data name="OpenDataFolder" xml:space="preserve"><value>打开数据目录</value></data>
+  <data name="OpenFilter" xml:space="preserve"><value>展开筛选</value></data>
+  <data name="OpenPanel" xml:space="preserve"><value>打开主面板</value></data>
+  <data name="ParkRejected" xml:space="preserve"><value>窗口未接受收起操作，恢复记录已保留。</value></data>
+  <data name="Passes" xml:space="preserve"><value>迭代轮数</value></data>
+  <data name="PendingWindow" xml:space="preserve"><value>等待窗口</value></data>
+  <data name="PerPixelOpacity" xml:space="preserve"><value>该窗口使用逐像素透明，不支持修改不透明度。</value></data>
+  <data name="PinHint" xml:space="preserve"><value>未置顶，点击置顶</value></data>
+  <data name="PinManager" xml:space="preserve"><value>固定管理器置顶</value></data>
+  <data name="PinNotifications" xml:space="preserve"><value>置顶操作显示系统托盘通知</value></data>
+  <data name="PinOnFocus" xml:space="preserve"><value>获得焦点时临时置顶</value></data>
+  <data name="PinOnFocusHint" xml:space="preserve"><value>失焦后自动退让并恢复长期置顶选择</value></data>
+  <data name="PinRejected" xml:space="preserve"><value>窗口未接受置顶设置。</value></data>
+  <data name="PinSound" xml:space="preserve"><value>置顶操作播放提示音</value></data>
+  <data name="PinThisWindow" xml:space="preserve"><value>本窗口置顶</value></data>
+  <data name="PinWindow" xml:space="preserve"><value>置顶窗口</value></data>
+  <data name="Pinned" xml:space="preserve"><value>已置顶</value></data>
+  <data name="PinnedAndHidden" xml:space="preserve"><value>{0} 置顶 · {1} 隐藏</value></data>
+  <data name="PinnedCount" xml:space="preserve"><value>{0} 置顶</value></data>
+  <data name="PinnedNotice" xml:space="preserve"><value>{0} 已置顶</value></data>
+  <data name="PreferEnlarge" xml:space="preserve"><value>优先放大</value></data>
+  <data name="PreferShrink" xml:space="preserve"><value>优先缩小</value></data>
+  <data name="ProtectEdges" xml:space="preserve"><value>保护四侧窗口边缘</value></data>
+  <data name="Quit" xml:space="preserve"><value>退出</value></data>
+  <data name="ReadPlacement" xml:space="preserve"><value>读取窗口位置</value></data>
+  <data name="RecordActivity" xml:space="preserve"><value>记录窗口活动习惯</value></data>
+  <data name="RecordPrivacy" xml:space="preserve"><value>仅在本机记录窗口几何位置与前后层级，不包含标题、按键或画面内容。</value></data>
+  <data name="RecorderCounts" xml:space="preserve"><value>{0} · 已记录 {1} 次手势、{2} 次窗口变化</value></data>
+  <data name="RecordsCleared" xml:space="preserve"><value>记录已清空。</value></data>
+  <data name="RefreshWindows" xml:space="preserve"><value>刷新窗口列表</value></data>
+  <data name="ReinforceError" xml:space="preserve"><value>“{0}”置顶状态未能恢复：{1}</value></data>
+  <data name="RememberWindow" xml:space="preserve"><value>记住设置（下次自动应用）</value></data>
+  <data name="Remembered" xml:space="preserve"><value>已记住</value></data>
+  <data name="RemoveHint" xml:space="preserve"><value>取消置顶并移出管理，不关闭目标程序</value></data>
+  <data name="RemoveWindow" xml:space="preserve"><value>移出管理</value></data>
+  <data name="RescueOffscreen" xml:space="preserve"><value>拉回部分出屏的窗口</value></data>
+  <data name="ResetLayout" xml:space="preserve"><value>恢复整理默认值</value></data>
+  <data name="ResetWindow" xml:space="preserve"><value>恢复窗口原样</value></data>
+  <data name="ResizeLimit" xml:space="preserve"><value>单次尺寸变化上限（%）</value></data>
+  <data name="RestoreAll" xml:space="preserve"><value>恢复全部原样</value></data>
+  <data name="RestoreError" xml:space="preserve"><value>“{0}”未恢复：{1}</value></data>
+  <data name="RestoreIncomplete" xml:space="preserve"><value>{0} 个窗口未恢复，记录已保留。</value></data>
+  <data name="RestoreOpacity" xml:space="preserve"><value>恢复透明状态</value></data>
+  <data name="RestorePending" xml:space="preserve"><value>窗口尚未恢复，记录已保留。</value></data>
+  <data name="RestoreRejected" xml:space="preserve"><value>窗口未接受恢复操作。</value></data>
+  <data name="RestoreWindow" xml:space="preserve"><value>恢复窗口</value></data>
+  <data name="RetryNextLaunch" xml:space="preserve"><value>{0} 个窗口未恢复，记录已保留，下次启动继续恢复。</value></data>
+  <data name="RuleError" xml:space="preserve"><value>“{0}”的规则未完全应用：{1}</value></data>
+  <data name="RunningNotFound" xml:space="preserve"><value>程序已在运行，但尚未找到窗口。</value></data>
+  <data name="SaveFailed" xml:space="preserve"><value>设置未能保存：</value></data>
+  <data name="SavedRule" xml:space="preserve"><value>保存的窗口规则</value></data>
+  <data name="ScreenSnap" xml:space="preserve"><value>屏幕边缘吸附距离（px）</value></data>
+  <data name="SearchManaged" xml:space="preserve"><value>搜索已管理窗口</value></data>
+  <data name="SearchOpenWindows" xml:space="preserve"><value>搜索当前打开的窗口…</value></data>
+  <data name="Settings" xml:space="preserve"><value>设置</value></data>
+  <data name="SettingsCategories" xml:space="preserve"><value>设置分类</value></data>
+  <data name="ShortcutConflict" xml:space="preserve"><value>两个操作使用了 {0}，请调整后再应用。</value></data>
+  <data name="ShortcutHint" xml:space="preserve"><value>点选输入框录入组合键，可连续修改多项。Delete 清空，Esc 还原当前项，点「应用」保存。</value></data>
+  <data name="ShortcutRegistrationFailed" xml:space="preserve"><value>快捷键 {0} 无法注册，可能已被占用。</value></data>
+  <data name="Shortcuts" xml:space="preserve"><value>快捷键</value></data>
+  <data name="ShortcutsApplied" xml:space="preserve"><value>快捷键已应用。</value></data>
+  <data name="ShowMainWindow" xml:space="preserve"><value>显示 / 隐藏主窗口</value></data>
+  <data name="Smart" xml:space="preserve"><value>智能整理</value></data>
+  <data name="StartWithWindows" xml:space="preserve"><value>开机自动启动</value></data>
+  <data name="StyleRejected" xml:space="preserve"><value>目标未接受窗口样式修改。</value></data>
+  <data name="TargetReplaced" xml:space="preserve"><value>目标窗口已关闭或已被替换。</value></data>
+  <data name="ThroughRejected" xml:space="preserve"><value>窗口未接受鼠标穿透设置。</value></data>
+  <data name="ToggleActivePin" xml:space="preserve"><value>切换当前窗口置顶</value></data>
+  <data name="ToggleCapsule" xml:space="preserve"><value>切换悬浮胶囊</value></data>
+  <data name="ToggleMaximize" xml:space="preserve"><value>最大化或还原</value></data>
+  <data name="TogglePin" xml:space="preserve"><value>切换置顶</value></data>
+  <data name="Transparent" xml:space="preserve"><value>完全透明</value></data>
+  <data name="TransparentHint" xml:space="preserve"><value>窗口接近透明，启用后鼠标可以点到下方的窗口</value></data>
+  <data name="TransparentRecoverable" xml:space="preserve"><value>完全透明 · 可恢复</value></data>
+  <data name="TrayManaged" xml:space="preserve"><value>管理的窗口</value></data>
+  <data name="TurnOffThrough" xml:space="preserve"><value>关闭鼠标穿透</value></data>
+  <data name="TurnOnThrough" xml:space="preserve"><value>开启鼠标穿透</value></data>
+  <data name="UndoArrange" xml:space="preserve"><value>撤销整理</value></data>
+  <data name="UndoArrangeHint" xml:space="preserve"><value>还原上一次桌面整理调整</value></data>
+  <data name="UndoLast" xml:space="preserve"><value>撤销上次整理</value></data>
+  <data name="UnpinAll" xml:space="preserve"><value>全部取消置顶</value></data>
+  <data name="UnpinFailed" xml:space="preserve"><value>{0} 个窗口未能取消置顶。</value></data>
+  <data name="UnpinHint" xml:space="preserve"><value>已置顶，点击取消置顶</value></data>
+  <data name="UnpinKeepListed" xml:space="preserve"><value>取消置顶（保留在列表中）</value></data>
+  <data name="UnpinnedNotice" xml:space="preserve"><value>{0} 已取消置顶</value></data>
+  <data name="Unset" xml:space="preserve"><value>未设置</value></data>
+  <data name="UseRecordedHabits" xml:space="preserve"><value>智能整理时参考已记录习惯</value></data>
+  <data name="VerticalFill" xml:space="preserve"><value>接近全高时自动填满，拖动后恢复</value></data>
+  <data name="VideoBars" xml:space="preserve"><value>调整视频窗口比例以减少黑边</value></data>
+  <data name="ViewingDistance" xml:space="preserve"><value>观看距离（毫米）</value></data>
+  <data name="WaitingForWindow" xml:space="preserve"><value>等待窗口出现</value></data>
+  <data name="WakeFailed" xml:space="preserve"><value>未能唤醒正在运行的 WinWindow。</value></data>
+  <data name="WakePermission" xml:space="preserve"><value>跨权限唤醒未启用（{0}）。</value></data>
+  <data name="WakeUnavailable" xml:space="preserve"><value>无法创建单实例唤醒消息。</value></data>
+  <data name="WindowBusy" xml:space="preserve"><value>该窗口的操作尚未完成。</value></data>
+  <data name="WindowPending" xml:space="preserve"><value>该窗口尚未出现。</value></data>
+  <data name="WindowPin" xml:space="preserve"><value>窗口置顶</value></data>
+  <data name="Working" xml:space="preserve"><value>正在处理</value></data>
+  <data name="ZipFilter" xml:space="preserve"><value>ZIP 压缩包|*.zip</value></data>
+</root>
