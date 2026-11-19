@@ -43,6 +43,8 @@ dotnet src/WinWindow/bin/Release/net10.0-windows/WinWindow.dll --self-test TestR
 ./scripts/package.ps1
 ```
 
+打包原生组件需要 CMake 3.24 或更高版本，以及 Visual Studio 的「使用 C++ 的桌面开发」、x86/x64 工具和 Windows SDK。首次构建下载固定版本的 MinHook。运行 `./scripts/package.ps1 -TestNative` 可以分别验证 32 位和 64 位测试窗口的失焦消息、焦点查询、后台鼠标及卸载恢复行为。
+
 默认打包命令在 `artifacts/` 生成标准 ZIP。Actions 制品包含应用包、界面截图和测试结果，省去源码压缩包。正式发版时，工作流自动将两份 ZIP 附到 Release。用户明确要求额外打包时，本地使用 `./scripts/package.ps1 -IncludeRuntime`，或手动运行 Actions 并勾选「额外打包一份内置 .NET 的 Windows x64 版本」。
 
 自动测试使用真实 WinForms/WPF 目标及完整主程序，验证原生状态、行内操作、收起/恢复、悬浮胶囊、失焦退让、单实例唤醒、阻塞目标下的退出及恢复日志，并输出实际界面截图。

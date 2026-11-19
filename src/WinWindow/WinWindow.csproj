@@ -21,4 +21,8 @@
     <EmbeddedResource Include="Assets/PinFeedback.wav" LogicalName="WinWindow.Resources.PinFeedback.wav" />
     <ProjectReference Include="../NeatWin.Layout/NeatWin.Layout.csproj" />
   </ItemGroup>
+  <ItemGroup Condition="'$(NoFocusLossResourceDirectory)' != ''">
+    <EmbeddedResource Include="$(NoFocusLossResourceDirectory)/NoFocusLoss.dll" LogicalName="WinWindow.Native.NoFocusLoss.x86.dll" />
+    <EmbeddedResource Include="$(NoFocusLossResourceDirectory)/NoFocusLoss64.dll" LogicalName="WinWindow.Native.NoFocusLoss.x64.dll" />
+  </ItemGroup>
 </Project>

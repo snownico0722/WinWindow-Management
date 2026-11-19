@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection.PortableExecutable;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -82,6 +83,11 @@ internal static class SmokeTests
             Assert(!OwnWindowPolicy.Topmost(false, false, true, false) && OwnWindowPolicy.Topmost(false, false, true, true) && OwnWindowPolicy.Topmost(false, true, false, false), "manual, focus and compact topmost are independent");
             Assert(!OwnWindowPolicy.Enforce(false, false, true, false, true) && !OwnWindowPolicy.Enforce(true, true, true, false, true) && !OwnWindowPolicy.Enforce(true, false, false, false, true), "hidden, minimized and focus-only windows never enforce absolute topmost");
             Assert(DesktopIntegration.ParseHotkey("Win+Ctrl+Shift+R") == (14u, 82u) && DesktopIntegration.ParseHotkey("") == (0u, 0u), "hotkey parsing and disabled bindings");
+            if (string.IsNullOrEmpty(typeof(App).Assembly.Location))
+            {
+                CheckNativeResource("x86", Machine.I386);
+                CheckNativeResource("x64", Machine.Amd64);
+            }
             CheckSmartArrangeScenarios();
             var store = new StateStore(data);
             store.Preferences.Language = "zh-CN";
@@ -435,6 +441,17 @@ internal static class SmokeTests
         await manager.SetOpacityAsync(forgotten, 54);
         Assert(forgotten.RuleId is null && store.Preferences.Rules.Count == 1, "explicitly forgotten windows stay forgotten after an edit");
         await manager.ShutdownAsync();
+    }
+
+    private static void CheckNativeResource(string architecture, Machine expected)
+    {
+        string name = $"WinWindow.Native.NoFocusLoss.{architecture}.dll";
+        using var stream = typeof(App).Assembly.GetManifestResourceStream(name)
+            ?? throw new InvalidDataException($"Packaged native resource missing: {name}");
+        using var image = new PEReader(stream);
+        var header = image.PEHeaders.CoffHeader;
+        Assert(header.Machine == expected && header.Characteristics.HasFlag(Characteristics.Dll),
+            $"published EXE embeds the {architecture} NoFocusLoss DLL");
     }
 
     private static void CheckSmartArrangeScenarios()

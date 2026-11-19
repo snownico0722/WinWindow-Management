@@ -34,7 +34,7 @@ jobs:
         shell: pwsh
         env:
           INCLUDE_RUNTIME: ${{ (github.event_name == 'release' && !github.event.release.prerelease) || (github.event_name == 'workflow_dispatch' && inputs.include_runtime) }}
-        run: ./scripts/package.ps1 -IncludeRuntime:($env:INCLUDE_RUNTIME -eq 'true')
+        run: ./scripts/package.ps1 -TestNative -IncludeRuntime:($env:INCLUDE_RUNTIME -eq 'true')
       - name: Native window and UI smoke tests from the published ZIP
         shell: pwsh
         run: |
