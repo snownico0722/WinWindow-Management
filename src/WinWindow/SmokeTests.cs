@@ -669,10 +669,15 @@ internal static class SmokeTests
             Assert(!release.WaitOne(0), "quit did not require releasing the hung target");
             release.Set(); await Task.Delay(150);
             var recovered = await StartMainAsync(store, processes);
-            await WaitAsync("unfinished journal recovered on next launch", () => store.ReadRecovery().All(s => s.Identity.Hwnd != stuck.Hwnd) && !Native.IsTopmost(stuck.Hwnd));
-            Assert(!Native.IsTopmost(stuck.Hwnd), "next launch restores the formerly blocked target");
+            // The previous session must restore the original, then the saved pin applies again.
+            // An unpinned window between these operations is transient and may never reach the test thread.
+            await WaitAsync("saved pins reapplied after recovery", () =>
+                Native.IsTopmost(stuck.Hwnd) && Native.IsTopmost(healthy.Hwnd) &&
+                store.ReadRecovery().Any(s => s.Identity.Hwnd == stuck.Hwnd && !s.Topmost && s.EditedTopmost));
             Native.PostMessage(recovered.Hwnd, 0x10, 0, 0);
             await WaitAsync("recovered app exits", () => recovered.Process.HasExited);
+            Assert(!Native.IsTopmost(stuck.Hwnd) && !Native.IsTopmost(healthy.Hwnd) && store.ReadRecovery().Count == 0,
+                "recovering a blocked target preserves its original state through the next pin and clean exit");
         }
         finally { release.Set(); }
     }
