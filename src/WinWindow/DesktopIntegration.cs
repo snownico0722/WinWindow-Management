@@ -86,13 +86,17 @@ internal sealed class DesktopIntegration : IDisposable
         AddTrayAction("RestoreAll", "recover");
         _menu.Items.Add(new Forms.ToolStripSeparator());
         AddTrayAction("Quit", "quit");
-        Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint lastForegroundProcess);
+        var initialForeground = Native.GetForegroundWindow();
+        Native.GetWindowThreadProcessId(initialForeground, out uint lastForegroundProcess);
+        _window.LayoutFocus.Visit(initialForeground, lastForegroundProcess, Environment.TickCount64);
         _eventCallback = (_, ev, hwnd, objectId, childId, _, _) =>
         {
             if (_disposed || hwnd == 0 || (ev >= 0x8000 && (objectId != 0 || childId != 0)) || _window.Dispatcher.HasShutdownStarted) return;
+            if (ev == 0x8001) _window.LayoutFocus.Retire(hwnd);
             if (ev == 3)
             {
                 Native.GetWindowThreadProcessId(hwnd, out var current);
+                _window.LayoutFocus.Visit(hwnd, current, Environment.TickCount64);
                 var previous = lastForegroundProcess;
                 lastForegroundProcess = current;
                 if (previous != 0 && current != previous)

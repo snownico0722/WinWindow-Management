@@ -5,7 +5,7 @@ using NeatWin.Recording;
 namespace NeatWin.App;
 
 internal sealed record LayoutPreferences(AutomaticLayoutMode Mode, TidyOptions Options,
-    SmartBehaviorOptions Behavior, TaskPreferences Task, bool UseReference);
+    SmartBehaviorOptions Behavior, TaskPreferences Task, bool UseReference, bool VisualSampling = false);
 
 // WinForms timers and out-of-context window events need a message pump. Keep
 // layout planning and foreign-window calls off the WPF UI.
@@ -15,13 +15,13 @@ internal sealed class DesktopLayout : IDisposable
     private readonly TaskCompletionSource<NeatWinApplicationContext> _ready =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    internal DesktopLayout(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged = null, Action<bool>? undoChanged = null)
+    internal DesktopLayout(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged = null, Action<bool>? undoChanged = null, ForegroundHistory? focus = null)
     {
         var thread = new Thread(() =>
         {
             try
             {
-                using var context = new NeatWinApplicationContext(directory, report, recorderChanged, undoChanged, _stop.Token);
+                using var context = new NeatWinApplicationContext(directory, report, recorderChanged, undoChanged, _stop.Token, focus);
                 _ready.SetResult(context);
                 Application.Run(context);
             }

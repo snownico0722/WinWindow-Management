@@ -112,7 +112,9 @@ public sealed partial class WindowManager
                 zOrder++,
                 Math.Max(96u, NativeMethods.GetDpiForWindow(hwnd)),
                 processId,
-                isTopmost));
+                isTopmost,
+                !hasVisibleOwner && !isToolWindow && !noActivate && visualRect.Area >= 10_000
+                    ? (fullScreen ? "fullscreen" : maximized ? "maximized" : "windowed") : null));
 
             return true;
         }, nint.Zero);

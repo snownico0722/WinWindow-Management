@@ -18,10 +18,28 @@ internal sealed record RecorderStatus(
 
 /// <summary>
 /// Shared recorder engine used by the main application and the legacy standalone recorder UI.
-/// It records geometry/context only; no titles, process names, keystrokes, screenshots or pointer paths.
+/// It records geometry, anonymous activity and optional change masks.
 /// </summary>
 internal sealed class RecorderSession : IDisposable
 {
+    private readonly DesktopActivity _activity;
+    private ActivitySample? _latest;
+    private long _sampleTick;
+    private WorkspaceFrame? _savedGeometry;
+    private long _geometryTick;
+    private readonly Dictionary<nint, (string Request, long Tick)> _lastPlan = [];
+    private bool _visualSampling;
+    internal bool VisualSampling
+    {
+        get => _visualSampling;
+        set
+        {
+            if (_visualSampling == value) return;
+            _visualSampling = value;
+            _latest = null;
+            _activity.ResetVisual();
+        }
+    }
     private readonly WindowManager _manager = new();
     private readonly IntentReferenceStore _store;
     private readonly ObservationIdentityTracker _identity = new();
@@ -56,6 +74,7 @@ internal sealed class RecorderSession : IDisposable
     internal RecorderSession(IntentReferenceStore store, bool recordingEnabled)
     {
         _store = store;
+        _activity = new(store.Placement);
         _paused = !recordingEnabled;
         var directoryBytes = System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(store.DirectoryPath).ToUpperInvariant());
         var directoryId = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(directoryBytes));
@@ -80,7 +99,7 @@ internal sealed class RecorderSession : IDisposable
         _contextHook = NativeMethods.SetWinEventHook(0x8000, 0x800B, nint.Zero, _contextCallback, 0, 0,
             NativeMethods.WinEventOutOfContext | NativeMethods.WinEventSkipOwnProcess);
 
-        try { _lastContext = _identity.Capture(_manager.Capture()); }
+        try { if (!_paused) _lastContext = Capture(_manager.Capture()); }
         catch (Exception ex) { _error = ex.Message; }
         if (_contextHook == nint.Zero || _foregroundHook == nint.Zero)
             _error = LayoutText.Get("MonitorPartial");
@@ -113,6 +132,7 @@ internal sealed class RecorderSession : IDisposable
         RecordingEpoch++;
         _active = null;
         _pending.Clear();
+        ResetActivity();
         _lastContext = null;
         _contextDirty = !_paused;
         PublishStatus();
@@ -121,6 +141,7 @@ internal sealed class RecorderSession : IDisposable
     internal void OpenDataDirectory()
     {
         Directory.CreateDirectory(_store.DirectoryPath);
+        _store.Rules.EnsureTemplate();
         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_store.DirectoryPath)
         {
             UseShellExecute = true,
@@ -146,7 +167,9 @@ internal sealed class RecorderSession : IDisposable
     internal void Clear()
     {
         RecordingEpoch++;
+        if (!_ownsSingleton) throw new InvalidOperationException(LayoutText.Get("RecorderInUse"));
         _store.Clear();
+        ResetActivity();
         _pending.Clear();
         _active = null;
         _lastContext = null;
@@ -167,6 +190,7 @@ internal sealed class RecorderSession : IDisposable
             try { _store.Prune(); }
             catch (Exception ex) { _error = LayoutText.Format("RecordCleanupFailed", ex.Message); }
         }
+        SampleActivity();
         FlushPending();
         CaptureContextChange();
     }
@@ -186,7 +210,7 @@ internal sealed class RecorderSession : IDisposable
                 var start = snapshot.FirstOrDefault(w => w.Handle == hwnd && w.IsManageable);
                 if (start is null) return;
                 NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
-                _active = new(start, pid, Environment.TickCount64, _identity.Capture(snapshot),
+                _active = new(start, pid, Environment.TickCount64, Capture(snapshot),
                     AutomationGuard.Stamp(hwnd), AutomationGuard.IsMarked(hwnd));
             }
             else if (eventType == NativeMethods.EventSystemMoveSizeEnd)
@@ -203,11 +227,12 @@ internal sealed class RecorderSession : IDisposable
                     .Where(w => w.Window.Handle != hwnd && w.Window.MonitorHandle == end.MonitorHandle)
                     .Take(24).Select(w => w.Window.VisualRect).ToArray();
                 var id = _identity.Id(end);
-                var context = _identity.Capture(captured);
+                var context = Capture(captured);
                 var observation = new WindowAdjustmentObservation(DateTimeOffset.UtcNow, _session, id,
                     active.Window.VisualRect, end.VisualRect, active.Window.WorkArea, end.WorkArea,
                     end.Dpi, Math.Max(0, Environment.TickCount64 - active.Tick), neighbors, "unconfirmed",
-                    Version: 2, StartContext: active.Context, EndContext: context);
+                    Version: 3, StartContext: active.Context, EndContext: context,
+                    AfterRequest: _lastPlan.TryGetValue(hwnd, out var plan) && active.Tick - plan.Tick is >= 0 and <= 30_000 ? plan.Request : null);
                 if (_pending.Count >= 32) { _pending.RemoveAt(0); _excluded++; }
                 _pending.Add(new(hwnd, pid, end.MonitorHandle, observation, Environment.TickCount64)
                 {
@@ -232,7 +257,7 @@ internal sealed class RecorderSession : IDisposable
             if (due.Length == 0) return;
             var snapshot = _manager.Capture();
             var current = snapshot.ToDictionary(w => w.Handle);
-            var settledContext = _identity.Capture(snapshot);
+            var settledContext = Capture(snapshot);
             foreach (var pending in due)
             {
                 _pending.Remove(pending);
@@ -265,7 +290,7 @@ internal sealed class RecorderSession : IDisposable
         if (_disposed || objectId != 0 || childId != 0) return;
         try
         {
-            if (type == 0x8001) { _identity.Retire(hwnd); _contextDirty = true; return; }
+            if (type == 0x8001) { _identity.Retire(hwnd); _activity.Retire(hwnd); _lastPlan.Remove(hwnd); _contextDirty = true; return; }
             if (_paused || hwnd == nint.Zero || AutomationGuard.IsUtility(hwnd)) return;
             if (type is not 0x0003 and not 0x8002 and not 0x8003 and not 0x8004 and not 0x800B) return;
             _contextDirty = true;
@@ -281,17 +306,97 @@ internal sealed class RecorderSession : IDisposable
         try
         {
             var snapshot = _manager.Capture();
-            var after = _identity.Capture(snapshot);
+            var after = Capture(snapshot);
             if (!ObservationIdentityTracker.SameState(_lastContext, after))
             {
                 var automated = snapshot.Any(w => AutomationGuard.IsMarked(w.Handle));
-                _store.AppendTransition(new(2, _session, automated ? "neatwin-intervention" : _contextCause, _lastContext, after));
+                _store.AppendTransition(new(3, _session, automated ? "neatwin-intervention" : _contextCause, _lastContext, after));
                 _contextRecords++;
             }
             _lastContext = after;
         }
         catch (Exception ex) { _error = LayoutText.Format("RecordStateFailed", ex.Message); }
         PublishStatus();
+    }
+
+    private void ResetActivity()
+    {
+        _latest = null; _savedGeometry = null; _sampleTick = 0; _lastPlan.Clear(); _activity.Reset();
+    }
+
+    internal WorkspaceFrame Capture(IReadOnlyList<WindowSnapshot> windows) =>
+        _identity.Capture(windows, DesktopActivity.Displays(), CanWriteDiagnostics ? w => _activity.AppKey(w, true) : null);
+
+    private void SampleActivity()
+    {
+        long now = Environment.TickCount64;
+        if (!CanWriteDiagnostics || now - _sampleTick < 5000) return;
+        _sampleTick = now;
+        try
+        {
+            if (!DesktopActivity.Interactive()) { _latest = null; _savedGeometry = null; _activity.Reset(); return; }
+            var snapshot = _manager.Capture();
+            var frame = Capture(snapshot);
+            _latest = _activity.Sample(_session, now, frame, snapshot, _identity, VisualSampling, _store.Rules.Read());
+            bool keyframe = _latest.ObservedMilliseconds == 0 || now - _geometryTick >= 60_000 ||
+                !ObservationIdentityTracker.SameState(_savedGeometry, frame);
+            _store.AppendActivity(_latest, keyframe ? frame : null, keyframe ? now : _geometryTick);
+            if (keyframe) { _geometryTick = now; _savedGeometry = frame; }
+        }
+        catch (Exception ex) { _latest = null; _error = LayoutText.Format("RecordStateFailed", ex.Message); }
+    }
+
+    internal void Applied(string request, IEnumerable<nint> handles)
+    {
+        if (!CanWriteDiagnostics) return;
+        _lastPlan.Clear();
+        foreach (var h in handles) _lastPlan[h] = (request, Environment.TickCount64);
+    }
+
+    internal TaskWindowHint[] LiveHints(IReadOnlyList<WindowSnapshot> snapshot)
+    {
+        if (!CanWriteDiagnostics || _latest == null || Environment.TickCount64 - _latest.Tick > 8000) return [];
+        var result = new List<TaskWindowHint>();
+        foreach (var w in snapshot.Where(w => w.IsManageable))
+        {
+            var id = _identity.Id(w);
+            var evidence = _latest.Windows.FirstOrDefault(a => a.Id == id);
+            if (w.IsForeground || evidence == null || !_latest.Frame.Windows.Any(a => a.Id == id &&
+                a.Rect == w.VisualRect && a.VisibleRatio > 0)) continue;
+            var hint = ActivityHints.ToLayoutHint(w.Handle, w.VisualRect, evidence.ActivityHint, evidence.Fragment);
+            if (hint?.Anchor == true && evidence.Fragment is { } patch)
+            {
+                // A new covering window can invalidate a sampled corner without moving its owner.
+                if (snapshot.Any(front => front.ZOrder < w.ZOrder && !front.VisualRect.Intersect(patch).IsEmpty)) continue;
+            }
+            if (hint != null) result.Add(hint);
+        }
+        return result.ToArray();
+    }
+
+    internal WorkingPairRule[] BindRules(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows) =>
+        rules.Pairs is { Length: > 0 } ? rules.Bind(windows.Where(w => w.IsManageable)
+            .Select(w => (w, _activity.AppKey(w, false)))) : [];
+
+    internal PlacementPreference[] Preferences(IReadOnlyList<WindowSnapshot> windows, LayoutFocus focus)
+    {
+        if (!_store.Enabled || _store.Placement.Read() is not { Length: > 0 } samples) return [];
+        var entries = windows.Where(w => w.IsManageable).Select(w => (Window: w, App: _activity.AppKey(w, false)))
+            .Where(w => w.App != null).ToArray();
+        var result = new List<PlacementPreference>();
+        foreach (var entry in entries.GroupBy(e => e.App).Where(g => g.Count() == 1).Select(g => g.First()))
+        {
+            var peers = entries.Where(p => p.Window.Handle != entry.Window.Handle &&
+                p.Window.MonitorHandle == entry.Window.MonitorHandle && p.App != entry.App)
+                .GroupBy(p => p.App).Where(g => g.Count() == 1).Select(g => g.First()).ToArray();
+            var partner = peers.OrderByDescending(p => (p.Window.Handle == focus.Companion && entry.Window.Handle == focus.Main) ||
+                    (p.Window.Handle == focus.Main && entry.Window.Handle == focus.Companion))
+                .ThenByDescending(p => samples.Count(s => s.App == entry.App && s.Partner == p.App)).FirstOrDefault();
+            var preference = LayoutHabits.Resolve(samples, entry.Window, entry.App!, partner.App,
+                partner.Window?.Handle ?? 0, DateTimeOffset.UtcNow);
+            if (preference is { Confidence: > .1 }) result.Add(preference);
+        }
+        return result.ToArray();
     }
 
     private void PublishStatus() => StatusChanged?.Invoke(Status);

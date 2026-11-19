@@ -267,4 +267,102 @@ internal static class NativeMethods
         internal Point MaxPosition;
         internal Rect NormalPosition;
     }
+
+    [StructLayout(LayoutKind.Sequential)] internal struct LastInput { public uint Size, Time; }
+    [DllImport("user32.dll")] internal static extern bool GetLastInputInfo(ref LastInput value);
+    [DllImport("user32.dll")] internal static extern nint OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] internal static extern bool CloseDesktop(nint desktop);
+    [DllImport("user32.dll", EntryPoint = "GetUserObjectInformationW", ExactSpelling = true, CharSet = CharSet.Unicode)]
+    internal static extern bool GetUserObjectInformation(nint handle, int index, StringBuilder info, int length, out int needed);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)] internal static extern int GetApplicationUserModelId(nint process, ref uint length, StringBuilder app);
+    [DllImport("user32.dll")] internal static extern nint GetDC(nint hwnd);
+    [DllImport("user32.dll")] internal static extern int ReleaseDC(nint hwnd, nint dc);
+    [DllImport("gdi32.dll")] internal static extern bool StretchBlt(nint dst, int x, int y, int w, int h, nint src, int sx, int sy, int sw, int sh, uint rop);
+    [ComImport]
+    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IMMDeviceEnumerator
+    {
+        [PreserveSig]
+        int EnumAudioEndpoints(int dataFlow, int stateMask, out nint devices);
+        [PreserveSig]
+        int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice? endpoint);
+    }
+
+    [ComImport]
+    [Guid("D666063F-1587-4E43-81F1-B948E807363F")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IMMDevice
+    {
+        [PreserveSig]
+        int Activate(in Guid iid, int clsCtx, nint activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object? iface);
+    }
+
+    [ComImport]
+    [Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IAudioSessionManager2
+    {
+        [PreserveSig]
+        int GetAudioSessionControl(nint sessionGuid, uint streamFlags, out nint sessionControl);
+        [PreserveSig]
+        int GetSimpleAudioVolume(nint sessionGuid, uint streamFlags, out nint audioVolume);
+        [PreserveSig]
+        int GetSessionEnumerator(out IAudioSessionEnumerator? sessionEnum);
+    }
+
+    [ComImport]
+    [Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IAudioSessionEnumerator
+    {
+        [PreserveSig]
+        int GetCount(out int sessionCount);
+        [PreserveSig]
+        int GetSession(int sessionIndex, [MarshalAs(UnmanagedType.IUnknown)] out object? session);
+    }
+
+    [ComImport]
+    [Guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IAudioSessionControl2
+    {
+        [PreserveSig]
+        int GetState(out int state);
+        [PreserveSig]
+        int GetDisplayName(out nint name);
+        [PreserveSig]
+        int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string value, in Guid context);
+        [PreserveSig]
+        int GetIconPath(out nint path);
+        [PreserveSig]
+        int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string value, in Guid context);
+        [PreserveSig]
+        int GetGroupingParam(out Guid grouping);
+        [PreserveSig]
+        int SetGroupingParam(in Guid grouping, in Guid context);
+        [PreserveSig]
+        int RegisterAudioSessionNotification(nint client);
+        [PreserveSig]
+        int UnregisterAudioSessionNotification(nint client);
+        [PreserveSig]
+        int GetSessionIdentifier(out nint id);
+        [PreserveSig]
+        int GetSessionInstanceIdentifier(out nint instanceId);
+        [PreserveSig]
+        int GetProcessId(out uint processId);
+        [PreserveSig]
+        int IsSystemSoundsSession();
+        [PreserveSig]
+        int SetDuckingPreference([MarshalAs(UnmanagedType.Bool)] bool optOut);
+    }
+
+    [ComImport]
+    [Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IAudioMeterInformation
+    {
+        [PreserveSig]
+        int GetPeakValue(out float peak);
+    }
 }

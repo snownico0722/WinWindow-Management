@@ -154,7 +154,7 @@
   <data name="Quit" xml:space="preserve"><value>Quit</value></data>
   <data name="ReadPlacement" xml:space="preserve"><value>Read window position</value></data>
   <data name="RecordActivity" xml:space="preserve"><value>Record window activity</value></data>
-  <data name="RecordPrivacy" xml:space="preserve"><value>Records window positions and stacking order locally. Titles, keystrokes, and screen contents are excluded.</value></data>
+  <data name="RecordPrivacy" xml:space="preserve"><value>Records anonymous windows, visible regions, usage intervals, process resources, audio peak levels and available playback state locally. Optional visual sampling stores change summaries only.</value></data>
   <data name="RecorderCounts" xml:space="preserve"><value>{0} · {1} gestures, {2} window changes</value></data>
   <data name="RecordsCleared" xml:space="preserve"><value>Records cleared.</value></data>
   <data name="RefreshWindows" xml:space="preserve"><value>Refresh windows</value></data>
@@ -227,4 +227,5 @@
   <data name="WindowPin" xml:space="preserve"><value>Always on top</value></data>
   <data name="Working" xml:space="preserve"><value>Working</value></data>
   <data name="ZipFilter" xml:space="preserve"><value>ZIP archive|*.zip</value></data>
+  <data name="VisualSampling" xml:space="preserve"><value>Sample visible content changes (change masks only)</value></data>
 </root>
