@@ -7,6 +7,22 @@ namespace NeatWin.Windows;
 
 public sealed partial class WindowManager
 {
+    private IReadOnlyList<WindowSnapshot>? _cachedSnapshot;
+    private long _cachedTick = long.MinValue;
+
+    internal void InvalidateCache()
+    {
+        _cachedSnapshot = null;
+        _cachedTick = long.MinValue;
+    }
+
+    internal IReadOnlyList<WindowSnapshot> CaptureCoalesced(int maxAgeMilliseconds = 25)
+    {
+        var now = Environment.TickCount64;
+        if (_cachedSnapshot is { } cached && now - _cachedTick is >= 0 && now - _cachedTick <= maxAgeMilliseconds)
+            return cached;
+        return Capture();
+    }
     private const int SwShowMaximized = 3;
     private static readonly HashSet<string> SystemClasses = new(StringComparer.Ordinal)
     {
@@ -124,6 +140,8 @@ public sealed partial class WindowManager
             throw new Win32Exception(Marshal.GetLastWin32Error(), "EnumWindows failed.");
         }
 
+        _cachedSnapshot = result;
+        _cachedTick = Environment.TickCount64;
         return result;
     }
 
@@ -134,6 +152,7 @@ public sealed partial class WindowManager
             return;
         }
 
+        InvalidateCache();
         foreach (var move in plan) AutomationGuard.Mark(move.Window.Handle);
 
         var flags =

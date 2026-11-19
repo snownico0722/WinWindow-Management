@@ -46,7 +46,7 @@ internal sealed class LayoutRunJournal : IDisposable
                 p.Moves.Select(m => new PlannedWindow(ids[m.Window.Handle], m.TargetVisualRect)).ToArray(),
                 p.Layers.Select(l => l.FrontToBack.Select(w => ids[w.Handle]).ToArray()).ToArray(),
                 p.Groups.Select(g => g.Selected).ToArray());
-            var observation = new LayoutRunObservation(4, _session, Guid.NewGuid().ToString("N"), trigger,
+            var observation = new LayoutRunObservation(5, _session, Guid.NewGuid().ToString("N"), trigger,
                 frame, targets, layers, groups, null, "requested-not-yet-verified", notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
                 context == null ? null : RecordedTaskSignals.From(context, ids));
             var epoch = _recorder?.RecordingEpoch ?? 0;
@@ -55,7 +55,8 @@ internal sealed class LayoutRunJournal : IDisposable
                 _recorder?.Applied(observation.RequestId, trigger == "undo" ? [] : plan.Moves.Select(m => m.Window.Handle));
             if (_pending.Count >= 8) _pending.RemoveAt(0);
             foreach (var old in _pending) old.Intervened = true;
-            _pending.Add(new(observation, before.Select(w => w.Handle).ToHashSet(), Environment.TickCount64, epoch, recorded));
+            var movesById = plan.Moves.ToDictionary(m => ids[m.Window.Handle], m => (m.Window.Handle, m.Window.ProcessId, m.Window.Dpi, Before: m.Window.VisualRect, Target: m.TargetVisualRect));
+            _pending.Add(new(observation, before.Select(w => w.Handle).ToHashSet(), Environment.TickCount64, epoch, recorded, movesById));
             _timer.Start();
         }
         catch { } // Diagnostics must not prevent a layout or an undo.
@@ -82,7 +83,18 @@ internal sealed class LayoutRunJournal : IDisposable
                 var matches = requested.Targets.All(t => frame.Windows.Any(w => w.Id == t.Id && Near(w.Rect, t.Target))) &&
                     requested.Layers.All(order => frame.Windows.Where(w => order.Contains(w.Id)).OrderBy(w => w.ZOrder)
                         .Select(w => w.Id).SequenceEqual(order));
-                var actual = requested with { Actual = frame, Outcome = pending.Intervened || NativeWindowActivity.IsMoving ? "intervened" :
+                bool intervened = pending.Intervened || NativeWindowActivity.IsMoving;
+                if (!intervened && _recorder != null && pending.Epoch == _recorder.RecordingEpoch && pending.MovesById != null)
+                {
+                    var snapshotByHandle = snapshot.ToDictionary(w => w.Handle);
+                    foreach (var (id, move) in pending.MovesById)
+                    {
+                        var actualWin = frame.Windows.FirstOrDefault(w => w.Id == id);
+                        if (actualWin != null && snapshotByHandle.TryGetValue(move.Handle, out var snapWin) && snapWin.ProcessId == move.ProcessId && snapWin.Dpi == move.Dpi)
+                            _recorder.SizeMemory.Observe(move.Before, move.Target, actualWin.Rect, move.Dpi, move.Handle, move.ProcessId, _recorder.TryReadAppKey(snapWin));
+                    }
+                }
+                var actual = requested with { Actual = frame, Outcome = intervened ? "intervened" :
                     matches ? "observed-match" : "observed-difference" };
                 // Pause/clear stops writes, not the runtime's placement verification. An old
                 // completion must not resurrect cleared data or become a new recording session.
@@ -96,13 +108,15 @@ internal sealed class LayoutRunJournal : IDisposable
 
     private static bool Near(RectI a, RectI b) => WindowStateRules.Near(a, b);
     public void Dispose() { _timer.Stop(); _timer.Dispose(); _pending.Clear(); }
-    private sealed class Pending(LayoutRunObservation observation, HashSet<nint> handles, long tick, long epoch, bool recorded)
+    private sealed class Pending(LayoutRunObservation observation, HashSet<nint> handles, long tick, long epoch, bool recorded,
+        Dictionary<int, (nint Handle, uint ProcessId, uint Dpi, RectI Before, RectI Target)>? movesById = null)
     {
         internal LayoutRunObservation Observation { get; } = observation;
         internal HashSet<nint> Handles { get; } = handles;
         internal long Tick { get; } = tick;
         internal long Epoch { get; } = epoch;
         internal bool Recorded { get; } = recorded;
+        internal Dictionary<int, (nint Handle, uint ProcessId, uint Dpi, RectI Before, RectI Target)>? MovesById { get; } = movesById;
         internal bool Intervened { get; set; }
     }
 }

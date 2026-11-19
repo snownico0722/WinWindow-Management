@@ -41,8 +41,8 @@ internal static partial class IntentLayoutPlanner
             var regions = ProtectedRegions(w, context);
             if (regions.Length == 0) continue;
             if (!next.TryGetValue(w.Handle, out var target)) return false;
-            var blockersBefore = before.Where(b => b.MonitorHandle == w.MonitorHandle && b.ZOrder < w.ZOrder).Select(b => b.VisualRect);
-            var blockersAfter = after.Where(b => b.MonitorHandle == target.MonitorHandle && b.ZOrder < target.ZOrder).Select(b => b.VisualRect);
+            var blockersBefore = before.Where(b => b.ZOrder < w.ZOrder).Select(b => b.VisualRect);
+            var blockersAfter = after.Where(b => b.ZOrder < target.ZOrder).Select(b => b.VisualRect);
             if (!RegionsPreserved(w.VisualRect, target.VisualRect, blockersBefore, blockersAfter, w.WorkArea, regions)) return false;
         }
         return true;

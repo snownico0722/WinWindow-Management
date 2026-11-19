@@ -1,14 +1,22 @@
+using System.Text.Json.Serialization;
+
 namespace NeatWin.Core;
 
 // A sample describes a stable manual edit. Application keys are anonymous and installation-local.
 public sealed record LayoutHabit(DateTimeOffset Time, string Display, string App, string? Partner,
-    double Center, double Width, int Order, int RevealedCell, bool Corrected, double? InnerOverlap = null);
+    double Center, double Width, int Order, int RevealedCell, bool Corrected, double? InnerOverlap = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? PartnerCenter = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? PartnerWidth = null);
+
 public sealed record PlacementPreference(nint Window, nint Partner, double Center, double Width,
     double Order, int RevealedCell, double Confidence, double? InnerOverlap = null);
+
 public sealed record LayoutFocus(nint Main, nint Companion, int Switches, string Evidence = "recent-switch-pair");
+
 public sealed class ForegroundHistory
 {
     private readonly List<(nint Handle, uint Pid, long Time)> _visits = [];
+
     public void Visit(nint handle, uint pid, long now)
     {
         if (handle == 0 || pid == 0 || pid == Environment.ProcessId) return;
@@ -16,11 +24,17 @@ public sealed class ForegroundHistory
         {
             if (_visits.Count > 0 && _visits[^1].Handle == handle && _visits[^1].Pid == pid)
                 _visits.RemoveAt(_visits.Count - 1);
+            // Collapse transient Alt+Tab pass-throughs (A -> B -> C where B dwelled < 450ms and A != C).
+            else if (_visits.Count >= 2 && _visits[^2].Handle != handle &&
+                now - _visits[^1].Time is >= 0 and < 450)
+                _visits.RemoveAt(_visits.Count - 1);
             _visits.Add((handle, pid, now));
             if (_visits.Count > 64) _visits.RemoveAt(0);
         }
     }
+
     public void Retire(nint handle) { lock (_visits) _visits.RemoveAll(v => v.Handle == handle); }
+
     public LayoutFocus Resolve(IReadOnlyList<WindowSnapshot> windows, long now)
     {
         lock (_visits)
@@ -30,20 +44,28 @@ public sealed class ForegroundHistory
                 valid.TryGetValue(v.Handle, out var w) && w.ProcessId == v.Pid).ToArray();
             var main = valid.Values.FirstOrDefault(w => w.IsForeground)?.Handle ?? visits.LastOrDefault().Handle;
             if (main == 0) return new(0, 0, 0);
-            var partners = new Dictionary<nint, int>();
+            var partners = new Dictionary<nint, (int Count, double Score)>();
             for (int i = 1; i < visits.Length; i++)
             {
                 var a = visits[i - 1]; var b = visits[i];
                 var peer = a.Handle == main ? b.Handle : b.Handle == main ? a.Handle : 0;
                 if (peer != 0 && peer != main && b.Time - a.Time <= 120_000 &&
                     valid[peer].MonitorHandle == valid[main].MonitorHandle)
-                    partners[peer] = partners.GetValueOrDefault(peer) + 1;
+                {
+                    var current = partners.GetValueOrDefault(peer);
+                    double decay = Math.Exp(-Math.Max(0, now - b.Time) / 180_000.0);
+                    partners[peer] = (current.Count + 1, current.Score + decay);
+                }
             }
-            var best = partners.OrderByDescending(p => p.Value).FirstOrDefault();
-            return new(main, best.Value >= 2 ? best.Key : 0, best.Value);
+            var best = partners.OrderByDescending(p => p.Value.Count >= 2)
+                .ThenByDescending(p => p.Value.Score)
+                .ThenByDescending(p => p.Value.Count)
+                .FirstOrDefault();
+            return new(main, best.Value.Count >= 2 ? best.Key : 0, best.Value.Count);
         }
     }
 }
+
 public static class LayoutHabits
 {
     public static LayoutHabit? Observe(WindowAdjustmentObservation o)
@@ -73,10 +95,15 @@ public static class LayoutHabits
             cell = Enumerable.Range(0, 16).Where(i => after[i] == 'F' && previous[i] <= '4')
                 .OrderBy(i => previous[i]).DefaultIfEmpty(-1).First();
         }
+        double? partnerCenter = partner == null ? null :
+            Math.Clamp((partner.Rect.X + partner.Rect.Width / 2d - o.WorkArea.X) / o.WorkArea.Width, 0, 1);
+        double? partnerWidth = partner == null ? null :
+            Math.Clamp(partner.Rect.Width / (double)o.WorkArea.Width, .05, 1);
         return new(o.Time, IntentEvidence.ContextFor(o.WorkArea), moved.AppKey, partner?.AppKey,
             Math.Clamp(center, 0, 1), Math.Clamp(moved.Rect.Width / (double)o.WorkArea.Width, .05, 1), order, cell,
             o.AfterRequest != null, partner != null && order != 0 && moved.Rect.VerticalOverlapRatio(partner.Rect) >= .5
-                ? moved.Rect.HorizontalOverlapRatio(partner.Rect) : null);
+                ? moved.Rect.HorizontalOverlapRatio(partner.Rect) : null,
+            partnerCenter, partnerWidth);
     }
 
     public static LayoutHabit[] Add(IEnumerable<LayoutHabit> history, LayoutHabit sample)
@@ -90,13 +117,27 @@ public static class LayoutHabits
     public static PlacementPreference? Resolve(IEnumerable<LayoutHabit> history, WindowSnapshot window,
         string app, string? partner, nint partnerHandle, DateTimeOffset now)
     {
-        var samples = history.Where(s => s.App == app && s.Display == IntentEvidence.ContextFor(window.WorkArea) &&
-            s.Time <= now && s.Time >= now.AddDays(-120)).ToArray();
-        var pair = samples.Where(s => partner != null && s.Partner == partner).ToArray();
+        string display = IntentEvidence.ContextFor(window.WorkArea);
+        var recent = history.Where(s => s.Display == display && s.Time <= now && s.Time >= now.AddDays(-120)).ToArray();
+        var direct = recent.Where(s => s.App == app).ToArray();
+        var directPair = direct.Where(s => partner != null && s.Partner == partner).ToArray();
+        // Include mirrored evidence when the user consistently dragged the companion relative to this stationary window.
+        var mirroredPair = partner == null ? [] : recent
+            .Where(s => s.App == partner && s.Partner == app && s.PartnerCenter is double && s.PartnerWidth is double)
+            .Select(s => new LayoutHabit(s.Time, s.Display, app, partner, s.PartnerCenter!.Value, s.PartnerWidth!.Value,
+                -s.Order, -1, s.Corrected, s.InnerOverlap)).ToArray();
+        // Keep both original gestures for diagnostics and old files. A pair contributes at
+        // most one vote per half hour, even if both windows were moved in that period.
+        static LayoutHabit[] Independent(IEnumerable<LayoutHabit> observations) =>
+            observations.GroupBy(s => s.Time.ToUnixTimeSeconds() / 1800)
+                .Select(g => g.MaxBy(s => s.Time)!).ToArray();
+        var pair = Independent(directPair.Concat(mirroredPair));
         bool specific = pair.Length >= 3;
-        var used = specific ? pair : samples;
+        var used = specific ? pair : Independent(direct);
         if (used.Length < 3) return null;
-        double Weight(LayoutHabit s) => Math.Pow(.5, (now - s.Time).TotalDays / 30) * (s.Corrected ? 1.5 : 1);
+        HashSet<LayoutHabit> mirrorSet = [.. mirroredPair];
+        double Weight(LayoutHabit s) => Math.Pow(.5, (now - s.Time).TotalDays / 30) *
+            (s.Corrected ? 1.5 : 1) * (mirrorSet.Contains(s) ? .85 : 1);
         double sum = used.Sum(Weight);
         if (sum < 1) return null;
         double Mean(Func<LayoutHabit, double> get) => used.Sum(s => Weight(s) * get(s)) / sum;
@@ -110,17 +151,18 @@ public static class LayoutHabits
                 .OrderByDescending(g => g.Sum(Weight)).FirstOrDefault();
             if (region != null && region.Count() >= 3 && region.Sum(Weight) > sum * .55) cell = region.Key;
         }
-        var overlaps = pair.Where(s => s.InnerOverlap is >= 0 and <= .4).ToArray();
+        // Clamp moderate overlap outliers up to .55 instead of dropping samples > .40 and losing the habit.
+        var overlaps = pair.Where(s => s.InnerOverlap is >= 0 and <= .55)
+            .Select(s => (Habit: s, Value: Math.Min(.40, s.InnerOverlap!.Value))).ToArray();
         double? overlap = null;
-        double overlapWeight = overlaps.Sum(Weight);
+        double overlapWeight = overlaps.Sum(o => Weight(o.Habit));
         if (specific && overlaps.Length >= 3 && overlapWeight >= .6 * sum)
         {
-            // A rare overlapping edit should not turn a consistent side-by-side habit into a narrow overlap.
             double accumulated = 0;
-            foreach (var sample in overlaps.OrderBy(s => s.InnerOverlap))
+            foreach (var sample in overlaps.OrderBy(o => o.Value))
             {
-                accumulated += Weight(sample);
-                if (accumulated >= overlapWeight / 2) { overlap = sample.InnerOverlap; break; }
+                accumulated += Weight(sample.Habit);
+                if (accumulated >= overlapWeight / 2) { overlap = sample.Value; break; }
             }
         }
         return new(window.Handle, specific ? partnerHandle : 0, center, Mean(s => s.Width),

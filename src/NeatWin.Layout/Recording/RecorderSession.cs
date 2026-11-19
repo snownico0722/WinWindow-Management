@@ -28,6 +28,18 @@ internal sealed class RecorderSession : IDisposable
     private WorkspaceFrame? _savedGeometry;
     private long _geometryTick;
     private readonly Dictionary<nint, (string Request, long Tick)> _lastPlan = [];
+    private long _senseUntil;
+    private bool LiveSensing => _senseUntil > Environment.TickCount64;
+    internal WindowSizeMemory SizeMemory { get; } = new();
+
+    internal void SetLiveSensing(AutomaticLayoutMode mode, bool manualRequest = false)
+    {
+        if (_disposed || !_ownsSingleton) return;
+        _senseUntil = AutomaticLayoutPolicy.UsesFullPlanner(mode) ? long.MaxValue :
+            manualRequest ? Environment.TickCount64 + 20_000 : 0;
+        _timer.Enabled = !_paused || LiveSensing;
+        if (!_timer.Enabled) ResetActivity();
+    }
     private bool _visualSampling;
     internal bool VisualSampling
     {
@@ -128,7 +140,7 @@ internal sealed class RecorderSession : IDisposable
             return;
         }
         _paused = !_paused;
-        _timer.Enabled = !_paused;
+        _timer.Enabled = !_paused || LiveSensing;
         RecordingEpoch++;
         _active = null;
         _pending.Clear();
@@ -169,6 +181,7 @@ internal sealed class RecorderSession : IDisposable
         RecordingEpoch++;
         if (!_ownsSingleton) throw new InvalidOperationException(LayoutText.Get("RecorderInUse"));
         _store.Clear();
+        SizeMemory.Clear();
         ResetActivity();
         _pending.Clear();
         _active = null;
@@ -184,7 +197,8 @@ internal sealed class RecorderSession : IDisposable
     private void OnTimerTick(object? sender, EventArgs e)
     {
         if (_disposed || !_ownsSingleton) return;
-        if (_lastMaintenanceTick == long.MinValue || Environment.TickCount64 - _lastMaintenanceTick >= 3_600_000)
+        if (_paused && !LiveSensing) { _timer.Stop(); ResetActivity(); return; }
+        if (CanWriteDiagnostics && (_lastMaintenanceTick == long.MinValue || Environment.TickCount64 - _lastMaintenanceTick >= 3_600_000))
         {
             _lastMaintenanceTick = Environment.TickCount64;
             try { _store.Prune(); }
@@ -290,7 +304,7 @@ internal sealed class RecorderSession : IDisposable
         if (_disposed || objectId != 0 || childId != 0) return;
         try
         {
-            if (type == 0x8001) { _identity.Retire(hwnd); _activity.Retire(hwnd); _lastPlan.Remove(hwnd); _contextDirty = true; return; }
+            if (type == 0x8001) { _identity.Retire(hwnd); _activity.Retire(hwnd); SizeMemory.Retire(hwnd); _lastPlan.Remove(hwnd); _contextDirty = true; return; }
             if (_paused || hwnd == nint.Zero || AutomationGuard.IsUtility(hwnd)) return;
             if (type is not 0x0003 and not 0x8002 and not 0x8003 and not 0x8004 and not 0x800B) return;
             _contextDirty = true;
@@ -305,7 +319,7 @@ internal sealed class RecorderSession : IDisposable
         _contextDirty = false;
         try
         {
-            var snapshot = _manager.Capture();
+            var snapshot = _manager.CaptureCoalesced();
             var after = Capture(snapshot);
             if (!ObservationIdentityTracker.SameState(_lastContext, after))
             {
@@ -330,20 +344,22 @@ internal sealed class RecorderSession : IDisposable
     private void SampleActivity()
     {
         long now = Environment.TickCount64;
-        if (!CanWriteDiagnostics || now - _sampleTick < 5000) return;
+        bool writeDisk = CanWriteDiagnostics;
+        if ((!writeDisk && !LiveSensing) || _disposed || !_ownsSingleton || now - _sampleTick < 5000) return;
         _sampleTick = now;
         try
         {
             if (!DesktopActivity.Interactive()) { _latest = null; _savedGeometry = null; _activity.Reset(); return; }
-            var snapshot = _manager.Capture();
+            var snapshot = _manager.CaptureCoalesced();
             var frame = Capture(snapshot);
-            _latest = _activity.Sample(_session, now, frame, snapshot, _identity, VisualSampling, _store.Rules.Read());
+            _latest = _activity.Sample(_session, now, frame, snapshot, _identity, VisualSampling, _store.Rules.Read(), persistKeys: writeDisk);
+            if (!writeDisk) return;
             bool keyframe = _latest.ObservedMilliseconds == 0 || now - _geometryTick >= 60_000 ||
                 !ObservationIdentityTracker.SameState(_savedGeometry, frame);
             _store.AppendActivity(_latest, keyframe ? frame : null, keyframe ? now : _geometryTick);
             if (keyframe) { _geometryTick = now; _savedGeometry = frame; }
         }
-        catch (Exception ex) { _latest = null; _error = LayoutText.Format("RecordStateFailed", ex.Message); }
+        catch (Exception ex) { _latest = null; if (writeDisk) _error = LayoutText.Format("RecordStateFailed", ex.Message); }
     }
 
     internal void Applied(string request, IEnumerable<nint> handles)
@@ -353,9 +369,25 @@ internal sealed class RecorderSession : IDisposable
         foreach (var h in handles) _lastPlan[h] = (request, Environment.TickCount64);
     }
 
+    internal IReadOnlyDictionary<nint, string> LiveActivities(IReadOnlyList<WindowSnapshot> snapshot)
+    {
+        if (_disposed || _latest == null || Environment.TickCount64 - _latest.Tick > 8000)
+            return new Dictionary<nint, string>();
+        var map = new Dictionary<nint, string>();
+        foreach (var w in snapshot.Where(w => w.IsManageable))
+        {
+            var id = _identity.Id(w);
+            if (_latest.Frame.Windows.Any(s => s.Id == id && s.Rect == w.VisualRect &&
+                s.Foreground == w.IsForeground && s.VisibleRatio > 0) &&
+                _latest.Windows.FirstOrDefault(a => a.Id == id) is { } ev)
+                map[w.Handle] = ev.ActivityHint;
+        }
+        return map;
+    }
+
     internal TaskWindowHint[] LiveHints(IReadOnlyList<WindowSnapshot> snapshot)
     {
-        if (!CanWriteDiagnostics || _latest == null || Environment.TickCount64 - _latest.Tick > 8000) return [];
+        if (_disposed || _latest == null || Environment.TickCount64 - _latest.Tick > 8000) return [];
         var result = new List<TaskWindowHint>();
         foreach (var w in snapshot.Where(w => w.IsManageable))
         {
@@ -374,27 +406,42 @@ internal sealed class RecorderSession : IDisposable
         return result.ToArray();
     }
 
-    internal WorkingPairRule[] BindRules(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows) =>
-        rules.Pairs is { Length: > 0 } ? rules.Bind(windows.Where(w => w.IsManageable)
-            .Select(w => (w, _activity.AppKey(w, false)))) : [];
+    internal WorkingPairRule[] BindRules(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows,
+        IReadOnlyList<TaskWindowHint> hints, IReadOnlyDictionary<nint, string> activities) =>
+        (rules.Pairs is { Length: > 0 } || rules.RolePairs is { Length: > 0 })
+            ? rules.Bind(windows.Where(w => w.IsManageable).Select(w => (w, _activity.AppKey(w, false))),
+                hints, activities)
+            : [];
+
+    internal PlacementPreference[] BindSlots(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows) =>
+        rules.AppSlots is { Length: > 0 } ? rules.BindSlots(windows.Select(w => (w, _activity.AppKey(w, false)))) : [];
+
+    internal WindowSizeFloor[] BindSizeFloors(IReadOnlyList<WindowSnapshot> windows) =>
+        SizeMemory.Bind(windows.Where(w => w.IsManageable).Select(w => (w, _activity.AppKey(w, false))));
+
+    internal string? TryReadAppKey(WindowSnapshot window) => _activity.AppKey(window, false);
 
     internal PlacementPreference[] Preferences(IReadOnlyList<WindowSnapshot> windows, LayoutFocus focus)
     {
-        if (!_store.Enabled || _store.Placement.Read() is not { Length: > 0 } samples) return [];
-        var entries = windows.Where(w => w.IsManageable).Select(w => (Window: w, App: _activity.AppKey(w, false)))
-            .Where(w => w.App != null).ToArray();
+        var manageable = windows.Where(w => w.IsManageable).Select(w => (Window: w, App: _activity.AppKey(w, false))).ToArray();
+        var entries = manageable.Where(w => w.App != null).ToArray();
         var result = new List<PlacementPreference>();
-        foreach (var entry in entries.GroupBy(e => e.App).Where(g => g.Count() == 1).Select(g => g.First()))
+        if (_store.Enabled && _store.Placement.Read() is { Length: > 0 } samples)
         {
-            var peers = entries.Where(p => p.Window.Handle != entry.Window.Handle &&
-                p.Window.MonitorHandle == entry.Window.MonitorHandle && p.App != entry.App)
-                .GroupBy(p => p.App).Where(g => g.Count() == 1).Select(g => g.First()).ToArray();
-            var partner = peers.OrderByDescending(p => (p.Window.Handle == focus.Companion && entry.Window.Handle == focus.Main) ||
-                    (p.Window.Handle == focus.Main && entry.Window.Handle == focus.Companion))
-                .ThenByDescending(p => samples.Count(s => s.App == entry.App && s.Partner == p.App)).FirstOrDefault();
-            var preference = LayoutHabits.Resolve(samples, entry.Window, entry.App!, partner.App,
-                partner.Window?.Handle ?? 0, DateTimeOffset.UtcNow);
-            if (preference is { Confidence: > .1 }) result.Add(preference);
+            foreach (var entry in entries.GroupBy(e => e.App).Where(g => g.Count() == 1).Select(g => g.First()))
+            {
+                var peers = entries.Where(p => p.Window.Handle != entry.Window.Handle &&
+                    p.Window.MonitorHandle == entry.Window.MonitorHandle && p.App != entry.App)
+                    .GroupBy(p => p.App).Where(g => g.Count() == 1).Select(g => g.First()).ToArray();
+                var partner = peers.OrderByDescending(p => (p.Window.Handle == focus.Companion && entry.Window.Handle == focus.Main) ||
+                        (p.Window.Handle == focus.Main && entry.Window.Handle == focus.Companion))
+                    .ThenByDescending(p => samples.Count(s =>
+                        (s.App == entry.App && s.Partner == p.App) || (s.Partner == entry.App && s.App == p.App)))
+                    .FirstOrDefault();
+                var preference = LayoutHabits.Resolve(samples, entry.Window, entry.App!, partner.App,
+                    partner.Window?.Handle ?? 0, DateTimeOffset.UtcNow);
+                if (preference is { Confidence: > .1 }) result.Add(preference);
+            }
         }
         return result.ToArray();
     }

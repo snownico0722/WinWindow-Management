@@ -68,19 +68,26 @@ public sealed class ObservationIdentityTracker
 public sealed record RecordedWindowHint(int Id, bool Passive, bool Media, bool Anchor, TaskContentRegion[]? Regions);
 public sealed record RecordedPlacement(int Id, int Partner, double Center, double Width, double Order,
     int Cell, double Confidence, double? Overlap);
+public sealed record RecordedSizeFloor(int Id, int MinWidth, int MinHeight);
 public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, string? FocusEvidence,
-    RecordedWindowHint[] Hints, RecordedPlacement[] Placements)
+    RecordedWindowHint[] Hints, RecordedPlacement[] Placements,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RecordedSizeFloor[]? SizeFloors = null, Dictionary<int, string>? Activities = null)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids)
     {
         int Id(nint handle) => ids.GetValueOrDefault(handle);
         var focus = context.Focus;
+        var floors = (context.SizeFloors ?? []).Where(f => Id(f.Handle) != 0)
+            .Select(f => new RecordedSizeFloor(Id(f.Handle), f.MinWidth, f.MinHeight)).ToArray();
         return new(Id(focus?.Main ?? 0), Id(focus?.Companion ?? 0), focus?.Switches ?? 0, focus?.Evidence,
             (context.WindowHints ?? []).Where(h => Id(h.Handle) != 0)
                 .Select(h => new RecordedWindowHint(Id(h.Handle), h.PassiveVisual, h.MediaCompanion, h.Anchor, h.ProtectedRegions)).ToArray(),
             (context.Placement ?? []).Where(p => Id(p.Window) != 0)
                 .Select(p => new RecordedPlacement(Id(p.Window), Id(p.Partner), p.Center, p.Width, p.Order,
-                    p.RevealedCell, p.Confidence, p.InnerOverlap)).ToArray());
+                    p.RevealedCell, p.Confidence, p.InnerOverlap)).ToArray(),
+            floors.Length > 0 ? floors : null, context.Activities?.Where(a => Id(a.Key) != 0)
+                .ToDictionary(a => Id(a.Key), a => a.Value));
     }
 
     // During offline replay the session-local ids are the simulated handles.
@@ -90,6 +97,8 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         WindowHints = Hints.Select(h => new TaskWindowHint(h.Id, h.Passive, ProtectedRegions: h.Regions,
             Anchor: h.Anchor, MediaCompanion: h.Media)).ToArray(),
         Placement = Placements.Select(p => new PlacementPreference(p.Id, p.Partner, p.Center, p.Width,
-            p.Order, p.Cell, p.Confidence, p.Overlap)).ToArray()
+            p.Order, p.Cell, p.Confidence, p.Overlap)).ToArray(),
+        Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),
+        SizeFloors = SizeFloors?.Select(f => new WindowSizeFloor(f.Id, f.MinWidth, f.MinHeight)).ToArray()
     };
 }

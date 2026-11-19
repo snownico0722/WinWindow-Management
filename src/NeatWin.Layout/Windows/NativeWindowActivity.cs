@@ -10,19 +10,8 @@ internal static class NativeWindowActivity
     {
         get
         {
-            var info = new GuiThreadInfo { Size = Marshal.SizeOf<GuiThreadInfo>() };
-            return GetGUIThreadInfo(0, ref info) && (info.Flags & 2) != 0;
+            var info = new NativeMethods.GuiThreadInfo { Size = Marshal.SizeOf<NativeMethods.GuiThreadInfo>() };
+            return NativeMethods.GetGUIThreadInfo(0, ref info) && (info.Flags & 2) != 0;
         }
     }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct GuiThreadInfo
-    {
-        internal int Size, Flags;
-        internal nint Active, Focus, Capture, MenuOwner, MoveSize, Caret;
-        internal NativeMethods.Rect CaretRect;
-    }
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
 }

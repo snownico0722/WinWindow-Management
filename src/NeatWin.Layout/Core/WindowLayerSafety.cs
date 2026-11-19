@@ -2,19 +2,38 @@ namespace NeatWin.Core;
 
 public static class WindowLayerSafety
 {
-    // Reorder only a contiguous normal-window block. Never jump past a dialog, an unrelated
-    // application, another monitor's interleaved window, or an always-on-top window.
-    public static bool CanReorder(IReadOnlyList<WindowSnapshot> desired, IReadOnlyList<WindowSnapshot> desktop)
+    // Reorder a normal-window group on the same monitor. Windows on other monitors or completely
+    // disjoint normal windows on the same monitor commute safely; overlapping external or topmost windows do not.
+    public static bool CanReorder(IReadOnlyList<WindowSnapshot> desired, IReadOnlyList<WindowSnapshot> desktop,
+        IReadOnlyDictionary<nint, RectI>? targetRects = null)
     {
         if (desired.Count < 2 || desired.Any(w => !w.IsManageable || w.IsTopmost) ||
             desired.Select(w => w.MonitorHandle).Distinct().Count() != 1 ||
             desired.Select(w => w.Handle).Distinct().Count() != desired.Count) return false;
+        var monitor = desired[0].MonitorHandle;
         var current = desktop.OrderBy(w => w.ZOrder).ToArray();
         var handles = desired.Select(w => w.Handle).ToHashSet();
         var slots = current.Select((w, i) => (w, i)).Where(p => handles.Contains(p.w.Handle)).ToArray();
-        if (slots.Length != desired.Count || slots[^1].i - slots[0].i + 1 != desired.Count) return false;
-        return desired.All(w => slots.Any(p => p.w.Handle == w.Handle && p.w.ProcessId == w.ProcessId &&
-            p.w.MonitorHandle == w.MonitorHandle && p.w.WorkArea == w.WorkArea && p.w.IsManageable && !p.w.IsTopmost));
+        if (slots.Length != desired.Count) return false;
+        if (!desired.All(w => slots.Any(p => p.w.Handle == w.Handle && p.w.ProcessId == w.ProcessId &&
+            p.w.MonitorHandle == w.MonitorHandle && p.w.WorkArea == w.WorkArea && p.w.IsManageable && !p.w.IsTopmost)))
+            return false;
+
+        for (int idx = slots[0].i + 1; idx < slots[^1].i; idx++)
+        {
+            var interleaved = current[idx];
+            if (handles.Contains(interleaved.Handle)) continue;
+            // Never jump across a topmost surface or an unmanageable dialog/overlay on the same monitor.
+            if (interleaved.MonitorHandle == monitor && (interleaved.IsTopmost || !interleaved.IsManageable)) return false;
+            bool overlapsAny = slots.Any(s =>
+            {
+                if (!s.w.VisualRect.Intersect(interleaved.VisualRect).IsEmpty) return true;
+                return targetRects != null && targetRects.TryGetValue(s.w.Handle, out var target) &&
+                    !target.Intersect(interleaved.VisualRect).IsEmpty;
+            });
+            if (overlapsAny) return false;
+        }
+        return true;
     }
 
     public static bool MatchesOrder(WindowLayerOrder order, IReadOnlyList<WindowSnapshot> desktop) =>

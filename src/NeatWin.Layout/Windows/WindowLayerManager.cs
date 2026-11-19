@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using NeatWin.Core;
 
 namespace NeatWin.Windows;
@@ -16,9 +15,10 @@ public sealed partial class WindowManager
             c.IsManageable && WindowStateRules.Matches(w, c, w.VisualRect))))
             return new(plan with { Moves = [], Layers = [] }, ["桌面在规划后发生变化，本次未执行。"]);
 
-        var notes = ApplyLayers(plan.Layers).ToList();
+        var targetRects = plan.Moves.ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
+        var notes = ApplyLayers(plan.Layers, targetRects).ToList();
         var afterLayers = plan.Layers.Count == 0 ? current : Capture();
-        var failed = plan.Layers.Where(l => !WindowLayerSafety.CanReorder(l.FrontToBack, afterLayers) || !WindowLayerSafety.MatchesOrder(l, afterLayers)).ToArray();
+        var failed = plan.Layers.Where(l => !WindowLayerSafety.CanReorder(l.FrontToBack, afterLayers, targetRects) || !WindowLayerSafety.MatchesOrder(l, afterLayers)).ToArray();
         var failedHandles = failed.SelectMany(l => l.FrontToBack.Select(w => w.Handle)).ToHashSet();
         var accepted = plan with
         {
@@ -35,18 +35,19 @@ public sealed partial class WindowManager
         return new(accepted, notes.ToArray());
     }
 
-    public string[] ApplyLayers(IReadOnlyList<WindowLayerOrder> orders)
+    public string[] ApplyLayers(IReadOnlyList<WindowLayerOrder> orders, IReadOnlyDictionary<nint, RectI>? targetRects = null)
     {
         var notes = new List<string>();
         foreach (var order in orders)
         {
             var current = Capture();
-            if (NativeWindowActivity.IsMoving || !WindowLayerSafety.CanReorder(order.FrontToBack, current))
+            if (NativeWindowActivity.IsMoving || !WindowLayerSafety.CanReorder(order.FrontToBack, current, targetRects))
             {
                 notes.Add("层级未执行：窗口状态改变或被其他窗口隔开。");
                 continue;
             }
             var originalOrder = current.Where(w => order.FrontToBack.Any(d => d.Handle == w.Handle)).OrderBy(w => w.ZOrder).ToArray();
+            InvalidateCache();
             var succeeded = SetOrder(order.FrontToBack);
             var actual = Capture();
             if (!succeeded || !WindowLayerSafety.MatchesOrder(order, actual))
@@ -79,13 +80,7 @@ public sealed partial class WindowManager
     {
         NativeMethods.GetWindowThreadProcessId(window.Handle, out var pid);
         return pid == window.ProcessId && NativeMethods.IsWindowVisible(window.Handle) &&
-            !NativeMethods.IsIconic(window.Handle) && !IsHungAppWindow(window.Handle) &&
+            !NativeMethods.IsIconic(window.Handle) && !NativeMethods.IsHungAppWindow(window.Handle) &&
             (NativeMethods.GetWindowLongPtr(window.Handle, NativeMethods.GwlExStyle).ToInt64() & 8) == 0;
     }
-    private static bool Near(RectI a, RectI b) => Math.Abs(a.X - b.X) <= 3 && Math.Abs(a.Y - b.Y) <= 3 &&
-        Math.Abs(a.Width - b.Width) <= 3 && Math.Abs(a.Height - b.Height) <= 3;
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsHungAppWindow(nint hwnd);
 }

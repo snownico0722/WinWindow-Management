@@ -6,7 +6,7 @@ namespace NeatWin.Windows;
 // Enumerate on a worker so a disconnected audio endpoint cannot hold up a layout operation.
 internal sealed class AudioSessionMeter
 {
-    internal sealed record Reading(long Tick, Dictionary<uint, float> Peaks);
+    internal sealed record Reading(long Tick, Dictionary<uint, float> Peaks, Dictionary<uint, float> SharedPeaks);
     private Task<Reading?>? _pending;
 
     internal Reading? Poll(long now)
@@ -33,19 +33,28 @@ internal sealed class AudioSessionMeter
                 audio.GetSessionEnumerator(out sessions) != 0 || sessions == null || sessions.GetCount(out var count) != 0)
                 return null;
             var peaks = new Dictionary<uint, float>();
+            var sharedPeaks = new Dictionary<uint, float>();
             for (int i = 0; i < Math.Min(count, 64); i++)
             {
                 if (sessions.GetSession(i, out var session) != 0 || session == null) continue;
                 try
                 {
                     if (session is IAudioSessionControl2 control && session is IAudioMeterInformation meter &&
-                        control.IsSystemSoundsSession() == 1 && control.GetProcessId(out uint pid) == 0 && pid != 0 &&
-                        meter.GetPeakValue(out float peak) == 0 && peak is >= 0 and <= 1)
-                        peaks[pid] = Math.Max(peaks.GetValueOrDefault(pid), peak);
+                        control.IsSystemSoundsSession() == 1)
+                    {
+                        int pidStatus = control.GetProcessId(out uint pid);
+                        // S_OK (0) or AUDCLNT_S_NO_SINGLE_PROCESS (0x0889000D) both populate the creating PID.
+                        if ((pidStatus == 0 || pidStatus == AudclntSNoSingleProcess) && pid != 0 &&
+                            meter.GetPeakValue(out float peak) == 0 && peak is >= 0 and <= 1)
+                        {
+                            var readings = pidStatus == 0 ? peaks : sharedPeaks;
+                            readings[pid] = Math.Max(readings.GetValueOrDefault(pid), peak);
+                        }
+                    }
                 }
                 finally { Release(session); }
             }
-            return new(Environment.TickCount64, peaks);
+            return new(Environment.TickCount64, peaks, sharedPeaks);
         }
         catch (Exception e) when (e is COMException or InvalidCastException or UnauthorizedAccessException or
             System.Reflection.TargetInvocationException or TypeLoadException) { return null; }

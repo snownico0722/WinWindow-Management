@@ -53,13 +53,100 @@ public enum TaskRelation { Automatic, JointView, Alternating, Integrated }
 public sealed record TaskPairHint(nint First, nint Second, TaskRelation Relation);
 public sealed record TaskWindowHint(nint Handle, bool PassiveVisual = false,
     bool ProtectPeriphery = false, double? UsefulWidthDip = null, double? UsefulHeightDip = null, TaskContentRegion[]? ProtectedRegions = null, bool Anchor = false, bool MediaCompanion = false);
+public sealed record WindowSizeFloor(nint Handle, int MinWidth, int MinHeight);
+
 public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDisplay[]? Displays = null,
     ViewingCalibration? Calibration = null, TaskPairHint[]? PairHints = null,
     TaskWindowHint[]? WindowHints = null, ManualWindowGesture? RecentGesture = null,
     bool VerifiedRepeat = false, string[]? RejectedLayouts = null, VideoBlackBarHint? VideoHint = null,
-    bool PreferReversibleVerticalFill = false, bool ExplicitArrange = false, LayoutFocus? Focus = null, PlacementPreference[]? Placement = null, CompiledLayoutRules? Rules = null, WorkingPairRule[]? RulePairs = null)
+    bool PreferReversibleVerticalFill = false, bool ExplicitArrange = false, LayoutFocus? Focus = null,
+    PlacementPreference[]? Placement = null, CompiledLayoutRules? Rules = null, WorkingPairRule[]? RulePairs = null,
+    bool UseWorkingPairs = false, WindowSizeFloor[]? SizeFloors = null,
+    IReadOnlyDictionary<nint, string>? Activities = null)
 {
     public TaskLayoutProfile Preferences => (Profile ?? new()).Normalize();
+    public bool PairPlanningEnabled => ExplicitArrange || UseWorkingPairs;
+    public (int Width, int Height) MinimumSize(nint handle) =>
+        SizeFloors?.FirstOrDefault(f => f.Handle == handle) is { } floor ? (floor.MinWidth, floor.MinHeight) : (0, 0);
+}
+
+/// <summary>Empirical, session-local lower bounds from observed partial resizes.</summary>
+public sealed class WindowSizeMemory
+{
+    private sealed record Limit(string? App, double Width, double Height);
+    private readonly Dictionary<(nint Handle, uint Pid), Limit> _windows = [];
+
+    public void Clear() { lock (_windows) _windows.Clear(); }
+
+    public void Retire(nint handle)
+    {
+        lock (_windows)
+            foreach (var key in _windows.Keys.Where(k => k.Handle == handle).ToArray()) _windows.Remove(key);
+    }
+
+    public void Observe(RectI before, RectI target, RectI actual, uint dpi, nint handle, uint pid, string? appKey)
+    {
+        if (handle == 0 || pid == 0 || actual.IsEmpty) return;
+        double scale = dpi == 0 ? 1 : dpi / 96d;
+        double ObserveAxis(int start, int request, int result, double previous)
+        {
+            if (result > request + 6 && result < start - 6 && request < start)
+                return result / scale;
+            return result + 4 < previous * scale ? 0 : previous;
+        }
+
+        lock (_windows)
+        {
+            var key = (handle, pid);
+            var previous = _windows.GetValueOrDefault(key);
+            double width = ObserveAxis(before.Width, target.Width, actual.Width, previous?.Width ?? 0);
+            double height = ObserveAxis(before.Height, target.Height, actual.Height, previous?.Height ?? 0);
+            if (width <= 0 && height <= 0) { _windows.Remove(key); return; }
+            if (_windows.Count >= 256 && previous == null) _windows.Remove(_windows.Keys.First());
+            _windows[key] = new(appKey, width, height);
+        }
+    }
+
+    private static double ConfirmedAxis(IEnumerable<double> values)
+    {
+        // Two distinct live instances must independently stop at the same DIP dimension.
+        // If limits disagree, match the lower corroborated pair.
+        double previous = 0;
+        foreach (double value in values.Where(v => v > 0).Order())
+        {
+            if (previous > 0 && value - previous <= 4) return previous;
+            previous = value;
+        }
+        return 0;
+    }
+
+    public WindowSizeFloor[] Bind(IEnumerable<(WindowSnapshot Window, string? Key)> entries)
+    {
+        lock (_windows)
+        {
+            if (_windows.Count == 0) return [];
+            var shared = _windows.Values.Where(v => v.App != null).GroupBy(v => v.App!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => (Width: ConfirmedAxis(g.Select(v => v.Width)),
+                    Height: ConfirmedAxis(g.Select(v => v.Height))), StringComparer.OrdinalIgnoreCase);
+            var result = new List<WindowSizeFloor>();
+            foreach (var (w, key) in entries.Where(e => e.Window.IsManageable))
+            {
+                var own = _windows.GetValueOrDefault((w.Handle, w.ProcessId));
+                var app = key == null ? default : shared.GetValueOrDefault(key);
+                double scale = w.Dpi == 0 ? 1 : w.Dpi / 96d;
+                int Floor(double local, double common, int actual, int available)
+                {
+                    double dip = local > 0 ? local : common;
+                    int pixels = (int)Math.Ceiling(dip * scale);
+                    return pixels <= actual + 4 ? Math.Min(pixels, available) : 0;
+                }
+                int width = Floor(own?.Width ?? 0, app.Width, w.VisualRect.Width, w.WorkArea.Width);
+                int height = Floor(own?.Height ?? 0, app.Height, w.VisualRect.Height, w.WorkArea.Height);
+                if (width > 0 || height > 0) result.Add(new(w.Handle, width, height));
+            }
+            return result.ToArray();
+        }
+    }
 }
 
 /// <summary>Bounded session feedback, never satisfaction learning. No disk persistence.</summary>
@@ -136,7 +223,7 @@ public sealed class TaskLayoutSession
         windows.OrderBy(w => w.Handle).Select(w =>
             $"{w.Handle}:{w.ProcessId}:{w.MonitorHandle}:{w.WorkArea}:{w.Dpi}:{w.VisualRect}:{w.ZOrder}:{w.IsForeground}:{w.IsTopmost}:{w.IsManageable}:{w.IsResizable}:{w.FrameInsets}"));
 
-    private static WindowSnapshot[] Project(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan)
+    internal static WindowSnapshot[] Project(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan)
     {
         var rects = plan.Moves.ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
         var ranks = before.ToDictionary(w => w.Handle, w => w.ZOrder);

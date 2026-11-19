@@ -88,8 +88,8 @@ Check(ActivityHints.Classify(false, .7, .5, 2, false, null, true) == "audible-wi
     ActivityHints.Classify(false, .7, .5, 0, false, null, true) == "visible-background",
     "process audio supports visible motion and alone cannot label a window as video");
 
-Check(ActivityHints.Classify(false, 1, .5, 0, true, null, true, uniqueMediaWindow: true) == "audible-media-session" &&
-    ActivityHints.Classify(false, 1, .5, 0, true, null, true, uniqueMediaWindow: false) == "visible-background",
+Check(ActivityHints.Classify(false, 1, .5, 0, true, null, true, processWindowCount: 1) == "audible-media-session" &&
+    ActivityHints.Classify(false, 1, .5, 0, true, null, true, processWindowCount: 2) == "visible-background",
     "audible playback can support a single visible app window without pixel sampling, and abstains for siblings");
 
 var workspace = new RectI(0, 0, 2100, 1000);
@@ -159,6 +159,153 @@ try
 }
 finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
 
+
+// --- v5 Algorithmic & Architectural Regression Checks ---
+// 1. Transient Alt+Tab pass-through (<450ms) does not pollute ForegroundHistory; recency breaks ties.
+var markov = new ForegroundHistory();
+markov.Visit(1, 1, 10_000);
+markov.Visit(3, 3, 10_200); // 200ms transient Alt+Tab icon pass-through on the way to window 2
+markov.Visit(2, 2, 10_400);
+markov.Visit(1, 1, 12_000);
+markov.Visit(2, 2, 14_000);
+var threeWins = new[] { Window(1, home), Window(2, home with { X = 600 }), Window(3, home with { X = 640 }) };
+Check(markov.Resolve(threeWins, 14_500) is { Main: 1, Companion: 2 },
+    "transient Alt+Tab pass-throughs are collapsed and recent active pair wins");
+
+// 2. Bidirectional habit learning + >0.40 overlap clamping (no cliff drop to null).
+var stationaryLeft = Window(1, new(0, 100, 1120, 780));
+var draggedRightBefore = Window(2, new(450, 100, 1120, 780));
+var draggedRightAfter = Window(2, new(800, 100, 1120, 780)); // ~28.6% overlap, later test 42% clamped to 40%
+var biStart = Frame([stationaryLeft, draggedRightBefore]);
+var biEnd = Frame([stationaryLeft, draggedRightAfter]);
+var biGesture = new WindowAdjustmentObservation(now, "bi", 2, draggedRightBefore.VisualRect, draggedRightAfter.VisualRect,
+    area, area, 96, 850, [], "stable", 3, biStart, biEnd, biEnd, "arrange-request");
+var biHabit = LayoutHabits.Observe(biGesture)!;
+Check(biHabit is { App: "app-2", Partner: "app-1", Order: 1, PartnerCenter: not null, PartnerWidth: not null },
+    "dragging only the right companion records stationary left partner geometry");
+var biSamples = Array.Empty<LayoutHabit>();
+for (int d = 1; d <= 4; d++)
+    biSamples = LayoutHabits.Add(biSamples, biHabit with { Time = now.AddDays(d), InnerOverlap = .43 });
+var mirrorPref = LayoutHabits.Resolve(biSamples, stationaryLeft, "app-1", "app-2", 2, now.AddDays(5));
+var directClamped = LayoutHabits.Resolve(biSamples, draggedRightAfter, "app-2", "app-1", 1, now.AddDays(5));
+Check(mirrorPref is { Order: < -.9, InnerOverlap: .40 } && directClamped is { Order: > .9, InnerOverlap: .40 },
+    "mirror habit resolves stationary main side/width and clamps 43% overlap to 40% instead of dropping");
+
+// 3. Authorized high overlap (0.35..0.40) beats zero-overlap columns without slope inversion.
+var wideArea = new RectI(0, 0, 2560, 1380);
+var hdPair = new[]
+{
+    Window(1, new(500, 120, 1520, 1080)) with { WorkArea = wideArea, Dpi = 120 },
+    Window(2, new(560, 120, 1520, 1080)) with { WorkArea = wideArea, Dpi = 120, IsForeground = false }
+};
+var highOverlapRule = new CompiledLayoutRules(Version: 2, MediaOverlap: .38,
+    RolePairs: [new RolePairRule("foreground", "media", "left", .38)]);
+var roleBound = highOverlapRule.Bind([(hdPair[0], "000000000000000000000001"), (hdPair[1], "000000000000000000000002")],
+    [new(2, PassiveVisual: true, MediaCompanion: true)]);
+var hdPlan = Run(hdPair, new(ExplicitArrange: true, Focus: new(1, 2, 3),
+    WindowHints: [new(2, PassiveVisual: true, MediaCompanion: true)], Rules: highOverlapRule, RulePairs: roleBound));
+var hdLeft = Placed(hdPlan, hdPair[0]); var hdRight = Placed(hdPlan, hdPair[1]);
+Check(hdLeft.X < hdRight.X && hdLeft.HorizontalOverlapRatio(hdRight) is >= .34 and <= .40,
+    "v2 RolePairRule binds new apps by role and achieves 38% authorized overlap without flipping to 0% columns");
+
+// 4. Three-window working-overlap tucks the 3rd auxiliary window's top access band instead of failing TaskSafe.
+var topPairA = hdPair[0] with { VisualRect = new(500, 0, 1520, 1080), OuterRect = new(500, 0, 1520, 1080) };
+var topPairB = hdPair[1] with { VisualRect = new(560, 0, 1520, 1080), OuterRect = new(560, 0, 1520, 1080), ZOrder = 1 };
+var auxThird = Window(3, new(40, 60, 1100, 760)) with { WorkArea = wideArea, Dpi = 120, IsForeground = false, ZOrder = 2 };
+var threeDesktop = new[] { topPairA, topPairB, auxThird };
+var threePlan = LayoutDispatch.Create(LayoutRoute.Smart,
+    new VisibilityAnalyzer().SelectVisibleWorkingSet(threeDesktop, includeStackAccess: true), new(), null, threeDesktop,
+    new(UseWorkingPairs: true, Focus: new(1, 2, 3),
+        WindowHints: [new(2, PassiveVisual: true, MediaCompanion: true)], Rules: highOverlapRule, RulePairs: roleBound));
+Check(threePlan.Groups.Any(g => g.Selected is "working-overlap" or "working-pair") &&
+    Placed(threePlan, topPairA).Top >= 40 && Placed(threePlan, auxThird).Top == 0 &&
+    Placed(threePlan, topPairA).HorizontalOverlapRatio(Placed(threePlan, topPairB)) >= .20,
+    "FullAssist (UseWorkingPairs) arranges a 3-window desktop with working-overlap while keeping the 3rd window's title band accessible");
+
+// 5. Small Topmost floating widget (<15% work area) does not trigger fixed-occluder veto.
+var miniPinned = new WindowSnapshot(99, new(2220, 1100, 290, 240), new(2220, 1100, 290, 240),
+    wideArea, 1, default, false, false, false, 0, 120, 99, IsTopmost: true);
+var withMiniOverlay = new[] { miniPinned, hdPair[0] with { ZOrder = 1 }, hdPair[1] with { ZOrder = 2 } };
+var overlayPlan = LayoutDispatch.Create(LayoutRoute.ManualAlgorithm,
+    new VisibilityAnalyzer().SelectForManualArrange(withMiniOverlay, true), new(), null, withMiniOverlay,
+    new(ExplicitArrange: true, Focus: new(1, 2, 3), WindowHints: [new(2, PassiveVisual: true, MediaCompanion: true)]));
+Check(overlayPlan.Moves.Count >= 2 && overlayPlan.Groups.All(g => g.Selected != "keep"),
+    "a small pinned Topmost widget (<15% area) acts as soft exposure rather than a fixed-occluder brick wall");
+
+// 6. WindowLayerSafety allows reordering across an other-monitor or disjoint normal window, blocks overlapping unmanageable dialogs.
+var disjointMid = new WindowSnapshot(50, new(10, 10, 200, 150), new(10, 10, 200, 150), wideArea, 1, default, true, false, true, 1, 120, 50);
+var reorderedA = hdPair[0] with { VisualRect = new(400, 200, 900, 700), ZOrder = 0 };
+var reorderedB = hdPair[1] with { VisualRect = new(900, 200, 900, 700), ZOrder = 2 };
+Check(WindowLayerSafety.CanReorder([reorderedB, reorderedA], [reorderedA, disjointMid, reorderedB]),
+    "WindowLayerSafety permits reordering past a completely non-intersecting normal window");
+var modalMid = disjointMid with { VisualRect = new(700, 300, 400, 300), IsManageable = false };
+Check(!WindowLayerSafety.CanReorder([reorderedB, reorderedA], [reorderedA, modalMid, reorderedB]),
+    "WindowLayerSafety still blocks reordering across an unmanageable dialog on the same monitor");
+
+// 7. WindowSizeMemory learns empirical WM_GETMINMAXINFO clamp floors and prevents unachievable shrinks.
+var sizeMem = new WindowSizeMemory();
+sizeMem.Observe(new(100, 100, 1400, 900), new(100, 100, 800, 900), new(100, 100, 1160, 900), 96, 2, 2, "app-clamped");
+var floors = sizeMem.Bind([(fixture[0], "app-normal"), (fixture[1], "app-clamped")]);
+Check(floors.Single() is { Handle: 2, MinWidth: 1160 },
+    "WindowSizeMemory records clamped minimum width and binds it for subsequent plans");
+var clampedPlan = Run(fixture, new(ExplicitArrange: true, Focus: new(1, 2, 3), SizeFloors: floors));
+Check(Placed(clampedPlan, fixture[1]).Width >= 1160,
+    "planner respects learned native minimum width floor instead of proposing an impossible shrink");
+
+// The same desk adjustment must not become two independent votes when the user moves both windows.
+var directLeft = biHabit with { App = "app-1", Partner = "app-2", Center = biHabit.PartnerCenter!.Value,
+    Width = biHabit.PartnerWidth!.Value, PartnerCenter = biHabit.Center, PartnerWidth = biHabit.Width, Order = -1, Time = now };
+var twoPeriods = new[] { directLeft, biHabit with { Time = now.AddMinutes(1) }, directLeft with { Time = now.AddMinutes(31) } };
+Check(LayoutHabits.Resolve(twoPeriods, stationaryLeft, "app-1", "app-2", 2, now.AddHours(1)) == null &&
+    LayoutHabits.Resolve([.. twoPeriods, biHabit with { Time = now.AddMinutes(61) }], stationaryLeft, "app-1", "app-2", 2,
+        now.AddMinutes(62)) is { Order: < -.9 }, "mirrored observations count once per pair and period, including older records");
+
+var gameRule = highOverlapRule with { RolePairs = [new("game", "media", "left", .38)] };
+var mediaContext = new TaskLayoutContext(ExplicitArrange: true, Focus: new(1, 2, 3), Rules: gameRule,
+    WindowHints: [new(2, MediaCompanion: true)], Activities: new Dictionary<nint,string> { [1] = "game-like-interaction" });
+var roleExport = RecordedTaskSignals.From(mediaContext, new Dictionary<nint,int> { [1] = 11, [2] = 12 });
+var restored = JsonSerializer.Deserialize<RecordedTaskSignals>(JsonSerializer.Serialize(roleExport))!.ApplyToReplay(new(ExplicitArrange: true));
+var replayDesktop = hdPair.Select(w => w with { Handle = w.Handle + 10 }).ToArray();
+WorkingPairRule[] BindGame(WindowSnapshot[] desk, TaskLayoutContext ctx) =>
+    gameRule.Bind(desk.Select(w => (w, (string?)null)), ctx.WindowHints, ctx.Activities);
+var runtimeGame = Run(hdPair, mediaContext with { RulePairs = BindGame(hdPair, mediaContext) });
+var replayGame = Run(replayDesktop, restored with { Rules = gameRule, RulePairs = BindGame(replayDesktop, restored) });
+Check(BindGame(hdPair, mediaContext).Length == 1 && BindGame(replayDesktop, restored).Single().First == 11 &&
+    hdPair.Select(w => Placed(runtimeGame, w)).SequenceEqual(replayDesktop.Select(w => Placed(replayGame, w))),
+    "resizable game and media bind the same role rule and coordinates after anonymous JSON replay");
+var missingRole = restored with { Activities = null };
+Check(BindGame(replayDesktop, missingRole).Length == 0, "older logs with no game evidence abstain");
+
+IntentLayoutPlan Automatic(WindowSnapshot[] desk, TaskLayoutContext ctx) => LayoutDispatch.Create(LayoutRoute.Smart,
+    new VisibilityAnalyzer().SelectVisibleWorkingSet(desk, includeStackAccess: true), new(), null, desk, ctx);
+var noPair = Automatic(threeDesktop, new(UseWorkingPairs: true, Focus: new(1, 0, 0)));
+var fullyCovered = Automatic([topPairA, topPairB with { VisualRect = topPairA.VisualRect }, auxThird],
+    new(UseWorkingPairs: true, Focus: new(1, 2, 3)));
+Check(noPair.Groups.All(g => !g.Handles.Contains((nint)2)) && fullyCovered.Groups.All(g => !g.Handles.Contains((nint)2)),
+    "unknown slivers and fully covered companions stay outside the automatic working set");
+var anchorPlan = Automatic(threeDesktop, new(UseWorkingPairs: true, Focus: new(1, 2, 3), WindowHints: [new(2, Anchor: true)]));
+Check(anchorPlan.Groups.All(g => !g.Handles.Contains((nint)2)), "an anchored companion stays put during automatic layout");
+
+var sizeTest = new WindowSizeMemory();
+var wide = new RectI(0, 0, 1400, 900); var narrow = wide with { Width = 800 };
+var stopped = wide with { Width = 1160 };
+var sameApp = new[] { (Window(1, wide), (string?)"app"), (Window(2, wide), (string?)"app"), (Window(3, wide), (string?)"app") };
+sizeTest.Observe(wide, narrow, wide, 96, 1, 1, "app");
+Check(sizeTest.Bind(sameApp).Length == 0, "a refused resize does not teach any minimum size");
+sizeTest.Observe(wide, narrow, stopped, 96, 1, 1, "app");
+sizeTest.Observe(wide, narrow, stopped, 96, 1, 1, "app");
+Check(sizeTest.Bind(sameApp) is [{ Handle: 1, MinWidth: 1160 }], "repeating a clamp on one instance stays window-local");
+sizeTest.Observe(wide, narrow, stopped, 96, 2, 2, "app");
+Check(sizeTest.Bind(sameApp).Length == 3, "two independent matching clamps support an application floor");
+sizeTest.Observe(stopped, narrow, narrow, 96, 1, 1, "app");
+Check(sizeTest.Bind(sameApp) is [{ Handle: 2 }] && sizeTest.Bind([(Window(2, narrow), "app")]).Length == 0,
+    "successful smaller geometry withdraws the floor and a smaller sibling is never inflated");
+sizeTest.Retire(2);
+Check(sizeTest.Bind(sameApp).Length == 0, "retired handles cannot donate a floor to a reused handle");
+Check(ActivityHints.Classify(false, .8, .4, 0, true, .5, true, processWindowCount: 2) == "visible-background" &&
+    ActivityHints.Classify(false, .8, .4, 2, true, .5, true, processWindowCount: 2) == "media-with-motion",
+    "a static browser sibling needs local evidence even when shared audio and playback are active");
+
 if (args.Length > 0) Replay(args[0], args.ElementAtOrDefault(1));
 
 static void Replay(string path, string? rulesPath)
@@ -170,17 +317,35 @@ static void Replay(string path, string? rulesPath)
         if (overrideRules?.IsValid() != true) throw new InvalidDataException("Invalid candidate layout rules.");
     }
     using var archive = ZipFile.OpenRead(path);
+    var corrections = new Dictionary<(string Session, string Request), List<WindowAdjustmentObservation>>();
+    foreach (var adjEntry in archive.Entries.Where(e => e.Name.StartsWith("adjustments-") && e.Name.EndsWith(".jsonl")))
+    {
+        using var adjReader = new StreamReader(adjEntry.Open());
+        while (adjReader.ReadLine() is { } line)
+        {
+            var obs = JsonSerializer.Deserialize<WindowAdjustmentObservation>(line);
+            if (obs is { Outcome: "stable", AfterRequest: string req } && !string.IsNullOrEmpty(req))
+            {
+                if (!corrections.TryGetValue((obs.Session, req), out var list)) corrections[(obs.Session, req)] = list = [];
+                list.Add(obs);
+            }
+        }
+    }
     var seen = new HashSet<(string, string)>();
     var analyzer = new VisibilityAnalyzer();
+    int correctedRuns = 0;
+    double totalNormalizedRegret = 0;
+    int regretSamples = 0;
     foreach (var entry in archive.Entries.Where(e => e.Name.StartsWith("plans-") && e.Name.EndsWith(".jsonl")))
     {
         using var reader = new StreamReader(entry.Open());
         while (reader.ReadLine() is { } line)
         {
             var run = JsonSerializer.Deserialize<LayoutRunObservation>(line);
-            if (run is not { Trigger: "explicit", Actual: not null } || !seen.Add((run.Session, run.RequestId))) continue;
+            if (run is not { Trigger: "explicit" or "automatic-gesture" or "automatic-workspace", Actual: not null } || !seen.Add((run.Session, run.RequestId))) continue;
             var frame = run.Before;
             var areas = frame.Windows.Select(w => w.WorkArea).Distinct().ToArray();
+            bool explicitRun = run.Trigger == "explicit";
             foreach (bool assumeResizable in new[] { true, false })
             {
                 var desktop = frame.Windows.OrderBy(w => w.ZOrder).Select(w => new WindowSnapshot(w.Id, w.Rect, w.Rect,
@@ -189,19 +354,49 @@ static void Replay(string path, string? rulesPath)
                 var displays = areas.Select((a, i) => new TaskDisplay(i + 1, a,
                     frame.Displays?.FirstOrDefault(d => d.WorkArea == a)?.Bounds ?? a)).ToArray();
                 var focus = desktop.FirstOrDefault(w => w.IsForeground);
-                var ctx = new TaskLayoutContext(Displays: displays, ExplicitArrange: true, PreferReversibleVerticalFill: true,
-                    Focus: new(focus?.Handle ?? 0, 0, 0));
-                var activeRules = overrideRules ?? run.Rules ?? CompiledLayoutRules.Default;
-                ctx = ctx with { Rules = activeRules, RulePairs = activeRules.Bind(desktop.Zip(frame.Windows.OrderBy(w => w.ZOrder),
-                    (window, observed) => (window, observed.AppKey))) };
+                var ctx = new TaskLayoutContext(Displays: displays, ExplicitArrange: explicitRun, UseWorkingPairs: true,
+                    PreferReversibleVerticalFill: true, Focus: new(focus?.Handle ?? 0, 0, 0));
                 ctx = run.Signals?.ApplyToReplay(ctx) ?? ctx;
-                var plan = LayoutDispatch.Create(LayoutRoute.ManualAlgorithm, analyzer.SelectForManualArrange(desktop, true),
-                    new(), null, desktop, ctx);
-                Console.WriteLine(JsonSerializer.Serialize(new { run.RequestId, assumeResizable, frame.Truncated,
+                var activeRules = overrideRules ?? run.Rules ?? CompiledLayoutRules.Default;
+                var keyed = desktop.Zip(frame.Windows.OrderBy(w => w.ZOrder), (window, observed) => (window, observed.AppKey)).ToArray();
+                var slotPrefs = activeRules.BindSlots(keyed);
+                var mergedPrefs = CompiledLayoutRules.ApplySlots(ctx.Placement ?? [], slotPrefs);
+                ctx = ctx with { Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities), Placement = mergedPrefs };
+                var workingSet = explicitRun ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);
+                var plan = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : LayoutRoute.Smart,
+                    workingSet, new(), null, desktop, ctx);
+                var projected = TaskLayoutSession.Project(desktop, plan);
+                bool? regionsPreserved = !frame.Truncated && ctx.WindowHints?.Any(h => h.ProtectedRegions is { Length: > 0 }) == true
+                    ? IntentLayoutPlanner.DesktopRegionsPreserved(desktop, projected, ctx) : null;
+                double? runRegret = null, verticalError = null;
+                if (corrections.TryGetValue((run.Session, run.RequestId), out var edits))
+                {
+                    double horizontal = 0, vertical = 0;
+                    int matched = 0;
+                    foreach (var edit in edits)
+                    {
+                        if (edit.WorkArea.IsEmpty || projected.FirstOrDefault(w => w.Handle == edit.WindowId) is not { } predicted)
+                            continue;
+                        var r = predicted.VisualRect;
+                        horizontal += (Math.Abs(r.X + r.Width / 2d - edit.End.X - edit.End.Width / 2d) +
+                            .5 * Math.Abs(r.Width - edit.End.Width)) / edit.WorkArea.Width;
+                        vertical += (Math.Abs(r.Y + r.Height / 2d - edit.End.Y - edit.End.Height / 2d) +
+                            .5 * Math.Abs(r.Height - edit.End.Height)) / edit.WorkArea.Height;
+                        matched++;
+                    }
+                    if (matched > 0)
+                    {
+                        runRegret = Math.Round(horizontal / matched, 4);
+                        verticalError = Math.Round(vertical / matched, 4);
+                        if (assumeResizable) { correctedRuns++; totalNormalizedRegret += horizontal; regretSamples += matched; }
+                    }
+                }
+                Console.WriteLine(JsonSerializer.Serialize(new { run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
+                    PostArrangeRegret = runRegret, PostArrangeVerticalError = verticalError, ProtectedRegionsPreserved = regionsPreserved,
                     Moves = plan.Moves.Select(m => new { Id = (int)m.Window.Handle, Before = m.Window.VisualRect, After = m.TargetVisualRect }),
                     Selected = plan.Groups.Select(g => g.Selected) }));
             }
         }
     }
-    Console.WriteLine($"Replayed {seen.Count} distinct explicit requests.");
+    Console.WriteLine($"Replayed {seen.Count} distinct requests ({correctedRuns} with post-arrange corrections, mean normalized regret={(regretSamples > 0 ? (totalNormalizedRegret / regretSamples).ToString("F4") : "n/a")}).");
 }
