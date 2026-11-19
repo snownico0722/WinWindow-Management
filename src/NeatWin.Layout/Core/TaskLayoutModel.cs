@@ -25,6 +25,15 @@ internal static partial class IntentLayoutPlanner
             if (column && dy > .55) { joint = .80; parked = .15; }
             var source = "geometry-hypotheses";
             var uncertainty = .40;
+            // A click is evidence that a heavily covered rear window should be readable.
+            // Drag assistance may still infer an intentional stack; explicit pair hints win below.
+            if (context.ExplicitArrange && CoversHalfOfRear(a, b))
+            {
+                joint = Math.Max(joint, .85);
+                parked = .12;
+                column = false;
+                source = "explicit-arrange-overlap";
+            }
             var passive = context.WindowHints?.Any(h => h.PassiveVisual &&
                 (h.Handle == windows[i].Window.Handle || h.Handle == windows[j].Window.Handle)) == true;
             if (passive && dx > .3) { joint = Math.Max(joint, .88); source += "+passive-visual"; uncertainty = .25; }
@@ -41,6 +50,9 @@ internal static partial class IntentLayoutPlanner
         }
         return evidence.ToArray();
     }
+
+    private static bool CoversHalfOfRear(RectI front, RectI rear) =>
+        front.Intersect(rear).Area >= rear.Area * .50;
 
     // Off-screen pixels must never earn visible-information utility.
     internal static OcclusionMetrics.Exposure ScreenExposure(RectI rect, IEnumerable<RectI> occluders,

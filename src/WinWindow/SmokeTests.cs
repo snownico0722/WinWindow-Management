@@ -77,6 +77,7 @@ internal static class SmokeTests
             Assert(!OwnWindowPolicy.Topmost(false, false, true, false) && OwnWindowPolicy.Topmost(false, false, true, true) && OwnWindowPolicy.Topmost(false, true, false, false), "manual, focus and compact topmost are independent");
             Assert(!OwnWindowPolicy.Enforce(false, false, true, false, true) && !OwnWindowPolicy.Enforce(true, true, true, false, true) && !OwnWindowPolicy.Enforce(true, false, false, false, true), "hidden, minimized and focus-only windows never enforce absolute topmost");
             Assert(DesktopIntegration.ParseHotkey("Win+Ctrl+Shift+R") == (14u, 82u) && DesktopIntegration.ParseHotkey("") == (0u, 0u), "hotkey parsing and disabled bindings");
+            CheckSmartArrangeScenarios();
             var store = new StateStore(data);
             store.Preferences.Rules.Add(new() { Title = "roundtrip", Opacity = 0, ClickThrough = true }); store.SavePreferences();
             Assert(new StateStore(data).Preferences.Rules.Single().Opacity == 0, "settings preserve zero opacity");
@@ -138,6 +139,7 @@ internal static class SmokeTests
             Native.ShowWindowAsync(item.Hwnd, Native.Normal);
             shell = new MainWindow(store, true); Application.Current.MainWindow = shell;
             shell.Show(); await shell.InitializeAsync(); await Task.Delay(150);
+            await CheckArrangeButtonAsync(shell, layoutWindows, item.Hwnd, stubborn.Hwnd);
             await shell.Manager.RefreshAsync();
             var chosen = shell.Manager.Items.First(x => x.Hwnd == item.Hwnd);
             var game = await FixtureAsync(output, false, activity: true);
@@ -357,6 +359,75 @@ internal static class SmokeTests
         var id = Native.Identity(hwnd)!;
         return new() { ProcessPath = id.ProcessPath, ClassName = id.ClassName, Title = Native.Title(hwnd), Pinned = true };
     }
+    private static void CheckSmartArrangeScenarios()
+    {
+        var area = new RectI(0, 0, 1920, 1040);
+        var rect = new RectI(250, 150, 1300, 720);
+        NeatWin.Core.WindowSnapshot Window(int rank, RectI bounds) =>
+            new(rank + 1, bounds, bounds, area, 1, default, true, false, true, rank);
+        var stack = new[] { Window(0, rect), Window(1, rect with { X = 270, Y = 170 }),
+            Window(2, rect with { X = 290, Y = 190 }) };
+        var analyzer = new VisibilityAnalyzer();
+        IntentLayoutPlan Manual(NeatWin.Core.WindowSnapshot[] windows, bool allowResize = true) => LayoutDispatch.Create(
+            LayoutRoute.ManualAlgorithm, analyzer.SelectForManualArrange(windows, true), new(), null,
+            windows, new(Profile: new(AllowUsefulResize: allowResize), ExplicitArrange: true));
+
+        var spread = Manual(stack);
+        var targets = stack.Select(w => spread.Moves.FirstOrDefault(m => m.Window.Handle == w.Handle)?.TargetVisualRect ?? w.VisualRect).ToArray();
+        Assert(targets.All(r => r.Intersect(area) == r) &&
+            targets.SelectMany((r, i) => targets.Skip(i + 1).Select(b => r.Intersect(b))).All(r => r.IsEmpty),
+            "explicit Smart fits a three-window cascade into readable nonoverlapping rows");
+        Assert(Manual(stack, allowResize: false).Moves.All(m => m.TargetVisualRect.Width == m.Window.VisualRect.Width &&
+            m.TargetVisualRect.Height == m.Window.VisualRect.Height), "manual arrange respects disabled resizing");
+        Assert(analyzer.SelectVisibleWorkingSet(stack, includeStackAccess: true).Count == 1,
+            "automatic Smart leaves the covered background out of its working set");
+        var session = new TaskLayoutSession();
+        var now = DateTimeOffset.UtcNow;
+        var placed = stack.Select((w, i) => w with { VisualRect = targets[i] }).ToArray();
+        session.Requested(stack, spread, now);
+        session.Verify(placed);
+        Assert(session.Capture(placed, new(), [], null, now).VerifiedRepeat &&
+            !session.Capture(placed, new(), [], null, now, explicitArrange: true).VerifiedRepeat,
+            "a verified automatic pass does not suppress the next explicit arrange");
+        var fixedCover = Window(0, area) with { IsManageable = false, IsTopmost = true };
+        Assert(analyzer.SelectForManualArrange([fixedCover, stack[1]], true).Count == 0,
+            "a fixed covering surface shields windows behind it from manual arrange");
+        Assert(Manual([Window(0, new(0, 0, 956, 1040)), Window(1, new(964, 0, 956, 1040))]).Moves.Count == 0,
+            "already aligned windows stay in place after a manual arrange");
+        var offscreen = Window(0, rect with { X = area.Right + 50 });
+        Assert(Manual([offscreen]).Moves.Single().TargetVisualRect.Intersect(area).Area == rect.Area &&
+            analyzer.SelectForManualArrange([offscreen], false).Count == 0, "off-screen rescue honors the preference");
+    }
+
+    private static async Task CheckArrangeButtonAsync(MainWindow shell, NeatWin.Windows.WindowManager layout, nint first, nint second)
+    {
+        var area = layout.Capture().Single(w => w.Handle == first).WorkArea;
+        await Task.Run(() =>
+        {
+            foreach (var hwnd in new[] { first, second })
+                if (!Native.SetWindowPos(hwnd, 0, area.X + 80, area.Y + 90, Math.Min(600, area.Width / 2 - 16),
+                    Math.Min(420, area.Height - 100), Native.NoActivate))
+                    throw new InvalidOperationException("Could not position the overlapping test windows.");
+        });
+        NeatWin.Core.WindowSnapshot[] Pair() => layout.Capture().Where(w => w.Handle == first || w.Handle == second).ToArray();
+        var before = Pair();
+        Assert(before.Length == 2 && before.All(w => w.IsManageable) &&
+            before[0].VisualRect.Intersect(before[1].VisualRect).Area > .90 * before[1].VisualRect.Area,
+            "two native windows start almost completely covered");
+        var arrange = (Button)shell.FindName("ArrangeButton");
+        var undo = (Button)shell.FindName("UndoArrangeButton");
+        arrange.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        await WaitAsync("manual Smart separates real windows through the footer", () =>
+        {
+            var pair = Pair();
+            return undo.IsEnabled && pair.Length == 2 && pair[0].VisualRect.Intersect(pair[1].VisualRect).IsEmpty;
+        }, 8000);
+        undo.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        await WaitAsync("footer undo restores both overlapping windows", () => !undo.IsEnabled && before.All(w =>
+            Pair().Any(a => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))), 8000);
+        Results.Add("PASS: the arrange and undo buttons separate overlapping native windows and restore their positions");
+    }
+
     private static async Task CheckFooterModesAsync(MainWindow shell, StateStore store, string output)
     {
         var group = (Panel)shell.FindName("FooterModes");
