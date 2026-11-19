@@ -148,6 +148,12 @@ internal static class SmokeTests
             await recovered.RecoverPreviousSessionAsync();
             await WaitAsync("startup recovery", () => store.ReadRecovery().Count == 0);
             Assert((Native.Style(item.Hwnd) & Native.Layered) == (originalStyle & Native.Layered), "startup recovery restores a surviving invisible window");
+            Assert(store.Preferences.Rules.Single().Opacity == 0, "crash recovery preserves the saved opacity rule");
+            await recovered.RefreshAsync();
+            await WaitAsync("reapply saved opacity after crash recovery", () =>
+                Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte opacity, out _) && opacity == 0 &&
+                !recovered.Items.Single(x => x.Hwnd == item.Hwnd).IsBusy);
+            await recovered.ShutdownAsync();
             await manager.ReleaseAsync(item);
             manager.SetRemembered(item, false);
             Native.ShowWindowAsync(item.Hwnd, Native.Normal);

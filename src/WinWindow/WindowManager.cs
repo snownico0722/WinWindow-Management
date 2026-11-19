@@ -10,7 +10,7 @@ internal sealed class WindowManager
 {
     private readonly StateStore _store;
     private readonly Dictionary<WindowItem, Task> _operations = new();
-    private bool _refreshing;
+    private bool _refreshing, _rulesActive;
     private volatile bool _stopping;
     private Task<int>? _shutdown;
     public ObservableCollection<WindowItem> Items { get; } = new();
@@ -48,7 +48,12 @@ internal sealed class WindowManager
     }
     private async Task RecoverOneAsync(WindowItem item)
     {
-        try { await ReleaseAsync(item, updateRule: false); }
+        try
+        {
+            await ReleaseAsync(item, updateRule: false);
+            // Recovery can outlast the initial enumeration. Retry rules for the now idle window.
+            if (_rulesActive && !_stopping) ApplyRules();
+        }
         catch (Exception e) { if (!_stopping) Notice?.Invoke(UiText.Format("RestoreError", item.Title, e.Message)); }
     }
     public async Task RefreshAsync()
@@ -78,6 +83,7 @@ internal sealed class WindowManager
             }
             foreach (var item in found) if (!Items.Any(x => Same(x.Identity, item.Identity))) Items.Add(item);
             if (removed) Journal();
+            _rulesActive = true;
             ApplyRules(); Changed?.Invoke();
         }
         finally { _refreshing = false; }
