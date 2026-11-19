@@ -22,7 +22,7 @@
 
 ```powershell
 dotnet build src/WinWindow/WinWindow.csproj -c Release
-dotnet src/WinWindow/bin/Release/net10.0-windows/WinWindow.dll --self-test TestResults
+dotnet run --no-build -c Release --project src/WinWindow -- --self-test TestResults
 dotnet run --project src/WinWindow/WinWindow.csproj -- --dev
 ```
 

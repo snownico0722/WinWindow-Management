@@ -31,6 +31,65 @@ internal static partial class IntentLayoutPlanner
         }
     }
 
+    private static void AddWorkingPair(List<Candidate> candidates, VisibleWindow[] windows, RectI[] seed,
+        RectI area, int gap, TaskLayoutContext context, int[] order)
+    {
+        foreach (var region in context.Placement ?? [])
+        {
+            if (region.RevealedCell is < 0 or >= 16 || region.Confidence <= .25) continue;
+            int cover = Array.FindIndex(windows, w => w.Window.Handle == region.Window);
+            int watched = Array.FindIndex(windows, w => w.Window.Handle == region.Partner);
+            if (cover < 0 || watched < 0) continue;
+            var cell = WindowExposure.Cell(seed[watched], region.RevealedCell);
+            var moving = seed[cover];
+            foreach (int x in new[] { cell.Right + gap, cell.Left - moving.Width - gap })
+            {
+                var targets = seed.ToArray();
+                targets[cover] = moving with { X = Math.Clamp(x, area.Left, Math.Max(area.Left, area.Right - moving.Width)) };
+                candidates.Add(new("working-region", targets, order));
+            }
+            foreach (int y in new[] { cell.Bottom + gap, cell.Top - moving.Height - gap })
+            {
+                var targets = seed.ToArray();
+                targets[cover] = moving with { Y = Math.Clamp(y, area.Top, Math.Max(area.Top, area.Bottom - moving.Height)) };
+                candidates.Add(new("working-region", targets, order));
+            }
+        }
+        var main = Array.FindIndex(windows, w => w.Window.Handle == context.Focus?.Main);
+        if (main < 0) main = Array.FindIndex(windows, w => w.Window.IsForeground);
+        if (main < 0) main = 0;
+        var peer = Array.FindIndex(windows, w => w.Window.Handle == context.Focus?.Companion);
+        var pref = context.Placement?.FirstOrDefault(p => p.Window == windows[main].Window.Handle);
+        if (peer < 0 && pref?.Partner is not null and not 0)
+            peer = Array.FindIndex(windows, w => w.Window.Handle == pref.Partner);
+        if (peer < 0 && windows.Length == 2) peer = 1 - main;
+        if (peer < 0 || peer == main) return;
+        var a = seed[main]; var b = seed[peer];
+        int span = Math.Min(area.Width - gap, a.Width + b.Width);
+        if (span <= 1) return;
+        int width = (int)Math.Round(span * (pref is { Confidence: > .35 }
+            ? Math.Clamp(pref.Width * area.Width / span, .25, .75) : a.Width / (double)(a.Width + b.Width)));
+        if (!context.Preferences.AllowUsefulResize)
+        {
+            if (a.Width + b.Width > span) return;
+            width = a.Width;
+        }
+        if (!windows[main].Window.IsResizable) width = a.Width;
+        if (!windows[peer].Window.IsResizable) width = span - b.Width;
+        if (width <= 0 || span <= width) return;
+        foreach (bool mainLeft in new[] { true, false })
+        {
+            // On an ultrawide keep the pair together, with the primary close to its working position.
+            int left = Math.Clamp((int)Math.Round(CenterX(a) - width / 2d) - (mainLeft ? 0 : span - width + gap),
+                area.Left, area.Right - span - gap);
+            var targets = seed.ToArray();
+            targets[main] = a with { X = mainLeft ? left : left + span - width + gap, Width = width };
+            targets[peer] = b with { X = mainLeft ? left + width + gap : left, Width = span - width };
+            candidates.Add(new("working-pair", targets, order));
+        }
+
+    }
+
     private static void AddTaskCandidates(List<Candidate> candidates, VisibleWindow[] windows,
         RectI[] original, RectI area, TaskEvidence[] relations, TaskLayoutContext context, int gap)
     {
@@ -61,6 +120,7 @@ internal static partial class IntentLayoutPlanner
                     var widthB = (int)Math.Round(targetTotal * (1 - ratio));
                     var heightA = ResizeHeight(a, widthA);
                     var heightB = ResizeHeight(b, widthB);
+                    AddPair("task-fit", widthA, a.Height, widthB, b.Height, false, crowded);
                     AddPair("task-fit", widthA, heightA, widthB, heightB, false, crowded);
                     if (crowded) AddPair("task-bleed", widthA, heightA, widthB, heightB, true, true);
                 }

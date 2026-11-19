@@ -35,10 +35,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private AutomaticLayoutMode _automaticMode;
     private readonly WorkspaceAutoTidyMonitor _workspaceMonitor;
     private bool _tidyRunning;
+    private readonly ForegroundHistory _focus;
 
-    internal NeatWinApplicationContext(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged, Action<bool>? undoChanged, CancellationToken stopping)
+    internal NeatWinApplicationContext(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged, Action<bool>? undoChanged, CancellationToken stopping, ForegroundHistory? focus = null)
     {
         _stopping = stopping;
+        _focus = focus ?? new();
         _report = report;
         _undoChanged = undoChanged;
         _recorderChanged = recorderChanged;
@@ -51,7 +53,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _smartBehaviorOptions = _settingsStore.LoadSmartBehaviorOptions();
         _verticalFillManager = new ReversibleVerticalFillManager();
         _autoTidyManager = new AutoTidyManager();
-        _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled);
+        _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) { VisualSampling = _settingsStore.VisualSampling };
         _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder);
         _workspaceMonitor = new WorkspaceAutoTidyMonitor(_windowManager.Capture,
             () => _tidyRunning || _autoTidyManager.IsGestureActive || NativeWindowActivity.IsMoving);
@@ -98,7 +100,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     internal Task<T> ReadAsync<T>(Func<T> read) => _dispatch.InvokeAsync(read);
 
     internal LayoutPreferences Preferences => new(_automaticMode, _tidyOptions, _smartBehaviorOptions,
-        _taskPreferences, _referenceStore.Enabled);
+        _taskPreferences, _referenceStore.Enabled, _recorder.VisualSampling);
     internal RecorderStatus Recorder => _recorder.Status;
 
     internal void ApplyPreferences(LayoutPreferences value)
@@ -114,6 +116,11 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         {
             value.Task.Save(_preferencesPath);
             _taskPreferences = value.Task;
+        }
+        if (value.VisualSampling != _recorder.VisualSampling)
+        {
+            _settingsStore.VisualSampling = value.VisualSampling;
+            _recorder.VisualSampling = value.VisualSampling;
         }
         if (value.UseReference != _referenceStore.Enabled) _referenceStore.SetEnabled(value.UseReference);
         _taskSession.Invalidate();
@@ -219,6 +226,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 videoHint = _videoBlackBarDetector.TryDetect(visibleWorkingSet);
             IReadOnlyList<TidyMove> plan;
             IntentLayoutPlan? detailed = null;
+            IntentLayoutPlan? baseline = null;
             if (tiling)
             {
                 detailed = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, null, snapshot, null);
@@ -226,12 +234,21 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             }
             else if (smart)
             {
+                var focus = _focus.Resolve(snapshot, Environment.TickCount64);
                 var taskContext = _taskSession.Capture(snapshot, _taskPreferences.Profile, Displays(snapshot),
                     _taskPreferences.Calibration, DateTimeOffset.UtcNow, explicitSmart) with
-                { PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill };
+                { PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill, Focus = focus, WindowHints = _recorder.LiveHints(snapshot) };
                 if (videoHint is { Confidence: >= .82 })
-                    taskContext = taskContext with { WindowHints = [new(videoHint.WindowHandle, PassiveVisual: true)], VideoHint = videoHint };
-                detailed = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, _referenceStore.Read(), snapshot, taskContext);
+                    taskContext = taskContext with { WindowHints = [.. (taskContext.WindowHints ?? []).Where(w => w.Handle != videoHint.WindowHandle), new(videoHint.WindowHandle, PassiveVisual: true)], VideoHint = videoHint };
+                var reference = _referenceStore.Read();
+                var placements = explicitSmart ? _recorder.Preferences(snapshot, focus) : [];
+                if (placements.Length > 0)
+                {
+                    if (_recorder.CanWriteDiagnostics)
+                        baseline = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, reference, snapshot, taskContext);
+                    taskContext = taskContext with { Placement = placements };
+                }
+                detailed = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, reference, snapshot, taskContext);
                 plan = detailed.Moves;
                 // The task objective replaces the old geometry-only fill pass. A video refinement
                 // is retained only when task utility and screen-aware access survive.
@@ -256,6 +273,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _autoTidyManager.SuppressFor(650);
             _workspaceMonitor.ApplicationRequested(snapshot, detailed);
             if (_stopping.IsCancellationRequested) return;
+            var proposed = detailed;
             var application = _windowManager.ApplyLayout(detailed);
             detailed = application.Plan; plan = detailed.Moves;
             _verticalFillManager.Track(plan, smart && _smartBehaviorOptions.PreferReversibleVerticalFill);
@@ -267,7 +285,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             }
             if (smart)
                 _taskSession.Requested(snapshot, detailed, DateTimeOffset.UtcNow, explicitSmart);
-            _journal.Record(snapshot, detailed, trigger, application.Notes);
+            _journal.Record(snapshot, detailed, trigger, application.Notes, baseline ?? proposed, proposed);
             if (showActivity)
             {
                 var kinds = string.Join(TextCatalog.Culture.TwoLetterISOLanguageName == "zh" ? "、" : ", ", detailed.Groups.Select(g => KindName(g.Selected)).Distinct());
@@ -331,6 +349,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private static string KindName(string kind) => kind switch
     {
         "full-tiling" => LayoutText.Get("Tiled"), "tiling-insufficient-space" => LayoutText.Get("InsufficientSpace"),
+        "learned-position" => LayoutText.Get("LearnedPosition"),
+        "working-pair" => LayoutText.Get("WorkingPair"), "working-region" => LayoutText.Get("WatchedRegion"),
         "task-vertical-fill" => LayoutText.Get("ReversibleFill"),
         "task-edge" => LayoutText.Get("SharedEdge"), "task-fit" => LayoutText.Get("ContentFit"), "task-bleed" => LayoutText.Get("EdgeBleed"),
         "task-columns" => LayoutText.Get("KeepColumns"), "rescue" => LayoutText.Get("RescueArea"),

@@ -92,6 +92,7 @@ public partial class MainWindow
         AllowBleed.IsChecked = p.AllowPeripheralBleed;
         ProtectEdges.IsChecked = p.ProtectWindowEdges;
         ReferenceEnabled.IsChecked = value.UseReference;
+        VisualSampling.IsChecked = value.VisualSampling;
         NeighborSnap.Text = o.NeighborSnapDistance.ToString();
         AlignSnap.Text = o.AlignmentSnapDistance.ToString();
         ScreenSnap.Text = o.ScreenSnapDistance.ToString();
@@ -173,6 +174,7 @@ public partial class MainWindow
                 nameof(ProtectEdges) => v with { Task = task with { Profile = profile with { ProtectWindowEdges = on } } },
                 nameof(AllowBleed) => v with { Task = task with { Profile = profile with { AllowPeripheralBleed = on } } },
                 nameof(Calibrate) => v with { Task = task with { Calibration = on ? CalibrateDisplay() : null } },
+                nameof(VisualSampling) => v with { VisualSampling = on },
                 nameof(ReferenceEnabled) => v with { UseReference = on },
                 _ => v
             };

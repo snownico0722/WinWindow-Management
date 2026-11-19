@@ -57,7 +57,7 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     ViewingCalibration? Calibration = null, TaskPairHint[]? PairHints = null,
     TaskWindowHint[]? WindowHints = null, ManualWindowGesture? RecentGesture = null,
     bool VerifiedRepeat = false, string[]? RejectedLayouts = null, VideoBlackBarHint? VideoHint = null,
-    bool PreferReversibleVerticalFill = false, bool ExplicitArrange = false)
+    bool PreferReversibleVerticalFill = false, bool ExplicitArrange = false, LayoutFocus? Focus = null, PlacementPreference[]? Placement = null)
 {
     public TaskLayoutProfile Preferences => (Profile ?? new()).Normalize();
 }

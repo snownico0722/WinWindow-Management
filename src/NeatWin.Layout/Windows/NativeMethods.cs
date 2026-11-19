@@ -267,4 +267,15 @@ internal static class NativeMethods
         internal Point MaxPosition;
         internal Rect NormalPosition;
     }
+
+    [StructLayout(LayoutKind.Sequential)] internal struct LastInput { public uint Size, Time; }
+    [DllImport("user32.dll")] internal static extern bool GetLastInputInfo(ref LastInput value);
+    [DllImport("user32.dll")] internal static extern nint OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] internal static extern bool CloseDesktop(nint desktop);
+    [DllImport("user32.dll", EntryPoint = "GetUserObjectInformationW", ExactSpelling = true, CharSet = CharSet.Unicode)]
+    internal static extern bool GetUserObjectInformation(nint handle, int index, StringBuilder info, int length, out int needed);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)] internal static extern int GetApplicationUserModelId(nint process, ref uint length, StringBuilder app);
+    [DllImport("user32.dll")] internal static extern nint GetDC(nint hwnd);
+    [DllImport("user32.dll")] internal static extern int ReleaseDC(nint hwnd, nint dc);
+    [DllImport("gdi32.dll")] internal static extern bool StretchBlt(nint dst, int x, int y, int w, int h, nint src, int sx, int sy, int sw, int sh, uint rop);
 }

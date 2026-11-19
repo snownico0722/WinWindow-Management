@@ -79,6 +79,12 @@ internal sealed class SettingsStore
             stored.FollowGestureSamples ?? defaults.FollowGestureSamples).Normalize();
     }
 
+    internal bool VisualSampling
+    {
+        get => LoadStoredSettings().VisualSampling;
+        set { var settings = LoadStoredSettings(); settings.VisualSampling = value; WriteStoredSettings(settings); }
+    }
+
     internal bool RecordingEnabled
     {
         get => LoadStoredSettings().RecordingEnabled;
@@ -176,6 +182,7 @@ internal sealed class SettingsStore
     private sealed class StoredSettings
     {
         public bool RecordingEnabled { get; set; }
+        public bool VisualSampling { get; set; }
         public bool? AutoTidyEnabled { get; set; }
         public int? AutomaticLayoutMode { get; set; }
 

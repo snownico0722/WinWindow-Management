@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.IO.Compression;
 using NeatWin.Core;
+using NeatWin.Recording;
 
 namespace NeatWin.Reference;
 
@@ -10,9 +11,14 @@ public sealed class IntentReferenceStore
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NeatWin", "Recorder");
     private readonly string _directory;
     internal string DirectoryPath => _directory;
+    internal PlacementHistoryStore Placement { get; }
     private string ProfilePath => Path.Combine(_directory, "intent-reference.json");
     private string DisabledPath => Path.Combine(_directory, "reference-disabled");
-    public IntentReferenceStore(string? directory = null) => _directory = directory ?? DefaultDirectory;
+    public IntentReferenceStore(string? directory = null)
+    {
+        _directory = directory ?? DefaultDirectory;
+        Placement = new(_directory);
+    }
     public bool Enabled => !File.Exists(DisabledPath);
 
     public void SetEnabled(bool enabled)
@@ -49,6 +55,7 @@ public sealed class IntentReferenceStore
         while (File.Exists(log) && new FileInfo(log).Length > 2 * 1024 * 1024 && index < 1000);
         using (var writer = new StreamWriter(new FileStream(log, FileMode.Append, FileAccess.Write, FileShare.Read)))
             writer.WriteLine(JsonSerializer.Serialize(observation));
+        Placement.Learn(observation);
         var sample = IntentEvidence.Extract(observation);
         var relation = IntentEvidence.ExtractRelation(observation);
         if (sample is not null || relation is not null)
@@ -74,6 +81,7 @@ public sealed class IntentReferenceStore
     {
         if (!Directory.Exists(_directory)) return;
         foreach (var path in LogFiles()) File.Delete(path);
+        Placement.Clear();
         File.Delete(ProfilePath);
         File.Delete(ProfilePath + ".tmp");
     }
@@ -92,13 +100,18 @@ public sealed class IntentReferenceStore
                 }
                 catch (FileNotFoundException) { }
             }
+        using (var preferences = archive.CreateEntry("placement-v1.json").Open())
+            JsonSerializer.Serialize(preferences, Placement.Read());
         using var writer = new StreamWriter(archive.CreateEntry("intent-reference.json").Open());
         writer.Write(JsonSerializer.Serialize(Read(respectEnabled: false)));
     }
 
-    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl" }
+    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl", "activity-*.jsonl" }
         .SelectMany(pattern => Directory.EnumerateFiles(_directory, pattern));
 
+    internal void AppendActivity(ActivitySample sample, WorkspaceFrame? geometry, long geometryTick) =>
+        AppendJson("activity", new { sample.Version, sample.Session, sample.Tick, sample.Frame.Time, sample.ObservedMilliseconds,
+            GeometryTick = geometryTick, Frame = geometry, sample.Processes, sample.Windows, sample.Media, sample.InputIdleMilliseconds });
     public void AppendTransition(WorkspaceTransition observation) => AppendJson("workspace", observation);
     public void AppendPlan(LayoutRunObservation observation) => AppendJson("plans", observation);
 
@@ -124,7 +137,7 @@ public sealed class IntentReferenceStore
             try
             {
                 retainedBytes += files[i].Length;
-                if (i >= 32 || retainedBytes > 32L * 1024 * 1024 || files[i].LastWriteTimeUtc < DateTime.UtcNow.AddDays(-30))
+                if (i >= 128 || retainedBytes > 128L * 1024 * 1024 || files[i].LastWriteTimeUtc < DateTime.UtcNow.AddDays(-30))
                     files[i].Delete();
             }
             catch (FileNotFoundException) { } // Another writer may prune a closed log concurrently.

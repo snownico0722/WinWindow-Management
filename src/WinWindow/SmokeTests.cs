@@ -101,6 +101,7 @@ internal static class SmokeTests
             var layoutWindows = new NeatWin.Windows.WindowManager();
             var source = layoutWindows.Capture().Single(w => w.Handle == item.Hwnd);
             Assert(source.IsManageable, "layout sees the normal fixture");
+            CheckActivityRecording(source, data);
             var target = source.VisualRect with { X = source.VisualRect.X + (source.VisualRect.X > source.WorkArea.X + 40 ? -32 : 32) };
             var applied = layoutWindows.ApplyLayout(new([new(source, target)], [], []));
             Assert(applied.Plan.Moves.Count == 1, "ordinary fixture is accepted for layout");
@@ -435,6 +436,29 @@ internal static class SmokeTests
         await manager.SetOpacityAsync(forgotten, 54);
         Assert(forgotten.RuleId is null && store.Preferences.Rules.Count == 1, "explicitly forgotten windows stay forgotten after an edit");
         await manager.ShutdownAsync();
+    }
+
+    private static void CheckActivityRecording(NeatWin.Core.WindowSnapshot fixture, string root)
+    {
+        var recorder = new NeatWin.Reference.IntentReferenceStore(Path.Combine(root, "ActivityFixture"));
+        var activity = new NeatWin.Recording.DesktopActivity(recorder.Placement);
+        var tracker = new ObservationIdentityTracker();
+        var frame = tracker.Capture([fixture], NeatWin.Recording.DesktopActivity.Displays(), w => activity.AppKey(w, true));
+        var tick = Environment.TickCount64;
+        var first = activity.Sample("fixture", tick, frame, [fixture], tracker, false);
+        var next = activity.Sample("fixture", tick + 5000, frame, [fixture], tracker, false);
+        Assert(frame.Windows.Single().AppKey?.Length == 24 && next.Processes.Single().WorkingSetBytes > 0 &&
+            next.Windows.Single().ComparedCells is null && first.ObservedMilliseconds == 0 && next.ObservedMilliseconds == 5000,
+            "native recorder correlates a window and process and marks disabled visual sampling unknown");
+        var gap = activity.Sample("fixture", tick + 60000, frame, [fixture], tracker, false);
+        Assert(gap.ObservedMilliseconds == 0 && gap.Windows.Single().ForegroundMs is null, "recorder excludes interruptions from usage time");
+        recorder.AppendActivity(next, frame, next.Tick);
+        var path = Path.Combine(root, "activity-fixture.zip");
+        recorder.ExportRecords(path);
+        using (var archive = System.IO.Compression.ZipFile.OpenRead(path))
+            Assert(archive.Entries.Any(e => e.Name.StartsWith("activity-")) && archive.GetEntry("identity.key") == null,
+                "export includes activity but excludes the installation identity secret");
+        recorder.Clear();
     }
 
     private static void CheckSmartArrangeScenarios()
