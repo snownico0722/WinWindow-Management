@@ -204,7 +204,12 @@ internal static partial class IntentLayoutPlanner
             var a = candidate.Rects[r.First]; var b = candidate.Rects[r.Second];
             var oa = original[r.First]; var ob = original[r.Second];
             var dx = CenterX(oa) - CenterX(ob); var dy = CenterY(oa) - CenterY(ob);
-            if (Math.Abs(dx) > .20 * Math.Min(oa.Width, ob.Width) && dx * (CenterX(a) - CenterX(b)) < 0) continuity += 1.8 * r.Affinity;
+            // Inside a larger background window, a smaller window's center can be to either
+            // side without establishing a reading order. Penalize reversals only for distinct positions.
+            var preserveHorizontalOrder = !context.ExplicitArrange ||
+                oa.Intersect(ob).Area < .50 * Math.Min(oa.Area, ob.Area);
+            if (preserveHorizontalOrder && Math.Abs(dx) > .20 * Math.Min(oa.Width, ob.Width) &&
+                dx * (CenterX(a) - CenterX(b)) < 0) continuity += 1.8 * r.Affinity;
             if (r.SameColumn)
             {
                 continuity += Math.Max(0, Math.Abs(CenterX(a) - CenterX(b)) / Math.Max(1, Math.Min(a.Width, b.Width)) - .30) * 2 * r.Affinity;

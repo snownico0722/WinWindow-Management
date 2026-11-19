@@ -57,6 +57,8 @@ internal static partial class IntentLayoutPlanner
                     AddPackedCandidate("rows", 1, false);
                     for (var columns = 2; columns < group.Length; columns++)
                         AddPackedCandidate("grid", columns, false);
+                    if (taskContext.ExplicitArrange && group.Length > 2)
+                        AddCoveredPairCandidates(candidates, group, original, task, area, hint.GapPixels, order);
                     AddOverlapping(candidates, group, original, area, hint);
                     AddOrders(candidates, "restack", original, group);
                     AddTaskCandidates(candidates, group, original, area, task, taskContext, hint.GapPixels);
