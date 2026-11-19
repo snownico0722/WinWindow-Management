@@ -416,12 +416,24 @@ internal static class SmokeTests
             "two native windows start almost completely covered");
         var arrange = (Button)shell.FindName("ArrangeButton");
         var undo = (Button)shell.FindName("UndoArrangeButton");
+        var status = (TextBlock)shell.FindName("StatusText");
+        var messages = new HashSet<string>();
         arrange.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-        await WaitAsync("manual Smart separates real windows through the footer", () =>
+        try
         {
-            var pair = Pair();
-            return undo.IsEnabled && pair.Length == 2 && pair[0].VisualRect.Intersect(pair[1].VisualRect).IsEmpty;
-        }, 8000);
+            await WaitAsync("manual Smart separates real windows through the footer", () =>
+            {
+                if (status.Text.Length != 0) messages.Add(status.Text);
+                var pair = Pair();
+                return undo.IsEnabled && pair.Length == 2 && pair[0].VisualRect.Intersect(pair[1].VisualRect).IsEmpty;
+            }, 8000);
+        }
+        catch (TimeoutException ex)
+        {
+            var observations = layout.Capture().Select(w => $"{w.Handle}: {w.VisualRect} movable={w.IsManageable} z={w.ZOrder}");
+            throw new TimeoutException($"{ex.Message}. Work area {area}, targets {first}/{second}, " +
+                $"undo={undo.IsEnabled}. {string.Join(" | ", messages)}. {string.Join(" | ", observations)}", ex);
+        }
         undo.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
         await WaitAsync("footer undo restores both overlapping windows", () => !undo.IsEnabled && before.All(w =>
             Pair().Any(a => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))), 8000);
