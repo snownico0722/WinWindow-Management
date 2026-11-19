@@ -28,11 +28,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - name: Archive source snapshot
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force artifacts | Out-Null
-          git archive --format=zip --output=artifacts/WinWindow-source.zip HEAD
       - name: Build WPF
         run: dotnet build src/WinWindow/WinWindow.csproj -c Release
       - name: Native window and UI smoke tests
@@ -51,7 +46,8 @@ jobs:
         with:
           name: WinWindow-preview-and-tests
           path: |
-            artifacts/*.zip
+            artifacts/WinWindow-win-x64.zip
+            artifacts/WinWindow-win-x64-self-contained.zip
             TestResults/*.png
             TestResults/smoke-tests.txt
           if-no-files-found: warn

@@ -7,6 +7,9 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
+using NeatWin.Core;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
@@ -201,6 +204,7 @@ internal static class SmokeTests
             Assert(shell.Width >= 500 && shell.MinWidth == 500 && double.IsPositiveInfinity(shell.MaxWidth), "workbench respects compact minimum and has no maximum width");
             Palette.Apply(false); shell.Width = 500; shell.Height = 380; shell.UpdateLayout();
             Capture(shell, Path.Combine(output, "workbench-minimum.png"));
+            await CheckFooterModesAsync(shell, store, output);
             ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             await Task.Delay(100); shell.UpdateLayout();
@@ -353,6 +357,42 @@ internal static class SmokeTests
         var id = Native.Identity(hwnd)!;
         return new() { ProcessPath = id.ProcessPath, ClassName = id.ClassName, Title = Native.Title(hwnd), Pinned = true };
     }
+    private static async Task CheckFooterModesAsync(MainWindow shell, StateStore store, string output)
+    {
+        var group = (Panel)shell.FindName("FooterModes");
+        var buttons = group.Children.OfType<RadioButton>().ToArray();
+        var footer = (Border)shell.FindName("DesktopFooter");
+        var undo = (Button)shell.FindName("UndoArrangeButton");
+        Rect Bounds(FrameworkElement element) => element.TransformToAncestor(footer).TransformBounds(new Rect(element.RenderSize));
+        Assert(buttons.Length == 4 && buttons.All(b => b.IsVisible) && Bounds(group).Right <= Bounds(undo).Left,
+            "all four mode choices fit to the left of the desktop commands at minimum width");
+        Assert(buttons[0].IsChecked == true && shell.Icon is not null, "the workbench starts in manual mode with its application icon");
+        var settingsPath = Path.Combine(store.DirectoryPath, "Layout", "settings.json");
+        foreach (var mode in new[] { AutomaticLayoutMode.LightAssist, AutomaticLayoutMode.FullAssist, AutomaticLayoutMode.AutoFullAssist, AutomaticLayoutMode.Off })
+        {
+            var option = buttons.Single(b => (string)b.Tag == mode.ToString());
+            var selection = (ISelectionItemProvider)new RadioButtonAutomationPeer(option).GetPattern(PatternInterface.SelectionItem)!;
+            selection.Select();
+            await WaitAsync("footer applies and saves " + mode, () => option.IsChecked == true &&
+                new NeatWin.App.SettingsStore(settingsPath).LoadAutomaticLayoutMode() == mode);
+            Assert(buttons.Count(b => b.IsChecked == true) == 1, "only " + mode + " is selected in the footer");
+            if (mode == AutomaticLayoutMode.LightAssist)
+            {
+                shell.UpdateLayout();
+                Capture(shell, Path.Combine(output, "footer-light-assist.png"));
+                var reopened = new MainWindow(new StateStore(store.DirectoryPath), testMode: true);
+                try
+                {
+                    await reopened.InitializeAsync();
+                    var savedGroup = (Panel)reopened.FindName("FooterModes");
+                    Assert(savedGroup.Children.OfType<RadioButton>().Single(b => b.IsChecked == true).Tag.Equals(mode.ToString()),
+                        "a fresh workbench restores the saved mode without visiting settings");
+                }
+                finally { reopened.Cleanup(); reopened.Close(); }
+            }
+        }
+    }
+
     private static async Task CheckHotkeyDraftAsync(MainWindow shell, StateStore store)
     {
         var pin = (TextBox)shell.FindName("PinKeyBox");

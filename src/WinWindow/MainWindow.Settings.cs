@@ -14,7 +14,8 @@ namespace WinWindow;
 public partial class MainWindow
 {
     private LayoutPreferences? _layoutPreferences;
-    private bool _loadingLayout;
+    private Task? _layoutLoad;
+    private bool _displayingMode;
     private long _layoutEdit;
 
     private void SettingsNav_Changed(object sender, SelectionChangedEventArgs e)
@@ -27,14 +28,21 @@ public partial class MainWindow
         var pages = new[] { GeneralSection, LayoutSection, KeysSection, DataSection };
         for (int i = 0; i < pages.Length; i++)
             pages[i].Visibility = i == SettingsNav.SelectedIndex ? Visibility.Visible : Visibility.Collapsed;
-        if (SettingsNav.SelectedIndex is 1 or 3 && _layoutPreferences is null && !_loadingLayout)
+        if (SettingsNav.SelectedIndex is 1 or 3 && _layoutPreferences is null && _layoutLoad is null)
             _ = LoadLayoutSettingsAsync();
     }
 
     private async Task LoadLayoutSettingsAsync()
     {
-        _loadingLayout = true;
-        LayoutSection.IsEnabled = DataSection.IsEnabled = false;
+        if (_layoutLoad is { } pending) { await pending; return; }
+        _layoutLoad = ReadLayoutSettingsAsync();
+        try { await _layoutLoad; }
+        finally { _layoutLoad = null; }
+    }
+
+    private async Task ReadLayoutSettingsAsync()
+    {
+        LayoutSection.IsEnabled = DataSection.IsEnabled = FooterModes.IsEnabled = false;
         try
         {
             var snapshot = await EnsureLayout().ReadSettingsAsync();
@@ -45,7 +53,7 @@ public partial class MainWindow
         catch (Exception ex) { ShowStatus(ex.Message); }
         finally
         {
-            _loadingLayout = false;
+            FooterModes.IsEnabled = true;
             LayoutSection.IsEnabled = DataSection.IsEnabled = _layoutPreferences is not null;
         }
     }
@@ -62,7 +70,6 @@ public partial class MainWindow
         var o = value.Options;
         var b = value.Behavior;
         var p = value.Task.Profile;
-        Choose(AutoChoices, value.Mode);
         Choose(AlgorithmChoices, o.AlgorithmMode);
         Choose(StrengthChoices, o.SmartStrength);
         Choose(VideoChoices, b.VideoBlackBarTendency);
@@ -97,20 +104,25 @@ public partial class MainWindow
         VideoChoices.Visibility = value.Behavior.RemoveVideoBlackBars ? Visibility.Visible : Visibility.Collapsed;
         BleedAmount.IsEnabled = value.Task.Profile.AllowPeripheralBleed;
         CalibrationFields.Visibility = value.Task.Calibration is null ? Visibility.Collapsed : Visibility.Visible;
-        ModeHint.Text = value.Mode switch
-        {
-            AutomaticLayoutMode.LightAssist => "拖动或缩放结束后，微调刚操作的窗口。",
-            AutomaticLayoutMode.FullAssist => "拖动或缩放结束后，智能整理同组窗口。",
-            AutomaticLayoutMode.AutoFullAssist => "窗口开关、位置或前后台变化后，自动智能整理桌面。",
-            _ => "点击底栏「整理桌面」或按快捷键时执行，不动已置顶与全屏窗口。"
-        };
-        FooterHintText.Text = value.Mode switch
-        {
-            AutomaticLayoutMode.LightAssist => "· 轻度辅助",
-            AutomaticLayoutMode.FullAssist => "· 完整辅助",
-            AutomaticLayoutMode.AutoFullAssist => "· 自动整理",
-            _ => "· 手动"
-        };
+        DisplayMode(value.Mode);
+    }
+
+    private void DisplayMode(AutomaticLayoutMode mode)
+    {
+        _displayingMode = true;
+        try { Choose(FooterModes, mode); }
+        finally { _displayingMode = false; }
+    }
+
+    private async void FooterMode_Checked(object sender, RoutedEventArgs e)
+    {
+        if (!_ready || _quitting || _displayingMode) return;
+        var mode = Enum.Parse<AutomaticLayoutMode>((string)((RadioButton)sender).Tag);
+        if (_layoutPreferences is null) await LoadLayoutSettingsAsync();
+        if (_layoutPreferences is { } current)
+            await SaveLayoutPreferencesAsync(current with { Mode = mode });
+        else
+            DisplayMode(AutomaticLayoutMode.Off);
     }
 
     private ViewingCalibration CalibrateDisplay()
@@ -131,7 +143,6 @@ public partial class MainWindow
             var tag = (string)radio.Tag;
             next = radio.GroupName switch
             {
-                nameof(AutoChoices) => v with { Mode = Enum.Parse<AutomaticLayoutMode>(tag) },
                 nameof(AlgorithmChoices) => v with { Options = v.Options with { AlgorithmMode = Enum.Parse<TidyAlgorithmMode>(tag) } },
                 nameof(StrengthChoices) => v with { Options = v.Options with { SmartStrength = Enum.Parse<SmartTidyStrength>(tag) } },
                 nameof(VideoChoices) => v with { Behavior = v.Behavior with { VideoBlackBarTendency = Enum.Parse<VideoBlackBarTendency>(tag) } },
@@ -214,7 +225,7 @@ public partial class MainWindow
     private async void ResetLayout_Click(object sender, RoutedEventArgs e)
     {
         if (_layoutPreferences is not { } v) return;
-        var defaults = v with { Mode = AutomaticLayoutMode.Off, Options = new(), Behavior = new(), Task = new(new TaskLayoutProfile()) };
+        var defaults = v with { Options = new(), Behavior = new(), Task = new(new TaskLayoutProfile()) };
         await SaveLayoutPreferencesAsync(defaults);
         if (_layoutPreferences is { } current) DisplayPreferences(current);
     }
