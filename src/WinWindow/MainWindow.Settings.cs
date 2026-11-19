@@ -101,8 +101,15 @@ public partial class MainWindow
         {
             AutomaticLayoutMode.LightAssist => "拖动或缩放结束后，微调刚操作的窗口。",
             AutomaticLayoutMode.FullAssist => "拖动或缩放结束后，智能整理同组窗口。",
-            AutomaticLayoutMode.AutoFullAssist => "窗口开关、位置或前后台变化后，智能整理桌面。",
-            _ => "点击「整理桌面」或按快捷键时整理。"
+            AutomaticLayoutMode.AutoFullAssist => "窗口开关、位置或前后台变化后，自动智能整理桌面。",
+            _ => "点击底栏「整理桌面」或按快捷键时执行，不动已置顶与全屏窗口。"
+        };
+        FooterHintText.Text = value.Mode switch
+        {
+            AutomaticLayoutMode.LightAssist => "· 轻度辅助",
+            AutomaticLayoutMode.FullAssist => "· 完整辅助",
+            AutomaticLayoutMode.AutoFullAssist => "· 自动整理",
+            _ => "· 手动"
         };
     }
 

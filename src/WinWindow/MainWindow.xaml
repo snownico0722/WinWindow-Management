@@ -3,77 +3,199 @@
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:local="clr-namespace:WinWindow"
  xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
- Title="WinWindow Management" Width="1180" Height="760" MinWidth="880" MinHeight="560"
+ Title="WinWindow Management" Width="580" Height="500" MinWidth="500" MinHeight="380"
  WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterScreen" PreviewKeyDown="Window_PreviewKeyDown">
- <shell:WindowChrome.WindowChrome><shell:WindowChrome CaptionHeight="48" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="12" UseAeroCaptionButtons="False"/></shell:WindowChrome.WindowChrome>
+ <shell:WindowChrome.WindowChrome>
+  <shell:WindowChrome CaptionHeight="44" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="12" UseAeroCaptionButtons="False"/>
+ </shell:WindowChrome.WindowChrome>
  <Border x:Name="ShellFrame" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="12" Background="{DynamicResource Paper}">
   <Grid>
-   <Grid.RowDefinitions><RowDefinition Height="48"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+   <Grid.RowDefinitions>
+    <RowDefinition x:Name="HeaderRow" Height="44"/>
+    <RowDefinition Height="*"/>
+   </Grid.RowDefinitions>
+
    <Grid x:Name="Header" Margin="10,0,8,0">
-    <Button x:Name="BrandArea" Style="{StaticResource RowTitleButton}" Click="Brand_Click" Width="128" HorizontalAlignment="Left" Background="Transparent"
-      ToolTip="收起为小窗" shell:WindowChrome.IsHitTestVisibleInChrome="True"
+    <Grid.ColumnDefinitions>
+     <ColumnDefinition Width="*"/>
+     <ColumnDefinition Width="Auto"/>
+    </Grid.ColumnDefinitions>
+
+    <Button x:Name="BrandArea" Style="{StaticResource RowTitleButton}" Click="Brand_Click" Padding="6,4" HorizontalAlignment="Left"
+      ToolTip="点击收起为悬浮胶囊，按住拖动窗口" shell:WindowChrome.IsHitTestVisibleInChrome="True"
       PreviewMouseLeftButtonDown="Brand_Down" PreviewMouseMove="Brand_Move" PreviewMouseLeftButtonUp="Brand_Up"
       LostMouseCapture="Brand_LostCapture">
-     <Button.ContextMenu><ContextMenu>
-      <MenuItem Header="设置" Click="CompactSettings_Click"/>
-      <MenuItem Header="恢复全部" Click="RecoverAll_Click"/>
-      <Separator/><MenuItem Header="退出" Click="Quit_Click"/>
-     </ContextMenu></Button.ContextMenu>
-     <TextBlock Text="WinWindow" FontWeight="SemiBold" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+     <Button.ContextMenu>
+      <ContextMenu>
+       <MenuItem Header="设置" Click="CompactSettings_Click"/>
+       <MenuItem Header="整理桌面" Click="Arrange_Click"/>
+       <MenuItem Header="恢复全部原样" Click="RecoverAll_Click"/>
+       <Separator/>
+       <MenuItem Header="退出" Click="Quit_Click"/>
+      </ContextMenu>
+     </Button.ContextMenu>
+     <Grid VerticalAlignment="Center">
+      <Grid.ColumnDefinitions>
+       <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <Border Width="22" Height="22" CornerRadius="6" Background="{DynamicResource Selection}" BorderBrush="{DynamicResource Line}" BorderThickness="1">
+       <Path Data="M4,5.5 L11.5,5.5 L11.5,12 L4,12 Z M6.5,3.5 L13.5,3.5 L13.5,9.5"
+         Stroke="{DynamicResource Accent}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+         Width="15" Height="15" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      </Border>
+      <TextBlock Grid.Column="1" TextTrimming="CharacterEllipsis" x:Name="BrandTitleText" Text="WinWindow" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="8,0,0,0"/>
+      <Border Grid.Column="2" x:Name="BrandCollapseHint" Background="{DynamicResource Surface}" CornerRadius="4" Padding="4,2" Margin="7,0,0,0" VerticalAlignment="Center">
+       <Path x:Name="BrandHintIcon" Data="M2,7.5 L7.5,2 M7.5,2 L3.5,2 M7.5,2 L7.5,6"
+         Stroke="{DynamicResource Muted}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="9" Height="9"/>
+      </Border>
+     </Grid>
     </Button>
-    <StackPanel x:Name="HeaderActions" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" shell:WindowChrome.IsHitTestVisibleInChrome="True">
-     <ToggleButton x:Name="OwnPinBox" Style="{StaticResource IconToggle}" Click="OwnPin_Click" ToolTip="本窗口置顶" AutomationProperties.Name="本窗口置顶">
-      <Path Data="M5,2 L12,2 M6,2 L6,7 L3,10 L3,11 L14,11 L14,10 L11,7 L11,2 M8.5,11 L8.5,17" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" StrokeThickness="1.5" Width="18" Height="18"/>
+
+    <StackPanel x:Name="HeaderActions" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+     <ToggleButton x:Name="OwnPinBox" Style="{StaticResource IconToggle}" Width="30" Height="28" Click="OwnPin_Click" ToolTip="固定管理器置顶" AutomationProperties.Name="本窗口置顶">
+      <Path x:Name="OwnPinIcon" Data="M5.2,2.2 L10.8,2.2 M10,2.2 L10,6.8 L12.4,9.5 L9.6,9.5 M6,2.2 L6,4.4 M3.6,9.5 L6.8,9.5 M8,11.2 L8,14.5 M2.5,2.5 L13.5,13.5"
+        Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+        StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="15" Height="15"/>
      </ToggleButton>
-     <Button x:Name="SettingsButton" Style="{StaticResource TitleButton}" Content="&#xE713;" ToolTip="设置" AutomationProperties.Name="设置" Click="SettingsButton_Click"/>
-     <Button Style="{StaticResource TitleButton}" Content="&#xE921;" ToolTip="最小化" AutomationProperties.Name="最小化" Click="Minimize_Click"/>
-     <Button x:Name="MaximizeButton" Style="{StaticResource TitleButton}" Content="&#xE922;" ToolTip="最大化 / 还原" AutomationProperties.Name="最大化或还原" Click="Maximize_Click"/>
-     <Button Style="{StaticResource TitleButton}" Content="&#xE8BB;" ToolTip="关闭" AutomationProperties.Name="关闭" Click="Close_Click"/>
+     <Button x:Name="SettingsButton" Style="{StaticResource TitleButton}" ToolTip="设置" AutomationProperties.Name="设置" Click="SettingsButton_Click">
+      <Path Data="M2.5,4.5 L8.5,4.5 M11.5,4.5 L13.5,4.5 M10,2.8 L10,6.2 M2.5,11.5 L4.5,11.5 M7.5,11.5 L13.5,11.5 M6,9.8 L6,13.2"
+        Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+        StrokeThickness="1.5" StrokeStartLineCap="Round" Width="15" Height="15"/>
+     </Button>
+     <Button Style="{StaticResource TitleButton}" ToolTip="最小化" AutomationProperties.Name="最小化" Click="Minimize_Click">
+      <Path Data="M3.5,8 L12.5,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" Width="15" Height="15"/>
+     </Button>
+     <Button x:Name="MaximizeButton" Style="{StaticResource TitleButton}" ToolTip="最大化 / 还原" AutomationProperties.Name="最大化或还原" Click="Maximize_Click">
+      <Path Data="M3.5,3.5 L12.5,3.5 L12.5,12.5 L3.5,12.5 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round" Width="15" Height="15"/>
+     </Button>
+     <Button Style="{StaticResource DangerTitleButton}" ToolTip="关闭" AutomationProperties.Name="关闭" Click="Close_Click">
+      <Path Data="M4,4 L12,12 M12,4 L4,12" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" Width="15" Height="15"/>
+     </Button>
+    </StackPanel>
+
+    <StackPanel x:Name="CompactActions" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Visibility="Collapsed" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+     <Button x:Name="CompactPickerButton" AutomationProperties.Name="拖拽置顶" Style="{StaticResource RowIconButton}" ToolTip="按住拖到目标窗口置顶"
+       PreviewMouseLeftButtonDown="Picker_Down" PreviewMouseMove="Picker_Move" PreviewMouseLeftButtonUp="Picker_Up" LostMouseCapture="Picker_LostCapture">
+      <Path Data="M8,2 L8,5 M8,11 L8,14 M2,8 L5,8 M11,8 L14,8 M8,6.5 A1.5,1.5 0 1 1 7.99,6.5"
+        Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" Width="15" Height="15"/>
+     </Button>
+     <Button x:Name="CompactArrangeButton" Style="{StaticResource RowIconButton}" AutomationProperties.Name="整理桌面" ToolTip="整理桌面" Click="Arrange_Click">
+      <Path Data="M2.5,3 L7,3 L7,7.5 L2.5,7.5 Z M9,3 L13.5,3 L13.5,7.5 L9,7.5 Z M2.5,9.5 L7,9.5 L7,13.5 L2.5,13.5 Z M9,9.5 L13.5,9.5 L13.5,13.5 L9,13.5 Z"
+        Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.3" StrokeLineJoin="Round" Width="15" Height="15"/>
+     </Button>
     </StackPanel>
    </Grid>
-   <Grid x:Name="Workspace" Grid.Row="1" Margin="22,12,22,20">
+
+   <Grid x:Name="Workspace" Grid.Row="1" Margin="16,4,16,14">
     <Grid x:Name="WindowPage">
-     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="16"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+     <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="10"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+     </Grid.RowDefinitions>
+
      <Grid x:Name="Toolbar">
-      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-      <Button x:Name="AddButton" Content="＋  添加窗口" Click="Add_Click"/>
-      <Button x:Name="PickerButton" Grid.Column="1" Content="拖动置顶" Margin="8,0,20,0" Cursor="Hand"
-       PreviewMouseLeftButtonDown="Picker_Down" PreviewMouseMove="Picker_Move" PreviewMouseLeftButtonUp="Picker_Up"
-       LostMouseCapture="Picker_LostCapture" Click="DragPicker_Click" ToolTip="拖到目标窗口后松开，只置顶，不切换"/>
-      <TextBox x:Name="SearchBox" Grid.Column="2" Tag="搜索已管理窗口" TextChanged="Search_Changed" Margin="0,0,16,0" AutomationProperties.Name="搜索已管理窗口"/>
-      <Button x:Name="ArrangeButton" Grid.Column="3" Content="整理桌面" Margin="0,0,8,0" Click="Arrange_Click" ToolTip="按当前整理设置调整可见窗口"/>
-      <Button x:Name="UndoArrangeButton" IsEnabled="False" Grid.Column="4" Content="撤销整理" Margin="0,0,8,0" Style="{StaticResource QuietButton}" Click="UndoLayout_Click" ToolTip="撤销上一次桌面整理"/>
-      <Button x:Name="MoreButton" Grid.Column="5" Style="{StaticResource TitleButton}" Content="&#xE712;" ToolTip="更多" Click="More_Click">
-       <Button.ContextMenu><ContextMenu>
-        <MenuItem x:Name="UnpinAllButton" Header="全部取消置顶" Click="UnpinAll_Click"/>
-        <MenuItem Header="恢复全部原样" Click="RecoverAll_Click"/>
-        <MenuItem Header="刷新窗口" Click="Refresh_Click"/>
-        <Separator/><MenuItem Header="退出" Click="Quit_Click"/>
-       </ContextMenu></Button.ContextMenu>
-      </Button>
+      <Grid.ColumnDefinitions>
+       <ColumnDefinition Width="Auto"/>
+       <ColumnDefinition Width="*"/>
+       <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+
+      <StackPanel Orientation="Horizontal">
+       <Button x:Name="AddButton" Style="{StaticResource PrimaryButton}" Click="Add_Click" ToolTip="从当前打开的窗口中选择加入管理">
+        <StackPanel Orientation="Horizontal">
+         <Path Data="M7,2 L7,12 M2,7 L12,7" Stroke="{DynamicResource OnAccent}" StrokeThickness="1.7" StrokeStartLineCap="Round" Width="13" Height="13" VerticalAlignment="Center"/>
+         <TextBlock Text="添加窗口" Margin="6,0,0,0" VerticalAlignment="Center"/>
+        </StackPanel>
+       </Button>
+       <Button x:Name="PickerButton" Style="{StaticResource SplitDragButton}" Margin="1,0,0,0"
+         PreviewMouseLeftButtonDown="Picker_Down" PreviewMouseMove="Picker_Move" PreviewMouseLeftButtonUp="Picker_Up"
+         LostMouseCapture="Picker_LostCapture" Click="DragPicker_Click" ToolTip="按住并拖到目标窗口松开，立即置顶并加入管理">
+        <StackPanel Orientation="Horizontal">
+         <Path Data="M7,1.5 L7,4.2 M7,9.8 L7,12.5 M1.5,7 L4.2,7 M9.8,7 L12.5,7" Stroke="{DynamicResource Accent}" StrokeThickness="1.6" StrokeStartLineCap="Round" Width="13" Height="13" VerticalAlignment="Center"/>
+         <TextBlock Text="拖拽置顶" Margin="5,0,0,0" VerticalAlignment="Center"/>
+        </StackPanel>
+       </Button>
+      </StackPanel>
+
+      <Grid Grid.Column="1" Margin="10,0,6,0">
+       <TextBlock x:Name="ManagedSummaryText" Style="{StaticResource MutedText}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+       <TextBox x:Name="SearchBox" Tag="筛选已管理窗口 (Esc 收起)" TextChanged="Search_Changed" KeyDown="SearchBox_KeyDown" Visibility="Collapsed" AutomationProperties.Name="搜索已管理窗口"/>
+      </Grid>
+
+      <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+       <ToggleButton x:Name="SearchToggleButton" Style="{StaticResource IconToggle}" Margin="0,0,2,0" ToolTip="筛选已管理窗口 (Ctrl+F)" Click="SearchToggle_Click" AutomationProperties.Name="展开筛选">
+        <Path Data="M6.8,2.5 A4.3,4.3 0 1 0 6.8,11.1 A4.3,4.3 0 1 0 6.8,2.5 M10,10 L13.5,13.5"
+          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" StrokeThickness="1.5" StrokeStartLineCap="Round" Width="15" Height="15"/>
+       </ToggleButton>
+       <Button x:Name="MoreButton" Style="{StaticResource TitleButton}" Width="28" Height="28" ToolTip="更多操作" Click="More_Click">
+        <Button.ContextMenu>
+         <ContextMenu>
+          <MenuItem x:Name="UnpinAllButton" Header="全部取消置顶" Click="UnpinAll_Click"/>
+          <MenuItem Header="恢复全部原样" Click="RecoverAll_Click"/>
+          <MenuItem Header="刷新窗口列表" Click="Refresh_Click"/>
+          <Separator/>
+          <MenuItem Header="退出" Click="Quit_Click"/>
+         </ContextMenu>
+        </Button.ContextMenu>
+        <Path Data="M3,8 A1,1 0 1 1 3,8.01 M8,8 A1,1 0 1 1 8,8.01 M13,8 A1,1 0 1 1 13,8.01"
+          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="2" StrokeStartLineCap="Round" Width="16" Height="16"/>
+       </Button>
+      </StackPanel>
      </Grid>
+
      <Grid Grid.Row="2">
-      <ListBox x:Name="WindowList" AutomationProperties.Name="已管理窗口">
+      <ListBox x:Name="WindowList" ItemContainerStyle="{StaticResource CardListItem}" AutomationProperties.Name="已管理窗口">
        <ListBox.ItemTemplate><DataTemplate><local:WindowRow/></DataTemplate></ListBox.ItemTemplate>
       </ListBox>
-      <TextBlock x:Name="EmptyListText" Text="暂无管理的窗口" Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"/>
+
+      <Border x:Name="EmptyStatePanel" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Margin="0,2,0,4" IsHitTestVisible="False">
+       <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="20">
+        <Border Width="34" Height="34" CornerRadius="17" Background="{DynamicResource Selection}" HorizontalAlignment="Center" Margin="0,0,0,10">
+         <Path Data="M5.2,2.2 L10.8,2.2 M6,2.2 L6,6.8 L3.6,9.5 L12.4,9.5 L10,6.8 L10,2.2 M8,9.5 L8,14.5"
+           Stroke="{DynamicResource Accent}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+           Width="16" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
+        <TextBlock x:Name="EmptyListText" Text="暂无管理的窗口" FontWeight="SemiBold" FontSize="13.5" Foreground="{DynamicResource Ink}" HorizontalAlignment="Center"/>
+        <TextBlock x:Name="EmptyHintText" Text="点击「添加窗口」，选择要管理的应用。" Style="{StaticResource MutedText}" HorizontalAlignment="Center" Margin="0,5,0,0"/>
+       </StackPanel>
+      </Border>
      </Grid>
+
+     <Border x:Name="DesktopFooter" Grid.Row="3" Margin="0,8,0,0" Padding="11,7" CornerRadius="9" Background="{DynamicResource Surface}">
+      <DockPanel LastChildFill="False">
+       <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+        <Path Data="M2,2.5 L6.5,2.5 L6.5,7 L2,7 Z M8.5,2.5 L13,2.5 L13,7 L8.5,7 Z M2,9 L6.5,9 L6.5,13 L2,13 Z M8.5,9 L13,9 L13,13 L8.5,13 Z"
+          Stroke="{DynamicResource Muted}" StrokeThickness="1.3" StrokeLineJoin="Round" Width="14" Height="14" VerticalAlignment="Center"/>
+        <TextBlock Text="整个桌面" FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center" Margin="7,0,0,0"/>
+        <TextBlock x:Name="FooterHintText" Text="· 手动" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="6,0,0,0"/>
+       </StackPanel>
+       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+        <Button x:Name="UndoArrangeButton" IsEnabled="False" Content="撤销整理" Margin="0,0,6,0" Style="{StaticResource QuietButton}" FontSize="12" Click="UndoLayout_Click" ToolTip="还原上一次桌面整理调整"/>
+        <Button x:Name="ArrangeButton" Content="整理桌面" MinHeight="27" Padding="11,4" FontSize="12.5" Click="Arrange_Click" ToolTip="按当前整理偏好排布整个桌面的普通可见窗口"/>
+       </StackPanel>
+      </DockPanel>
+     </Border>
     </Grid>
+
     <Grid x:Name="SettingsPage" Visibility="Collapsed">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
       </Grid.RowDefinitions>
-      <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-        <Button Content="" Style="{StaticResource TitleButton}" Click="Back_Click" ToolTip="返回窗口列表" AutomationProperties.Name="返回"/>
-        <TextBlock Text="设置" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center" Margin="8,0,0,0"/>
+      <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+        <Button Style="{StaticResource TitleButton}" Click="Back_Click" ToolTip="返回窗口列表" AutomationProperties.Name="返回">
+          <Path Data="M10.5,3 L5,8 L10.5,13 M5.5,8 L13.5,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="15" Height="15"/>
+        </Button>
+        <TextBlock Text="设置" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" Margin="6,0,0,0"/>
       </StackPanel>
       <Grid Grid.Row="1">
         <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="158"/>
+          <ColumnDefinition Width="122"/>
           <ColumnDefinition Width="*"/>
         </Grid.ColumnDefinitions>
-        <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0" Padding="0,4,9,0">
+        <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0" Padding="0,2,8,0">
           <ListBox x:Name="SettingsNav" SelectionChanged="SettingsNav_Changed" SelectedIndex="0" AutomationProperties.Name="设置分类" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
             <ListBoxItem Content="常规"/>
             <ListBoxItem Content="桌面整理"/>
@@ -82,20 +204,20 @@
           </ListBox>
         </Border>
         <ScrollViewer x:Name="GeneralSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
-          <StackPanel Margin="22,0,16,14">
-            <TextBlock Text="外观与启动" Style="{StaticResource SectionTitle}" Margin="0,14,0,7"/>
+          <StackPanel Margin="18,0,10,14">
+            <TextBlock Text="外观与启动" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
             <CheckBox x:Name="DarkBox" Content="深色主题" Click="Settings_Click"/>
-            <CheckBox x:Name="TrayBox" Content="关闭时退出程序" Click="Settings_Click"/>
-            <CheckBox x:Name="StartupBox" Content="开机启动" Click="Startup_Click"/>
-            <TextBlock Text="管理器窗口置顶" Style="{StaticResource SectionTitle}" Margin="0,14,0,7"/>
-            <CheckBox x:Name="FocusPinBox" Content="焦点临时置顶" Click="Settings_Click" ToolTip="失焦后恢复长期置顶选择"/>
-            <CheckBox x:Name="AbsoluteBox" Content="保持绝对置顶" Click="Settings_Click" ToolTip="仅在手动置顶或小窗时提高层级，不抢焦点"/>
-            <CheckBox x:Name="AggressiveBox" Content="激进置顶" Click="Settings_Click" ToolTip="绝对置顶开启时，每 500 毫秒检查遮挡"/>
+            <CheckBox x:Name="TrayBox" Content="关闭时退出程序（不留驻托盘）" Click="Settings_Click"/>
+            <CheckBox x:Name="StartupBox" Content="开机自动启动" Click="Startup_Click"/>
+            <TextBlock Text="管理器窗口层级" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
+            <CheckBox x:Name="FocusPinBox" Content="获得焦点时临时置顶" Click="Settings_Click" ToolTip="失焦后自动退让并恢复长期置顶选择"/>
+            <CheckBox x:Name="AbsoluteBox" Content="手动置顶或小窗时保持最高层" Click="Settings_Click" ToolTip="仅在手动置顶或悬浮胶囊模式下提高层级，不抢键盘焦点"/>
+            <CheckBox x:Name="AggressiveBox" Content="激进防遮挡检查" Click="Settings_Click" ToolTip="开启最高层时，每 500 毫秒检查其他置顶窗口遮挡"/>
           </StackPanel>
         </ScrollViewer>
         <ScrollViewer x:Name="LayoutSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
-          <StackPanel Margin="22,0,16,14">
-            <TextBlock Text="何时整理" Style="{StaticResource SectionTitle}" Margin="0,14,0,7"/>
+          <StackPanel Margin="18,0,10,14">
+            <TextBlock Text="何时整理" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
             <WrapPanel x:Name="AutoChoices" Margin="0,0,0,6">
               <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AutoChoices" Content="仅手动" Tag="Off" Click="LayoutPreference_Click"/>
               <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AutoChoices" Content="轻度辅助" Tag="LightAssist" Click="LayoutPreference_Click"/>
@@ -103,49 +225,49 @@
               <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AutoChoices" Content="自动整理" Tag="AutoFullAssist" Click="LayoutPreference_Click"/>
             </WrapPanel>
             <TextBlock x:Name="ModeHint" Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
-            <TextBlock Text="手动整理方式" Style="{StaticResource SectionTitle}" Margin="0,14,0,7"/>
+            <TextBlock Text="整理算法" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
             <WrapPanel x:Name="AlgorithmChoices" Margin="0,0,0,6">
               <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AlgorithmChoices" Content="智能整理" Tag="Smart" Click="LayoutPreference_Click"/>
               <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AlgorithmChoices" Content="经典吸附" Tag="Classic" Click="LayoutPreference_Click"/>
             </WrapPanel>
             <StackPanel x:Name="SmartOptions">
-              <TextBlock Text="整理幅度" Style="{StaticResource SectionTitle}" Margin="0,14,0,7"/>
+              <TextBlock Text="整理幅度" Style="{StaticResource SectionTitle}" Margin="0,12,0,6"/>
               <WrapPanel x:Name="StrengthChoices" Margin="0,0,0,6">
                 <RadioButton Style="{StaticResource SettingsChoice}" GroupName="StrengthChoices" Content="保守" Tag="Gentle" Click="LayoutPreference_Click"/>
                 <RadioButton Style="{StaticResource SettingsChoice}" GroupName="StrengthChoices" Content="平衡" Tag="Balanced" Click="LayoutPreference_Click"/>
                 <RadioButton Style="{StaticResource SettingsChoice}" GroupName="StrengthChoices" Content="积极" Tag="Assertive" Click="LayoutPreference_Click"/>
               </WrapPanel>
-              <CheckBox x:Name="VerticalFill" Content="接近全高时填满，拖动后恢复" Click="LayoutPreference_Click"/>
+              <CheckBox x:Name="VerticalFill" Content="接近全高时自动填满，拖动后恢复" Click="LayoutPreference_Click"/>
               <CheckBox x:Name="VideoBars" Content="调整视频窗口比例以减少黑边" Click="LayoutPreference_Click"/>
               <WrapPanel x:Name="VideoChoices" Margin="0,0,0,6">
                 <RadioButton Style="{StaticResource SettingsChoice}" GroupName="VideoChoices" Content="优先缩小" Tag="Shrink" Click="LayoutPreference_Click"/>
                 <RadioButton Style="{StaticResource SettingsChoice}" GroupName="VideoChoices" Content="优先放大" Tag="Expand" Click="LayoutPreference_Click"/>
               </WrapPanel>
-              <Expander Header="空间与观看偏好" Foreground="{DynamicResource Ink}" Margin="0,8">
-                <StackPanel Margin="14,5,0,0">
+              <Expander Header="高级空间与观看校准" Foreground="{DynamicResource Ink}" Margin="0,6">
+                <StackPanel Margin="10,6,0,0">
                   <CheckBox x:Name="UsefulResize" Content="允许调整窗口大小" Click="LayoutPreference_Click"/>
                   <CheckBox x:Name="ProtectEdges" Content="保护四侧窗口边缘" Click="LayoutPreference_Click"/>
                   <CheckBox x:Name="AllowBleed" Content="允许窗口略微超出屏幕外缘" Click="LayoutPreference_Click"/>
-                  <DockPanel Margin="0,3" MaxWidth="460" HorizontalAlignment="Left" Width="390">
-                    <TextBox x:Name="BleedAmount" DockPanel.Dock="Right" Width="84" MinHeight="27" Padding="5,3" Tag="0,48" AutomationProperties.Name="外缘最大超出距离（DIP）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                    <TextBox x:Name="BleedAmount" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="0,48" AutomationProperties.Name="外缘最大超出距离（DIP）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
                     <TextBlock Text="外缘最大超出距离（DIP）" VerticalAlignment="Center"/>
                   </DockPanel>
-                  <DockPanel Margin="0,3" MaxWidth="460" HorizontalAlignment="Left" Width="390">
-                    <TextBox x:Name="ComfortWidth" DockPanel.Dock="Right" Width="84" MinHeight="27" Padding="5,3" Tag="480,2400" AutomationProperties.Name="参考窗口宽度（DIP）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                    <TextBox x:Name="ComfortWidth" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="480,2400" AutomationProperties.Name="参考窗口宽度（DIP）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
                     <TextBlock Text="参考窗口宽度（DIP）" VerticalAlignment="Center"/>
                   </DockPanel>
-                  <DockPanel Margin="0,3" MaxWidth="460" HorizontalAlignment="Left" Width="390">
-                    <TextBox x:Name="ComfortHeight" DockPanel.Dock="Right" Width="84" MinHeight="27" Padding="5,3" Tag="320,1600" AutomationProperties.Name="参考窗口高度（DIP）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                    <TextBox x:Name="ComfortHeight" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="320,1600" AutomationProperties.Name="参考窗口高度（DIP）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
                     <TextBlock Text="参考窗口高度（DIP）" VerticalAlignment="Center"/>
                   </DockPanel>
                   <CheckBox x:Name="Calibrate" Content="使用当前显示器的实际观看尺寸" Click="LayoutPreference_Click"/>
                   <StackPanel x:Name="CalibrationFields">
-                    <DockPanel Margin="0,3" MaxWidth="460" HorizontalAlignment="Left" Width="390">
-                      <TextBox x:Name="PhysicalWidth" DockPanel.Dock="Right" Width="84" MinHeight="27" Padding="5,3" Tag="150,4000" AutomationProperties.Name="屏幕物理宽度（毫米）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                    <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                      <TextBox x:Name="PhysicalWidth" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="150,4000" AutomationProperties.Name="屏幕物理宽度（毫米）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
                       <TextBlock Text="屏幕物理宽度（毫米）" VerticalAlignment="Center"/>
                     </DockPanel>
-                    <DockPanel Margin="0,3" MaxWidth="460" HorizontalAlignment="Left" Width="390">
-                      <TextBox x:Name="ViewDistance" DockPanel.Dock="Right" Width="84" MinHeight="27" Padding="5,3" Tag="200,3000" AutomationProperties.Name="观看距离（毫米）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                    <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                      <TextBox x:Name="ViewDistance" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="200,3000" AutomationProperties.Name="观看距离（毫米）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
                       <TextBlock Text="观看距离（毫米）" VerticalAlignment="Center"/>
                     </DockPanel>
                   </StackPanel>
@@ -153,79 +275,87 @@
               </Expander>
             </StackPanel>
             <StackPanel x:Name="ClassicOptions">
-              <DockPanel Margin="0,3" MaxWidth="460" HorizontalAlignment="Left" Width="390">
-                <TextBox x:Name="NeighborSnap" DockPanel.Dock="Right" Width="84" MinHeight="27" Padding="5,3" Tag="0,240" AutomationProperties.Name="相邻窗口吸附距离（px）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
-                <TextBlock Text="相邻窗口吸附距离（px）" VerticalAlignment="Center"/>
-              </DockPanel>
-              <DockPanel Margin="0,3" MaxWidth="460" HorizontalAlignment="Left" Width="390">
-                <TextBox x:Name="AlignSnap" DockPanel.Dock="Right" Width="84" MinHeight="27" Padding="5,3" Tag="0,120" AutomationProperties.Name="边缘对齐距离（px）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
-                <TextBlock Text="边缘对齐距离（px）" VerticalAlignment="Center"/>
-              </DockPanel>
-              <DockPanel Margin="0,3" MaxWidth="460" HorizontalAlignment="Left" Width="390">
-                <TextBox x:Name="ScreenSnap" DockPanel.Dock="Right" Width="84" MinHeight="27" Padding="5,3" Tag="0,240" AutomationProperties.Name="屏幕边缘吸附距离（px）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
-                <TextBlock Text="屏幕边缘吸附距离（px）" VerticalAlignment="Center"/>
-              </DockPanel>
-              <DockPanel Margin="0,3" MaxWidth="460" HorizontalAlignment="Left" Width="390">
-                <TextBox x:Name="EdgeAdjust" DockPanel.Dock="Right" Width="84" MinHeight="27" Padding="5,3" Tag="0,480" AutomationProperties.Name="单边最大调整量（px）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
-                <TextBlock Text="单边最大调整量（px）" VerticalAlignment="Center"/>
-              </DockPanel>
-              <DockPanel Margin="0,3" MaxWidth="460" HorizontalAlignment="Left" Width="390">
-                <TextBox x:Name="ResizeRatio" DockPanel.Dock="Right" Width="84" MinHeight="27" Padding="5,3" Tag="0,50" AutomationProperties.Name="单次尺寸变化上限（%）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
-                <TextBlock Text="单次尺寸变化上限（%）" VerticalAlignment="Center"/>
-              </DockPanel>
-              <DockPanel Margin="0,3" MaxWidth="460" HorizontalAlignment="Left" Width="390">
-                <TextBox x:Name="PassCount" DockPanel.Dock="Right" Width="84" MinHeight="27" Padding="5,3" Tag="1,5" AutomationProperties.Name="迭代轮数" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
-                <TextBlock Text="迭代轮数" VerticalAlignment="Center"/>
-              </DockPanel>
+              <Expander Header="高级吸附与迭代参数" Foreground="{DynamicResource Ink}" Margin="0,6" IsExpanded="False">
+                <StackPanel Margin="10,6,0,0">
+                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                    <TextBox x:Name="NeighborSnap" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="0,240" AutomationProperties.Name="相邻窗口吸附距离（px）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                    <TextBlock Text="相邻窗口吸附距离（px）" VerticalAlignment="Center"/>
+                  </DockPanel>
+                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                    <TextBox x:Name="AlignSnap" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="0,120" AutomationProperties.Name="边缘对齐距离（px）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                    <TextBlock Text="边缘对齐距离（px）" VerticalAlignment="Center"/>
+                  </DockPanel>
+                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                    <TextBox x:Name="ScreenSnap" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="0,240" AutomationProperties.Name="屏幕边缘吸附距离（px）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                    <TextBlock Text="屏幕边缘吸附距离（px）" VerticalAlignment="Center"/>
+                  </DockPanel>
+                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                    <TextBox x:Name="EdgeAdjust" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="0,480" AutomationProperties.Name="单边最大调整量（px）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                    <TextBlock Text="单边最大调整量（px）" VerticalAlignment="Center"/>
+                  </DockPanel>
+                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                    <TextBox x:Name="ResizeRatio" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="0,50" AutomationProperties.Name="单次尺寸变化上限（%）" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                    <TextBlock Text="单次尺寸变化上限（%）" VerticalAlignment="Center"/>
+                  </DockPanel>
+                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                    <TextBox x:Name="PassCount" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="1,5" AutomationProperties.Name="迭代轮数" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                    <TextBlock Text="迭代轮数" VerticalAlignment="Center"/>
+                  </DockPanel>
+                </StackPanel>
+              </Expander>
             </StackPanel>
             <CheckBox x:Name="RescueWindows" Content="拉回部分出屏的窗口" Click="LayoutPreference_Click"/>
-            <Button Content="恢复整理默认值" Click="ResetLayout_Click" Style="{StaticResource QuietButton}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+            <Button Content="恢复整理默认值" Click="ResetLayout_Click" Style="{StaticResource QuietButton}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
           </StackPanel>
         </ScrollViewer>
         <ScrollViewer x:Name="KeysSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
-          <StackPanel Margin="22,0,16,14">
-            <TextBlock Text="全局快捷键" Style="{StaticResource SectionTitle}" Margin="0,14,0,7"/>
+          <StackPanel Margin="18,0,10,14">
+            <TextBlock Text="全局快捷键" Style="{StaticResource SectionTitle}" Margin="0,8,0,4"/>
+            <TextBlock Text="点选输入框录入组合键，可连续修改多项。Delete 清空，Esc 还原当前项，点「应用」保存。" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,10"/>
             <Grid>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="190"/>
+                <ColumnDefinition Width="178"/>
               </Grid.ColumnDefinitions>
               <Grid.RowDefinitions>
-                <RowDefinition Height="46"/>
-                <RowDefinition Height="46"/>
-                <RowDefinition Height="46"/>
-                <RowDefinition Height="46"/>
-                <RowDefinition Height="46"/>
-                <RowDefinition Height="46"/>
-                <RowDefinition Height="46"/>
+                <RowDefinition Height="42"/>
+                <RowDefinition Height="42"/>
+                <RowDefinition Height="42"/>
+                <RowDefinition Height="42"/>
+                <RowDefinition Height="42"/>
+                <RowDefinition Height="42"/>
+                <RowDefinition Height="42"/>
               </Grid.RowDefinitions>
               <TextBlock Text="唤出主窗口" VerticalAlignment="Center"/>
-              <TextBox x:Name="ShowKeyBox" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
-              <TextBlock Grid.Row="1" Text="切换置顶" VerticalAlignment="Center"/>
-              <TextBox x:Name="PinKeyBox" Grid.Row="1" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
+              <TextBox x:Name="ShowKeyBox" Grid.Column="1" Margin="0,4" IsReadOnly="True" Tag="未设置" PreviewKeyDown="Hotkey_KeyDown"/>
+              <TextBlock Grid.Row="1" Text="切换当前窗口置顶" VerticalAlignment="Center"/>
+              <TextBox x:Name="PinKeyBox" Grid.Row="1" Grid.Column="1" Margin="0,4" IsReadOnly="True" Tag="未设置" PreviewKeyDown="Hotkey_KeyDown"/>
               <TextBlock Grid.Row="2" Text="强制最小化" VerticalAlignment="Center"/>
-              <TextBox x:Name="ParkKeyBox" Grid.Row="2" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
-              <TextBlock Grid.Row="3" Text="恢复全部" VerticalAlignment="Center"/>
-              <TextBox x:Name="RecoverKeyBox" Grid.Row="3" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
-              <TextBlock Grid.Row="4" Text="增加不透明度" VerticalAlignment="Center"/>
-              <TextBox x:Name="UpKeyBox" Grid.Row="4" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
-              <TextBlock Grid.Row="5" Text="降低不透明度" VerticalAlignment="Center"/>
-              <TextBox x:Name="DownKeyBox" Grid.Row="5" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
+              <TextBox x:Name="ParkKeyBox" Grid.Row="2" Grid.Column="1" Margin="0,4" IsReadOnly="True" Tag="未设置" PreviewKeyDown="Hotkey_KeyDown"/>
+              <TextBlock Grid.Row="3" Text="恢复全部原样" VerticalAlignment="Center"/>
+              <TextBox x:Name="RecoverKeyBox" Grid.Row="3" Grid.Column="1" Margin="0,4" IsReadOnly="True" Tag="未设置" PreviewKeyDown="Hotkey_KeyDown"/>
+              <TextBlock Grid.Row="4" Text="增加不透明度（=）" VerticalAlignment="Center"/>
+              <TextBox x:Name="UpKeyBox" Grid.Row="4" Grid.Column="1" Margin="0,4" IsReadOnly="True" Tag="未设置" PreviewKeyDown="Hotkey_KeyDown"/>
+              <TextBlock Grid.Row="5" Text="降低不透明度（-）" VerticalAlignment="Center"/>
+              <TextBox x:Name="DownKeyBox" Grid.Row="5" Grid.Column="1" Margin="0,4" IsReadOnly="True" Tag="未设置" PreviewKeyDown="Hotkey_KeyDown"/>
               <TextBlock Grid.Row="6" Text="整理桌面" VerticalAlignment="Center"/>
-              <TextBox x:Name="ArrangeKeyBox" Grid.Row="6" Grid.Column="1" Margin="0,4" PreviewKeyDown="Hotkey_KeyDown"/>
+              <TextBox x:Name="ArrangeKeyBox" Grid.Row="6" Grid.Column="1" Margin="0,4" IsReadOnly="True" Tag="未设置" PreviewKeyDown="Hotkey_KeyDown"/>
             </Grid>
-            <Button Content="应用" HorizontalAlignment="Right" Margin="0,16,0,0" Click="ApplyHotkeys_Click" ToolTip="点击输入框录入组合键，Delete 清空"/>
+            <DockPanel Margin="0,12,0,0">
+              <Button Content="填入默认值" Style="{StaticResource QuietButton}" Click="ResetHotkeys_Click" DockPanel.Dock="Left"/>
+              <Button x:Name="ApplyKeysButton" Content="应用" HorizontalAlignment="Right" Click="ApplyHotkeys_Click" DockPanel.Dock="Right"/>
+            </DockPanel>
           </StackPanel>
         </ScrollViewer>
         <ScrollViewer x:Name="DataSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
-          <StackPanel Margin="22,0,16,14">
-            <TextBlock Text="窗口活动记录" Style="{StaticResource SectionTitle}" Margin="0,14,0,7"/>
-            <TextBlock Text="在本机记录窗口的几何位置与层级。记录不包含窗口标题、按键或截图。" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,12"/>
-            <CheckBox x:Name="RecordSwitch" Content="记录窗口活动" Click="RecordSwitch_Click"/>
-            <TextBlock x:Name="RecordStatus" Style="{StaticResource MutedText}" Margin="0,4,0,12" TextWrapping="Wrap"/>
-            <CheckBox x:Name="ReferenceEnabled" Content="整理时参考已记录的窗口习惯" Click="LayoutPreference_Click"/>
+          <StackPanel Margin="18,0,10,14">
+            <TextBlock Text="窗口活动记录" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
+            <TextBlock Text="仅在本机记录窗口几何位置与前后层级，不包含标题、按键或画面内容。" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,2,0,10"/>
+            <CheckBox x:Name="RecordSwitch" Content="记录窗口活动习惯" Click="RecordSwitch_Click"/>
+            <TextBlock x:Name="RecordStatus" Style="{StaticResource MutedText}" Margin="0,4,0,10" TextWrapping="Wrap"/>
+            <CheckBox x:Name="ReferenceEnabled" Content="智能整理时参考已记录习惯" Click="LayoutPreference_Click"/>
             <WrapPanel Margin="0,12,0,0">
-              <Button Content="打开目录" Click="OpenData_Click" Margin="0,0,8,0"/>
+              <Button Content="打开数据目录" Click="OpenData_Click" Margin="0,0,8,0"/>
               <Button Content="导出记录…" Click="ExportData_Click" Margin="0,0,8,0"/>
               <Button Content="清空记录…" Click="ClearData_Click" Style="{StaticResource QuietButton}"/>
             </WrapPanel>
@@ -233,28 +363,41 @@
         </ScrollViewer>
       </Grid>
     </Grid>
-
    </Grid>
+
    <Popup x:Name="AddPopup" PlacementTarget="{Binding ElementName=AddButton}" Placement="Bottom" VerticalOffset="6" StaysOpen="False" AllowsTransparency="True" Opened="AddPopup_Opened">
-    <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Padding="12" Width="520" MaxHeight="440" PreviewKeyDown="AddPopup_Key">
+    <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Padding="10" Width="430" MaxHeight="380" PreviewKeyDown="AddPopup_Key">
      <DockPanel>
-      <TextBox x:Name="PickSearch" DockPanel.Dock="Top" Tag="搜索窗口" Margin="0,0,0,8" TextChanged="PickSearch_Changed" AutomationProperties.Name="选择要管理的窗口"/>
+      <TextBox x:Name="PickSearch" DockPanel.Dock="Top" Tag="搜索当前打开的窗口…" Margin="0,0,0,8" TextChanged="PickSearch_Changed" AutomationProperties.Name="选择要管理的窗口"/>
       <ListBox x:Name="PickList">
-       <ListBox.ItemTemplate><DataTemplate>
-        <DockPanel LastChildFill="True">
-        <Button DockPanel.Dock="Right" Content="置顶" Style="{StaticResource QuietButton}" Click="PickPinned_Click" ToolTip="添加并置顶" IsEnabled="{Binding CanOperate}"/>
-        <Button Style="{StaticResource RowTitleButton}" Padding="10,9" HorizontalContentAlignment="Stretch" Click="Pick_Click" IsEnabled="{Binding CanOperate}">
-         <StackPanel><TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding ProcessName}" Style="{StaticResource MutedText}" Margin="0,4,0,0"/></StackPanel>
-        </Button>
-        </DockPanel>
-       </DataTemplate></ListBox.ItemTemplate>
+       <ListBox.ItemTemplate>
+        <DataTemplate>
+         <DockPanel LastChildFill="True">
+          <Button DockPanel.Dock="Right" Content="添加并置顶" Style="{StaticResource QuietButton}" FontSize="12" Click="PickPinned_Click" ToolTip="加入列表并立即置顶" IsEnabled="{Binding CanOperate}"/>
+          <Button Style="{StaticResource RowTitleButton}" Padding="6,6" HorizontalContentAlignment="Stretch" Click="Pick_Click" IsEnabled="{Binding CanOperate}">
+           <Grid>
+            <Grid.ColumnDefinitions>
+             <ColumnDefinition Width="32"/>
+             <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <ContentPresenter Content="{Binding}" ContentTemplate="{StaticResource WindowAvatar}" Width="24" Height="24" HorizontalAlignment="Left" VerticalAlignment="Center"/>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+             <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="13" TextTrimming="CharacterEllipsis"/>
+             <TextBlock Text="{Binding ProcessName}" Style="{StaticResource MutedText}" Margin="0,2,0,0"/>
+            </StackPanel>
+           </Grid>
+          </Button>
+         </DockPanel>
+        </DataTemplate>
+       </ListBox.ItemTemplate>
       </ListBox>
      </DockPanel>
     </Border>
    </Popup>
-   <Border x:Name="StatusBar" Grid.RowSpan="2" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="24" Padding="12,8" CornerRadius="8"
-      Background="{DynamicResource Selection}" Visibility="Collapsed" MaxWidth="680" MouseLeftButtonDown="DismissStatus_Click">
-    <TextBlock x:Name="StatusText" Foreground="{DynamicResource Ink}" FontSize="12" TextWrapping="Wrap"/>
+
+   <Border x:Name="StatusBar" Grid.RowSpan="2" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="20,0,20,52" Padding="12,7" CornerRadius="8"
+      Background="{DynamicResource Ink}" Visibility="Collapsed" MaxWidth="460" MouseLeftButtonDown="DismissStatus_Click">
+    <TextBlock x:Name="StatusText" Foreground="{DynamicResource Paper}" FontSize="12" TextWrapping="Wrap"/>
    </Border>
   </Grid>
  </Border>

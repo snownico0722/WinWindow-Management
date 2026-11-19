@@ -3,7 +3,7 @@
 先读 README.md 与 docs/DECISIONS.md。用户决定高于历史实现；遇到冲突先纠正设计，不用旧文档反驳需求。
 
 - C# / WPF / Win32；独立产品，不复制 Pin-It 的 Rust/Slint 实现。
-- 先设计后实施。沿用 PaperTodo 暖纸配色。主界面是宽松、可缩放的行内直接操作列表。用户要求参照其 Pin-It 与 PaperTodo 交互，不能再恢复“先选择、再右侧检查器修改”的后台式流程。
+- 先设计后实施。沿用 PaperTodo 的暖色和统一设置导航。工作台可缩放，窄窗优先保留窗口标题及行内操作。用户要求参照其 Pin-It 与 PaperTodo 交互，不能再恢复“先选择、再右侧检查器修改”的后台式流程。
 - 业务围绕 WindowManager；Win32 只放 Native；持久化由 StateStore 管理。不按方法拆文件，不预建框架、插件平台或数据库。
 - 不透明度必须支持 0–100%；找回入口不可依赖目标可见或能接收鼠标。
 - 强制最小化是一轮有限操作，验证实际状态，失败则隐藏。不加持续压后台监听或注入。
@@ -18,4 +18,4 @@
 - 验证：`dotnet build src/WinWindow/WinWindow.csproj -c Release`；`dotnet src/WinWindow/bin/Release/net10.0-windows/WinWindow.dll --self-test TestResults`。
 - 左上角品牌点击切换小窗，拖动移动；标题栏中间只拖动。图钉只切换置顶且保留管理；行尾 × 取消置顶并移出，不关闭目标。选择置顶和拖动置顶分开，重复添加不取消置顶。
 
-- 设置统一在顶栏齿轮内，以侧栏切换分类。面向整个桌面的立即操作放工具栏，面向某个窗口的开关放该行。后台保持由 WinWindow 直接管理。
+- 设置统一在顶栏齿轮内，以侧栏切换分类。整理与撤销并列在工作台底栏，面向某个窗口的开关放该行。后台保持由 WinWindow 直接管理。

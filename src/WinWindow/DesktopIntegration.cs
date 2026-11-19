@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -18,6 +20,8 @@ internal sealed class DesktopIntegration : IDisposable
     private readonly nint _hwnd;
     private readonly HwndSource _source;
     private readonly Forms.NotifyIcon _tray;
+    private readonly Icon _trayIcon;
+    private readonly nint _trayIconHandle;
     private readonly Forms.ToolStripItem _undo;
     private readonly Forms.ContextMenuStrip _menu = new();
     private readonly Native.EventProc _eventCallback;
@@ -28,6 +32,7 @@ internal sealed class DesktopIntegration : IDisposable
     public event Action<string>? ActionRequested;
     public event Action<bool>? WindowsChanged;
     public event Action<WindowItem>? RecoveryRequested;
+
     public DesktopIntegration(MainWindow window, WindowManager manager)
     {
         _window = window;
@@ -38,14 +43,15 @@ internal sealed class DesktopIntegration : IDisposable
         // Only this parameterless Show request is permitted across UIPI.
         if (!Native.ChangeWindowMessageFilterEx(_hwnd, WakeMessage, 1, 0))
             window.ShowStatus($"跨权限唤醒未启用（{Marshal.GetLastPInvokeError()}）。");
-        _tray = new Forms.NotifyIcon { Text = "WinWindow", Icon = System.Drawing.SystemIcons.Application, Visible = true, ContextMenuStrip = _menu };
+        _trayIcon = CreateBrandIcon(out _trayIconHandle);
+        _tray = new Forms.NotifyIcon { Text = "WinWindow", Icon = _trayIcon, Visible = true, ContextMenuStrip = _menu };
         _tray.DoubleClick += (_, _) => Dispatch("show");
-        _menu.Items.Add("打开", null, (_, _) => Dispatch("show"));
-        _menu.Items.Add("切换小窗", null, (_, _) => Dispatch("compact"));
+        _menu.Items.Add("打开主面板", null, (_, _) => Dispatch("show"));
+        _menu.Items.Add("切换悬浮胶囊", null, (_, _) => Dispatch("compact"));
         _menu.Items.Add("整理桌面", null, (_, _) => Dispatch("arrange"));
         _undo = _menu.Items.Add("撤销上次整理", null, (_, _) => Dispatch("undoLayout"));
         _undo.Enabled = false;
-        var recover = new Forms.ToolStripMenuItem("找回窗口");
+        var recover = new Forms.ToolStripMenuItem("找回隐藏 / 透明窗口");
         _menu.Items.Add(recover);
         _menu.Opening += (_, _) =>
         {
@@ -58,7 +64,7 @@ internal sealed class DesktopIntegration : IDisposable
             }
             recover.Enabled = recover.DropDownItems.Count != 0;
         };
-        _menu.Items.Add("恢复全部", null, (_, _) => Dispatch("recover"));
+        _menu.Items.Add("恢复全部原样", null, (_, _) => Dispatch("recover"));
         _menu.Items.Add(new Forms.ToolStripSeparator());
         _menu.Items.Add("退出", null, (_, _) => Dispatch("quit"));
         Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint lastForegroundProcess);
@@ -85,24 +91,65 @@ internal sealed class DesktopIntegration : IDisposable
         };
         AddHook(3, 3); AddHook(0x16, 0x17); AddHook(0x8000, 0x8003); AddHook(0x800C, 0x800C);
     }
+
+    private static Icon CreateBrandIcon(out nint handle)
+    {
+        using var bmp = new Bitmap(32, 32);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(Color.Transparent);
+            using var bg = new SolidBrush(Color.FromArgb(255, 154, 99, 56));
+            using var path = new GraphicsPath();
+            int r = 14;
+            path.AddArc(2, 2, r, r, 180, 90);
+            path.AddArc(30 - r, 2, r, r, 270, 90);
+            path.AddArc(30 - r, 30 - r, r, r, 0, 90);
+            path.AddArc(2, 30 - r, r, r, 90, 90);
+            path.CloseFigure();
+            g.FillPath(bg, path);
+
+            using var pen = new Pen(Color.FromArgb(255, 255, 252, 248), 2.3f)
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round,
+                LineJoin = LineJoin.Round
+            };
+            g.DrawLine(pen, 11f, 8.5f, 21f, 8.5f);
+            g.DrawLine(pen, 12.5f, 8.5f, 12.5f, 15f);
+            g.DrawLine(pen, 19.5f, 8.5f, 19.5f, 15f);
+            g.DrawLine(pen, 9.5f, 18.5f, 22.5f, 18.5f);
+            g.DrawLine(pen, 12.5f, 15f, 9.5f, 18.5f);
+            g.DrawLine(pen, 19.5f, 15f, 22.5f, 18.5f);
+            g.DrawLine(pen, 16f, 18.5f, 16f, 24.5f);
+        }
+        handle = bmp.GetHicon();
+        return Icon.FromHandle(handle);
+    }
+
     internal void SetUndoAvailable(bool available) => _undo.Enabled = available;
+
     private void AddHook(uint first, uint last)
     {
         nint hook = Native.SetWinEventHook(first, last, 0, _eventCallback, 0, 0, 0);
         if (hook != 0) _hooks.Add(hook);
     }
+
     private void Dispatch(string action) => _window.Dispatcher.BeginInvoke(new Action(() => { if (!_disposed) ActionRequested?.Invoke(action); }));
+
     private nint Message(nint hwnd, int msg, nint wp, nint lp, ref bool handled)
     {
         if ((uint)msg == WakeMessage && wp == 0 && lp == 0) { Dispatch("show"); handled = true; }
         else if (msg == 0x0312 && _actions.TryGetValue(wp.ToInt32(), out string? action))
         {
-            if (!_window.IsEditingHotkey) Dispatch(action);
+            if (!_window.CaptureRegisteredHotkey(_hotkeys[action])) Dispatch(action);
             handled = true;
         }
         return 0;
     }
+
     public void Notify(string message) => _tray.ShowBalloonTip(4000, "WinWindow", message, Forms.ToolTipIcon.Warning);
+
     public static (uint Modifiers, uint Key) ParseHotkey(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return (0, 0);
@@ -114,6 +161,7 @@ internal sealed class DesktopIntegration : IDisposable
             throw new ArgumentException("快捷键需要修饰键和普通按键。");
         return (mods, (uint)KeyInterop.VirtualKeyFromKey(key));
     }
+
     private Dictionary<int, string> Register(Dictionary<string, string> settings)
     {
         var result = new Dictionary<int, string>();
@@ -124,19 +172,21 @@ internal sealed class DesktopIntegration : IDisposable
             {
                 var key = ParseHotkey(entry.Value);
                 if (key.Key == 0) continue;
-                if (!Native.RegisterHotKey(_hwnd, id, key.Modifiers | 0x4000, key.Key)) throw new Win32Exception($"快捷键 {entry.Value} 无法注册。");
+                if (!Native.RegisterHotKey(_hwnd, id, key.Modifiers | 0x4000, key.Key)) throw new Win32Exception($"快捷键 {entry.Value} 无法注册，可能已被占用。");
                 result.Add(id++, entry.Key);
             }
             return result;
         }
         catch { foreach (int id in result.Keys) Native.UnregisterHotKey(_hwnd, id); throw; }
     }
+
     public void ApplyHotkeys(Dictionary<string, string> settings)
     {
         foreach (int id in _actions.Keys) Native.UnregisterHotKey(_hwnd, id);
         try { _actions = Register(settings); _hotkeys = new(settings); }
         catch { _actions = Register(_hotkeys); throw; }
     }
+
     public static void SetAutostart(bool enabled)
     {
         bool dev = Environment.GetCommandLineArgs().Contains("--dev");
@@ -151,6 +201,7 @@ internal sealed class DesktopIntegration : IDisposable
         }
         else key.DeleteValue(name, false);
     }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -159,5 +210,7 @@ internal sealed class DesktopIntegration : IDisposable
         foreach (nint hook in _hooks) Native.UnhookWinEvent(hook);
         _source.RemoveHook(Message);
         _tray.Visible = false; _tray.Dispose(); _menu.Dispose();
+        _trayIcon.Dispose();
+        if (_trayIconHandle != 0) Native.DestroyIcon(_trayIconHandle);
     }
 }

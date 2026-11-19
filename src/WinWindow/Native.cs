@@ -1,17 +1,25 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Windows;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace WinWindow;
 
 internal static class Native
 {
-    internal const long Layered = 0x80000, Transparent = 0x20, TopmostStyle = 8;
+    internal const long Layered = 0x80000, Transparent = 0x20, TopmostStyle = 8, ToolWindow = 0x80, NoActivateStyle = 0x08000000L;
     internal const uint NoSize = 1, NoMove = 2, NoActivate = 0x10, AsyncPosition = 0x4000;
     internal const int Hide = 0, Normal = 1, Minimized = 2, Maximized = 3, ShowNoActivate = 4, Restore = 9, ForceMinimize = 11;
+    private static readonly ConcurrentDictionary<string, ImageSource?> IconCache = new(StringComparer.OrdinalIgnoreCase);
+
     [StructLayout(LayoutKind.Sequential)] public struct Point { public int X; public int Y; }
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
     [StructLayout(LayoutKind.Sequential)] public struct Placement
@@ -47,7 +55,7 @@ internal static class Native
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(Point point);
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint hwnd, uint command);
-    [DllImport("user32.dll")] private static extern bool GetWindowRect(nint hwnd, out Rect rect);
+    [DllImport("user32.dll")] internal static extern bool GetWindowRect(nint hwnd, out Rect rect);
     [DllImport("user32.dll")] internal static extern nint MonitorFromWindow(nint hwnd, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
     [DllImport("user32.dll", SetLastError = true)] internal static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint key);
@@ -59,11 +67,56 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern uint InSendMessageEx(nint reserved);
     [DllImport("user32.dll")] internal static extern nint SetWinEventHook(uint first, uint last, nint module, EventProc callback, uint process, uint thread, uint flags);
     [DllImport("user32.dll")] internal static extern bool UnhookWinEvent(nint hook);
+    [DllImport("user32.dll", SetLastError = true)] internal static extern bool DestroyIcon(nint hIcon);
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(nint hwnd, int attribute, out int value, int size);
+    [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] private static extern int DwmGetWindowAttributeRect(nint hwnd, int attribute, out Rect rect, int size);
     [DllImport("dwmapi.dll")] internal static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(uint access, bool inherit, uint id);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageName(nint process, uint flags, StringBuilder name, ref uint size);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
+
+    public static ImageSource? AppIcon(string processPath)
+    {
+        if (string.IsNullOrWhiteSpace(processPath)) return null;
+        return IconCache.GetOrAdd(processPath, static file =>
+        {
+            try
+            {
+                if (!File.Exists(file)) return null;
+                using var icon = System.Drawing.Icon.ExtractAssociatedIcon(file);
+                if (icon is null) return null;
+                var source = Imaging.CreateBitmapSourceFromHIcon(icon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromWidthAndHeight(32, 32));
+                source.Freeze();
+                return source;
+            }
+            catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException or ExternalException)
+            {
+                return null;
+            }
+        });
+    }
+
+    internal static bool PositionOutline(nint hwnd, Rect rect) =>
+        SetWindowPos(hwnd, (nint)(-1), rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, NoActivate);
+
+    public static bool TryGetFrameBounds(nint hwnd, out Rect rect)
+    {
+        rect = default;
+        if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) return false;
+        if (DwmGetWindowAttributeRect(hwnd, 9, out rect, Marshal.SizeOf<Rect>()) != 0 && !GetWindowRect(hwnd, out rect))
+            return false;
+        return rect.Right > rect.Left && rect.Bottom > rect.Top;
+    }
+
+    public static void ConfigureOverlay(nint hwnd)
+    {
+        if (hwnd == 0 || !IsWindow(hwnd)) return;
+        long mask = Transparent | ToolWindow | NoActivateStyle;
+        long value = Style(hwnd) | mask;
+        if (IntPtr.Size == 8) SetWindowLong64(hwnd, -20, (nint)value);
+        else SetWindowLong32(hwnd, -20, (int)value);
+    }
+
     public static string Title(nint hwnd) { var b = new StringBuilder(2048); GetWindowText(hwnd, b, b.Capacity); return b.ToString(); }
     public static string ClassName(nint hwnd) { var b = new StringBuilder(256); GetClassName(hwnd, b, b.Capacity); return b.ToString(); }
     public static long Style(nint hwnd) => IntPtr.Size == 8 ? GetWindowLong64(hwnd, -20).ToInt64() : GetWindowLong32(hwnd, -20);
@@ -124,7 +177,7 @@ internal static class Native
         {
             if (!IsTarget(hwnd) || !IsWindowVisible(hwnd)) return true;
             long style = Style(hwnd);
-            if ((style & 0x80) != 0 && (style & 0x40000) == 0) return true;
+            if ((style & ToolWindow) != 0 && (style & 0x40000) == 0) return true;
             if (DwmGetWindowAttribute(hwnd, 14, out int cloaked, 4) == 0 && cloaked != 0) return true;
             string title = Title(hwnd);
             if (string.IsNullOrWhiteSpace(title)) return true;

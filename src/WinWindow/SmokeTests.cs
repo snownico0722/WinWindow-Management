@@ -10,6 +10,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -185,11 +186,20 @@ internal static class SmokeTests
             Capture(shell, Path.Combine(output, "workbench-dark.png"));
             ((Button)shell.FindName("BrandArea")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Task.Delay(100);
             nint own = new WindowInteropHelper(shell).Handle;
-            Assert(shell.Width == 180 && Native.IsTopmost(own), "compact mode pins the native HWND, independently of WPF Topmost");
+            Assert(shell.Width == 240 && Native.IsTopmost(own), "compact mode pins the native HWND, independently of WPF Topmost");
+            shell.UpdateLayout();
+            var compactPick = (Button)shell.FindName("CompactPickerButton");
+            var compactArrange = (Button)shell.FindName("CompactArrangeButton");
+            Rect InShell(FrameworkElement control) => control.TransformToAncestor(shell).TransformBounds(new Rect(control.RenderSize));
+            var pickBounds = InShell(compactPick);
+            var arrangeBounds = InShell(compactArrange);
+            Assert(compactPick.IsVisible && compactArrange.IsVisible && pickBounds.Width >= 24 && arrangeBounds.Width >= 24 &&
+                InShell((Button)shell.FindName("BrandArea")).Right <= pickBounds.Left && pickBounds.Right <= arrangeBounds.Left &&
+                arrangeBounds.Right <= shell.ActualWidth, "both capsule actions fit beside the managed-window count");
             Capture(shell, Path.Combine(output, "compact-dark.png"));
             ((Button)shell.FindName("BrandArea")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Assert(shell.Width >= 880 && shell.MinWidth == 880 && double.IsPositiveInfinity(shell.MaxWidth), "workbench remains spacious and has no maximum width");
-            Palette.Apply(false); shell.Width = 880; shell.Height = 560; shell.UpdateLayout();
+            Assert(shell.Width >= 500 && shell.MinWidth == 500 && double.IsPositiveInfinity(shell.MaxWidth), "workbench respects compact minimum and has no maximum width");
+            Palette.Apply(false); shell.Width = 500; shell.Height = 380; shell.UpdateLayout();
             Capture(shell, Path.Combine(output, "workbench-minimum.png"));
             ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
@@ -210,13 +220,36 @@ internal static class SmokeTests
             await WaitAsync("recorder shares the same settings window", () => ((CheckBox)shell.FindName("RecordSwitch")).IsVisible && !layoutPage.IsVisible);
             nav.SelectedIndex = 2;
             await WaitAsync("hotkeys are reachable from the same sidebar", () => ((TextBox)shell.FindName("ShowKeyBox")).IsVisible);
+            await CheckHotkeyDraftAsync(shell, store);
             ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             var row = await FindRowAsync(shell, chosen);
             var slider = (Slider)row.FindName("OpacitySlider");
-            slider.Focus(); slider.Value = 25; slider.Value = 73;
+            var label = (TextBlock)row.FindName("BackgroundLabel");
+            Assert(!label.IsVisible, "narrow cards keep the background switch compact");
+            shell.Width = 820;
+            await WaitAsync("wide cards label the background switch", () => label.IsVisible);
+            shell.SelectForTest(chosen);
+            var focusButton = (ToggleButton)shell.FindName("SearchToggleButton");
+            focusButton.Focus();
+            var list = (ListBox)shell.FindName("WindowList");
+            var container = (ListBoxItem)list.ItemContainerGenerator.ContainerFromItem(chosen);
+            var frame = (Border)container.Template.FindName("Outer", container);
+            Assert(container.IsSelected && !container.IsKeyboardFocusWithin && Equals(frame.BorderBrush, shell.FindResource("Accent")), "the target stays visibly selected when the toolbar has focus");
+            shell.UpdateLayout();
+            Capture(shell, Path.Combine(output, "workbench-wide.png"));
+            var passiveWheel = new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120) { RoutedEvent = Mouse.PreviewMouseWheelEvent };
+            int beforeWheel = shell.DesiredOpacity(chosen);
+            slider.RaiseEvent(passiveWheel);
+            Assert(!passiveWheel.Handled && shell.DesiredOpacity(chosen) == beforeWheel, "an unfocused slider leaves the wheel to the list");
+            slider.Focus();
+            var activeWheel = new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120) { RoutedEvent = Mouse.PreviewMouseWheelEvent };
+            slider.RaiseEvent(activeWheel);
+            Assert(activeWheel.Handled && shell.DesiredOpacity(chosen) == beforeWheel - 5, "a focused slider accepts deliberate wheel edits");
+            slider.Value = 25; slider.Value = 73;
             await WaitAsync("coalesced slider edit", () => Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(73));
             Assert(slider.IsEnabled && slider.Value == 73, "slider keeps accepting input and applies the latest value");
             await WaitAsync("slider completion", () => !chosen.IsBusy);
+            await CheckPickerOutlineAsync(shell, chosen.Hwnd);
             await shell.AddTargetAsync(chosen.Hwnd); await shell.AddTargetAsync(chosen.Hwnd);
             Assert(chosen.Pinned && shell.Manager.Items.Count(x => x.Hwnd == chosen.Hwnd) == 1, "adding an existing row never unpins or duplicates it");
             row = await FindRowAsync(shell, chosen);
@@ -320,6 +353,65 @@ internal static class SmokeTests
         var id = Native.Identity(hwnd)!;
         return new() { ProcessPath = id.ProcessPath, ClassName = id.ClassName, Title = Native.Title(hwnd), Pinned = true };
     }
+    private static async Task CheckHotkeyDraftAsync(MainWindow shell, StateStore store)
+    {
+        var pin = (TextBox)shell.FindName("PinKeyBox");
+        var show = (TextBox)shell.FindName("ShowKeyBox");
+        var apply = (Button)shell.FindName("ApplyKeysButton");
+        var originalPin = pin.Text;
+        var originalShow = show.Text;
+        using var desktop = new DesktopIntegration(shell, shell.Manager);
+        // Use an isolated chord to exercise the same WM_HOTKEY route as a binding already owned by WinWindow.
+        const string probe = "Ctrl+Shift+F23";
+        desktop.ApplyHotkeys(new() { ["pin"] = probe });
+        pin.Focus();
+        Assert(Native.PostMessage(new WindowInteropHelper(shell).Handle, 0x0312, 1, (nint)((0x86 << 16) | 6)), "registered chord reaches the window");
+        await WaitAsync("an already registered chord can be recorded in a focused editor", () => pin.Text == probe);
+        pin.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(pin)!, Environment.TickCount, Key.Escape)
+            { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+        Assert(pin.Text == originalPin, "Escape restores the applied shortcut");
+        show.Focus(); shell.CaptureRegisteredHotkey(originalPin);
+        apply.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        Assert(store.Preferences.Hotkeys["show"] == originalShow, "a duplicate does not replace the working shortcut map");
+        pin.Focus(); shell.CaptureRegisteredHotkey(originalShow);
+        apply.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        var saved = new StateStore(store.DirectoryPath).Preferences.Hotkeys;
+        Assert(saved["show"] == originalPin && saved["pin"] == originalShow, "two shortcuts can be swapped and saved together");
+        show.Text = originalShow; pin.Text = originalPin;
+        apply.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+    }
+
+    private static async Task CheckPickerOutlineAsync(MainWindow shell, nint target)
+    {
+        shell.ShowShell();
+        nint own = new WindowInteropHelper(shell).Handle;
+        await WaitAsync("workbench has focus before preview", () => Native.GetForegroundWindow() == own);
+        shell.PreviewPickerTarget(target);
+        var overlay = Application.Current.Windows.Cast<Window>().Single(w => w != shell && w.IsVisible && w.AllowsTransparency);
+        nint hwnd = new WindowInteropHelper(overlay).Handle;
+        bool Aligned() => Native.TryGetFrameBounds(target, out var targetRect) && Native.GetWindowRect(hwnd, out var outline)
+            && outline.Left == targetRect.Left - 5 && outline.Top == targetRect.Top - 5
+            && outline.Right == targetRect.Right + 5 && outline.Bottom == targetRect.Bottom + 5;
+        await WaitAsync("outline matches the target's screen pixels", Aligned);
+        Assert(Native.GetForegroundWindow() == own && (Native.Style(hwnd) & (Native.Transparent | Native.NoActivateStyle)) == (Native.Transparent | Native.NoActivateStyle),
+            "the outline leaves keyboard focus and mouse input with the application");
+        if (!Native.GetWindowRect(target, out var original)) throw new InvalidOperationException("Fixture has no window bounds.");
+        try
+        {
+            await Task.Run(() => Native.SetWindowPos(target, 0, original.Left + 34, original.Top + 18, 0, 0, Native.NoSize | Native.NoActivate | 4));
+            await WaitAsync("target moves away from the old outline", () => !Aligned());
+            shell.PreviewPickerTarget(target);
+            await WaitAsync("preview follows the same window at its new position", Aligned);
+            shell.PreviewPickerTarget(0);
+            Assert(!Native.IsWindowVisible(hwnd), "leaving a target hides the outline");
+        }
+        finally
+        {
+            shell.PreviewPickerTarget(0);
+            await Task.Run(() => Native.SetWindowPos(target, 0, original.Left, original.Top, 0, 0, Native.NoSize | Native.NoActivate | 4));
+        }
+    }
+
     private static async Task DesktopRegressionAsync(string output, List<Process> processes)
     {
         var trayStore = ChildStore(output, true);
