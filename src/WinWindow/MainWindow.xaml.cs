@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
+using System.IO;
+using NeatWin.App;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -27,6 +29,8 @@ public partial class MainWindow : Window
     private readonly Dictionary<WindowItem, int> _pendingOpacity = new();
     private Dictionary<string, TextBox> _keyEditors = new();
     private DesktopIntegration? _desktop;
+    private DesktopLayout? _layout;
+    private string LayoutDirectory => Path.Combine(_store.DirectoryPath, "Layout");
     private HwndSource? _source;
     private nint _hwnd;
     private bool _ready, _picking, _compact, _quitting, _allowClose;
@@ -43,7 +47,7 @@ public partial class MainWindow : Window
         _view = new ListCollectionView(Manager.Items) { Filter = FilterManaged };
         _pickView = new ListCollectionView(Manager.Items) { Filter = FilterAvailable };
         WindowList.ItemsSource = _view; PickList.ItemsSource = _pickView;
-        _keyEditors = new() { ["show"] = ShowKeyBox, ["pin"] = PinKeyBox, ["park"] = ParkKeyBox, ["recover"] = RecoverKeyBox, ["opacityUp"] = UpKeyBox, ["opacityDown"] = DownKeyBox };
+        _keyEditors = new() { ["arrange"] = ArrangeKeyBox, ["show"] = ShowKeyBox, ["pin"] = PinKeyBox, ["park"] = ParkKeyBox, ["recover"] = RecoverKeyBox, ["opacityUp"] = UpKeyBox, ["opacityDown"] = DownKeyBox };
         var p = store.Preferences;
         if (double.IsFinite(p.Width)) Width = Math.Max(MinWidth, p.Width);
         if (double.IsFinite(p.Height)) Height = Math.Max(MinHeight, p.Height);
@@ -102,6 +106,7 @@ public partial class MainWindow : Window
         if (!_testMode) await Manager.RecoverPreviousSessionAsync();
         await Manager.RefreshAsync();
         if (_quitting) return;
+        if (!_testMode && DesktopLayout.NeedsBackgroundSession(LayoutDirectory)) EnsureLayout();
         if (_store.Preferences.Maximized && !_compact) WindowState = WindowState.Maximized;
         if (_store.LoadWarning.Length != 0) ShowStatus(_store.LoadWarning);
     });
@@ -152,6 +157,7 @@ public partial class MainWindow : Window
             case "activate": await Manager.ActivateAsync(item); break;
             case "pin": await Manager.SetListedPinAsync(item, !item.Pinned); break;
             case "through": await Manager.SetClickThroughAsync(item, !item.ClickThrough); break;
+            case "background": Manager.SetBackgroundEnabled(item, !item.BackgroundEnabled); break;
             case "park":
                 if (item.IsMinimized || item.IsHidden) await Manager.RestoreParkingAsync(item);
                 else ShowStatus(await Manager.ParkAsync(item));
@@ -193,18 +199,21 @@ public partial class MainWindow : Window
     }
     private void PickSearch_Changed(object sender, TextChangedEventArgs e) { if (_ready) _pickView.Refresh(); }
     private async void Pick_Click(object sender, RoutedEventArgs e)
-    { if ((sender as FrameworkElement)?.DataContext is WindowItem item) await AddTargetAsync(item.Hwnd); }
+    { if ((sender as FrameworkElement)?.DataContext is WindowItem item) await AddTargetAsync(item.Hwnd, pin: false); }
     private async void AddPopup_Key(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape) { AddPopup.IsOpen = false; AddButton.Focus(); e.Handled = true; }
         else if (e.Key == Key.Enter && (PickList.SelectedItem as WindowItem ?? _pickView.Cast<WindowItem>().FirstOrDefault()) is { } item)
-        { e.Handled = true; await AddTargetAsync(item.Hwnd); }
+        { e.Handled = true; await AddTargetAsync(item.Hwnd, pin: false); }
     }
-    internal Task AddTargetAsync(nint hwnd) => RunAsync(async () =>
+    private async void PickPinned_Click(object sender, RoutedEventArgs e)
+    { if ((sender as FrameworkElement)?.DataContext is WindowItem item) await AddTargetAsync(item.Hwnd); }
+    internal Task AddTargetAsync(nint hwnd, bool pin = true) => RunAsync(async () =>
     {
         AddPopup.IsOpen = false;
         var item = Manager.SelectTarget(hwnd);
-        await Manager.SetPinAsync(item, true);
+        if (pin) await Manager.SetPinAsync(item, true);
+        else Manager.AddToList(item);
         SearchBox.Clear(); RefreshView(); WindowList.ScrollIntoView(item);
     });
     private void Picker_Down(object sender, MouseButtonEventArgs e)
@@ -229,10 +238,31 @@ public partial class MainWindow : Window
         return RunAsync(async () => { int failures = await Manager.RestoreAllAsync(); ShowStatus(failures == 0 ? "已恢复全部窗口。" : $"{failures} 个窗口未恢复，记录已保留。"); });
     }
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RunAsync(Manager.RefreshAsync);
+    private DesktopLayout EnsureLayout() => _layout ??= new DesktopLayout(LayoutDirectory, message =>
+    {
+        if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(new Action(() => ShowStatus(message)));
+    }, status =>
+    {
+        if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(new Action(() => { if (!_quitting) DisplayRecorder(status); }));
+    }, available =>
+    {
+        if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(new Action(() =>
+        {
+            UndoArrangeButton.IsEnabled = available;
+            _desktop?.SetUndoAvailable(available);
+        }));
+    });
+    private async void Arrange_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().ArrangeAsync());
+    private async void UndoLayout_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().UndoAsync());
     private void More_Click(object sender, RoutedEventArgs e)
     { var button = (Button)sender; button.ContextMenu.PlacementTarget = button; button.ContextMenu.Placement = PlacementMode.Bottom; button.ContextMenu.IsOpen = true; }
     private void ShowSettings(bool show)
-    { AddPopup.IsOpen = false; WindowPage.Visibility = show ? Visibility.Collapsed : Visibility.Visible; SettingsPage.Visibility = show ? Visibility.Visible : Visibility.Collapsed; }
+    {
+        AddPopup.IsOpen = false;
+        WindowPage.Visibility = show ? Visibility.Collapsed : Visibility.Visible;
+        SettingsPage.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (show) SelectSettingsSection();
+    }
     private void SettingsButton_Click(object sender, RoutedEventArgs e) => ShowSettings(SettingsPage.Visibility != Visibility.Visible);
     private void Back_Click(object sender, RoutedEventArgs e) => ShowSettings(false);
     private void CompactSettings_Click(object sender, RoutedEventArgs e) { if (_compact) ToggleCompact(); ShowSettings(true); }
@@ -354,6 +384,8 @@ public partial class MainWindow : Window
         if (action == "show") { ShowShell(); return; }
         if (action == "compact") { ShowShell(); ToggleCompact(); return; }
         if (action == "quit") { await QuitAsync(); return; }
+        if (action == "arrange") { await RunAsync(() => EnsureLayout().ArrangeAsync()); return; }
+        if (action == "undoLayout") { await RunAsync(() => EnsureLayout().UndoAsync()); return; }
         if (action == "recover") { await RecoverAllAsync(); return; }
         await RunAsync(async () =>
         {
@@ -387,7 +419,7 @@ public partial class MainWindow : Window
     internal async Task QuitAsync()
     {
         if (_quitting) return;
-        _quitting = true; AddPopup.IsOpen = false;
+        _quitting = true; _layout?.Dispose(); AddPopup.IsOpen = false;
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
         CancelPicker(); SaveGeometry(); ApplyOwnPolicy();
         int failures = await Manager.ShutdownAsync();
@@ -397,6 +429,7 @@ public partial class MainWindow : Window
     internal void Cleanup()
     {
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
+        _layout?.Dispose(); _layout = null;
         _desktop?.Dispose(); _desktop = null;
         _source?.RemoveHook(WindowMessage); _source = null;
         _store.Error -= ShowStatus; Manager.Notice -= ShowStatus; Manager.Changed -= RefreshView;

@@ -4,7 +4,6 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -36,16 +35,17 @@ internal static class SmokeTests
     }
     private static Process Start(params string[] args)
     {
-        string executable = Path.ChangeExtension(Assembly.GetExecutingAssembly().Location, ".exe");
+        string executable = Path.Combine(AppContext.BaseDirectory, typeof(App).Assembly.GetName().Name + ".exe");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         foreach (string arg in args) start.ArgumentList.Add(arg);
         return Process.Start(start) ?? throw new InvalidOperationException("无法启动测试进程。");
     }
-    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject, string? stall = null)
+    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject, string? stall = null, bool activity = false)
     {
         string file = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".hwnd");
         var args = new List<string> { "--fixture", file };
         if (reject) args.Add("reject");
+        if (activity) args.Add("activity");
         if (stall is not null) { args.Add("stall"); args.Add(stall); }
         var process = Start(args.ToArray());
         for (int i = 0; i < 100; i++)
@@ -82,10 +82,24 @@ internal static class SmokeTests
             var item = manager.SelectTarget(normal.Hwnd);
             long originalStyle = Native.Style(item.Hwnd); bool originalPin = Native.IsTopmost(item.Hwnd);
             Assert(item.Identity is not null && !Native.Matches(item.Identity with { ProcessStarted = item.Identity.ProcessStarted + 1 }), "recovery rejects a different process lifetime");
+            var layoutWindows = new NeatWin.Windows.WindowManager();
+            var source = layoutWindows.Capture().Single(w => w.Handle == item.Hwnd);
+            Assert(source.IsManageable, "layout sees the normal fixture");
+            var target = source.VisualRect with { X = source.VisualRect.X + (source.VisualRect.X > source.WorkArea.X + 40 ? -32 : 32) };
+            var applied = layoutWindows.ApplyLayout(new([new(source, target)], [], []));
+            Assert(applied.Plan.Moves.Count == 1, "ordinary fixture is accepted for layout");
+            bool Reached(NeatWin.Core.RectI rect) => layoutWindows.Capture().Any(w => w.Handle == item.Hwnd &&
+                NeatWin.Core.WindowStateRules.Near(w.VisualRect, rect));
+            await WaitAsync("fixture reaches layout target", () => Reached(target));
+            var undo = NeatWin.Core.LayoutUndoPlanner.Create(applied.Plan, layoutWindows.Capture());
+            Assert(layoutWindows.ApplyLayout(undo).Plan.Moves.Count == 1, "verified layout can be undone");
+            await WaitAsync("layout undo restores fixture geometry", () => Reached(source.VisualRect));
             await manager.SetPinAsync(item, true);
+            Assert(!layoutWindows.Capture().Single(w => w.Handle == item.Hwnd).IsManageable, "layout protects a WinWindow-pinned target");
             Assert(Native.IsTopmost(item.Hwnd), "native topmost is actually applied");
             await manager.SetOpacityAsync(item, 0);
             Assert(Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte alpha, out _) && alpha == 0, "native opacity really reaches zero");
+            Assert(layoutWindows.Capture().All(w => w.Handle != item.Hwnd), "a fully transparent window does not obstruct layout");
             await manager.SetClickThroughAsync(item, true);
             Assert((Native.Style(item.Hwnd) & Native.Transparent) != 0, "native click-through is applied");
             Assert(store.ReadRecovery().Count == 1, "restorable snapshot is durable before mutations");
@@ -122,7 +136,48 @@ internal static class SmokeTests
             shell.Show(); await shell.InitializeAsync(); await Task.Delay(150);
             await shell.Manager.RefreshAsync();
             var chosen = shell.Manager.Items.First(x => x.Hwnd == item.Hwnd);
+            var game = await FixtureAsync(output, false, activity: true);
+            processes.Add(game.Process);
+            using (var desktop = new DesktopIntegration(shell, shell.Manager))
+            {
+                await shell.AddTargetAsync(game.Hwnd, pin: false);
+                var gameItem = shell.Manager.Items.Single(w => w.Hwnd == game.Hwnd);
+                Assert(gameItem.IsManaged && !Native.IsTopmost(game.Hwnd), "adding a background target does not pin it");
+                shell.ShowShell();
+                await WaitAsync("fixture pauses when another window is active", () => Native.Title(game.Hwnd).StartsWith("activity:paused:"));
+                var gameRow = await FindRowAsync(shell, gameItem);
+                var keepRunning = (ToggleButton)gameRow.FindName("BackgroundToggle");
+                keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("row toggle resumes a background fixture", () => Native.Title(game.Hwnd).StartsWith("activity:running:"));
+                Native.SetForegroundWindow(game.Hwnd);
+                await WaitAsync("fixture becomes foreground", () => Native.GetForegroundWindow() == game.Hwnd);
+                shell.ShowShell();
+                await WaitAsync("foreground returns to workbench", () => Native.GetForegroundWindow() == new WindowInteropHelper(shell).Handle);
+                await Task.Delay(150);
+                var title = Native.Title(game.Hwnd);
+                await WaitAsync("background fixture heartbeat advances after switching away",
+                    () => Native.Title(game.Hwnd).StartsWith("activity:running:") && Native.Title(game.Hwnd) != title);
+                Assert(Native.GetForegroundWindow() != game.Hwnd && !Native.IsTopmost(game.Hwnd), "background keep leaves keyboard focus and z-order alone");
+                keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("turning off the row toggle restores the background pause", () => !gameItem.BackgroundEnabled && Native.Title(game.Hwnd).StartsWith("activity:paused:"));
+                keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("enabling the row toggle again resumes the same window", () => gameItem.BackgroundEnabled && Native.Title(game.Hwnd).StartsWith("activity:running:"));
+                await shell.Manager.RemoveAsync(gameItem);
+                await WaitAsync("removal restores the fixture's background pause", () => Native.Title(game.Hwnd).StartsWith("activity:paused:"));
+            }
+            Stop(game.Process);
+            await game.Process.WaitForExitAsync();
             await shell.Manager.SetPinAsync(chosen, true); await shell.Manager.SetOpacityAsync(chosen, 68);
+            string layoutData = Path.Combine(data, "layout-check");
+            var notice = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (var layout = new NeatWin.App.DesktopLayout(layoutData, message => notice.TrySetResult(message)))
+            {
+                var settings = await layout.ReadSettingsAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                Assert(settings.Preferences.Mode == NeatWin.Core.AutomaticLayoutMode.Off && settings.Recorder.IsPaused, "unified settings read the engine defaults without starting recording");
+                await layout.UndoAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                Assert(await notice.Task.WaitAsync(TimeSpan.FromSeconds(5)) == "没有可撤销的整理。", "embedded layout accepts commands on its own message loop");
+                Assert(!Directory.Exists(Path.Combine(layoutData, "Recorder")), "opening layout settings leaves recording off");
+            }
             shell.SelectForTest(chosen);
             await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             shell.UpdateLayout(); Capture(shell, Path.Combine(output, "workbench-light.png"));
@@ -141,6 +196,20 @@ internal static class SmokeTests
             await Task.Delay(100); shell.UpdateLayout();
             Assert(((TextBox)shell.FindName("ShowKeyBox")).Text == "Win+Ctrl+Space", "settings retain the actual hotkey text");
             Capture(shell, Path.Combine(output, "settings-minimum.png"));
+            var nav = (ListBox)shell.FindName("SettingsNav");
+            nav.SelectedIndex = 1;
+            var layoutPage = (ScrollViewer)shell.FindName("LayoutSection");
+            await WaitAsync("integrated layout settings loaded", () => layoutPage.IsVisible && layoutPage.IsEnabled && ((CheckBox)shell.FindName("VerticalFill")).IsChecked.HasValue);
+            var strength = ((Panel)shell.FindName("StrengthChoices")).Children.OfType<RadioButton>().Single(x => (string)x.Tag == "Assertive");
+            strength.IsChecked = true;
+            strength.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            var layoutSettings = new NeatWin.App.SettingsStore(Path.Combine(store.DirectoryPath, "Layout", "settings.json"));
+            await WaitAsync("layout edit persists through unified UI", () => layoutSettings.LoadTidyOptions().SmartStrength == NeatWin.Core.SmartTidyStrength.Assertive);
+            shell.UpdateLayout(); Capture(shell, Path.Combine(output, "settings-layout.png"));
+            nav.SelectedIndex = 3;
+            await WaitAsync("recorder shares the same settings window", () => ((CheckBox)shell.FindName("RecordSwitch")).IsVisible && !layoutPage.IsVisible);
+            nav.SelectedIndex = 2;
+            await WaitAsync("hotkeys are reachable from the same sidebar", () => ((TextBox)shell.FindName("ShowKeyBox")).IsVisible);
             ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             var row = await FindRowAsync(shell, chosen);
             var slider = (Slider)row.FindName("OpacitySlider");

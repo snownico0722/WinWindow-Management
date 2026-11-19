@@ -17,3 +17,5 @@
 - 打包统一使用 `scripts/package.ps1`。日常构建、PR、测试版和预发布版只出依赖系统 .NET 的标准包。仅在用户明确要求或发布正式版时，额外提供一份内置 .NET 的自包含包，标准包始终保留。
 - 验证：`dotnet build src/WinWindow/WinWindow.csproj -c Release`；`dotnet src/WinWindow/bin/Release/net10.0-windows/WinWindow.dll --self-test TestResults`。
 - 左上角品牌点击切换小窗，拖动移动；标题栏中间只拖动。图钉只切换置顶且保留管理；行尾 × 取消置顶并移出，不关闭目标。选择置顶和拖动置顶分开，重复添加不取消置顶。
+
+- 设置统一在顶栏齿轮内，以侧栏切换分类。面向整个桌面的立即操作放工具栏，面向某个窗口的开关放该行。后台保持由 WinWindow 直接管理。

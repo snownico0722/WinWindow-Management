@@ -168,4 +168,18 @@
     </ControlTemplate></Setter.Value></Setter>
   </Style>
   <Style TargetType="Separator"><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Separator"><Border Height="1" Margin="10,4" Background="{DynamicResource Line}"/></ControlTemplate></Setter.Value></Setter></Style>
+  <Style x:Key="SettingsChoice" TargetType="RadioButton">
+    <Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Margin" Value="0,0,6,3"/>
+    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
+      <Border x:Name="Chip" Padding="11,6" CornerRadius="6" BorderThickness="1" BorderBrush="{DynamicResource Line}" Background="{DynamicResource Panel}">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      </Border>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Chip" Property="Background" Value="{DynamicResource Surface}"/></Trigger>
+        <Trigger Property="IsChecked" Value="True"><Setter TargetName="Chip" Property="Background" Value="{DynamicResource Selection}"/><Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter Property="FontWeight" Value="SemiBold"/></Trigger>
+        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource Ink}"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate></Setter.Value></Setter>
+  </Style>
 </ResourceDictionary>

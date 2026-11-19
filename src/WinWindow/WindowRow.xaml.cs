@@ -48,6 +48,7 @@ public partial class WindowRow : UserControl
             ParkButton.ToolTip = restore ? "恢复窗口" : "强制最小化";
             System.Windows.Automation.AutomationProperties.SetName(ParkButton, restore ? "恢复窗口" : "强制最小化");
             RowState.Text = item.IsBusy ? "处理中" : item.IsHidden ? "已隐藏" : item.IsMinimized ? "已最小化" : item.Opacity == 0 ? "完全透明" : "";
+            BackgroundToggle.IsChecked = item.BackgroundEnabled;
             int value = Owner?.DesiredOpacity(item) ?? item.Opacity;
             if (!OpacitySlider.IsMouseCaptureWithin) OpacitySlider.Value = value;
             if (!_dirty) OpacityNumber.Text = value.ToString();
@@ -62,6 +63,7 @@ public partial class WindowRow : UserControl
     private void Title_Click(object sender, RoutedEventArgs e) => Execute("activate");
     private void Pin_Click(object sender, RoutedEventArgs e) => Execute("pin");
     private void Through_Click(object sender, RoutedEventArgs e) => Execute("through");
+    private void Background_Click(object sender, RoutedEventArgs e) => Execute("background");
     private void Park_Click(object sender, RoutedEventArgs e) => Execute("park");
     private void Remove_Click(object sender, RoutedEventArgs e) => Execute("remove");
     private void Remember_Click(object sender, RoutedEventArgs e) => Execute("remember");

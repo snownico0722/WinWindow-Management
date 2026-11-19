@@ -103,6 +103,20 @@ internal static class Native
         var current = Identity(identity.Hwnd);
         return current is not null && current.ProcessId == identity.ProcessId && current.ProcessStarted == identity.ProcessStarted && current.ClassName == identity.ClassName;
     }
+    internal const uint AppActivationMessage = 0x001C;
+
+    internal static void SetBackgroundActivity(WindowIdentity identity, bool enabled)
+    {
+        EnsureIdentity(identity);
+        var foreground = GetForegroundWindow();
+        uint thread = GetWindowThreadProcessId(foreground, out uint pid);
+        // Windows already supplies the real activation for the foreground process.
+        // WM_ACTIVATEAPP has no default focus-transfer behavior.
+        if (pid == identity.ProcessId) return;
+        if (!PostMessage(identity.Hwnd, AppActivationMessage, enabled ? 1 : 0, (nint)thread))
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "窗口未接受后台保持通知，请检查目标权限。");
+    }
+
     public static List<WindowItem> Enumerate()
     {
         var result = new List<WindowItem>();
