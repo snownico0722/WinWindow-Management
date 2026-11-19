@@ -487,6 +487,14 @@ internal static class SmokeTests
         Assert(first.Intersect(second).IsEmpty && mixed.Skip(2).Take(2).All(w =>
             moves.TryGetValue(w.Handle, out var dest) && dest.Intersect(smallArea) == dest),
             "one arrange uncovers the front pair and rescues the larger background windows");
+
+        // Removing one of the larger background windows used to leave 78 px of overlap.
+        var four = new[] { mixed[0], mixed[1], mixed[3], mixed[4] };
+        var fourMoves = Manual(four).Moves.ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
+        var left = fourMoves.GetValueOrDefault(four[0].Handle, four[0].VisualRect);
+        var right = fourMoves.GetValueOrDefault(four[1].Handle, four[1].VisualRect);
+        Assert(left.Intersect(right).IsEmpty && left.Intersect(smallArea) == left && right.Intersect(smallArea) == right,
+            "a fully stacked pair separates on the four-window desktop without pushing either window off screen");
     }
 
     private static async Task CheckArrangeButtonAsync(MainWindow shell, NeatWin.Windows.WindowManager layout, nint first, nint second)

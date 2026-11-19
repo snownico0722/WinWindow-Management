@@ -3,14 +3,14 @@ namespace NeatWin.Core;
 internal static partial class IntentLayoutPlanner
 {
     private static void AddCoveredPairCandidates(List<Candidate> candidates, VisibleWindow[] group,
-        RectI[] original, TaskEvidence[] relations, RectI area, int gap, int[] order)
+        RectI[] seed, TaskEvidence[] relations, RectI area, int gap, int[] order)
     {
         // A large window behind a pair can connect it to the rest of the monitor. Try exposing
         // the pair on its own, optionally leaving the underlying title bars accessible.
-        foreach (var pair in relations.Where(r => CoversHalfOfRear(original[r.First], original[r.Second])))
+        foreach (var pair in relations.Where(r => CoversHalfOfRear(group[r.First].Window.VisualRect, group[r.Second].Window.VisualRect)))
         {
             var windows = new[] { group[pair.First], group[pair.Second] };
-            var rects = new[] { original[pair.First], original[pair.Second] };
+            var rects = new[] { seed[pair.First], seed[pair.Second] };
             var tops = group.Skip(pair.First + 1).Where(w => w != windows[1])
                 .Select(w => w.Window.VisualRect.Top + (int)Math.Ceiling(32 * w.Window.Dpi / 96.0))
                 .Where(y => y > area.Top && y < area.Bottom).Prepend(area.Top).Distinct();
@@ -22,7 +22,7 @@ internal static partial class IntentLayoutPlanner
                 AddPacked(packed, windows, rects, space, gap, columns, false);
                 foreach (var layout in packed)
                 {
-                    var targets = original.ToArray();
+                    var targets = seed.ToArray();
                     targets[pair.First] = layout[0];
                     targets[pair.Second] = layout[1];
                     candidates.Add(new(columns == 2 ? "columns" : "rows", targets, order));
