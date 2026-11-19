@@ -69,6 +69,14 @@ public partial class App : Application
             Shutdown(1);
         }
     }
+    private static void PublishFixtureHandle(string path, nint hwnd)
+    {
+        // Readers treat the marker's existence as readiness. Publish it only after its writer closes.
+        var pending = path + ".tmp";
+        File.WriteAllText(pending, hwnd.ToInt64().ToString());
+        File.Move(pending, path);
+    }
+
     private void OpenFixture(string[] args)
     {
         bool reject = args.Contains("reject");
@@ -85,7 +93,7 @@ public partial class App : Application
                 form.Icon = System.Drawing.SystemIcons.Information;
                 new Forms.Form { Text = form.Text, Icon = System.Drawing.SystemIcons.Warning }.Show();
             }
-            form.Show(); File.WriteAllText(args[1], form.Handle.ToInt64().ToString());
+            form.Show(); PublishFixtureHandle(args[1], form.Handle);
             return;
         }
         var window = new Window
@@ -98,7 +106,7 @@ public partial class App : Application
         {
             if (window.WindowState == WindowState.Minimized) window.Dispatcher.BeginInvoke(new Action(() => window.WindowState = WindowState.Normal), DispatcherPriority.Send);
         };
-        window.Show(); File.WriteAllText(args[1], new WindowInteropHelper(window).Handle.ToInt64().ToString());
+        window.Show(); PublishFixtureHandle(args[1], new WindowInteropHelper(window).Handle);
     }
     // Standalone fixture with an application-controlled pause and a measurable heartbeat.
     private sealed class ActivityTarget : Forms.Form
