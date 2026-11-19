@@ -15,7 +15,6 @@ function Write-Package([bool] $SelfContained) {
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $name ($LASTEXITCODE)" }
 
     Copy-Item (Join-Path $root 'README.md'), (Join-Path $root 'docs/MANUAL_TESTS.md') -Destination $publish
-    Copy-Item (Join-Path $root 'licenses/Pin-It-Apache-2.0.txt') -Destination $publish
     Get-ChildItem $publish -Filter '*.pdb' -File | Remove-Item
     $zip = Join-Path $stage "$name.zip"
     Compress-Archive -Path (Join-Path $publish '*') -DestinationPath $zip

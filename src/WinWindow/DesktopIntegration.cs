@@ -152,7 +152,7 @@ internal sealed class DesktopIntegration : IDisposable
     internal void NotifyInfo(string message) => _tray.ShowBalloonTip(2500, "WinWindow", message, Forms.ToolTipIcon.Info);
 
     private readonly SoundPlayer _pinSound = new(typeof(DesktopIntegration).Assembly
-        .GetManifestResourceStream("WinWindow.Resources.PinItTick.wav")!);
+        .GetManifestResourceStream("WinWindow.Resources.PinFeedback.wav")!);
 
     internal void PlayPinSound() => _pinSound.Play();
 

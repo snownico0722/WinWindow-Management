@@ -53,6 +53,4 @@ dotnet src/WinWindow/bin/Release/net10.0-windows/WinWindow.dll --self-test TestR
 
 `Native` 封装 Win32 与图标缓存；`WindowManager` 管理操作与恢复；`WindowRow` 维护单行卡片交互与编辑状态；`DesktopIntegration` 管理托盘、快捷键和唤醒；`StateStore` 负责持久化。外部窗口修改不在 UI 线程同步等待。
 
-产品决定见 [DECISIONS.md](docs/DECISIONS.md)，维护规则见 [AGENTS.md](AGENTS.md)。未移植 Pin-It 源码，布局程序集沿用 NeatWin 源码，不预建插件平台或数据库，尚未选择开源许可证。
-
-置顶提示音来自 [Pin-It](https://github.com/snownico0722/Pin-It)，沿用 Apache-2.0 许可，发布包附有许可全文。
+产品决定见 [DECISIONS.md](docs/DECISIONS.md)，维护规则见 [AGENTS.md](AGENTS.md)。布局程序集沿用 NeatWin 源码，不预建插件平台或数据库，尚未选择开源许可证。
