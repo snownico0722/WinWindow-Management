@@ -189,7 +189,7 @@
   <data name="ShortcutRegistrationFailed" xml:space="preserve"><value>快捷键 {0} 无法注册，可能已被占用。</value></data>
   <data name="Shortcuts" xml:space="preserve"><value>快捷键</value></data>
   <data name="ShortcutsApplied" xml:space="preserve"><value>快捷键已应用。</value></data>
-  <data name="ShowMainWindow" xml:space="preserve"><value>唤出主窗口</value></data>
+  <data name="ShowMainWindow" xml:space="preserve"><value>显示 / 隐藏主窗口</value></data>
   <data name="Smart" xml:space="preserve"><value>智能整理</value></data>
   <data name="StartWithWindows" xml:space="preserve"><value>开机自动启动</value></data>
   <data name="StyleRejected" xml:space="preserve"><value>目标未接受窗口样式修改。</value></data>

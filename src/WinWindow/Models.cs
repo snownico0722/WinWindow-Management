@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
+using System.Threading.Tasks;
 using System.Windows.Media;
 
 namespace WinWindow;
@@ -60,7 +61,26 @@ internal sealed class WindowItem : Observable
     public nint Hwnd => Identity?.Hwnd ?? 0;
     public string ProcessName => Identity is null ? UiText.Get("WaitingForWindow") : Path.GetFileName(Identity.ProcessPath);
     public string ProcessPath => Identity?.ProcessPath ?? "";
-    public ImageSource? Icon => Identity is null ? null : Native.AppIcon(ProcessPath);
+    private ImageSource? _icon;
+    private bool _requestedIcon;
+    public ImageSource? Icon
+    {
+        get
+        {
+            if (!_requestedIcon && Identity is { } identity)
+            {
+                _requestedIcon = true;
+                _ = LoadIconAsync(identity);
+            }
+            return _icon;
+        }
+    }
+
+    private async Task LoadIconAsync(WindowIdentity identity)
+    {
+        _icon = await Task.Run(() => Native.WindowIcon(identity));
+        if (_icon is not null) Changed(nameof(Icon));
+    }
     public string Initial
     {
         get

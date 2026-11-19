@@ -631,10 +631,26 @@ public partial class MainWindow : Window
         ShowStatus(UiText.Get("ShortcutsApplied"));
     });
 
-    private async Task OnDesktopActionAsync(string action)
+    internal async Task OnDesktopActionAsync(string action)
     {
         if (_quitting) return;
         if (action == "show") { ShowShell(); return; }
+        if (action == "togglePanel")
+        {
+            if (IsVisible && Native.GetForegroundWindow() == _hwnd) Hide();
+            else ShowShell();
+            return;
+        }
+        if (action == "unpinAll") { await RunAsync(Manager.UnpinAllAsync); return; }
+        if (action == "pickWindow")
+        {
+            ShowShell();
+            if (_compact) ToggleCompact();
+            ShowSettings(false);
+            AddPopup.IsOpen = true;
+            await RunAsync(Manager.RefreshAsync);
+            return;
+        }
         if (action == "compact") { ShowShell(); ToggleCompact(); return; }
         if (action == "quit") { await QuitAsync(); return; }
         if (action == "arrange") { await RunAsync(() => EnsureLayout().ArrangeAsync()); return; }

@@ -189,7 +189,7 @@
   <data name="ShortcutRegistrationFailed" xml:space="preserve"><value>Could not register {0}. It may already be in use.</value></data>
   <data name="Shortcuts" xml:space="preserve"><value>Shortcuts</value></data>
   <data name="ShortcutsApplied" xml:space="preserve"><value>Shortcuts applied.</value></data>
-  <data name="ShowMainWindow" xml:space="preserve"><value>Show main window</value></data>
+  <data name="ShowMainWindow" xml:space="preserve"><value>Show / hide main window</value></data>
   <data name="Smart" xml:space="preserve"><value>Smart</value></data>
   <data name="StartWithWindows" xml:space="preserve"><value>Start with Windows</value></data>
   <data name="StyleRejected" xml:space="preserve"><value>The window rejected the style change.</value></data>

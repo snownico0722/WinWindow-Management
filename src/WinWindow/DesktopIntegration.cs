@@ -44,7 +44,7 @@ internal sealed class DesktopIntegration : IDisposable
             window.ShowStatus(UiText.Format("WakePermission", Marshal.GetLastPInvokeError()));
         _trayIcon = LoadTrayIcon();
         _tray = new Forms.NotifyIcon { Text = "WinWindow", Icon = _trayIcon, Visible = true, ContextMenuStrip = _menu };
-        _tray.DoubleClick += (_, _) => Dispatch("show");
+        _tray.MouseClick += (_, e) => { if (e.Button == Forms.MouseButtons.Left) Dispatch("togglePanel"); };
         AddTrayAction("OpenPanel", "show");
         AddTrayAction("ToggleCapsule", "compact");
         AddTrayAction("Arrange", "arrange");
@@ -80,6 +80,9 @@ internal sealed class DesktopIntegration : IDisposable
             }
             recover.Enabled = recover.DropDownItems.Count != 0;
         };
+        AddTrayAction("AddWindow", "pickWindow");
+        var unpinAll = AddTrayAction("UnpinAll", "unpinAll");
+        _menu.Opening += (_, _) => unpinAll.Enabled = manager.Items.Any(x => (x.IsManaged || x.Remembered) && (x.Pinned || x.WantsPin));
         AddTrayAction("RestoreAll", "recover");
         _menu.Items.Add(new Forms.ToolStripSeparator());
         AddTrayAction("Quit", "quit");
@@ -138,7 +141,7 @@ internal sealed class DesktopIntegration : IDisposable
         if ((uint)msg == WakeMessage && wp == 0 && lp == 0) { Dispatch("show"); handled = true; }
         else if (msg == 0x0312 && _actions.TryGetValue(wp.ToInt32(), out string? action))
         {
-            if (!_window.CaptureRegisteredHotkey(_hotkeys[action])) Dispatch(action);
+            if (!_window.CaptureRegisteredHotkey(_hotkeys[action])) Dispatch(action == "show" ? "togglePanel" : action);
             handled = true;
         }
         return 0;

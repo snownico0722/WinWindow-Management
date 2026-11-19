@@ -74,7 +74,46 @@ internal static class Native
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageName(nint process, uint flags, StringBuilder name, ref uint size);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
 
-    public static ImageSource? AppIcon(string processPath)
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
+    private static extern nint SendMessageTimeout(nint hwnd, uint message, nint wp, nint lp, uint flags, uint timeout, out nint result);
+    [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW")]
+    private static extern nint GetClassLong64(nint hwnd, int index);
+    [DllImport("user32.dll", EntryPoint = "GetClassLongW")]
+    private static extern uint GetClassLong32(nint hwnd, int index);
+
+    public static ImageSource? WindowIcon(WindowIdentity id)
+    {
+        if (Matches(id))
+        {
+            const uint getIcon = 0x007F, abortIfHung = 0x0002;
+            // Request the large, alternate small, then small window icon. Borrowed HICONs stay with the owner.
+            foreach (var size in new[] { 1, 2, 0 })
+            {
+                if (SendMessageTimeout(id.Hwnd, getIcon, size, 0, abortIfHung, 60, out var icon) == 0) break;
+                if (CopyIcon(icon) is { } bitmap) return bitmap;
+            }
+            foreach (var index in new[] { -14, -34 })
+            {
+                var icon = IntPtr.Size == 8 ? GetClassLong64(id.Hwnd, index) : (nint)GetClassLong32(id.Hwnd, index);
+                if (CopyIcon(icon) is { } bitmap) return bitmap;
+            }
+        }
+        return AppIcon(id.ProcessPath);
+    }
+
+    private static ImageSource? CopyIcon(nint icon)
+    {
+        if (icon == 0) return null;
+        try
+        {
+            var bitmap = Imaging.CreateBitmapSourceFromHIcon(icon, Int32Rect.Empty, BitmapSizeOptions.FromWidthAndHeight(32, 32));
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch (Exception e) when (e is ArgumentException or ExternalException or InvalidOperationException) { return null; }
+    }
+
+    private static ImageSource? AppIcon(string processPath)
     {
         if (string.IsNullOrWhiteSpace(processPath)) return null;
         return IconCache.GetOrAdd(processPath, static file =>
@@ -84,9 +123,7 @@ internal static class Native
                 if (!File.Exists(file)) return null;
                 using var icon = System.Drawing.Icon.ExtractAssociatedIcon(file);
                 if (icon is null) return null;
-                var source = Imaging.CreateBitmapSourceFromHIcon(icon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromWidthAndHeight(32, 32));
-                source.Freeze();
-                return source;
+                return CopyIcon(icon.Handle);
             }
             catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException or ExternalException)
             {

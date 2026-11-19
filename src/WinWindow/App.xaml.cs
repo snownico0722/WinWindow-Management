@@ -82,7 +82,8 @@ public partial class App : Application
             if (args.Contains("twins"))
             {
                 form.Text = "WinWindow duplicate fixture";
-                new Forms.Form { Text = form.Text }.Show();
+                form.Icon = System.Drawing.SystemIcons.Information;
+                new Forms.Form { Text = form.Text, Icon = System.Drawing.SystemIcons.Warning }.Show();
             }
             form.Show(); File.WriteAllText(args[1], form.Handle.ToInt64().ToString());
             return;

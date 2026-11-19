@@ -159,6 +159,12 @@ internal static class SmokeTests
             Native.ShowWindowAsync(item.Hwnd, Native.Normal);
             shell = new MainWindow(store, true); Application.Current.MainWindow = shell;
             shell.Show(); await shell.InitializeAsync(); await Task.Delay(150);
+            shell.ShowShell();
+            await WaitAsync("foreground before toggling the workbench", () => Native.GetForegroundWindow() == new WindowInteropHelper(shell).Handle);
+            await shell.OnDesktopActionAsync("togglePanel");
+            Assert(!shell.IsVisible, "the workbench shortcut hides the foreground workbench");
+            await shell.OnDesktopActionAsync("togglePanel");
+            Assert(shell.IsVisible, "the same shortcut shows the hidden workbench");
             var language = (ComboBox)shell.FindName("LanguageBox");
             var arrange = (Button)shell.FindName("ArrangeButton");
             language.SelectedValue = "en";
@@ -403,6 +409,17 @@ internal static class SmokeTests
         var pair = manager.Items.Where(x => x.Identity?.ProcessId == identity.ProcessId && first.Matches(x)).ToArray();
         Assert(pair.Length == 2 && pair.Count(x => x.RuleId == first.Id) == 1 && pair.Count(x => x.Opacity == 100) == 1,
             "one saved rule claims exactly one of two identically titled windows");
+        await WaitAsync("duplicate windows load their own icons", () => pair.All(x => x.Icon is not null));
+        byte[] Pixels(WindowItem window)
+        {
+            var bitmap = new System.Windows.Media.Imaging.FormatConvertedBitmap(
+                (System.Windows.Media.Imaging.BitmapSource)window.Icon!, System.Windows.Media.PixelFormats.Bgra32, null, 0);
+            var stride = bitmap.PixelWidth * 4;
+            var pixels = new byte[stride * bitmap.PixelHeight];
+            bitmap.CopyPixels(pixels, stride, 0);
+            return pixels;
+        }
+        Assert(!Pixels(pair[0]).SequenceEqual(Pixels(pair[1])), "window-specific icons distinguish windows from one executable");
         var second = Rule(83);
         store.Preferences.Rules.Add(second);
         await manager.RefreshAsync();
