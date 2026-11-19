@@ -18,7 +18,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets/WinWindow.ico" />
-    <EmbeddedResource Include="Assets/PinItTick.wav" LogicalName="WinWindow.Resources.PinItTick.wav" />
+    <EmbeddedResource Include="Assets/PinFeedback.wav" LogicalName="WinWindow.Resources.PinFeedback.wav" />
     <ProjectReference Include="../NeatWin.Layout/NeatWin.Layout.csproj" />
   </ItemGroup>
 </Project>
