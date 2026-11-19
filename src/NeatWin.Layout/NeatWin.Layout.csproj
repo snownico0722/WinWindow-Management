@@ -9,6 +9,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="../../docs/LAYOUT_RECORDING.md" LogicalName="NeatWin.Layout.RecordingGuide" />
     <InternalsVisibleTo Include="WinWindow" />
   </ItemGroup>
 </Project>

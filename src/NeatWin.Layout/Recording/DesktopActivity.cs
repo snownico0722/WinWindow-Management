@@ -10,13 +10,13 @@ using Windows.Media.Control;
 
 namespace NeatWin.Recording;
 
-internal sealed record ProcessActivity(string Instance, long? WorkingSetBytes, double? CpuCores, string? MediaSource);
+internal sealed record ProcessActivity(string Instance, long? WorkingSetBytes, double? CpuCores, string? MediaSource, float? AudioPeak = null);
 internal sealed record MediaActivity(string Source, string Playback);
 internal sealed record WindowActivity(int Id, string? Process, int? ComparedCells, int? ChangedCells,
-    long? ForegroundMs, long? BackgroundVisibleMs, string ActivityHint);
+    long? ForegroundMs, long? BackgroundVisibleMs, string ActivityHint, RectI? Fragment = null, double? FragmentChange = null);
 internal sealed record ActivitySample(int Version, string Session, long Tick, long ObservedMilliseconds,
     WorkspaceFrame Frame, ProcessActivity[] Processes, WindowActivity[] Windows, MediaActivity[]? Media,
-    uint? InputIdleMilliseconds);
+    uint? InputIdleMilliseconds, long? AudioTick = null);
 
 // The color probes are transient. Persist only the masks of comparable cells and changed cells.
 internal sealed class DesktopActivity(PlacementHistoryStore store)
@@ -26,6 +26,8 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     private readonly Dictionary<(uint Pid, nint Hwnd), string?> _keys = [];
     private readonly Dictionary<string, (long Tick, TimeSpan Cpu)> _cpu = [];
     private readonly Dictionary<int, (RectI Rect, string Cells, int[] Colors)> _colors = [];
+    private readonly Dictionary<int, (RectI Window, RectI Patch, int[] Colors, int Streak)> _fragments = [];
+    private AudioSessionMeter _audio = new();
     private Task<GlobalSystemMediaTransportControlsSessionManager?>? _mediaManager;
     private long _mediaAttempt;
     private long _lastTick;
@@ -40,9 +42,12 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         foreach (var key in _keys.Keys.Where(k => k.Hwnd == hwnd).ToArray()) _keys.Remove(key);
     }
 
+    internal void ResetVisual() { _colors.Clear(); _fragments.Clear(); _previous.Clear(); }
+
     internal void Reset()
     {
         _process.Clear(); _keys.Clear(); _cpu.Clear(); _colors.Clear(); _previous.Clear(); _lastTick = 0;
+        _fragments.Clear(); _audio = new();
         _mediaManager = null; _mediaAttempt = 0;
     }
 
@@ -91,27 +96,59 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     }
 
     internal ActivitySample Sample(string session, long now, WorkspaceFrame frame,
-        IReadOnlyList<WindowSnapshot> snapshot, ObservationIdentityTracker ids, bool visual)
+        IReadOnlyList<WindowSnapshot> snapshot, ObservationIdentityTracker ids, bool visual, CompiledLayoutRules? rules = null)
     {
+        rules ??= CompiledLayoutRules.Default;
         var elapsed = now - _lastTick;
         var interval = _lastTick != 0 && elapsed is >= 0 and <= 8_000 ? elapsed : 0;
-        if (interval == 0) { _colors.Clear(); _cpu.Clear(); _previous.Clear(); }
+        if (interval == 0) { _colors.Clear(); _cpu.Clear(); _previous.Clear(); _fragments.Clear(); }
         _lastTick = now;
         var media = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) ? Media(now) : null;
+        var audio = _audio.Poll(now);
         var usage = new Dictionary<uint, ProcessActivity?>();
         var windows = new List<WindowActivity>();
         var byId = snapshot.ToDictionary(ids.Id);
+        var processWindows = snapshot.Where(w => w.IsManageable || w.SurfaceState != null)
+            .GroupBy(w => w.ProcessId).ToDictionary(g => g.Key, g => g.Count());
         var alive = new HashSet<int>();
         var seenColors = new HashSet<int>();
+        var sampledFragments = new HashSet<int>();
+        int visualBudget = 8;
         foreach (var w in frame.Windows.Where(w => w.Manageable || w.SurfaceState != null))
         {
             var native = byId[w.Id];
             if (!usage.TryGetValue(native.ProcessId, out var resource))
-                usage[native.ProcessId] = resource = ReadUsage(native.ProcessId, now);
+                usage[native.ProcessId] = resource = ReadUsage(native.ProcessId, now, audio);
             int? compared = null, changed = null;
-            if (visual && seenColors.Count < 8 && w.Exposure is { Visible: > 0 } e && e.Cells.Contains('F') &&
-                TryProbe(w.Rect) is { } colors)
+            RectI? fragment = null;
+            double? fraction = null;
+            int fragmentStreak = 0;
+            if (visual && visualBudget > 0 && !w.Foreground && w.Exposure is { Visible: > 0 and < .25 } exposure &&
+                ActivityHints.FragmentPatch(exposure.LargestFragment) is { } patch)
             {
+                visualBudget--;
+                var cursor = Cursor.Position;
+                var pixels = new Rectangle(patch.X, patch.Y, patch.Width, patch.Height).Contains(cursor)
+                    ? null : TryProbe(patch, 16);
+                if (pixels != null)
+                {
+                    sampledFragments.Add(w.Id);
+                    fragment = patch;
+                    if (_fragments.TryGetValue(w.Id, out var old) && old.Window == w.Rect && old.Patch == patch)
+                    {
+                        int changes = 0;
+                        for (int i = 0; i < pixels.Length; i++)
+                            if (ColorChanged(old.Colors[i], pixels[i])) changes++;
+                        fraction = changes / (double)pixels.Length;
+                        fragmentStreak = fraction >= rules.FragmentChangeThreshold ? Math.Min(3, old.Streak + 1) : 0;
+                    }
+                    _fragments[w.Id] = (w.Rect, patch, pixels, fragmentStreak);
+                }
+            }
+            else if (visual && visualBudget > 0 && w.Exposure is { Visible: > 0 } e && e.Cells.Contains('F') &&
+                TryProbe(w.Rect, 4) is { } colors)
+            {
+                visualBudget--;
                 seenColors.Add(w.Id);
                 if (_colors.TryGetValue(w.Id, out var prev) && prev.Rect == w.Rect)
                 {
@@ -133,13 +170,15 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
                 ? Math.Min(3, prior.Motion + 1) : 0;
             bool playing = resource?.MediaSource is string source && media?.Any(m => m.Source == source && m.Playback == "Playing") == true;
             string hint = ActivityHints.Classify(w.Foreground, w.VisibleRatio, w.Rect.Area / (double)Math.Max(1, w.WorkArea.Area),
-                motion, playing, resource?.CpuCores);
+                motion, playing, resource?.CpuCores, resource?.AudioPeak >= rules.AudioPeakThreshold, fragmentStreak,
+                processWindows.GetValueOrDefault(native.ProcessId) == 1);
             windows.Add(new(w.Id, resource?.Instance, compared, changed,
                 known && prior.Foreground == w.Foreground ? (w.Foreground ? interval : 0) : null,
                 known && prior.Foreground == w.Foreground && prior.Visible == visible ? (!w.Foreground && visible ? interval : 0) : null,
-                hint));
+                hint, fragment, fraction));
             _previous[w.Id] = (w.Foreground, visible, motion);
         }
+        foreach (var id in _fragments.Keys.Where(id => !sampledFragments.Contains(id)).ToArray()) _fragments.Remove(id);
         foreach (int id in _previous.Keys.Where(id => !alive.Contains(id)).ToArray()) _previous.Remove(id);
         foreach (int id in _colors.Keys.Where(id => !seenColors.Contains(id)).ToArray()) _colors.Remove(id);
         var present = usage.Values.OfType<ProcessActivity>().ToArray();
@@ -147,10 +186,10 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         foreach (var id in _cpu.Keys.Where(id => !instances.Contains(id)).ToArray()) _cpu.Remove(id);
         var last = new LastInput { Size = 8 };
         uint? idle = GetLastInputInfo(ref last) ? unchecked((uint)now - last.Time) : null;
-        return new(3, session, now, interval, frame, present, windows.ToArray(), media, idle);
+        return new(4, session, now, interval, frame, present, windows.ToArray(), media, idle, audio?.Tick);
     }
 
-    private ProcessActivity? ReadUsage(uint pid, long now)
+    private ProcessActivity? ReadUsage(uint pid, long now, AudioSessionMeter.Reading? audio)
     {
         try
         {
@@ -160,7 +199,8 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
             double? cores = _cpu.TryGetValue(info.Instance, out var old) && now > old.Tick
                 ? Math.Max(0, (cpu - old.Cpu).TotalMilliseconds / (now - old.Tick)) : null;
             _cpu[info.Instance] = (now, cpu);
-            return new(info.Instance, p.WorkingSet64, cores, info.Source == null ? null : store.Key(info.Source, true));
+            return new(info.Instance, p.WorkingSet64, cores, info.Source == null ? null : store.Key(info.Source, true),
+                audio != null && audio.Peaks.TryGetValue(pid, out var peak) ? peak : null);
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException or IOException or UnauthorizedAccessException)
         { return null; }
@@ -199,17 +239,17 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         return false;
     }
 
-    private static int[]? TryProbe(RectI r)
+    private static int[]? TryProbe(RectI r, int grid)
     {
-        // Let GDI downsample straight into a 4x4 bitmap; no full-screen buffer or image on disk.
-        using var bitmap = new Bitmap(4, 4);
+        // Let GDI downsample straight into a small bitmap; no full-screen buffer or image on disk.
+        using var bitmap = new Bitmap(grid, grid);
         using var g = Graphics.FromImage(bitmap);
         var dest = g.GetHdc();
         var screen = GetDC(0);
         bool ok;
-        try { ok = screen != 0 && StretchBlt(dest, 0, 0, 4, 4, screen, r.X, r.Y, r.Width, r.Height, 0x00CC0020); }
+        try { ok = screen != 0 && StretchBlt(dest, 0, 0, grid, grid, screen, r.X, r.Y, r.Width, r.Height, 0x00CC0020); }
         finally { if (screen != 0) ReleaseDC(0, screen); g.ReleaseHdc(dest); }
-        return ok ? Enumerable.Range(0, 16).Select(i => bitmap.GetPixel(i % 4, i / 4).ToArgb()).ToArray() : null;
+        return ok ? Enumerable.Range(0, grid * grid).Select(i => bitmap.GetPixel(i % grid, i / grid).ToArgb()).ToArray() : null;
     }
 
 }

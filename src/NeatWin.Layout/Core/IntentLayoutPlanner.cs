@@ -18,10 +18,13 @@ internal static partial class IntentLayoutPlanner
             return new(new TidyEngine().CreatePlan(visible, options), [], []);
         taskContext ??= new TaskLayoutContext();
         if (taskContext.VerifiedRepeat) return new([], [], []);
+        // Anchored monitors keep their original location and remain in the desktop occlusion checks.
+        desktop ??= visible.Select(v => v.Window).ToArray();
+        var anchors = (taskContext.WindowHints ?? []).Where(h => h.Anchor).Select(h => h.Handle).ToHashSet();
         var moves = new List<TidyMove>();
         var layers = new List<WindowLayerOrder>();
         var traces = new List<LayoutGroupTrace>();
-        foreach (var monitor in visible.Where(v => v.Window.IsManageable && !v.Window.VisualRect.IsEmpty)
+        foreach (var monitor in visible.Where(v => !anchors.Contains(v.Window.Handle) && v.Window.IsManageable && !v.Window.VisualRect.IsEmpty)
             .GroupBy(v => v.Window.MonitorHandle))
         {
             var all = monitor.OrderBy(v => v.Window.ZOrder).ThenBy(v => v.Window.Handle).ToArray();

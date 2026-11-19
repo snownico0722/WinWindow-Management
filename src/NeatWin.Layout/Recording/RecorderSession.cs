@@ -28,7 +28,18 @@ internal sealed class RecorderSession : IDisposable
     private WorkspaceFrame? _savedGeometry;
     private long _geometryTick;
     private readonly Dictionary<nint, (string Request, long Tick)> _lastPlan = [];
-    internal bool VisualSampling { get; set; }
+    private bool _visualSampling;
+    internal bool VisualSampling
+    {
+        get => _visualSampling;
+        set
+        {
+            if (_visualSampling == value) return;
+            _visualSampling = value;
+            _latest = null;
+            _activity.ResetVisual();
+        }
+    }
     private readonly WindowManager _manager = new();
     private readonly IntentReferenceStore _store;
     private readonly ObservationIdentityTracker _identity = new();
@@ -130,6 +141,7 @@ internal sealed class RecorderSession : IDisposable
     internal void OpenDataDirectory()
     {
         Directory.CreateDirectory(_store.DirectoryPath);
+        _store.Rules.EnsureTemplate();
         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_store.DirectoryPath)
         {
             UseShellExecute = true,
@@ -325,7 +337,7 @@ internal sealed class RecorderSession : IDisposable
             if (!DesktopActivity.Interactive()) { _latest = null; _savedGeometry = null; _activity.Reset(); return; }
             var snapshot = _manager.Capture();
             var frame = Capture(snapshot);
-            _latest = _activity.Sample(_session, now, frame, snapshot, _identity, VisualSampling);
+            _latest = _activity.Sample(_session, now, frame, snapshot, _identity, VisualSampling, _store.Rules.Read());
             bool keyframe = _latest.ObservedMilliseconds == 0 || now - _geometryTick >= 60_000 ||
                 !ObservationIdentityTracker.SameState(_savedGeometry, frame);
             _store.AppendActivity(_latest, keyframe ? frame : null, keyframe ? now : _geometryTick);
@@ -349,12 +361,22 @@ internal sealed class RecorderSession : IDisposable
         {
             var id = _identity.Id(w);
             var evidence = _latest.Windows.FirstOrDefault(a => a.Id == id);
-            if (evidence == null || !_latest.Frame.Windows.Any(a => a.Id == id && a.Rect == w.VisualRect && a.VisibleRatio > .08)) continue;
-            if (evidence.ActivityHint is "media-with-motion" or "background-motion")
-                result.Add(new(w.Handle, PassiveVisual: true));
+            if (w.IsForeground || evidence == null || !_latest.Frame.Windows.Any(a => a.Id == id &&
+                a.Rect == w.VisualRect && a.VisibleRatio > 0)) continue;
+            var hint = ActivityHints.ToLayoutHint(w.Handle, w.VisualRect, evidence.ActivityHint, evidence.Fragment);
+            if (hint?.Anchor == true && evidence.Fragment is { } patch)
+            {
+                // A new covering window can invalidate a sampled corner without moving its owner.
+                if (snapshot.Any(front => front.ZOrder < w.ZOrder && !front.VisualRect.Intersect(patch).IsEmpty)) continue;
+            }
+            if (hint != null) result.Add(hint);
         }
         return result.ToArray();
     }
+
+    internal WorkingPairRule[] BindRules(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows) =>
+        rules.Pairs is { Length: > 0 } ? rules.Bind(windows.Where(w => w.IsManageable)
+            .Select(w => (w, _activity.AppKey(w, false)))) : [];
 
     internal PlacementPreference[] Preferences(IReadOnlyList<WindowSnapshot> windows, LayoutFocus focus)
     {

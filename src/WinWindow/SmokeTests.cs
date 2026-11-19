@@ -456,7 +456,8 @@ internal static class SmokeTests
         var path = Path.Combine(root, "activity-fixture.zip");
         recorder.ExportRecords(path);
         using (var archive = System.IO.Compression.ZipFile.OpenRead(path))
-            Assert(archive.Entries.Any(e => e.Name.StartsWith("activity-")) && archive.GetEntry("identity.key") == null,
+            Assert(archive.Entries.Any(e => e.Name.StartsWith("activity-")) && archive.GetEntry("identity.key") == null &&
+                archive.GetEntry("compiled-rules.json") != null && archive.GetEntry("layout-guide.md") != null,
                 "export includes activity but excludes the installation identity secret");
         recorder.Clear();
     }

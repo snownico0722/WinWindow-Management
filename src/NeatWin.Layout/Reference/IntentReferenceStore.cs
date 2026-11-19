@@ -12,12 +12,14 @@ public sealed class IntentReferenceStore
     private readonly string _directory;
     internal string DirectoryPath => _directory;
     internal PlacementHistoryStore Placement { get; }
+    internal LayoutRuleFile Rules { get; }
     private string ProfilePath => Path.Combine(_directory, "intent-reference.json");
     private string DisabledPath => Path.Combine(_directory, "reference-disabled");
     public IntentReferenceStore(string? directory = null)
     {
         _directory = directory ?? DefaultDirectory;
         Placement = new(_directory);
+        Rules = new(_directory);
     }
     public bool Enabled => !File.Exists(DisabledPath);
 
@@ -100,6 +102,11 @@ public sealed class IntentReferenceStore
                 }
                 catch (FileNotFoundException) { }
             }
+        using (var guide = typeof(IntentReferenceStore).Assembly.GetManifestResourceStream("NeatWin.Layout.RecordingGuide")!)
+        using (var output = archive.CreateEntry("layout-guide.md").Open())
+            guide.CopyTo(output);
+        using (var rules = archive.CreateEntry(LayoutRuleFile.Name).Open())
+            JsonSerializer.Serialize(rules, Rules.Read(), LayoutRuleFile.Json);
         using (var preferences = archive.CreateEntry("placement-v1.json").Open())
             JsonSerializer.Serialize(preferences, Placement.Read());
         using var writer = new StreamWriter(archive.CreateEntry("intent-reference.json").Open());
@@ -111,7 +118,7 @@ public sealed class IntentReferenceStore
 
     internal void AppendActivity(ActivitySample sample, WorkspaceFrame? geometry, long geometryTick) =>
         AppendJson("activity", new { sample.Version, sample.Session, sample.Tick, sample.Frame.Time, sample.ObservedMilliseconds,
-            GeometryTick = geometryTick, Frame = geometry, sample.Processes, sample.Windows, sample.Media, sample.InputIdleMilliseconds });
+            GeometryTick = geometryTick, Frame = geometry, sample.Processes, sample.Windows, sample.Media, sample.InputIdleMilliseconds, sample.AudioTick });
     public void AppendTransition(WorkspaceTransition observation) => AppendJson("workspace", observation);
     public void AppendPlan(LayoutRunObservation observation) => AppendJson("plans", observation);
 

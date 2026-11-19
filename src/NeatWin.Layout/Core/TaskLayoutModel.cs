@@ -19,6 +19,19 @@ internal static partial class IntentLayoutPlanner
             var companion = primary == learned.Window ? learned.Partner : learned.Window;
             return context with { Focus = new(primary, companion, 0, "learned-working-pair") };
         }
+        var members = windows.Select(w => w.Window.Handle).ToHashSet();
+        var rules = context.RulePairs?.Where(r => members.Contains(r.First) && members.Contains(r.Second) &&
+            (mainHandle == 0 || r.First == mainHandle || r.Second == mainHandle)).Take(2).ToArray();
+        if (rules is { Length: 1 })
+        {
+            var rule = rules[0];
+            var primary = mainHandle == 0 ? rule.First : mainHandle;
+            return context with { Focus = new(primary, primary == rule.First ? rule.Second : rule.First, 0, "configured-pair") };
+        }
+        var passive = context.WindowHints?.Where(h => h.MediaCompanion && !h.Anchor && h.Handle != mainHandle &&
+            members.Contains(h.Handle)).Take(2).ToArray();
+        if (mainHandle != 0 && members.Contains(mainHandle) && passive is { Length: 1 })
+            return context with { Focus = new(mainHandle, passive[0].Handle, 0, "visible-media-pair") };
         if (windows.Length < 4) return context;
         var visible = windows.Where(w => w.VisibleRatio >= .4 && w.Window.VisualRect.Area >= .12 * w.Window.WorkArea.Area).ToArray();
         if (visible.Length != 2 || visible[0] != windows[0] || visible[1] != windows[1] ||
@@ -260,10 +273,13 @@ internal static partial class IntentLayoutPlanner
         }
         var n = Math.Max(1, windows.Length);
         information /= n; switching /= n; continuity /= n; reflow /= n; peripheral /= n;
+        double pairCost = 0;
         foreach (var r in relations)
         {
             var a = candidate.Rects[r.First]; var b = candidate.Rects[r.Second];
             var oa = original[r.First]; var ob = original[r.Second];
+            var choice = PairPreferenceFor(windows[r.First].Window.Handle, windows[r.Second].Window.Handle, context);
+            if (choice != null) pairCost += PairPlacementCost(a, b, oa, ob, area, choice);
             // Manual arrange treats a heavily stacked pair as a request to see both windows.
             // A larger window behind the pair can otherwise make a partly overlapped row score better.
             if (context.ExplicitArrange && r.Joint > r.Parked &&
@@ -274,7 +290,7 @@ internal static partial class IntentLayoutPlanner
             // side without establishing a reading order. Penalize reversals only for distinct positions.
             var preserveHorizontalOrder = !context.ExplicitArrange ||
                 oa.Intersect(ob).Area < .50 * Math.Min(oa.Area, ob.Area);
-            if (preserveHorizontalOrder && Math.Abs(dx) > .20 * Math.Min(oa.Width, ob.Width) &&
+            if ((choice?.Order ?? 0) == 0 && preserveHorizontalOrder && Math.Abs(dx) > .20 * Math.Min(oa.Width, ob.Width) &&
                 dx * (CenterX(a) - CenterX(b)) < 0) continuity += 1.8 * r.Affinity;
             if (r.SameColumn)
             {
@@ -326,7 +342,7 @@ internal static partial class IntentLayoutPlanner
             }
             personal += preference.Confidence * error;
         }
-        return new(information, switching, continuity, reflow, peripheral, alignment, uncertainty, feedback, personal);
+        return new(information, switching, continuity, reflow, peripheral, alignment, uncertainty, feedback, personal, pairCost);
     }
 
     internal static bool TaskRefinementAcceptable(IReadOnlyList<VisibleWindow> visible,

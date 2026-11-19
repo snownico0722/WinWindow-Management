@@ -154,7 +154,7 @@
   <data name="Quit" xml:space="preserve"><value>退出</value></data>
   <data name="ReadPlacement" xml:space="preserve"><value>读取窗口位置</value></data>
   <data name="RecordActivity" xml:space="preserve"><value>记录窗口活动习惯</value></data>
-  <data name="RecordPrivacy" xml:space="preserve"><value>在本机记录匿名窗口、可见区域、使用时段、进程资源及可用的媒体状态。画面变化可选，不保存图像、按键或窗口标题。</value></data>
+  <data name="RecordPrivacy" xml:space="preserve"><value>在本机记录匿名窗口、可见区域、使用时段、进程资源、音量峰值和可用的播放状态。画面变化可单独开启，只保存变化摘要。</value></data>
   <data name="RecorderCounts" xml:space="preserve"><value>{0} · 已记录 {1} 次手势、{2} 次窗口变化</value></data>
   <data name="RecordsCleared" xml:space="preserve"><value>记录已清空。</value></data>
   <data name="RefreshWindows" xml:space="preserve"><value>刷新窗口列表</value></data>

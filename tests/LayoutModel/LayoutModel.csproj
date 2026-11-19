@@ -9,5 +9,6 @@
   <ItemGroup>
     <Compile Include="../../src/NeatWin.Layout/Core/*.cs" />
     <Compile Include="../../src/NeatWin.Layout/Reference/PlacementHistoryStore.cs" />
+    <Compile Include="../../src/NeatWin.Layout/Reference/LayoutRuleFile.cs" />
   </ItemGroup>
 </Project>

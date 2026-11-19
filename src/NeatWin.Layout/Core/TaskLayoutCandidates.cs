@@ -64,6 +64,7 @@ internal static partial class IntentLayoutPlanner
             peer = Array.FindIndex(windows, w => w.Window.Handle == pref.Partner);
         if (peer < 0 && windows.Length == 2) peer = 1 - main;
         if (peer < 0 || peer == main) return;
+        AddPartialOverlap(candidates, windows, seed, main, peer, area, context, order);
         var a = seed[main]; var b = seed[peer];
         int span = Math.Min(area.Width - gap, a.Width + b.Width);
         if (span <= 1) return;

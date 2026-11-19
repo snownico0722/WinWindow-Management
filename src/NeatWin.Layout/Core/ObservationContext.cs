@@ -16,7 +16,7 @@ public sealed record PlannedGroup(int[] Ids, string Selected, double StackEviden
 public sealed record ProjectedPlan(PlannedWindow[] Targets, int[][] Layers, string[] Selected);
 public sealed record LayoutRunObservation(int Version, string Session, string RequestId, string Trigger,
     WorkspaceFrame Before, PlannedWindow[] Targets, int[][] Layers, PlannedGroup[] Groups,
-    WorkspaceFrame? Actual, string Outcome, string[] ApplyNotes, ProjectedPlan? BasePlan = null, ProjectedPlan? Proposal = null, ProjectedPlan? ScoredPlan = null);
+    WorkspaceFrame? Actual, string Outcome, string[] ApplyNotes, ProjectedPlan? BasePlan = null, ProjectedPlan? Proposal = null, ProjectedPlan? ScoredPlan = null, CompiledLayoutRules? Rules = null, RecordedTaskSignals? Signals = null);
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
 public sealed class ObservationIdentityTracker
@@ -63,4 +63,33 @@ public sealed class ObservationIdentityTracker
     public static bool SameState(WorkspaceFrame? first, WorkspaceFrame second) =>
         first is not null && first.Truncated == second.Truncated && first.Windows.SequenceEqual(second.Windows) &&
         (first.Displays ?? []).SequenceEqual(second.Displays ?? []);
+}
+
+public sealed record RecordedWindowHint(int Id, bool Passive, bool Media, bool Anchor, TaskContentRegion[]? Regions);
+public sealed record RecordedPlacement(int Id, int Partner, double Center, double Width, double Order,
+    int Cell, double Confidence, double? Overlap);
+public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, string? FocusEvidence,
+    RecordedWindowHint[] Hints, RecordedPlacement[] Placements)
+{
+    internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids)
+    {
+        int Id(nint handle) => ids.GetValueOrDefault(handle);
+        var focus = context.Focus;
+        return new(Id(focus?.Main ?? 0), Id(focus?.Companion ?? 0), focus?.Switches ?? 0, focus?.Evidence,
+            (context.WindowHints ?? []).Where(h => Id(h.Handle) != 0)
+                .Select(h => new RecordedWindowHint(Id(h.Handle), h.PassiveVisual, h.MediaCompanion, h.Anchor, h.ProtectedRegions)).ToArray(),
+            (context.Placement ?? []).Where(p => Id(p.Window) != 0)
+                .Select(p => new RecordedPlacement(Id(p.Window), Id(p.Partner), p.Center, p.Width, p.Order,
+                    p.RevealedCell, p.Confidence, p.InnerOverlap)).ToArray());
+    }
+
+    // During offline replay the session-local ids are the simulated handles.
+    internal TaskLayoutContext ApplyToReplay(TaskLayoutContext context) => context with
+    {
+        Focus = new(Main, Companion, Switches, FocusEvidence ?? "recent-switch-pair"),
+        WindowHints = Hints.Select(h => new TaskWindowHint(h.Id, h.Passive, ProtectedRegions: h.Regions,
+            Anchor: h.Anchor, MediaCompanion: h.Media)).ToArray(),
+        Placement = Placements.Select(p => new PlacementPreference(p.Id, p.Partner, p.Center, p.Width,
+            p.Order, p.Cell, p.Confidence, p.Overlap)).ToArray()
+    };
 }

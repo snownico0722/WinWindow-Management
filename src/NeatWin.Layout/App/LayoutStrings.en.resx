@@ -54,4 +54,5 @@
   <data name="LearnedPosition" xml:space="preserve"><value>Preferred position</value></data>
   <data name="WorkingPair" xml:space="preserve"><value>Main and companion side by side</value></data>
   <data name="WatchedRegion" xml:space="preserve"><value>Expose preferred region</value></data>
+  <data name="WorkingOverlap" xml:space="preserve"><value>Partially overlapping pair</value></data>
 </root>

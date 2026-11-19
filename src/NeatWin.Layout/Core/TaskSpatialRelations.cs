@@ -8,6 +8,7 @@ internal static partial class IntentLayoutPlanner
     internal static double TaskAffinity(WindowSnapshot first, WindowSnapshot second, TaskLayoutContext context)
     {
         if (first.MonitorHandle != second.MonitorHandle || first.WorkArea != second.WorkArea) return 0;
+        if (context.ExplicitArrange && context.RulePairs?.Any(r => r.Matches(first.Handle, second.Handle)) == true) return 1;
         if (context.Focus is { Companion: not 0 } f &&
             ((f.Main == first.Handle && f.Companion == second.Handle) || (f.Main == second.Handle && f.Companion == first.Handle))) return 1;
         if (context.ExplicitArrange && context.Placement?.Any(p => p.Confidence >= .4 &&

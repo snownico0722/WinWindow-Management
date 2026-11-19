@@ -54,4 +54,5 @@
   <data name="LearnedPosition" xml:space="preserve"><value>习惯位置</value></data>
   <data name="WorkingPair" xml:space="preserve"><value>主副窗口并排</value></data>
   <data name="WatchedRegion" xml:space="preserve"><value>露出常用区域</value></data>
+  <data name="WorkingOverlap" xml:space="preserve"><value>主副窗边缘重叠</value></data>
 </root>

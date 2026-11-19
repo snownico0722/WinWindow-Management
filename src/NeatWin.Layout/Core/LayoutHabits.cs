@@ -2,9 +2,9 @@ namespace NeatWin.Core;
 
 // A sample describes a stable manual edit. Application keys are anonymous and installation-local.
 public sealed record LayoutHabit(DateTimeOffset Time, string Display, string App, string? Partner,
-    double Center, double Width, int Order, int RevealedCell, bool Corrected);
+    double Center, double Width, int Order, int RevealedCell, bool Corrected, double? InnerOverlap = null);
 public sealed record PlacementPreference(nint Window, nint Partner, double Center, double Width,
-    double Order, int RevealedCell, double Confidence);
+    double Order, int RevealedCell, double Confidence, double? InnerOverlap = null);
 public sealed record LayoutFocus(nint Main, nint Companion, int Switches, string Evidence = "recent-switch-pair");
 public sealed class ForegroundHistory
 {
@@ -75,7 +75,8 @@ public static class LayoutHabits
         }
         return new(o.Time, IntentEvidence.ContextFor(o.WorkArea), moved.AppKey, partner?.AppKey,
             Math.Clamp(center, 0, 1), Math.Clamp(moved.Rect.Width / (double)o.WorkArea.Width, .05, 1), order, cell,
-            o.AfterRequest != null);
+            o.AfterRequest != null, partner != null && order != 0 && moved.Rect.VerticalOverlapRatio(partner.Rect) >= .5
+                ? moved.Rect.HorizontalOverlapRatio(partner.Rect) : null);
     }
 
     public static LayoutHabit[] Add(IEnumerable<LayoutHabit> history, LayoutHabit sample)
@@ -109,7 +110,20 @@ public static class LayoutHabits
                 .OrderByDescending(g => g.Sum(Weight)).FirstOrDefault();
             if (region != null && region.Count() >= 3 && region.Sum(Weight) > sum * .55) cell = region.Key;
         }
+        var overlaps = pair.Where(s => s.InnerOverlap is >= 0 and <= .4).ToArray();
+        double? overlap = null;
+        double overlapWeight = overlaps.Sum(Weight);
+        if (specific && overlaps.Length >= 3 && overlapWeight >= .6 * sum)
+        {
+            // A rare overlapping edit should not turn a consistent side-by-side habit into a narrow overlap.
+            double accumulated = 0;
+            foreach (var sample in overlaps.OrderBy(s => s.InnerOverlap))
+            {
+                accumulated += Weight(sample);
+                if (accumulated >= overlapWeight / 2) { overlap = sample.InnerOverlap; break; }
+            }
+        }
         return new(window.Handle, specific ? partnerHandle : 0, center, Mean(s => s.Width),
-            specific ? Mean(s => s.Order) : 0, cell, confidence);
+            specific ? Mean(s => s.Order) : 0, cell, confidence, overlap);
     }
 }
