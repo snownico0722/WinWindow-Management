@@ -212,6 +212,9 @@
             <CheckBox x:Name="DarkBox" Content="深色主题" Click="Settings_Click"/>
             <CheckBox x:Name="TrayBox" Content="关闭时退出程序（不留驻托盘）" Click="Settings_Click"/>
             <CheckBox x:Name="StartupBox" Content="开机自动启动" Click="Startup_Click"/>
+            <TextBlock Text="操作反馈" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
+            <CheckBox x:Name="SoundBox" Content="置顶操作播放提示音" Click="Settings_Click"/>
+            <CheckBox x:Name="NotificationBox" Content="置顶操作显示系统托盘通知" Click="Settings_Click"/>
             <TextBlock Text="管理器窗口层级" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
             <CheckBox x:Name="FocusPinBox" Content="获得焦点时临时置顶" Click="Settings_Click" ToolTip="失焦后自动退让并恢复长期置顶选择"/>
             <CheckBox x:Name="AbsoluteBox" Content="手动置顶或小窗时保持最高层" Click="Settings_Click" ToolTip="仅在手动置顶或悬浮胶囊模式下提高层级，不抢键盘焦点"/>

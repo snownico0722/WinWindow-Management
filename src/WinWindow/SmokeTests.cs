@@ -44,12 +44,13 @@ internal static class SmokeTests
         foreach (string arg in args) start.ArgumentList.Add(arg);
         return Process.Start(start) ?? throw new InvalidOperationException("无法启动测试进程。");
     }
-    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject, string? stall = null, bool activity = false)
+    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject, string? stall = null, bool activity = false, bool twins = false)
     {
         string file = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".hwnd");
         var args = new List<string> { "--fixture", file };
         if (reject) args.Add("reject");
         if (activity) args.Add("activity");
+        if (twins) args.Add("twins");
         if (stall is not null) { args.Add("stall"); args.Add(stall); }
         var process = Start(args.ToArray());
         for (int i = 0; i < 100; i++)
@@ -82,6 +83,11 @@ internal static class SmokeTests
             store.Preferences.Rules.Add(new() { Title = "roundtrip", Opacity = 0, ClickThrough = true }); store.SavePreferences();
             Assert(new StateStore(data).Preferences.Rules.Single().Opacity == 0, "settings preserve zero opacity");
             store.Preferences.Rules.Clear(); store.SavePreferences();
+            var twins = await FixtureAsync(output, false, twins: true);
+            processes.Add(twins.Process);
+            await CheckDuplicateRulesAsync(twins.Hwnd, data);
+            Stop(twins.Process);
+            await twins.Process.WaitForExitAsync();
             var normal = await FixtureAsync(output, false); processes.Add(normal.Process);
             manager = new WindowManager(store);
             var item = manager.SelectTarget(normal.Hwnd);
@@ -100,6 +106,10 @@ internal static class SmokeTests
             Assert(layoutWindows.ApplyLayout(undo).Plan.Moves.Count == 1, "verified layout can be undone");
             await WaitAsync("layout undo restores fixture geometry", () => Reached(source.VisualRect));
             await manager.SetPinAsync(item, true);
+            Assert(store.Preferences.Rules.Single().Pinned, "pinning automatically persists a rule");
+            Native.SetTopmost(item.Hwnd, false);
+            await manager.ReinforcePinnedAsync();
+            Assert(Native.IsTopmost(item.Hwnd), "restore a managed pin after TOPMOST is lost");
             Assert(!layoutWindows.Capture().Single(w => w.Handle == item.Hwnd).IsManageable, "layout protects a WinWindow-pinned target");
             Assert(Native.IsTopmost(item.Hwnd), "native topmost is actually applied");
             await manager.SetOpacityAsync(item, 0);
@@ -107,6 +117,8 @@ internal static class SmokeTests
             Assert(layoutWindows.Capture().All(w => w.Handle != item.Hwnd), "a fully transparent window does not obstruct layout");
             await manager.SetClickThroughAsync(item, true);
             Assert((Native.Style(item.Hwnd) & Native.Transparent) != 0, "native click-through is applied");
+            Assert(store.Preferences.Rules.Single().ClickThrough && store.Preferences.Rules.Single().Opacity == 0,
+                "remembered styles include zero opacity and click-through");
             Assert(store.ReadRecovery().Count == 1, "restorable snapshot is durable before mutations");
             await manager.ReleaseAsync(item);
             Assert(Native.IsTopmost(item.Hwnd) == originalPin && (Native.Style(item.Hwnd) & (Native.Layered | Native.Transparent)) == (originalStyle & (Native.Layered | Native.Transparent)), "release restores original style bits and pin state");
@@ -136,6 +148,7 @@ internal static class SmokeTests
             await WaitAsync("startup recovery", () => store.ReadRecovery().Count == 0);
             Assert((Native.Style(item.Hwnd) & Native.Layered) == (originalStyle & Native.Layered), "startup recovery restores a surviving invisible window");
             await manager.ReleaseAsync(item);
+            manager.SetRemembered(item, false);
             Native.ShowWindowAsync(item.Hwnd, Native.Normal);
             shell = new MainWindow(store, true); Application.Current.MainWindow = shell;
             shell.Show(); await shell.InitializeAsync(); await Task.Delay(150);
@@ -359,6 +372,33 @@ internal static class SmokeTests
         var id = Native.Identity(hwnd)!;
         return new() { ProcessPath = id.ProcessPath, ClassName = id.ClassName, Title = Native.Title(hwnd), Pinned = true };
     }
+    private static async Task CheckDuplicateRulesAsync(nint hwnd, string data)
+    {
+        var store = new StateStore(Path.Combine(data, "duplicates"));
+        var manager = new WindowManager(store);
+        var identity = manager.SelectTarget(hwnd).Identity!;
+        WindowRule Rule(int opacity) => new() { ProcessPath = identity.ProcessPath, ClassName = identity.ClassName,
+            Title = Native.Title(hwnd), Opacity = opacity };
+        var first = Rule(62);
+        store.Preferences.Rules.Add(first);
+        await manager.RefreshAsync();
+        await WaitAsync("restore first duplicate rule", () => manager.Items.Any(x => x.RuleId == first.Id && !x.IsBusy && x.Opacity == 62));
+        var pair = manager.Items.Where(x => x.Identity?.ProcessId == identity.ProcessId && first.Matches(x)).ToArray();
+        Assert(pair.Length == 2 && pair.Count(x => x.RuleId == first.Id) == 1 && pair.Count(x => x.Opacity == 100) == 1,
+            "one saved rule claims exactly one of two identically titled windows");
+        var second = Rule(83);
+        store.Preferences.Rules.Add(second);
+        await manager.RefreshAsync();
+        await WaitAsync("restore the other duplicate", () => pair.Any(x => x.RuleId == second.Id && !x.IsBusy && x.Opacity == 83));
+        await manager.RefreshAsync();
+        Assert(pair.Any(x => x.RuleId == first.Id && x.Opacity == 62), "later refreshes preserve both assignments");
+        var forgotten = pair.Single(x => x.RuleId == first.Id);
+        manager.SetRemembered(forgotten, false);
+        await manager.SetOpacityAsync(forgotten, 54);
+        Assert(forgotten.RuleId is null && store.Preferences.Rules.Count == 1, "explicitly forgotten windows stay forgotten after an edit");
+        await manager.ShutdownAsync();
+    }
+
     private static void CheckSmartArrangeScenarios()
     {
         var area = new RectI(0, 0, 1920, 1040);

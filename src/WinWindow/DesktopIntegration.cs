@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Media;
 using System.Windows.Input;
 using System.Windows.Interop;
 using Microsoft.Win32;
@@ -49,10 +50,25 @@ internal sealed class DesktopIntegration : IDisposable
         _menu.Items.Add("整理桌面", null, (_, _) => Dispatch("arrange"));
         _undo = _menu.Items.Add("撤销上次整理", null, (_, _) => Dispatch("undoLayout"));
         _undo.Enabled = false;
+        var managed = new Forms.ToolStripMenuItem("管理的窗口");
+        _menu.Items.Add(managed);
         var recover = new Forms.ToolStripMenuItem("找回隐藏 / 透明窗口");
         _menu.Items.Add(recover);
         _menu.Opening += (_, _) =>
         {
+            managed.DropDownItems.Clear();
+            foreach (var item in manager.Items.Where(x => x.IsManaged || x.Remembered).OrderBy(x => x.Title, StringComparer.CurrentCultureIgnoreCase).ToArray())
+            {
+                var captured = item;
+                string title = item.Title.Length > 44 ? item.Title[..44] + "…" : item.Title;
+                var entry = new Forms.ToolStripMenuItem(title) { Checked = item.Pinned, CheckOnClick = false, ToolTipText = item.Pinned ? "已置顶，点击取消置顶" : "未置顶，点击置顶" };
+                entry.Click += (_, _) => _window.Dispatcher.BeginInvoke(new Action(async () =>
+                {
+                    if (!_disposed) await _window.ExecuteRowAsync(captured, "pin");
+                }));
+                managed.DropDownItems.Add(entry);
+            }
+            managed.Enabled = managed.DropDownItems.Count != 0;
             recover.DropDownItems.Clear();
             foreach (var item in manager.Items.Where(x => x.IsManaged && (x.IsHidden || x.IsParked || x.Opacity == 0)).ToArray())
             {
@@ -121,6 +137,13 @@ internal sealed class DesktopIntegration : IDisposable
 
     public void Notify(string message) => _tray.ShowBalloonTip(4000, "WinWindow", message, Forms.ToolTipIcon.Warning);
 
+    internal void NotifyInfo(string message) => _tray.ShowBalloonTip(2500, "WinWindow", message, Forms.ToolTipIcon.Info);
+
+    private readonly SoundPlayer _pinSound = new(typeof(DesktopIntegration).Assembly
+        .GetManifestResourceStream("WinWindow.Resources.PinItTick.wav")!);
+
+    internal void PlayPinSound() => _pinSound.Play();
+
     public static (uint Modifiers, uint Key) ParseHotkey(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return (0, 0);
@@ -180,7 +203,7 @@ internal sealed class DesktopIntegration : IDisposable
         foreach (int id in _actions.Keys) Native.UnregisterHotKey(_hwnd, id);
         foreach (nint hook in _hooks) Native.UnhookWinEvent(hook);
         _source.RemoveHook(Message);
-        _tray.Visible = false; _tray.Dispose(); _menu.Dispose();
+        _tray.Visible = false; _pinSound.Dispose(); _tray.Dispose(); _menu.Dispose();
         _trayIcon.Dispose();
     }
 }

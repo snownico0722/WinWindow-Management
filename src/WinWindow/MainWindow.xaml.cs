@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private readonly ListCollectionView _view, _pickView;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromMilliseconds(160) };
     private readonly DispatcherTimer _aggressiveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private readonly DispatcherTimer _pinReinforceTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _opacityTimer = new() { Interval = TimeSpan.FromMilliseconds(70) };
     private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(4.5) };
     private readonly Dictionary<WindowItem, int> _pendingOpacity = new();
@@ -74,12 +75,14 @@ public partial class MainWindow : Window
         SyncOwnPinGlyph();
         DarkBox.IsChecked = p.Dark; TrayBox.IsChecked = !p.CloseToTray; StartupBox.IsChecked = p.StartWithWindows;
         FocusPinBox.IsChecked = p.PinWhenFocused; AbsoluteBox.IsChecked = p.AbsoluteTopmost; AggressiveBox.IsChecked = p.AggressiveTopmost;
+        SoundBox.IsChecked = p.EnablePinSound; NotificationBox.IsChecked = p.ShowPinNotifications;
         AggressiveBox.IsEnabled = p.AbsoluteTopmost;
         foreach (var pair in _keyEditors) pair.Value.Text = p.Hotkeys.GetValueOrDefault(pair.Key, "");
         Palette.Apply(p.Dark);
         Manager.Changed += RefreshView; Manager.Notice += ShowStatus; store.Error += ShowStatus;
         _refreshTimer.Tick += async (_, _) => { _refreshTimer.Stop(); await RunAsync(Manager.RefreshAsync); };
         _aggressiveTimer.Tick += (_, _) => { if (CanEnforceOwn() && Native.OverlappingTopmostAbove(_hwnd)) Native.Raise(_hwnd); };
+        _pinReinforceTimer.Tick += async (_, _) => await RunAsync(Manager.ReinforcePinnedAsync);
         _opacityTimer.Tick += (_, _) => DrainOpacity();
         _pickerTimer.Tick += (_, _) => UpdatePickerOutline();
         _statusTimer.Tick += (_, _) => DismissStatus();
@@ -164,6 +167,7 @@ public partial class MainWindow : Window
         if (AddPopup.IsOpen && !_pickView.Cast<WindowItem>().SequenceEqual(Manager.Items.Where(x => FilterAvailable(x)))) _pickView.Refresh();
 
         var managedAll = Manager.Items.Where(x => x.IsManaged || x.Remembered).ToArray();
+        _pinReinforceTimer.IsEnabled = managedAll.Any(x => x.WantsPin);
         int totalManaged = managedAll.Length;
         int pinnedCount = managedAll.Count(x => x.Pinned);
         int parkedCount = managedAll.Count(x => x.IsHidden || x.IsMinimized || x.Opacity == 0);
@@ -242,6 +246,7 @@ public partial class MainWindow : Window
                 bool nextPin = !item.Pinned;
                 await Manager.SetListedPinAsync(item, nextPin);
                 if (item.Hwnd != 0) Outline.Show(item.Hwnd, transient: true, muted: !nextPin);
+                PinFeedback(item, nextPin);
                 break;
             case "through": await Manager.SetClickThroughAsync(item, !item.ClickThrough); break;
             case "background": Manager.SetBackgroundEnabled(item, !item.BackgroundEnabled); break;
@@ -262,6 +267,13 @@ public partial class MainWindow : Window
             case "copy": Clipboard.SetText($"{item.Title}\n{item.Details}\n{item.ProcessPath}"); ShowStatus("窗口信息已复制。"); break;
         }
     });
+
+    private void PinFeedback(WindowItem item, bool pinned)
+    {
+        if (_store.Preferences.EnablePinSound) _desktop?.PlayPinSound();
+        if (_store.Preferences.ShowPinNotifications)
+            _desktop?.NotifyInfo($"{item.Title} {(pinned ? "已置顶" : "已取消置顶")}");
+    }
 
     internal int DesiredOpacity(WindowItem item) => _pendingOpacity.GetValueOrDefault(item, item.Opacity);
 
@@ -321,6 +333,7 @@ public partial class MainWindow : Window
         {
             await Manager.SetPinAsync(item, true);
             Outline.Show(item.Hwnd, transient: true);
+            PinFeedback(item, true);
         }
         else Manager.AddToList(item);
         SearchBox.Clear(); RefreshView(); WindowList.ScrollIntoView(item);
@@ -551,6 +564,7 @@ public partial class MainWindow : Window
         p.Dark = DarkBox.IsChecked == true; p.CloseToTray = TrayBox.IsChecked != true;
         p.PinWhenFocused = FocusPinBox.IsChecked == true; p.AbsoluteTopmost = AbsoluteBox.IsChecked == true;
         p.AggressiveTopmost = AggressiveBox.IsChecked == true; AggressiveBox.IsEnabled = p.AbsoluteTopmost;
+        p.EnablePinSound = SoundBox.IsChecked == true; p.ShowPinNotifications = NotificationBox.IsChecked == true;
         Palette.Apply(p.Dark); ApplyOwnPolicy(); _store.SaveSoon();
     }
 
@@ -635,6 +649,7 @@ public partial class MainWindow : Window
                     bool nextPin = !Native.IsTopmost(item.Hwnd);
                     await Manager.SetPinAsync(item, nextPin);
                     Outline.Show(item.Hwnd, transient: true, muted: !nextPin);
+                    PinFeedback(item, nextPin);
                     break;
                 case "park":
                     _flash?.Hide();
@@ -667,7 +682,7 @@ public partial class MainWindow : Window
     {
         if (_quitting) return;
         _quitting = true; _layout?.Dispose(); AddPopup.IsOpen = false; _flash?.Dispose(); _flash = null;
-        _refreshTimer.Stop(); _aggressiveTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
+        _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
         CancelPicker(); SaveGeometry(); ApplyOwnPolicy();
         int failures = await Manager.ShutdownAsync();
         if (failures != 0) _desktop?.Notify($"{failures} 个窗口未恢复，记录已保留，下次启动继续恢复。");
@@ -676,7 +691,7 @@ public partial class MainWindow : Window
 
     internal void Cleanup()
     {
-        _pickerTimer.Stop(); _refreshTimer.Stop(); _aggressiveTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
+        _pickerTimer.Stop(); _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
         _flash?.Dispose(); _flash = null;
         _layout?.Dispose(); _layout = null;
         _desktop?.Dispose(); _desktop = null;

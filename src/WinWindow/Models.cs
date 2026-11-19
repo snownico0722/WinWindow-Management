@@ -85,6 +85,8 @@ internal sealed class WindowItem : Observable
     // Membership is independent from TOPMOST and the recovery snapshot.
     public bool Listed { get; set; }
     public bool IsManaged => Listed || Original is not null;
+    public bool AutoRemember { get; set; } = true;
+    public bool WantsPin { get; set; }
     public bool Remembered => RuleId is not null;
     private bool _pinned;
     public bool Pinned { get => _pinned; set { if (Set(ref _pinned, value)) NotifyState(); } }
@@ -115,6 +117,8 @@ internal sealed class Preferences
     public bool PinWhenFocused { get; set; } = true;
     public bool AbsoluteTopmost { get; set; } = true;
     public bool AggressiveTopmost { get; set; }
+    public bool EnablePinSound { get; set; } = true;
+    public bool ShowPinNotifications { get; set; }
     public bool ManualTopmost { get; set; }
     public double Width { get; set; } = 580;
     public double Height { get; set; } = 500;

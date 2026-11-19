@@ -40,7 +40,6 @@ internal sealed class WindowManager
         {
             if (!Native.Matches(snapshot.Identity)) continue;
             var item = new WindowItem { Identity = snapshot.Identity, Title = snapshot.Title, Original = snapshot, Listed = true, IsHidden = !Native.IsWindowVisible(snapshot.Identity.Hwnd), IsMinimized = Native.IsIconic(snapshot.Identity.Hwnd) };
-            item.RuleId = _store.Preferences.Rules.FirstOrDefault(r => r.Matches(item))?.Id;
             Items.Add(item);
         }
         Journal();
@@ -49,7 +48,7 @@ internal sealed class WindowManager
     }
     private async Task RecoverOneAsync(WindowItem item)
     {
-        try { await ReleaseAsync(item); }
+        try { await ReleaseAsync(item, updateRule: false); }
         catch (Exception e) { if (!_stopping) Notice?.Invoke($"“{item.Title}”未恢复：{e.Message}"); }
     }
     public async Task RefreshAsync()
@@ -87,20 +86,39 @@ internal sealed class WindowManager
     {
         foreach (var rule in _store.Preferences.Rules.ToArray())
         {
-            var matches = Items.Where(x => x.IsAvailable && rule.Matches(x)).ToArray();
+            // Keep a live binding through title changes. Each saved rule may claim one unbound HWND.
+            if (Items.Any(x => x.Identity is not null && x.RuleId == rule.Id)) continue;
             var placeholder = Items.FirstOrDefault(x => x.Identity is null && x.RuleId == rule.Id);
-            if (matches.Length == 1)
+            var item = Items.FirstOrDefault(x => x.IsAvailable && !x.IsBusy && x.AutoRemember &&
+                x.RuleId is null && rule.Matches(x));
+            if (item is not null)
             {
                 if (placeholder is not null) Items.Remove(placeholder);
-                var item = matches[0];
-                if (item.RuleId == rule.Id || item.IsBusy) continue;
-                item.RuleId = rule.Id; _ = ApplyRuleAsync(item, rule);
+                item.RuleId = rule.Id;
+                _ = ApplyRuleAsync(item, rule);
             }
-            else if (placeholder is null && !Items.Any(x => x.RuleId == rule.Id))
+            else if (placeholder is null)
                 Items.Add(new() { Title = rule.Title, RuleId = rule.Id, IsAvailable = false, Pinned = rule.Pinned, Opacity = rule.Opacity, ClickThrough = rule.ClickThrough });
         }
         foreach (var pending in Items.Where(x => x.Identity is null && !_store.Preferences.Rules.Any(r => r.Id == x.RuleId)).ToArray()) Items.Remove(pending);
     }
+    public Task ReinforcePinnedAsync()
+    {
+        var missing = Items.Where(x => x.WantsPin && !x.IsBusy && !Native.IsTopmost(x.Hwnd)).ToArray();
+        return Task.WhenAll(missing.Select(async item =>
+        {
+            try
+            {
+                await SetPinAsync(item, true, updateRule: false);
+            }
+            catch (Exception e)
+            {
+                item.WantsPin = false;
+                if (!_stopping) Notice?.Invoke($"“{item.Title}”置顶状态未能恢复：{e.Message}");
+            }
+        }));
+    }
+
     private async Task ApplyRuleAsync(WindowItem item, WindowRule rule)
     {
         try
@@ -119,6 +137,7 @@ internal sealed class WindowManager
                     if (!_stopping && through != item.ClickThrough) Native.SetClickThrough(original, through, opacity);
                 });
                 if (_stopping) return;
+                item.WantsPin = pin;
                 if (keep) Native.SetBackgroundActivity(original.Identity, true);
                 item.BackgroundEnabled = keep;
                 item.Pinned = Native.IsTopmost(item.Hwnd); item.Opacity = opacity; item.ClickThrough = through; item.NotifyState();
@@ -210,6 +229,8 @@ internal sealed class WindowManager
         await Task.Run(() => { Native.EnsureIdentity(item.Identity!); Native.SetTopmost(item.Hwnd, value); });
         item.Pinned = Native.IsTopmost(item.Hwnd);
         if (item.Pinned != value) throw new InvalidOperationException("窗口未接受置顶设置。");
+        item.WantsPin = value;
+        if (updateRule && value) AutoRemember(item);
         Finish(item, updateRule);
     });
     public Task SetOpacityAsync(WindowItem item, int value, bool updateRule = true) => OperateAsync(item, async () =>
@@ -217,7 +238,9 @@ internal sealed class WindowManager
         value = Math.Clamp(value, 0, 100); Track(item, s => s.EditedOpacity = true);
         var original = item.Original!;
         await Task.Run(() => { Native.EnsureIdentity(original.Identity); Native.SetOpacity(original, value); });
-        item.Opacity = value; Finish(item, updateRule);
+        item.Opacity = value;
+        if (updateRule && value < 100) AutoRemember(item);
+        Finish(item, updateRule);
     });
     public Task SetClickThroughAsync(WindowItem item, bool value, bool updateRule = true) => OperateAsync(item, async () =>
     {
@@ -226,6 +249,7 @@ internal sealed class WindowManager
         await Task.Run(() => { Native.EnsureIdentity(original.Identity); Native.SetClickThrough(original, value, opacity); });
         item.ClickThrough = (Native.Style(item.Hwnd) & Native.Transparent) != 0;
         if (item.ClickThrough != value) throw new InvalidOperationException("窗口未接受鼠标穿透设置。");
+        if (updateRule && value) AutoRemember(item);
         Finish(item, updateRule);
     });
     public Task SetListedPinAsync(WindowItem item, bool value)
@@ -238,7 +262,7 @@ internal sealed class WindowManager
     }
     public async Task UnpinAllAsync()
     {
-        var attempts = Items.Where(x => (x.IsManaged || x.Remembered) && x.Pinned).ToArray().Select(async item =>
+        var attempts = Items.Where(x => (x.IsManaged || x.Remembered) && (x.Pinned || x.WantsPin)).ToArray().Select(async item =>
         {
             try { await SetListedPinAsync(item, false); return 0; }
             catch (Exception) { return 1; }
@@ -271,6 +295,7 @@ internal sealed class WindowManager
     public void SetRemembered(WindowItem item, bool remember)
     {
         if (_stopping) return;
+        item.AutoRemember = remember;
         if (!remember)
         {
             _store.Preferences.Rules.RemoveAll(x => x.Id == item.RuleId);
@@ -281,11 +306,24 @@ internal sealed class WindowManager
         {
             EnsureIdle(item); Manage(item);
             if (item.RuleId is not null) return;
-            var rule = new WindowRule { ProcessPath = item.ProcessPath, ClassName = item.Identity!.ClassName, Title = item.Title, Pinned = item.Pinned, Opacity = item.Opacity, ClickThrough = item.ClickThrough, KeepRunning = item.BackgroundEnabled };
-            _store.Preferences.Rules.Add(rule); item.RuleId = rule.Id;
+            AddRule(item);
         }
         _store.SaveSoon(); Finish(item, false); Changed?.Invoke();
     }
+    private void AutoRemember(WindowItem item)
+    {
+        if (item.AutoRemember && item.RuleId is null) AddRule(item);
+    }
+
+    private void AddRule(WindowItem item)
+    {
+        var rule = new WindowRule { ProcessPath = item.ProcessPath, ClassName = item.Identity!.ClassName,
+            Title = item.Title, Pinned = item.Pinned, Opacity = item.Opacity, ClickThrough = item.ClickThrough,
+            KeepRunning = item.BackgroundEnabled };
+        _store.Preferences.Rules.Add(rule);
+        item.RuleId = rule.Id;
+    }
+
     private void UpdateRule(WindowItem item)
     {
         var rule = _store.Preferences.Rules.FirstOrDefault(x => x.Id == item.RuleId);
@@ -367,6 +405,7 @@ internal sealed class WindowManager
             item.IsHidden = false; item.IsMinimized = Native.IsIconic(item.Hwnd);
             item.Original = null; Journal();
         }
+        item.WantsPin = false;
         if (forgetRule) SetRemembered(item, false);
         else if (!_stopping && updateRule) UpdateRule(item);
         Finish(item, false);

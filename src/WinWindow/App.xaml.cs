@@ -79,6 +79,11 @@ public partial class App : Application
             form.Text = "窗口测试 · 文档工作区"; form.Width = 640; form.Height = 420;
             form.Controls.Add(new Forms.Label { Text = "WinWindow 原生窗口验证", Dock = Forms.DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleCenter });
             form.FormClosed += (_, _) => Shutdown();
+            if (args.Contains("twins"))
+            {
+                form.Text = "WinWindow duplicate fixture";
+                new Forms.Form { Text = form.Text }.Show();
+            }
             form.Show(); File.WriteAllText(args[1], form.Handle.ToInt64().ToString());
             return;
         }
