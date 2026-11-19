@@ -1,3 +1,7 @@
-原生源码、版本资源及 LICENSE.txt 取自 [snownico0722/NoFocusLoss 的 a88dd66](https://github.com/snownico0722/NoFocusLoss/tree/a88dd66c22dcba4581f6f01b55ab4fc9ebafc67e/NoFocusLoss)。构建使用该提交所固定的 MinHook，MinHook-LICENSE.txt 包含其依赖的许可声明。
+# NoFocusLoss 原生组件
 
-打包脚本把两个架构的 DLL 嵌入 WinWindow.exe。Windows 测试由每种架构的独立测试窗口在自身进程中加载对应 DLL，并在卸载前后核对行为。本阶段主界面的后台保持开关仍使用应用激活通知。
+`NoFocusLoss.cpp`、版本资源和 `LICENSE.txt` 来自 [NoFocusLoss a88dd66](https://github.com/snownico0722/NoFocusLoss/tree/a88dd66c22dcba4581f6f01b55ab4fc9ebafc67e/NoFocusLoss)。`minhook/` 包含原版所用 [MinHook f5485b8](https://github.com/TsudaKageyu/minhook/tree/f5485b8454544c2f034c78f8f127c1d03dea3636) 的全部 C 源文件和头文件。许可文件为 `MinHook-LICENSE.txt`。
+
+仓库根目录执行 `./scripts/package.ps1 -TestNative` 后，CMake 分别构建 Win32 和 x64 目标，将对应指令解码器和 MinHook 静态链接进 DLL。打包脚本把两份原生 DLL 嵌入 WinWindow.exe。修改焦点消息、查询或鼠标处理后，重新运行同一命令即可测试并打包修改。
+
+Windows 测试由每种架构的测试窗口在自身进程中加载对应 DLL，核对启用、关闭后台鼠标拦截及卸载后的行为。主界面的后台保持开关当前使用应用激活通知。对外部游戏启用原生组件及关闭、移出和退出时恢复仍待接入。

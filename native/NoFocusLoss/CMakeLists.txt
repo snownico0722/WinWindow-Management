@@ -1,16 +1,20 @@
 cmake_minimum_required(VERSION 3.24)
 project(WinWindowNoFocusLoss LANGUAGES C CXX RC)
 
-# The MinHook revision recorded in snownico0722/NoFocusLoss at a88dd66.
-include(FetchContent)
-FetchContent_Declare(minhook
-    URL https://codeload.github.com/TsudaKageyu/minhook/tar.gz/f5485b8454544c2f034c78f8f127c1d03dea3636
-    URL_HASH SHA256=9a60e6615ddfe4ba0ef53f8589aa51acb539d617ce106ef72bfeed5a125f758b
-)
-# The pinned dependency declares CMake 3.0 in its project.
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+# Match MinHook's original selection of the instruction decoder per target.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
-FetchContent_MakeAvailable(minhook)
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(decoder minhook/src/hde/hde64.c)
+else()
+    set(decoder minhook/src/hde/hde32.c)
+endif()
+add_library(minhook STATIC
+    minhook/src/buffer.c
+    minhook/src/hook.c
+    minhook/src/trampoline.c
+    ${decoder}
+)
+target_include_directories(minhook PUBLIC minhook/include)
 
 add_library(NoFocusLoss SHARED NoFocusLoss.cpp NoFocusLoss.rc)
 target_compile_definitions(NoFocusLoss PRIVATE UNICODE _UNICODE)

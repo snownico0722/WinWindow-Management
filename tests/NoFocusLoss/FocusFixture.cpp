@@ -91,12 +91,17 @@ int wmain(int argc, wchar_t** argv)
         HMODULE library = LoadLibraryW(argv[1]);
         Check(library != nullptr, "fixture loaded its own native library");
         auto initialize = FindEntry(library, "NoFocusLoss_Initialize", "_NoFocusLoss_Initialize@4");
+        auto allowCursor = FindEntry(library, "NoFocusLoss_DisableCursorBlocking", "_NoFocusLoss_DisableCursorBlocking@4");
         auto shutdown = FindEntry(library, "NoFocusLoss_ShutdownAndUnload", "_NoFocusLoss_ShutdownAndUnload@4");
         Check(initialize(nullptr) == 1, "original initialization completed");
         Check(GetForegroundWindow() == window && GetActiveWindow() == window && GetFocus() == window,
               "all three UI-thread focus queries return the fixture");
         Check(SendDeactivation(window) == 0, "deactivation messages do not reach the fixture");
         CheckCursor(true);
+        Check(allowCursor(nullptr) == TRUE, "original option allows background cursor movement");
+        CheckCursor(false);
+        Check(GetFocus() == window && SendDeactivation(window) == 0,
+              "turning off cursor blocking keeps focus handling active");
 
         CheckUnload(shutdown);
         Check(GetModuleHandleW(argv[1]) == nullptr, "library unloaded from the fixture");

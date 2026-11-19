@@ -51,4 +51,8 @@
   <data name="Unavailable" xml:space="preserve"><value>不可用</value></data>
   <data name="UndoFailed" xml:space="preserve"><value>撤销失败：{0}</value></data>
   <data name="UndoRequested" xml:space="preserve"><value>已请求还原 {0} 个窗口；跳过 {1} 个已再次调整、关闭或状态改变的窗口。</value></data>
+  <data name="LearnedPosition" xml:space="preserve"><value>习惯位置</value></data>
+  <data name="WorkingPair" xml:space="preserve"><value>主副窗口并排</value></data>
+  <data name="WatchedRegion" xml:space="preserve"><value>露出常用区域</value></data>
+  <data name="WorkingOverlap" xml:space="preserve"><value>主副窗边缘重叠</value></data>
 </root>

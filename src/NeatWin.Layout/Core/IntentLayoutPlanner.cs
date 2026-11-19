@@ -18,10 +18,13 @@ internal static partial class IntentLayoutPlanner
             return new(new TidyEngine().CreatePlan(visible, options), [], []);
         taskContext ??= new TaskLayoutContext();
         if (taskContext.VerifiedRepeat) return new([], [], []);
+        // Anchored monitors keep their original location and remain in the desktop occlusion checks.
+        desktop ??= visible.Select(v => v.Window).ToArray();
+        var anchors = (taskContext.WindowHints ?? []).Where(h => h.Anchor).Select(h => h.Handle).ToHashSet();
         var moves = new List<TidyMove>();
         var layers = new List<WindowLayerOrder>();
         var traces = new List<LayoutGroupTrace>();
-        foreach (var monitor in visible.Where(v => v.Window.IsManageable && !v.Window.VisualRect.IsEmpty)
+        foreach (var monitor in visible.Where(v => !anchors.Contains(v.Window.Handle) && v.Window.IsManageable && !v.Window.VisualRect.IsEmpty)
             .GroupBy(v => v.Window.MonitorHandle))
         {
             var all = monitor.OrderBy(v => v.Window.ZOrder).ThenBy(v => v.Window.Handle).ToArray();
@@ -31,12 +34,13 @@ internal static partial class IntentLayoutPlanner
             var settledRanks = all.ToDictionary(v => v.Window.Handle, v => v.Window.ZOrder);
             foreach (var group in Groups(all, taskContext))
             {
+                var groupContext = ResolveWorkingPair(group, taskContext);
                 var hint = IntentEvidence.Resolve(reference, area, group[0].Window.Dpi, DateTimeOffset.UtcNow);
                 var original = group.Select(v => v.Window.VisualRect).ToArray();
-                var task = InferTask(group, original, taskContext);
+                var task = InferTask(group, original, groupContext);
                 var order = Enumerable.Range(0, group.Length).ToArray();
-                var trySmallerRows = group.Length >= 3 && taskContext.ExplicitArrange &&
-                    taskContext.Preferences.AllowUsefulResize && group.All(v => v.Window.IsResizable) &&
+                var trySmallerRows = group.Length >= 3 && groupContext.ExplicitArrange &&
+                    groupContext.Preferences.AllowUsefulResize && group.All(v => v.Window.IsResizable) &&
                     task.Any(r => r.Joint >= .8 && CoversHalfOfRear(original[r.First], original[r.Second]));
                 var blockers = desktop?.Where(w => !all.Any(v => v.Window.Handle == w.Handle) &&
                     w.MonitorHandle == group[0].Window.MonitorHandle && w.ZOrder < group.Max(v => v.Window.ZOrder)).ToArray() ?? [];
@@ -46,7 +50,7 @@ internal static partial class IntentLayoutPlanner
                       ZOrder = settledRanks.GetValueOrDefault(w.Handle, w.ZOrder) }).ToArray() ?? [];
                 var generationNotes = new List<LayoutCandidateTrace>();
                 var candidates = new List<Candidate> { new("keep", original, order) };
-                var rescue = group.Select(v => Fit(v.Window.VisualRect, v.Window, options, taskContext.Preferences.AllowUsefulResize)).ToArray();
+                var rescue = group.Select(v => Fit(v.Window.VisualRect, v.Window, options, groupContext.Preferences.AllowUsefulResize)).ToArray();
                 if (!rescue.SequenceEqual(original)) candidates.Add(new("rescue", rescue, order));
                 var local = LogicalLocalPlan(group, options).ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
                 candidates.Add(new("local", group.Select((v, i) => local.GetValueOrDefault(v.Window.Handle, original[i])).ToArray(), order));
@@ -57,16 +61,26 @@ internal static partial class IntentLayoutPlanner
                     AddPackedCandidate("rows", 1, false);
                     for (var columns = 2; columns < group.Length; columns++)
                         AddPackedCandidate("grid", columns, false);
-                    if (taskContext.ExplicitArrange && group.Length > 2)
+                    if (groupContext.ExplicitArrange && group.Length > 2)
                         AddCoveredPairCandidates(candidates, group, rescue, task, area, hint.GapPixels, order);
+                    if (groupContext.ExplicitArrange) AddWorkingPair(candidates, group, rescue, area, hint.GapPixels, groupContext, order);
                     AddOverlapping(candidates, group, original, area, hint);
                     AddOrders(candidates, "restack", original, group);
-                    AddTaskCandidates(candidates, group, original, area, task, taskContext, hint.GapPixels);
+                    AddTaskCandidates(candidates, group, original, area, task, groupContext, hint.GapPixels);
                 }
-                AddVerticalFillCandidates(candidates, group, original, taskContext);
+                if (groupContext.ExplicitArrange && group.Length == 1 &&
+                    groupContext.Placement?.FirstOrDefault(p => p.Window == group[0].Window.Handle) is { Confidence: > .40 } habit)
+                {
+                    int width = group[0].Window.IsResizable && groupContext.Preferences.AllowUsefulResize
+                        ? Math.Clamp((int)Math.Round(habit.Width * area.Width), 1, area.Width) : rescue[0].Width;
+                    int x = Math.Clamp((int)Math.Round(area.Left + habit.Center * area.Width - width / 2d),
+                        area.Left, Math.Max(area.Left, area.Right - width));
+                    candidates.Add(new("learned-position", [rescue[0] with { X = x, Width = width }], order));
+                }
+                AddVerticalFillCandidates(candidates, group, original, groupContext);
                 var stackSignal = StackSignal(group, original);
                 TaskCostBreakdown Breakdown(Candidate c) => EffectiveBreakdown(
-                    TaskCost(group, original, c, task, area, taskContext, hint, obstacles), options.SmartStrength, task);
+                    TaskCost(group, original, c, task, area, groupContext, hint, obstacles), options.SmartStrength, task);
                 candidates = candidates.DistinctBy(c => string.Join(";", c.Rects) + ":" + string.Join(",", c.Order)).ToList();
                 var best = candidates[0]; var baselineBreakdown = Breakdown(best);
                 var baseline = baselineBreakdown.Total; var bestScore = baseline;
@@ -89,9 +103,9 @@ internal static partial class IntentLayoutPlanner
                         var kind = columns == 1 ? "rows" : columns == group.Length ? "columns" : "grid";
                         foreach (var rects in packed) AddOrders(completion, kind, rects, group);
                     }
-                    if (taskContext.ExplicitArrange && group.Length > 2)
+                    if (groupContext.ExplicitArrange && group.Length > 2)
                         AddCoveredPairCandidates(completion, group, seed.Rects, task, area, hint.GapPixels, order);
-                    AddTaskCandidates(completion, group, seed.Rects, area, task, taskContext, hint.GapPixels);
+                    AddTaskCandidates(completion, group, seed.Rects, area, task, groupContext, hint.GapPixels);
                     AddOverlapping(completion, group, seed.Rects, area, hint);
                     foreach (var proposal in completion)
                         if (seen.Add(CandidateKey(proposal))) Evaluate(proposal, generation);
@@ -104,7 +118,7 @@ internal static partial class IntentLayoutPlanner
                         !LayerOrderSafe(group, candidate, order)
                         ? "layer-preserve-foreground-or-occluded" : !candidate.Order.SequenceEqual(order) &&
                         !WindowLayerSafety.CanReorder(group.Select(v => v.Window).ToArray(), desktop ?? all.Select(v => v.Window).ToArray())
-                        ? "layer-band-or-interleaved-window" : !TaskSafe(group, original, candidate, area, options, taskContext, obstacles, beforeExposure) ? "geometry-budget" :
+                        ? "layer-band-or-interleaved-window" : !TaskSafe(group, original, candidate, area, options, groupContext, obstacles, beforeExposure) ? "geometry-budget" :
                         HitsOutsideGroup(settled, group, original, candidate.Rects) ? "other-group" :
                         blockers.Any(w => candidate.Rects.Select((r, i) => r.Intersect(w.VisualRect).Area > original[i].Intersect(w.VisualRect).Area).Any(b => b)) ? "fixed-occluder" :
                         null;
@@ -127,7 +141,7 @@ internal static partial class IntentLayoutPlanner
                 }
                 if (!best.Order.SequenceEqual(order)) layers.Add(new(best.Order.Select(i => group[i].Window).ToArray()));
                 traces.Add(new(group.Select(v => v.Window.Handle).ToArray(), best.Kind, stackSignal, audits.ToArray(),
-                    new(task, taskContext.Calibration?.Matches(area, group[0].Window.Dpi) == true ? "calibrated-flat-screen-angle" : "normalized-distance-not-gaze",
+                    new(task, groupContext.Calibration?.Matches(area, group[0].Window.Dpi) == true ? "calibrated-flat-screen-angle" : "normalized-distance-not-gaze",
                         ["hypothesis-weights-not-calibrated-probabilities", "content-prior-not-semantic-recognition", "stable-is-not-satisfaction"])));
 
                 void AddPackedCandidate(string kind, int columns, bool equalize)
@@ -259,16 +273,16 @@ internal static partial class IntentLayoutPlanner
         if (shrinkToFit)
         {
             // Three large overlapping windows can fit in two rows even when neither the
-            // original heights nor a single row fit. Shrink uniformly, only as much as needed.
+            // original heights nor a single row fit. Fit only the constrained axes.
             var heightScale = (area.Height - gap * (rows.Length - 1)) /
                 (double)rows.Sum(row => row.Max(i => sizes[i].Height));
             var widthScale = rows.Min(row => (area.Width - gap * (row.Length - 1)) /
                 (double)row.Sum(i => sizes[i].Width));
-            var scale = Math.Min(1, Math.Min(heightScale, widthScale));
-            if (scale <= 0) return;
+            var sx = Math.Min(1, widthScale); var sy = Math.Min(1, heightScale);
+            if (sx <= 0 || sy <= 0) return;
             for (var i = 0; i < sizes.Length; i++)
-                sizes[i] = sizes[i] with { Width = (int)Math.Floor(sizes[i].Width * scale),
-                    Height = (int)Math.Floor(sizes[i].Height * scale) };
+                sizes[i] = sizes[i] with { Width = (int)Math.Floor(sizes[i].Width * sx),
+                    Height = (int)Math.Floor(sizes[i].Height * sy) };
         }
         foreach (var row in rows)
         {

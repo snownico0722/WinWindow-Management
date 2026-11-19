@@ -31,20 +31,28 @@ internal sealed class LayoutRunJournal : IDisposable
             if (pending.Handles.Contains(handle)) pending.Intervened = true;
     }
 
-    internal void Record(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan, string trigger, string[] notes)
+    internal void Record(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan, string trigger, string[] notes,
+        IntentLayoutPlan? baseline = null, IntentLayoutPlan? proposal = null, IntentLayoutPlan? scored = null, TaskLayoutContext? context = null)
     {
         try
         {
-            var frame = _identity.Capture(before);
+            var frame = _recorder?.Capture(before) ?? _identity.Capture(before);
             var ids = before.ToDictionary(w => w.Handle, w => _identity.Id(w));
             var targets = plan.Moves.Select(m => new PlannedWindow(ids[m.Window.Handle], m.TargetVisualRect)).ToArray();
             var layers = plan.Layers.Select(l => l.FrontToBack.Select(w => ids[w.Handle]).ToArray()).ToArray();
             var groups = plan.Groups.Select(g => new PlannedGroup(g.Handles.Select(h => ids[h]).ToArray(),
                 g.Selected, g.StackEvidence, g.Candidates, g.Task)).ToArray();
-            var observation = new LayoutRunObservation(2, _session, Guid.NewGuid().ToString("N"), trigger,
-                frame, targets, layers, groups, null, "requested-not-yet-verified", notes);
+            ProjectedPlan? Project(IntentLayoutPlan? p) => p == null ? null : new(
+                p.Moves.Select(m => new PlannedWindow(ids[m.Window.Handle], m.TargetVisualRect)).ToArray(),
+                p.Layers.Select(l => l.FrontToBack.Select(w => ids[w.Handle]).ToArray()).ToArray(),
+                p.Groups.Select(g => g.Selected).ToArray());
+            var observation = new LayoutRunObservation(4, _session, Guid.NewGuid().ToString("N"), trigger,
+                frame, targets, layers, groups, null, "requested-not-yet-verified", notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
+                context == null ? null : RecordedTaskSignals.From(context, ids));
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);
+            if (recorded && (plan.Moves.Count > 0 || trigger == "undo"))
+                _recorder?.Applied(observation.RequestId, trigger == "undo" ? [] : plan.Moves.Select(m => m.Window.Handle));
             if (_pending.Count >= 8) _pending.RemoveAt(0);
             foreach (var old in _pending) old.Intervened = true;
             _pending.Add(new(observation, before.Select(w => w.Handle).ToHashSet(), Environment.TickCount64, epoch, recorded));
@@ -68,7 +76,8 @@ internal sealed class LayoutRunJournal : IDisposable
             _pending.Remove(pending);
             try
             {
-                var frame = _identity.Capture(_manager.Capture());
+                var snapshot = _manager.Capture();
+                var frame = _recorder?.Capture(snapshot) ?? _identity.Capture(snapshot);
                 var requested = pending.Observation;
                 var matches = requested.Targets.All(t => frame.Windows.Any(w => w.Id == t.Id && Near(w.Rect, t.Target))) &&
                     requested.Layers.All(order => frame.Windows.Where(w => order.Contains(w.Id)).OrderBy(w => w.ZOrder)

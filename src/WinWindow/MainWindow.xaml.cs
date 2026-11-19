@@ -414,6 +414,8 @@ public partial class MainWindow : Window
 
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RunAsync(Manager.RefreshAsync);
 
+    internal NeatWin.Core.ForegroundHistory LayoutFocus { get; } = new();
+
     private DesktopLayout EnsureLayout() => _layout ??= new DesktopLayout(LayoutDirectory, message =>
     {
         if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(new Action(() => ShowStatus(message)));
@@ -427,7 +429,7 @@ public partial class MainWindow : Window
             UndoArrangeButton.IsEnabled = available;
             _desktop?.SetUndoAvailable(available);
         }));
-    });
+    }, LayoutFocus);
 
     private async void Arrange_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().ArrangeAsync());
     private async void UndoLayout_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().UndoAsync());

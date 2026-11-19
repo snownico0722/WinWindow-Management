@@ -52,12 +52,12 @@ public sealed record ViewingCalibration(RectI WorkArea, uint Dpi, double WidthMi
 public enum TaskRelation { Automatic, JointView, Alternating, Integrated }
 public sealed record TaskPairHint(nint First, nint Second, TaskRelation Relation);
 public sealed record TaskWindowHint(nint Handle, bool PassiveVisual = false,
-    bool ProtectPeriphery = false, double? UsefulWidthDip = null, double? UsefulHeightDip = null, TaskContentRegion[]? ProtectedRegions = null);
+    bool ProtectPeriphery = false, double? UsefulWidthDip = null, double? UsefulHeightDip = null, TaskContentRegion[]? ProtectedRegions = null, bool Anchor = false, bool MediaCompanion = false);
 public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDisplay[]? Displays = null,
     ViewingCalibration? Calibration = null, TaskPairHint[]? PairHints = null,
     TaskWindowHint[]? WindowHints = null, ManualWindowGesture? RecentGesture = null,
     bool VerifiedRepeat = false, string[]? RejectedLayouts = null, VideoBlackBarHint? VideoHint = null,
-    bool PreferReversibleVerticalFill = false, bool ExplicitArrange = false)
+    bool PreferReversibleVerticalFill = false, bool ExplicitArrange = false, LayoutFocus? Focus = null, PlacementPreference[]? Placement = null, CompiledLayoutRules? Rules = null, WorkingPairRule[]? RulePairs = null)
 {
     public TaskLayoutProfile Preferences => (Profile ?? new()).Normalize();
 }

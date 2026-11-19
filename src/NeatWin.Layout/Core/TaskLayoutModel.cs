@@ -2,6 +2,48 @@ namespace NeatWin.Core;
 
 internal static partial class IntentLayoutPlanner
 {
+    private static TaskLayoutContext ResolveWorkingPair(VisibleWindow[] windows, TaskLayoutContext context)
+    {
+        // A crowded desktop can already have two readable working surfaces above a parked stack.
+        // Preserve this cue when the utility owns focus and there is no stronger interaction history.
+        if (!context.ExplicitArrange || context.Focus is { Companion: not 0 } ||
+            context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true) return context;
+        var mainHandle = context.Focus?.Main ?? 0;
+        var learned = context.Placement?.Where(p => p.Confidence >= .4 && p.Partner != 0 &&
+            (mainHandle == 0 || p.Window == mainHandle || p.Partner == mainHandle) &&
+            windows.Any(w => w.Window.Handle == p.Window) && windows.Any(w => w.Window.Handle == p.Partner))
+            .OrderByDescending(p => p.Confidence).FirstOrDefault();
+        if (learned != null)
+        {
+            var primary = mainHandle != 0 ? mainHandle : learned.Window;
+            var companion = primary == learned.Window ? learned.Partner : learned.Window;
+            return context with { Focus = new(primary, companion, 0, "learned-working-pair") };
+        }
+        var members = windows.Select(w => w.Window.Handle).ToHashSet();
+        var rules = context.RulePairs?.Where(r => members.Contains(r.First) && members.Contains(r.Second) &&
+            (mainHandle == 0 || r.First == mainHandle || r.Second == mainHandle)).Take(2).ToArray();
+        if (rules is { Length: 1 })
+        {
+            var rule = rules[0];
+            var primary = mainHandle == 0 ? rule.First : mainHandle;
+            return context with { Focus = new(primary, primary == rule.First ? rule.Second : rule.First, 0, "configured-pair") };
+        }
+        var passive = context.WindowHints?.Where(h => h.MediaCompanion && !h.Anchor && h.Handle != mainHandle &&
+            members.Contains(h.Handle)).Take(2).ToArray();
+        if (mainHandle != 0 && members.Contains(mainHandle) && passive is { Length: 1 })
+            return context with { Focus = new(mainHandle, passive[0].Handle, 0, "visible-media-pair") };
+        if (windows.Length < 4) return context;
+        var visible = windows.Where(w => w.VisibleRatio >= .4 && w.Window.VisualRect.Area >= .12 * w.Window.WorkArea.Area).ToArray();
+        if (visible.Length != 2 || visible[0] != windows[0] || visible[1] != windows[1] ||
+            !windows.Skip(2).Any(w => w.VisibleRatio < .08)) return context;
+        var main = visible.FirstOrDefault(w => w.Window.Handle == context.Focus?.Main) ?? visible[0];
+        if (context.Focus is { Main: not 0 } f && main.Window.Handle != f.Main) return context;
+        var peer = visible.First(w => w.Window.Handle != main.Window.Handle);
+        var a = main.Window.VisualRect; var b = peer.Window.VisualRect;
+        if (a.VerticalOverlapRatio(b) < .5 || Math.Abs(CenterX(a) - CenterX(b)) < .4 * Math.Min(a.Width, b.Width)) return context;
+        return context with { Focus = new(main.Window.Handle, peer.Window.Handle, 0, "co-visible-working-pair") };
+    }
+
     private static TaskEvidence[] InferTask(VisibleWindow[] windows, RectI[] rects, TaskLayoutContext context)
     {
         var evidence = new List<TaskEvidence>();
@@ -27,12 +69,23 @@ internal static partial class IntentLayoutPlanner
             var uncertainty = .40;
             // A click is evidence that a heavily covered rear window should be readable.
             // Drag assistance may still infer an intentional stack; explicit pair hints win below.
-            if (context.ExplicitArrange && CoversHalfOfRear(a, b))
+            var focus = context.Focus;
+            bool activePair = focus is { Companion: not 0 } &&
+                (windows[i].Window.Handle == focus.Main && windows[j].Window.Handle == focus.Companion ||
+                 windows[j].Window.Handle == focus.Main && windows[i].Window.Handle == focus.Companion);
+            if (context.ExplicitArrange && CoversHalfOfRear(a, b) && (focus?.Companion is null or 0 || activePair))
             {
                 joint = Math.Max(joint, .85);
                 parked = .12;
                 column = false;
                 source = "explicit-arrange-overlap";
+            }
+            if (activePair)
+            {
+                // Switching supports association. Joint visibility additionally needs spatial evidence.
+                bool coVisible = windows[i].VisibleRatio >= .25 && windows[j].VisibleRatio >= .25;
+                joint = Math.Max(joint, coVisible || context.ExplicitArrange ? .85 : .52);
+                source = focus!.Evidence; uncertainty = focus.Switches > 0 ? .30 : .45;
             }
             var passive = context.WindowHints?.Any(h => h.PassiveVisual &&
                 (h.Handle == windows[i].Window.Handle || h.Handle == windows[j].Window.Handle)) == true;
@@ -178,7 +231,23 @@ internal static partial class IntentLayoutPlanner
                 .65 * exposure.CenterVisible + .35 * exposure.Visible;
             var demand = windows.Length == 1 ? 0 : Math.Max(joint * profile.JointVisibilityWeight,
                 i == 0 ? .85 : .18 * park);
+            if (context.ExplicitArrange && context.Focus is { Companion: not 0 } pair &&
+                w.Handle != pair.Main && w.Handle != pair.Companion && windows[i].VisibleRatio < .08 &&
+                context.PairHints?.Any(h => h.First == w.Handle || h.Second == w.Handle) != true)
+            {
+                demand *= .25;
+                continuity += .6 * (Math.Abs(CenterX(a) - CenterX(b)) / area.Width +
+                    Math.Abs(CenterY(a) - CenterY(b)) / area.Height);
+            }
             information += demand * (3.4 * (1 - contentVisibility) + 1.8 * (1 - capacity));
+            if (context.ExplicitArrange && context.Focus is { Companion: not 0 } working &&
+                w.Handle == working.Companion && context.PairHints?.Any(h => h.Relation == TaskRelation.Alternating &&
+                    (h.First == w.Handle || h.Second == w.Handle)) != true &&
+                context.Placement?.Any(p => p.Partner == w.Handle && p.RevealedCell >= 0) != true)
+            {
+                // Background windows should not dilute the visibility of the two working surfaces.
+                information += windows.Length * 1.5 * (1 - contentVisibility);
+            }
             if (context.VideoHint is { Confidence: >= .82, ContentAspectRatio: >= .55 and <= 4.5 } video && video.WindowHandle == w.Handle)
             {
                 var chromeX = Math.Max(0, a.Width - video.ViewportVisualRect.Width);
@@ -194,15 +263,23 @@ internal static partial class IntentLayoutPlanner
             if (context.RecentGesture is { } gesture && gesture.WindowHandle == w.Handle &&
                 gesture.WorkArea == area && gesture.EndRect == a && gesture.Kind != ManualGestureKind.Move)
                 reflow += .45 * (Math.Abs(Math.Log(b.Width / (double)a.Width)) + Math.Abs(Math.Log(b.Height / (double)a.Height)));
+            if (context.Focus?.Main == w.Handle)
+            {
+                information += 1.6 * (1 - capacity) + .8 * (1 - contentVisibility);
+                reflow += .9 * Math.Max(0, Math.Log(a.Height / (double)b.Height));
+            }
             alignment += VerticalFillPreferenceCost(w, a, b, context) / Math.Max(1, windows.Length);
             front.Add(b);
         }
         var n = Math.Max(1, windows.Length);
         information /= n; switching /= n; continuity /= n; reflow /= n; peripheral /= n;
+        double pairCost = 0;
         foreach (var r in relations)
         {
             var a = candidate.Rects[r.First]; var b = candidate.Rects[r.Second];
             var oa = original[r.First]; var ob = original[r.Second];
+            var choice = PairPreferenceFor(windows[r.First].Window.Handle, windows[r.Second].Window.Handle, context);
+            if (choice != null) pairCost += PairPlacementCost(a, b, oa, ob, area, choice);
             // Manual arrange treats a heavily stacked pair as a request to see both windows.
             // A larger window behind the pair can otherwise make a partly overlapped row score better.
             if (context.ExplicitArrange && r.Joint > r.Parked &&
@@ -213,7 +290,7 @@ internal static partial class IntentLayoutPlanner
             // side without establishing a reading order. Penalize reversals only for distinct positions.
             var preserveHorizontalOrder = !context.ExplicitArrange ||
                 oa.Intersect(ob).Area < .50 * Math.Min(oa.Area, ob.Area);
-            if (preserveHorizontalOrder && Math.Abs(dx) > .20 * Math.Min(oa.Width, ob.Width) &&
+            if ((choice?.Order ?? 0) == 0 && preserveHorizontalOrder && Math.Abs(dx) > .20 * Math.Min(oa.Width, ob.Width) &&
                 dx * (CenterX(a) - CenterX(b)) < 0) continuity += 1.8 * r.Affinity;
             if (r.SameColumn)
             {
@@ -242,7 +319,30 @@ internal static partial class IntentLayoutPlanner
         var projected = candidate.Order.Select((i, rank) => windows[i].Window with
             { VisualRect = candidate.Rects[i], ZOrder = ranks[rank] }).ToArray();
         var feedback = context.RejectedLayouts?.Contains(TaskLayoutSession.LayoutKey(projected)) == true ? 5 : 0;
-        return new(information, switching, continuity, reflow, peripheral, alignment, uncertainty, feedback);
+        double personal = 0;
+        foreach (var preference in context.Placement ?? [])
+        {
+            int index = Array.FindIndex(windows, w => w.Window.Handle == preference.Window);
+            if (index < 0) continue;
+            var r = candidate.Rects[index];
+            double targetCenter = (CenterX(r) - area.Left) / area.Width;
+            double error = Math.Abs(targetCenter - preference.Center) +
+                .5 * Math.Abs(r.Width / (double)area.Width - preference.Width);
+            int peer = Array.FindIndex(windows, w => w.Window.Handle == preference.Partner);
+            if (peer >= 0 && Math.Abs(preference.Order) >= .5 &&
+                Math.Sign(CenterX(r) - CenterX(candidate.Rects[peer])) != Math.Sign(preference.Order))
+                error += 2 * Math.Abs(preference.Order);
+            if (peer >= 0 && preference.RevealedCell is >= 0 and < 16)
+            {
+                var cell = WindowExposure.Cell(candidate.Rects[peer], preference.RevealedCell);
+                var slot = Array.IndexOf(candidate.Order, peer);
+                var covers = candidate.Order.Take(slot).Select(i => candidate.Rects[i])
+                    .Concat((obstacles ?? []).Where(w => w.ZOrder < ranks[slot]).Select(w => w.VisualRect));
+                error += 2 * (1 - ScreenExposure(cell, covers, area, windows[peer].Window.Dpi).Visible);
+            }
+            personal += preference.Confidence * error;
+        }
+        return new(information, switching, continuity, reflow, peripheral, alignment, uncertainty, feedback, personal, pairCost);
     }
 
     internal static bool TaskRefinementAcceptable(IReadOnlyList<VisibleWindow> visible,

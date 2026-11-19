@@ -154,7 +154,7 @@
   <data name="Quit" xml:space="preserve"><value>退出</value></data>
   <data name="ReadPlacement" xml:space="preserve"><value>读取窗口位置</value></data>
   <data name="RecordActivity" xml:space="preserve"><value>记录窗口活动习惯</value></data>
-  <data name="RecordPrivacy" xml:space="preserve"><value>仅在本机记录窗口几何位置与前后层级，不包含标题、按键或画面内容。</value></data>
+  <data name="RecordPrivacy" xml:space="preserve"><value>在本机记录匿名窗口、可见区域、使用时段、进程资源、音量峰值和可用的播放状态。画面变化可单独开启，只保存变化摘要。</value></data>
   <data name="RecorderCounts" xml:space="preserve"><value>{0} · 已记录 {1} 次手势、{2} 次窗口变化</value></data>
   <data name="RecordsCleared" xml:space="preserve"><value>记录已清空。</value></data>
   <data name="RefreshWindows" xml:space="preserve"><value>刷新窗口列表</value></data>
@@ -227,4 +227,5 @@
   <data name="WindowPin" xml:space="preserve"><value>窗口置顶</value></data>
   <data name="Working" xml:space="preserve"><value>正在处理</value></data>
   <data name="ZipFilter" xml:space="preserve"><value>ZIP 压缩包|*.zip</value></data>
+  <data name="VisualSampling" xml:space="preserve"><value>记录可见区域的画面变化（仅存变化标记）</value></data>
 </root>
