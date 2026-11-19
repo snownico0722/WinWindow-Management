@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
+using System.Windows.Media;
 
 namespace WinWindow;
 
@@ -56,11 +58,26 @@ internal sealed class WindowItem : Observable
     public WindowSnapshot? Original { get; set; }
     public string? RuleId { get; set; }
     public nint Hwnd => Identity?.Hwnd ?? 0;
-    public string ProcessName => Identity is null ? "等待窗口出现" : System.IO.Path.GetFileName(Identity.ProcessPath);
+    public string ProcessName => Identity is null ? "等待窗口出现" : Path.GetFileName(Identity.ProcessPath);
     public string ProcessPath => Identity?.ProcessPath ?? "";
+    public ImageSource? Icon => Identity is null ? null : Native.AppIcon(ProcessPath);
+    public string Initial
+    {
+        get
+        {
+            string source = Identity is not null ? Path.GetFileNameWithoutExtension(Identity.ProcessPath) : Title;
+            foreach (char c in source)
+                if (char.IsLetterOrDigit(c)) return char.ToUpperInvariant(c).ToString();
+            return "W";
+        }
+    }
     public string Details => Identity is null ? "保存的窗口规则" : $"PID {Identity.ProcessId}  ·  HWND 0x{Identity.Handle:X}  ·  {Identity.ClassName}";
     private string _title = "";
-    public string Title { get => _title; set => Set(ref _title, value); }
+    public string Title
+    {
+        get => _title;
+        set { if (Set(ref _title, value) && Identity is null) Changed(nameof(Initial)); }
+    }
     private bool _backgroundEnabled;
     public bool BackgroundEnabled { get => _backgroundEnabled; set => Set(ref _backgroundEnabled, value); }
     private bool _available = true;
@@ -99,8 +116,8 @@ internal sealed class Preferences
     public bool AbsoluteTopmost { get; set; } = true;
     public bool AggressiveTopmost { get; set; }
     public bool ManualTopmost { get; set; }
-    public double Width { get; set; } = 1180;
-    public double Height { get; set; } = 760;
+    public double Width { get; set; } = 580;
+    public double Height { get; set; } = 500;
     public double? Left { get; set; }
     public double? Top { get; set; }
     public bool Maximized { get; set; }
