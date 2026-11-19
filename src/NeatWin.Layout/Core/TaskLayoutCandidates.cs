@@ -62,19 +62,34 @@ internal static partial class IntentLayoutPlanner
         var pref = context.Placement?.FirstOrDefault(p => p.Window == windows[main].Window.Handle);
         if (peer < 0 && pref?.Partner is not null and not 0)
             peer = Array.FindIndex(windows, w => w.Window.Handle == pref.Partner);
+        if (peer < 0)
+        {
+            var mirror = context.Placement?.Where(p => p.Partner == windows[main].Window.Handle && p.Confidence >= .4)
+                .OrderByDescending(p => p.Confidence).FirstOrDefault();
+            if (mirror != null) peer = Array.FindIndex(windows, w => w.Window.Handle == mirror.Window);
+        }
         if (peer < 0 && windows.Length == 2) peer = 1 - main;
         if (peer < 0 || peer == main) return;
         AddPartialOverlap(candidates, windows, seed, main, peer, area, context, order);
         var a = seed[main]; var b = seed[peer];
         int span = Math.Min(area.Width - gap, a.Width + b.Width);
         if (span <= 1) return;
-        int width = (int)Math.Round(span * (pref is { Confidence: > .35 }
-            ? Math.Clamp(pref.Width * area.Width / span, .25, .75) : a.Width / (double)(a.Width + b.Width)));
+        var peerPref = context.Placement?.FirstOrDefault(p => p.Window == windows[peer].Window.Handle && p.Partner == windows[main].Window.Handle);
+        double preferredFraction = pref is { Confidence: > .35 }
+            ? Math.Clamp(pref.Width * area.Width / span, .25, .75)
+            : peerPref is { Confidence: > .35 }
+                ? Math.Clamp(1 - peerPref.Width * area.Width / span, .25, .75)
+                : a.Width / (double)(a.Width + b.Width);
+        int width = (int)Math.Round(span * preferredFraction);
         if (!context.Preferences.AllowUsefulResize)
         {
             if (a.Width + b.Width > span) return;
             width = a.Width;
         }
+        var floorMain = context.MinimumSize(windows[main].Window.Handle);
+        var floorPeer = context.MinimumSize(windows[peer].Window.Handle);
+        if (floorMain.Width > 0) width = Math.Max(width, Math.Min(a.Width, floorMain.Width));
+        if (floorPeer.Width > 0) width = Math.Min(width, span - Math.Min(b.Width, floorPeer.Width));
         if (!windows[main].Window.IsResizable) width = a.Width;
         if (!windows[peer].Window.IsResizable) width = span - b.Width;
         if (width <= 0 || span <= width) return;
@@ -86,7 +101,7 @@ internal static partial class IntentLayoutPlanner
             var targets = seed.ToArray();
             targets[main] = a with { X = mainLeft ? left : left + span - width + gap, Width = width };
             targets[peer] = b with { X = mainLeft ? left + width + gap : left, Width = span - width };
-            candidates.Add(new("working-pair", targets, order));
+            EmitPairAndAuxCandidates("working-pair", candidates, windows, targets, main, peer, area, context, order);
         }
 
     }

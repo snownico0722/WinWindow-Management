@@ -30,11 +30,11 @@ internal static class ActivityHints
     }
 
     internal static string Classify(bool foreground, double visible, double workspaceFraction,
-        int consecutiveMotionSamples, bool mediaPlaying, double? processCores, bool audible = false, int fragmentStreak = 0, bool uniqueMediaWindow = false)
+        int consecutiveMotionSamples, bool mediaPlaying, double? processCores, bool audible = false, int fragmentStreak = 0, int processWindowCount = 0)
     {
         if (visible <= 0) return "covered";
         if (!foreground && visible < .25 && fragmentStreak >= 2) return "peripheral-motion";
-        if (!foreground && mediaPlaying && audible && uniqueMediaWindow) return "audible-media-session";
+        if (!foreground && mediaPlaying && audible && processWindowCount == 1) return "audible-media-session";
         if (consecutiveMotionSamples >= 2)
         {
             if (mediaPlaying) return "media-with-motion";
@@ -44,4 +44,18 @@ internal static class ActivityHints
         }
         return foreground ? "foreground" : "visible-background";
     }
+
+    internal static bool MatchesRole(string role, WindowSnapshot window, TaskWindowHint? hint, string? activity) =>
+        role switch
+        {
+            "any" => true,
+            "game" => activity == "game-like-interaction" ||
+                (window.IsForeground && !window.IsResizable && window.VisualRect.Area >= window.WorkArea.Area * .42),
+            "media" => hint?.MediaCompanion == true ||
+                activity is "media-with-motion" or "audible-with-motion" or "audible-media-session",
+            "passive" => hint?.PassiveVisual == true || activity == "background-motion",
+            "foreground" => window.IsForeground || activity == "foreground",
+            "companion" => !window.IsForeground && hint?.Anchor != true,
+            _ => false,
+        };
 }

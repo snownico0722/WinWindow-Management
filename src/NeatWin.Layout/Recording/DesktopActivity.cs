@@ -1,30 +1,34 @@
 using System.ComponentModel;
 using System.Diagnostics;
-using static NeatWin.Windows.NativeMethods;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Security.Cryptography;
 using System.Text;
 using NeatWin.Core;
 using NeatWin.Reference;
 using NeatWin.Windows;
 using Windows.Media.Control;
+using static NeatWin.Windows.NativeMethods;
 
 namespace NeatWin.Recording;
 
-internal sealed record ProcessActivity(string Instance, long? WorkingSetBytes, double? CpuCores, string? MediaSource, float? AudioPeak = null);
+internal sealed record ProcessActivity(string Instance, long? WorkingSetBytes, double? CpuCores, string? MediaSource, float? AudioPeak = null, float? SharedAudioPeak = null);
 internal sealed record MediaActivity(string Source, string Playback);
 internal sealed record WindowActivity(int Id, string? Process, int? ComparedCells, int? ChangedCells,
     long? ForegroundMs, long? BackgroundVisibleMs, string ActivityHint, RectI? Fragment = null, double? FragmentChange = null);
 internal sealed record ActivitySample(int Version, string Session, long Tick, long ObservedMilliseconds,
     WorkspaceFrame Frame, ProcessActivity[] Processes, WindowActivity[] Windows, MediaActivity[]? Media,
-    uint? InputIdleMilliseconds, long? AudioTick = null);
+    uint? InputIdleMilliseconds, long? AudioTick = null, bool? DisplayRequired = null);
 
 // The color probes are transient. Persist only the masks of comparable cells and changed cells.
 internal sealed class DesktopActivity(PlacementHistoryStore store)
 {
     private sealed record ProcessInfo(string? Path, string? Source, string Instance, DateTime Start);
+    private readonly byte[] _ephemeralKey = RandomNumberGenerator.GetBytes(32);
     private readonly Dictionary<uint, ProcessInfo> _process = [];
     private readonly Dictionary<(uint Pid, nint Hwnd), string?> _keys = [];
-    private readonly Dictionary<string, (long Tick, TimeSpan Cpu)> _cpu = [];
+    private readonly Dictionary<(uint Pid, DateTime Start), (long Tick, TimeSpan Cpu)> _cpu = [];
     private readonly Dictionary<int, (RectI Rect, string Cells, int[] Colors)> _colors = [];
     private readonly Dictionary<int, (RectI Window, RectI Patch, int[] Colors, int Streak)> _fragments = [];
     private AudioSessionMeter _audio = new();
@@ -51,6 +55,12 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         _mediaManager = null; _mediaAttempt = 0;
     }
 
+    private string EphemeralKey(string identity) =>
+        Convert.ToHexString(HMACSHA256.HashData(_ephemeralKey, Encoding.UTF8.GetBytes(identity)))[..24];
+
+    private string ResolveKey(string identity, bool persist) =>
+        store.Key(identity, persist) ?? EphemeralKey(identity);
+
     internal string? AppKey(WindowSnapshot w, bool create)
     {
         var key = (w.ProcessId, w.Handle);
@@ -63,6 +73,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
             var name = new StringBuilder(256);
             if (NativeMethods.GetClassName(w.Handle, name, name.Capacity) == 0) return null;
             var value = store.Key(info.Path + "|" + name, create);
+            if (value == null) return null;
             if (_keys.Count >= 512) _keys.Clear();
             return _keys[key] = value;
         }
@@ -95,21 +106,67 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         finally { CloseDesktop(desktop); }
     }
 
+    private static bool? QueryDisplayRequired() =>
+        CallNtPowerInformation(16, 0, 0, out uint state, sizeof(uint)) == 0 ? (state & 2) != 0 : null;
+
+    private static Dictionary<uint, List<uint>> SnapshotProcessChildren()
+    {
+        var children = new Dictionary<uint, List<uint>>();
+        var snap = CreateToolhelp32Snapshot(Th32csSnapProcess, 0);
+        if (snap == 0 || snap == -1) return children;
+        try
+        {
+            var entry = new ProcessEntry32 { Size = (uint)Marshal.SizeOf<ProcessEntry32>() };
+            if (!Process32First(snap, ref entry)) return children;
+            do
+            {
+                if (entry.ProcessId == 0 || entry.ParentProcessId == 0 || entry.ProcessId == entry.ParentProcessId) continue;
+                if (!children.TryGetValue(entry.ParentProcessId, out var list))
+                    children[entry.ParentProcessId] = list = [];
+                if (list.Count < 64) list.Add(entry.ProcessId);
+            } while (Process32Next(snap, ref entry));
+        }
+        finally { _ = CloseHandle(snap); }
+        return children;
+    }
+
+    private static List<uint> CollectDescendants(uint rootPid, Dictionary<uint, List<uint>> childrenByParent, HashSet<uint> rootWindowPids)
+    {
+        var result = new List<uint>();
+        if (!childrenByParent.TryGetValue(rootPid, out var direct)) return result;
+        var visited = new HashSet<uint> { rootPid };
+        var queue = new Queue<(uint Pid, int Depth)>();
+        foreach (var child in direct) queue.Enqueue((child, 1));
+        while (queue.Count > 0 && result.Count < 32)
+        {
+            var (pid, depth) = queue.Dequeue();
+            if (!visited.Add(pid) || rootWindowPids.Contains(pid)) continue;
+            result.Add(pid);
+            if (depth < 3 && childrenByParent.TryGetValue(pid, out var next))
+                foreach (var grand in next) queue.Enqueue((grand, depth + 1));
+        }
+        return result;
+    }
+
     internal ActivitySample Sample(string session, long now, WorkspaceFrame frame,
-        IReadOnlyList<WindowSnapshot> snapshot, ObservationIdentityTracker ids, bool visual, CompiledLayoutRules? rules = null)
+        IReadOnlyList<WindowSnapshot> snapshot, ObservationIdentityTracker ids, bool visual,
+        CompiledLayoutRules? rules = null, bool persistKeys = true)
     {
         rules ??= CompiledLayoutRules.Default;
         var elapsed = now - _lastTick;
         var interval = _lastTick != 0 && elapsed is >= 0 and <= 8_000 ? elapsed : 0;
         if (interval == 0) { _colors.Clear(); _cpu.Clear(); _previous.Clear(); _fragments.Clear(); }
         _lastTick = now;
-        var media = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) ? Media(now) : null;
+        var media = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) ? Media(now, persistKeys) : null;
         var audio = _audio.Poll(now);
+        var displayRequired = QueryDisplayRequired();
+        var childrenByParent = SnapshotProcessChildren();
         var usage = new Dictionary<uint, ProcessActivity?>();
         var windows = new List<WindowActivity>();
         var byId = snapshot.ToDictionary(ids.Id);
-        var processWindows = snapshot.Where(w => w.IsManageable || w.SurfaceState != null)
-            .GroupBy(w => w.ProcessId).ToDictionary(g => g.Key, g => g.Count());
+        var activeSnapshots = snapshot.Where(w => w.IsManageable || w.SurfaceState != null).ToArray();
+        var rootWindowPids = activeSnapshots.Select(w => w.ProcessId).Where(p => p != 0).ToHashSet();
+        var processWindows = activeSnapshots.GroupBy(w => w.ProcessId).ToDictionary(g => g.Key, g => g.Count());
         var alive = new HashSet<int>();
         var seenColors = new HashSet<int>();
         var sampledFragments = new HashSet<int>();
@@ -118,7 +175,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         {
             var native = byId[w.Id];
             if (!usage.TryGetValue(native.ProcessId, out var resource))
-                usage[native.ProcessId] = resource = ReadUsage(native.ProcessId, now, audio);
+                usage[native.ProcessId] = resource = ReadUsage(native.ProcessId, now, audio, childrenByParent, rootWindowPids, persistKeys);
             int? compared = null, changed = null;
             RectI? fragment = null;
             double? fraction = null;
@@ -169,9 +226,9 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
             int motion = changed is int bits && System.Numerics.BitOperations.PopCount((uint)bits) >= 2
                 ? Math.Min(3, prior.Motion + 1) : 0;
             bool playing = resource?.MediaSource is string source && media?.Any(m => m.Source == source && m.Playback == "Playing") == true;
+            // Shared playback and power requests cannot identify a particular browser window.
             string hint = ActivityHints.Classify(w.Foreground, w.VisibleRatio, w.Rect.Area / (double)Math.Max(1, w.WorkArea.Area),
-                motion, playing, resource?.CpuCores, resource?.AudioPeak >= rules.AudioPeakThreshold, fragmentStreak,
-                processWindows.GetValueOrDefault(native.ProcessId) == 1);
+                motion, playing, resource?.CpuCores, resource?.AudioPeak >= rules.AudioPeakThreshold, fragmentStreak, processWindows.GetValueOrDefault(native.ProcessId));
             windows.Add(new(w.Id, resource?.Instance, compared, changed,
                 known && prior.Foreground == w.Foreground ? (w.Foreground ? interval : 0) : null,
                 known && prior.Foreground == w.Foreground && prior.Visible == visible ? (!w.Foreground && visible ? interval : 0) : null,
@@ -182,32 +239,59 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         foreach (int id in _previous.Keys.Where(id => !alive.Contains(id)).ToArray()) _previous.Remove(id);
         foreach (int id in _colors.Keys.Where(id => !seenColors.Contains(id)).ToArray()) _colors.Remove(id);
         var present = usage.Values.OfType<ProcessActivity>().ToArray();
-        var instances = present.Select(p => p.Instance).ToHashSet();
-        foreach (var id in _cpu.Keys.Where(id => !instances.Contains(id)).ToArray()) _cpu.Remove(id);
+        foreach (var id in _cpu.Where(p => p.Value.Tick != now).Select(p => p.Key).ToArray()) _cpu.Remove(id);
         var last = new LastInput { Size = 8 };
         uint? idle = GetLastInputInfo(ref last) ? unchecked((uint)now - last.Time) : null;
-        return new(4, session, now, interval, frame, present, windows.ToArray(), media, idle, audio?.Tick);
+        return new(5, session, now, interval, frame, present, windows.ToArray(), media, idle, audio?.Tick, displayRequired);
     }
 
-    private ProcessActivity? ReadUsage(uint pid, long now, AudioSessionMeter.Reading? audio)
+    private ProcessActivity? ReadUsage(uint pid, long now, AudioSessionMeter.Reading? audio,
+        Dictionary<uint, List<uint>> childrenByParent, HashSet<uint> rootWindowPids, bool persistKeys)
     {
         try
         {
             using var p = Process.GetProcessById((int)pid);
             var info = Identify(pid, p);
-            var cpu = p.TotalProcessorTime;
-            double? cores = _cpu.TryGetValue(info.Instance, out var old) && now > old.Tick
-                ? Math.Max(0, (cpu - old.Cpu).TotalMilliseconds / (now - old.Tick)) : null;
-            _cpu[info.Instance] = (now, cpu);
-            return new(info.Instance, p.WorkingSet64, cores, info.Source == null ? null : store.Key(info.Source, true),
-                audio != null && audio.Peaks.TryGetValue(pid, out var peak) ? peak : null);
+            long workingSet = p.WorkingSet64;
+            double? cores = CpuDelta(p, pid, info.Start, now);
+            float? maxAudio = audio != null && audio.Peaks.TryGetValue(pid, out var rootPeak) ? rootPeak : null;
+            float? sharedAudio = audio != null && audio.SharedPeaks.TryGetValue(pid, out var sharedPeak) ? sharedPeak : null;
+            var descendants = CollectDescendants(pid, childrenByParent, rootWindowPids);
+            int sampledChildren = 0;
+            foreach (var childPid in descendants)
+            {
+                if (audio != null && audio.Peaks.TryGetValue(childPid, out var childPeak))
+                    maxAudio = maxAudio is float prev ? Math.Max(prev, childPeak) : childPeak;
+                if (audio != null && audio.SharedPeaks.TryGetValue(childPid, out var childShared))
+                    sharedAudio = Math.Max(sharedAudio ?? 0, childShared);
+                if (sampledChildren >= 12) continue;
+                try
+                {
+                    using var child = Process.GetProcessById((int)childPid);
+                    workingSet += child.WorkingSet64;
+                    var childDelta = CpuDelta(child, childPid, child.StartTime.ToUniversalTime(), now);
+                    if (childDelta.HasValue && cores.HasValue) cores += childDelta;
+                    sampledChildren++;
+                }
+                catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException or UnauthorizedAccessException) { }
+            }
+            return new(info.Instance, workingSet, cores, info.Source == null ? null : ResolveKey(info.Source, persistKeys), maxAudio, sharedAudio);
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException or IOException or UnauthorizedAccessException)
         { return null; }
     }
 
+    private double? CpuDelta(Process process, uint pid, DateTime start, long now)
+    {
+        var key = (pid, start);
+        var cpu = process.TotalProcessorTime;
+        bool comparable = _cpu.TryGetValue(key, out var old) && now > old.Tick;
+        _cpu[key] = (now, cpu);
+        return comparable ? Math.Max(0, (cpu - old.Cpu).TotalMilliseconds / (now - old.Tick)) : null;
+    }
+
     [SupportedOSPlatform("windows10.0.17763")]
-    private MediaActivity[]? Media(long now)
+    private MediaActivity[]? Media(long now, bool persistKeys)
     {
         try
         {
@@ -218,8 +302,11 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
             if (!_mediaManager.IsCompletedSuccessfully || _mediaManager.Result is not { } manager) return null;
             var result = new List<MediaActivity>();
             foreach (var item in manager.GetSessions().Take(16))
-                if (store.Key(item.SourceAppUserModelId.ToUpperInvariant(), true) is { } key)
-                    result.Add(new(key, item.GetPlaybackInfo().PlaybackStatus.ToString()));
+            {
+                var aumid = item.SourceAppUserModelId;
+                if (!string.IsNullOrWhiteSpace(aumid))
+                    result.Add(new(ResolveKey(aumid.ToUpperInvariant(), persistKeys), item.GetPlaybackInfo().PlaybackStatus.ToString()));
+            }
             return result.ToArray();
         }
         catch (Exception ex) when (ex is not OutOfMemoryException) { return null; }
@@ -241,15 +328,29 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
 
     private static int[]? TryProbe(RectI r, int grid)
     {
-        // Let GDI downsample straight into a small bitmap; no full-screen buffer or image on disk.
-        using var bitmap = new Bitmap(grid, grid);
+        // Downsample straight into a small ARGB bitmap using COLORONCOLOR (no BLACKONWHITE scanline AND distortion).
+        using var bitmap = new Bitmap(grid, grid, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(bitmap);
         var dest = g.GetHdc();
         var screen = GetDC(0);
-        bool ok;
-        try { ok = screen != 0 && StretchBlt(dest, 0, 0, grid, grid, screen, r.X, r.Y, r.Width, r.Height, 0x00CC0020); }
-        finally { if (screen != 0) ReleaseDC(0, screen); g.ReleaseHdc(dest); }
-        return ok ? Enumerable.Range(0, grid * grid).Select(i => bitmap.GetPixel(i % grid, i / grid).ToArgb()).ToArray() : null;
+        bool ok = false;
+        try
+        {
+            if (screen != 0)
+            {
+                _ = SetStretchBltMode(dest, StretchColorOnColor);
+                ok = StretchBlt(dest, 0, 0, grid, grid, screen, r.X, r.Y, r.Width, r.Height, 0x00CC0020);
+            }
+        }
+        finally { if (screen != 0) _ = ReleaseDC(0, screen); g.ReleaseHdc(dest); }
+        if (!ok) return null;
+        var data = bitmap.LockBits(new Rectangle(0, 0, grid, grid), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var pixels = new int[grid * grid];
+            Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
+            return pixels;
+        }
+        finally { bitmap.UnlockBits(data); }
     }
-
 }

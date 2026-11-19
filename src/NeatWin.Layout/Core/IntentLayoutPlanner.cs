@@ -20,6 +20,7 @@ internal static partial class IntentLayoutPlanner
         if (taskContext.VerifiedRepeat) return new([], [], []);
         // Anchored monitors keep their original location and remain in the desktop occlusion checks.
         desktop ??= visible.Select(v => v.Window).ToArray();
+        visible = IncludeWorkingCompanion(visible, desktop, taskContext);
         var anchors = (taskContext.WindowHints ?? []).Where(h => h.Anchor).Select(h => h.Handle).ToHashSet();
         var moves = new List<TidyMove>();
         var layers = new List<WindowLayerOrder>();
@@ -42,8 +43,11 @@ internal static partial class IntentLayoutPlanner
                 var trySmallerRows = group.Length >= 3 && groupContext.ExplicitArrange &&
                     groupContext.Preferences.AllowUsefulResize && group.All(v => v.Window.IsResizable) &&
                     task.Any(r => r.Joint >= .8 && CoversHalfOfRear(original[r.First], original[r.Second]));
+                // Small topmost widgets (<15% of work area, e.g. pinned sticky notes or mini overlays) stay in
+                // obstacles for soft exposure scoring instead of acting as hard fixed-occluder brick walls.
                 var blockers = desktop?.Where(w => !all.Any(v => v.Window.Handle == w.Handle) &&
-                    w.MonitorHandle == group[0].Window.MonitorHandle && w.ZOrder < group.Max(v => v.Window.ZOrder)).ToArray() ?? [];
+                    w.MonitorHandle == group[0].Window.MonitorHandle && w.ZOrder < group.Max(v => v.Window.ZOrder) &&
+                    (!w.IsTopmost || w.VisualRect.Area >= area.Area * .15)).ToArray() ?? [];
                 var obstacles = desktop?.Where(w => !group.Any(v => v.Window.Handle == w.Handle) &&
                     w.MonitorHandle == group[0].Window.MonitorHandle).Select(w => w with
                     { VisualRect = settled.GetValueOrDefault(w.Handle, w.VisualRect),
@@ -63,12 +67,12 @@ internal static partial class IntentLayoutPlanner
                         AddPackedCandidate("grid", columns, false);
                     if (groupContext.ExplicitArrange && group.Length > 2)
                         AddCoveredPairCandidates(candidates, group, rescue, task, area, hint.GapPixels, order);
-                    if (groupContext.ExplicitArrange) AddWorkingPair(candidates, group, rescue, area, hint.GapPixels, groupContext, order);
+                    if (groupContext.PairPlanningEnabled) AddWorkingPair(candidates, group, rescue, area, hint.GapPixels, groupContext, order);
                     AddOverlapping(candidates, group, original, area, hint);
                     AddOrders(candidates, "restack", original, group);
                     AddTaskCandidates(candidates, group, original, area, task, groupContext, hint.GapPixels);
                 }
-                if (groupContext.ExplicitArrange && group.Length == 1 &&
+                if (groupContext.PairPlanningEnabled && group.Length == 1 &&
                     groupContext.Placement?.FirstOrDefault(p => p.Window == group[0].Window.Handle) is { Confidence: > .40 } habit)
                 {
                     int width = group[0].Window.IsResizable && groupContext.Preferences.AllowUsefulResize
@@ -114,10 +118,12 @@ internal static partial class IntentLayoutPlanner
 
                 void Evaluate(Candidate candidate, int generation)
                 {
+                    var targetLookup = candidate.Order.SequenceEqual(order) ? null :
+                        Enumerable.Range(0, group.Length).ToDictionary(i => group[i].Window.Handle, i => candidate.Rects[i]);
                     var rejection = !candidate.Order.SequenceEqual(order) &&
                         !LayerOrderSafe(group, candidate, order)
                         ? "layer-preserve-foreground-or-occluded" : !candidate.Order.SequenceEqual(order) &&
-                        !WindowLayerSafety.CanReorder(group.Select(v => v.Window).ToArray(), desktop ?? all.Select(v => v.Window).ToArray())
+                        !WindowLayerSafety.CanReorder(group.Select(v => v.Window).ToArray(), desktop ?? all.Select(v => v.Window).ToArray(), targetLookup)
                         ? "layer-band-or-interleaved-window" : !TaskSafe(group, original, candidate, area, options, groupContext, obstacles, beforeExposure) ? "geometry-budget" :
                         HitsOutsideGroup(settled, group, original, candidate.Rects) ? "other-group" :
                         blockers.Any(w => candidate.Rects.Select((r, i) => r.Intersect(w.VisualRect).Area > original[i].Intersect(w.VisualRect).Area).Any(b => b)) ? "fixed-occluder" :

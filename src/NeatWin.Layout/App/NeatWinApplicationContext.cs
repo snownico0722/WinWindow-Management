@@ -32,6 +32,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private readonly LayoutRunJournal _journal;
     private CompiledLayoutRules? _lastRules;
     private LayoutFocus? _lastFocus;
+    private WorkingPairRule[] _lastPairs = [];
+    private WindowSizeFloor[] _lastFloors = [];
+    private PlacementPreference[] _lastPlacements = [];
     private TaskWindowHint[] _lastLiveHints = [];
     private readonly TaskLayoutSession _taskSession = new();
     private TaskPreferences _taskPreferences;
@@ -58,7 +61,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _autoTidyManager = new AutoTidyManager();
         _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) { VisualSampling = _settingsStore.VisualSampling };
         _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder);
-        _workspaceMonitor = new WorkspaceAutoTidyMonitor(_windowManager.Capture,
+        _workspaceMonitor = new WorkspaceAutoTidyMonitor(() => _windowManager.CaptureCoalesced(),
             () => _tidyRunning || _autoTidyManager.IsGestureActive || NativeWindowActivity.IsMoving);
         _autoTidyManager.GestureStarted += handle =>
         {
@@ -78,6 +81,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         };
         _automaticMode = _settingsStore.LoadAutomaticLayoutMode();
         if (!ConfigureAutomation(_automaticMode)) _automaticMode = AutomaticLayoutMode.Off;
+        _recorder.SetLiveSensing(_automaticMode);
         _workspaceMonitor.Requested += OnAutomaticLayoutRequested;
         _autoTidyManager.TidyRequested += OnFollowHandRequested;
         _journal.Completed += OnLayoutVerified;
@@ -141,6 +145,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             throw;
         }
         _automaticMode = value.Mode;
+        _recorder.SetLiveSensing(_automaticMode);
     }
 
     internal void SetRecording(bool enabled)
@@ -239,34 +244,54 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             }
             else if (smart)
             {
+                _recorder.SetLiveSensing(_automaticMode, manualRequest: explicitSmart);
                 var rules = _referenceStore.Rules.Read();
+                var activities = _recorder.LiveActivities(snapshot);
                 var focus = _focus.Resolve(snapshot, Environment.TickCount64);
                 var liveHints = _recorder.LiveHints(snapshot);
-                if (!ReferenceEquals(rules, _lastRules) || focus.Main != _lastFocus?.Main || focus.Companion != _lastFocus?.Companion ||
+                if (videoHint is { Confidence: >= .82 })
+                {
+                    var existing = liveHints.FirstOrDefault(w => w.Handle == videoHint.WindowHandle);
+                    var mediaHint = (existing ?? new TaskWindowHint(videoHint.WindowHandle)) with { PassiveVisual = true, MediaCompanion = true };
+                    liveHints = [.. liveHints.Where(w => w.Handle != videoHint.WindowHandle), mediaHint];
+                }
+                bool pairSmart = explicitSmart || trigger is "automatic-gesture" or "automatic-workspace";
+                var pairs = pairSmart ? _recorder.BindRules(rules, snapshot, liveHints, activities) : [];
+                var floors = _recorder.BindSizeFloors(snapshot);
+                var minConfidence = trigger == "automatic-workspace" ? .50 : .10;
+                var learned = pairSmart ? _recorder.Preferences(snapshot, focus).Where(p => p.Confidence >= minConfidence).ToArray() : [];
+                var slots = pairSmart ? _recorder.BindSlots(rules, snapshot) : [];
+                var placements = CompiledLayoutRules.ApplySlots(learned, slots);
+                if (!_lastPairs.SequenceEqual(pairs) || !_lastFloors.SequenceEqual(floors) ||
+                    !_lastPlacements.SequenceEqual(placements) || !ReferenceEquals(rules, _lastRules) || focus.Main != _lastFocus?.Main || focus.Companion != _lastFocus?.Companion ||
                     !ActivityHints.Equivalent(_lastLiveHints, liveHints))
                     _taskSession.Invalidate();
+                _lastPairs = pairs; _lastFloors = floors; _lastPlacements = placements;
                 _lastRules = rules;
                 _lastFocus = focus;
                 _lastLiveHints = liveHints;
                 var taskContext = _taskSession.Capture(snapshot, _taskPreferences.Profile, Displays(snapshot),
                     _taskPreferences.Calibration, DateTimeOffset.UtcNow, explicitSmart) with
-                { PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill, Focus = focus, WindowHints = liveHints,
-                    Rules = rules, RulePairs = explicitSmart ? _recorder.BindRules(rules, snapshot) : [] };
-                if (videoHint is { Confidence: >= .82 })
                 {
-                    var existing = taskContext.WindowHints?.FirstOrDefault(w => w.Handle == videoHint.WindowHandle);
-                    var mediaHint = (existing ?? new TaskWindowHint(videoHint.WindowHandle)) with { PassiveVisual = true, MediaCompanion = true };
-                    taskContext = taskContext with { WindowHints = [.. (taskContext.WindowHints ?? []).Where(w => w.Handle != videoHint.WindowHandle), mediaHint], VideoHint = videoHint };
-                }
+                    PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill,
+                    Focus = focus,
+                    WindowHints = liveHints,
+                    VideoHint = videoHint is { Confidence: >= .82 } ? videoHint : null,
+                    Rules = rules, Activities = activities,
+                    UseWorkingPairs = pairSmart,
+                    RulePairs = pairs,
+                    SizeFloors = floors,
+                };
                 var reference = _referenceStore.Read();
-                var placements = explicitSmart ? _recorder.Preferences(snapshot, focus) : [];
+                // Save the learned inputs separately so an offline rule edit can replace an old slot.
+                recordedContext = taskContext with { Placement = learned };
                 if (placements.Length > 0)
                 {
                     if (_recorder.CanWriteDiagnostics)
-                        baseline = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, reference, snapshot, taskContext);
+                        baseline = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, reference, snapshot,
+                            taskContext with { Placement = slots });
                     taskContext = taskContext with { Placement = placements };
                 }
-                recordedContext = taskContext;
                 detailed = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, reference, snapshot, taskContext);
                 plan = detailed.Moves;
                 scored = detailed;

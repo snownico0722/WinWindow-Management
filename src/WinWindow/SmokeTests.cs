@@ -520,6 +520,14 @@ internal static class SmokeTests
         var right = fourMoves.GetValueOrDefault(four[1].Handle, four[1].VisualRect);
         Assert(left.Intersect(right).IsEmpty && left.Intersect(smallArea) == left && right.Intersect(smallArea) == right,
             "a fully stacked pair separates on the four-window desktop without pushing either window off screen");
+        var smallTopmost = Window(0, new(1600, 820, 260, 200)) with { IsManageable = false, IsTopmost = true };
+        var underPair = new[] { smallTopmost, Window(1, new(300, 120, 1200, 760)) with { IsForeground = true },
+            Window(2, new(380, 120, 1200, 760)) };
+        var fullAssistPlan = LayoutDispatch.Create(LayoutRoute.Smart,
+            analyzer.SelectVisibleWorkingSet(underPair, includeStackAccess: true), new(), null, underPair,
+            new(UseWorkingPairs: true, Focus: new(2, 3, 3), WindowHints: [new(3, PassiveVisual: true, MediaCompanion: true)]));
+        Assert(fullAssistPlan.Moves.Count >= 2 && fullAssistPlan.Groups.Any(g => g.Selected == "working-overlap"),
+            "FullAssist applies working-overlap even with a small pinned Topmost widget on screen");
     }
 
     private static async Task CheckArrangeButtonAsync(MainWindow shell, NeatWin.Windows.WindowManager layout, nint first, nint second)

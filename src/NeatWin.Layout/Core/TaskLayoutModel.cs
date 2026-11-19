@@ -2,11 +2,33 @@ namespace NeatWin.Core;
 
 internal static partial class IntentLayoutPlanner
 {
+    // A known companion may only expose a sliver. Keep the regular automatic working set
+    // for everything else, including fully covered windows and anchored observation regions.
+    private static IReadOnlyList<VisibleWindow> IncludeWorkingCompanion(IReadOnlyList<VisibleWindow> visible,
+        IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext context)
+    {
+        if (!context.UseWorkingPairs || context.ExplicitArrange || context.Focus is not { Main: not 0 } focus ||
+            !visible.Any(v => v.Window.Handle == focus.Main) ||
+            (focus.Companion != 0 && visible.Any(v => v.Window.Handle == focus.Companion))) return visible;
+        if (focus.Companion == 0 && context.RulePairs is not { Length: > 0 } &&
+            context.Placement?.Any(p => p.Partner != 0 && p.Confidence >= .4) != true &&
+            context.WindowHints?.Any(h => h.MediaCompanion && !h.Anchor) != true) return visible;
+
+        var monitor = visible.First(v => v.Window.Handle == focus.Main).Window.MonitorHandle;
+        var eligible = new VisibilityAnalyzer().SelectVisibleWorkingSet(desktop, new(0, 1))
+            .Where(v => v.Window.MonitorHandle == monitor).ToArray();
+        var companion = ResolveWorkingPair(eligible, context).Focus?.Companion ?? 0;
+        var peer = eligible.FirstOrDefault(v => v.Window.Handle == companion);
+        if (peer == null || visible.Any(v => v.Window.Handle == companion) ||
+            context.WindowHints?.Any(h => h.Handle == companion && h.Anchor) == true) return visible;
+        return visible.Append(peer).OrderBy(v => v.Window.ZOrder).ToArray();
+    }
+
     private static TaskLayoutContext ResolveWorkingPair(VisibleWindow[] windows, TaskLayoutContext context)
     {
         // A crowded desktop can already have two readable working surfaces above a parked stack.
         // Preserve this cue when the utility owns focus and there is no stronger interaction history.
-        if (!context.ExplicitArrange || context.Focus is { Companion: not 0 } ||
+        if (!context.PairPlanningEnabled || context.Focus is { Companion: not 0 } ||
             context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true) return context;
         var mainHandle = context.Focus?.Main ?? 0;
         var learned = context.Placement?.Where(p => p.Confidence >= .4 && p.Partner != 0 &&
@@ -32,7 +54,7 @@ internal static partial class IntentLayoutPlanner
             members.Contains(h.Handle)).Take(2).ToArray();
         if (mainHandle != 0 && members.Contains(mainHandle) && passive is { Length: 1 })
             return context with { Focus = new(mainHandle, passive[0].Handle, 0, "visible-media-pair") };
-        if (windows.Length < 4) return context;
+        if (!context.ExplicitArrange || windows.Length < 4) return context;
         var visible = windows.Where(w => w.VisibleRatio >= .4 && w.Window.VisualRect.Area >= .12 * w.Window.WorkArea.Area).ToArray();
         if (visible.Length != 2 || visible[0] != windows[0] || visible[1] != windows[1] ||
             !windows.Skip(2).Any(w => w.VisibleRatio < .08)) return context;
@@ -84,7 +106,7 @@ internal static partial class IntentLayoutPlanner
             {
                 // Switching supports association. Joint visibility additionally needs spatial evidence.
                 bool coVisible = windows[i].VisibleRatio >= .25 && windows[j].VisibleRatio >= .25;
-                joint = Math.Max(joint, coVisible || context.ExplicitArrange ? .85 : .52);
+                joint = Math.Max(joint, coVisible || context.PairPlanningEnabled ? .85 : .52);
                 source = focus!.Evidence; uncertainty = focus.Switches > 0 ? .30 : .45;
             }
             var passive = context.WindowHints?.Any(h => h.PassiveVisual &&
@@ -171,6 +193,9 @@ internal static partial class IntentLayoutPlanner
                  b.Top < area.Top || b.Bottom > area.Bottom))) return false;
             if (window.IsTopmost && b != a) return false;
             if ((!window.IsResizable || !context.Preferences.AllowUsefulResize) && (b.Width != a.Width || b.Height != a.Height)) return false;
+            var sizeFloor = context.MinimumSize(window.Handle);
+            if (window.IsResizable && ((sizeFloor.Width > 0 && b.Width < Math.Min(a.Width, sizeFloor.Width)) ||
+                (sizeFloor.Height > 0 && b.Height < Math.Min(a.Height, sizeFloor.Height)))) return false;
             if (window.IsResizable && (b.Width < Math.Min(a.Width, Math.Min(options.MinimumWidth * window.Dpi / 96.0, area.Width)) ||
                 b.Height < Math.Min(a.Height, Math.Min(options.MinimumHeight * window.Dpi / 96.0, area.Height)))) return false;
             // A near-maximized draft is not a measured readability requirement. Use the
@@ -229,9 +254,35 @@ internal static partial class IntentLayoutPlanner
                 Math.Pow(Math.Min(1, b.Height / Math.Max(1, needHeight)), .35);
             var contentVisibility = (context.Preferences.ProtectWindowEdges || windowHint?.ProtectPeriphery == true) ? exposure.Visible :
                 .65 * exposure.CenterVisible + .35 * exposure.Visible;
+            double occlusionLoss = 1 - contentVisibility;
+            double thirdPartyLoss = occlusionLoss;
+            if (context.PairPlanningEnabled && !context.Preferences.ProtectWindowEdges && windowHint?.ProtectPeriphery != true)
+            {
+                // When a working pair authorizes inner-edge overlap (personal habit, rule, or media default),
+                // do not triple-charge that authorized edge slice as accidental occlusion; penalize only
+                // third-window covers and overlap exceeding the authorized target.
+                int rankOfI = Array.IndexOf(candidate.Order, i);
+                for (int rIdx = 0; rIdx < rankOfI; rIdx++)
+                {
+                    int frontIdx = candidate.Order[rIdx];
+                    var pref = PairPreferenceFor(windows[frontIdx].Window.Handle, w.Handle, context);
+                    if (pref?.Overlap is not double authOverlap || authOverlap <= 0) continue;
+                    var partnerRect = candidate.Rects[frontIdx];
+                    double actualOv = b.VerticalOverlapRatio(partnerRect) >= .5 ? partnerRect.HorizontalOverlapRatio(b) : 0;
+                    double allowedOv = Math.Min(actualOv, authOverlap);
+                    double excessOv = Math.Max(0, actualOv - authOverlap);
+                    var otherFront = candidate.Order.Take(rankOfI).Where(k => k != frontIdx).Select(k => candidate.Rects[k])
+                        .Concat((obstacles ?? []).Where(o => o.ZOrder < windows[rankOfI].Window.ZOrder).Select(o => o.VisualRect));
+                    var otherExp = ScreenExposure(b, otherFront, area, w.Dpi);
+                    double baseOtherLoss = 1 - (.65 * otherExp.CenterVisible + .35 * otherExp.Visible);
+                    occlusionLoss = Math.Clamp(baseOtherLoss + .12 * allowedOv + 1.35 * excessOv, 0, 1);
+                    thirdPartyLoss = Math.Clamp(baseOtherLoss + excessOv, 0, 1);
+                    break;
+                }
+            }
             var demand = windows.Length == 1 ? 0 : Math.Max(joint * profile.JointVisibilityWeight,
                 i == 0 ? .85 : .18 * park);
-            if (context.ExplicitArrange && context.Focus is { Companion: not 0 } pair &&
+            if (context.PairPlanningEnabled && context.Focus is { Companion: not 0 } pair &&
                 w.Handle != pair.Main && w.Handle != pair.Companion && windows[i].VisibleRatio < .08 &&
                 context.PairHints?.Any(h => h.First == w.Handle || h.Second == w.Handle) != true)
             {
@@ -239,14 +290,14 @@ internal static partial class IntentLayoutPlanner
                 continuity += .6 * (Math.Abs(CenterX(a) - CenterX(b)) / area.Width +
                     Math.Abs(CenterY(a) - CenterY(b)) / area.Height);
             }
-            information += demand * (3.4 * (1 - contentVisibility) + 1.8 * (1 - capacity));
-            if (context.ExplicitArrange && context.Focus is { Companion: not 0 } working &&
+            information += demand * (3.4 * occlusionLoss + 1.8 * (1 - capacity));
+            if (context.PairPlanningEnabled && context.Focus is { Companion: not 0 } working &&
                 w.Handle == working.Companion && context.PairHints?.Any(h => h.Relation == TaskRelation.Alternating &&
                     (h.First == w.Handle || h.Second == w.Handle)) != true &&
                 context.Placement?.Any(p => p.Partner == w.Handle && p.RevealedCell >= 0) != true)
             {
                 // Background windows should not dilute the visibility of the two working surfaces.
-                information += windows.Length * 1.5 * (1 - contentVisibility);
+                information += windows.Length * 1.5 * thirdPartyLoss;
             }
             if (context.VideoHint is { Confidence: >= .82, ContentAspectRatio: >= .55 and <= 4.5 } video && video.WindowHandle == w.Handle)
             {
@@ -284,7 +335,13 @@ internal static partial class IntentLayoutPlanner
             // A larger window behind the pair can otherwise make a partly overlapped row score better.
             if (context.ExplicitArrange && r.Joint > r.Parked &&
                 oa.Intersect(ob).Area >= .5 * Math.Max(oa.Area, ob.Area))
-                information += 3.4 * r.Joint * a.Intersect(b).Area / Math.Max(1d, Math.Min(a.Area, b.Area));
+            {
+                double rawOverlap = a.Intersect(b).Area / Math.Max(1d, Math.Min(a.Area, b.Area));
+                double unpermitted = choice?.Overlap is double permitted && permitted > 0
+                    ? Math.Max(0, (a.VerticalOverlapRatio(b) >= .5 ? a.HorizontalOverlapRatio(b) : rawOverlap) - permitted)
+                    : rawOverlap;
+                information += (3.4 * r.Joint * unpermitted) / n;
+            }
             var dx = CenterX(oa) - CenterX(ob); var dy = CenterY(oa) - CenterY(ob);
             // Inside a larger background window, a smaller window's center can be to either
             // side without establishing a reading order. Penalize reversals only for distinct positions.
@@ -350,6 +407,7 @@ internal static partial class IntentLayoutPlanner
         TaskLayoutContext context, IReadOnlyList<WindowSnapshot> desktop)
     {
         if (context.VerifiedRepeat) return refined.Count == 0;
+        visible = IncludeWorkingCompanion(visible, desktop, context);
         var known = planned.Groups.SelectMany(g => g.Handles).ToHashSet();
         if (refined.Any(m => !known.Contains(m.Window.Handle))) return false;
         var ranks = desktop.ToDictionary(w => w.Handle, w => w.ZOrder);
