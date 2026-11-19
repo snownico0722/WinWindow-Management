@@ -17,7 +17,6 @@
 
    <Grid x:Name="Header" Margin="10,0,8,0">
     <Grid.ColumnDefinitions>
-     <ColumnDefinition Width="Auto"/>
      <ColumnDefinition Width="*"/>
      <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
@@ -35,21 +34,24 @@
        <MenuItem Header="退出" Click="Quit_Click"/>
       </ContextMenu>
      </Button.ContextMenu>
-     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+     <Grid VerticalAlignment="Center">
+      <Grid.ColumnDefinitions>
+       <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
       <Border Width="22" Height="22" CornerRadius="6" Background="{DynamicResource Selection}" BorderBrush="{DynamicResource Line}" BorderThickness="1">
        <Path Data="M4,5.5 L11.5,5.5 L11.5,12 L4,12 Z M6.5,3.5 L13.5,3.5 L13.5,9.5"
          Stroke="{DynamicResource Accent}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
          Width="15" Height="15" HorizontalAlignment="Center" VerticalAlignment="Center"/>
       </Border>
-      <TextBlock x:Name="BrandTitleText" Text="WinWindow" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="8,0,0,0"/>
-      <Border x:Name="BrandCollapseHint" Background="{DynamicResource Surface}" CornerRadius="4" Padding="4,2" Margin="7,0,0,0" VerticalAlignment="Center">
+      <TextBlock Grid.Column="1" TextTrimming="CharacterEllipsis" x:Name="BrandTitleText" Text="WinWindow" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="8,0,0,0"/>
+      <Border Grid.Column="2" x:Name="BrandCollapseHint" Background="{DynamicResource Surface}" CornerRadius="4" Padding="4,2" Margin="7,0,0,0" VerticalAlignment="Center">
        <Path x:Name="BrandHintIcon" Data="M2,7.5 L7.5,2 M7.5,2 L3.5,2 M7.5,2 L7.5,6"
          Stroke="{DynamicResource Muted}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="9" Height="9"/>
       </Border>
-     </StackPanel>
+     </Grid>
     </Button>
 
-    <StackPanel x:Name="HeaderActions" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+    <StackPanel x:Name="HeaderActions" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" shell:WindowChrome.IsHitTestVisibleInChrome="True">
      <ToggleButton x:Name="OwnPinBox" Style="{StaticResource IconToggle}" Width="30" Height="28" Click="OwnPin_Click" ToolTip="固定管理器置顶" AutomationProperties.Name="本窗口置顶">
       <Path x:Name="OwnPinIcon" Data="M5.2,2.2 L10.8,2.2 M10,2.2 L10,6.8 L12.4,9.5 L9.6,9.5 M6,2.2 L6,4.4 M3.6,9.5 L6.8,9.5 M8,11.2 L8,14.5 M2.5,2.5 L13.5,13.5"
         Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
@@ -71,13 +73,13 @@
      </Button>
     </StackPanel>
 
-    <StackPanel x:Name="CompactActions" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Visibility="Collapsed" shell:WindowChrome.IsHitTestVisibleInChrome="True">
-     <Button x:Name="CompactPickerButton" Style="{StaticResource RowIconButton}" ToolTip="按住拖到目标窗口置顶"
+    <StackPanel x:Name="CompactActions" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Visibility="Collapsed" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+     <Button x:Name="CompactPickerButton" AutomationProperties.Name="拖拽置顶" Style="{StaticResource RowIconButton}" ToolTip="按住拖到目标窗口置顶"
        PreviewMouseLeftButtonDown="Picker_Down" PreviewMouseMove="Picker_Move" PreviewMouseLeftButtonUp="Picker_Up" LostMouseCapture="Picker_LostCapture">
       <Path Data="M8,2 L8,5 M8,11 L8,14 M2,8 L5,8 M11,8 L14,8 M8,6.5 A1.5,1.5 0 1 1 7.99,6.5"
         Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" Width="15" Height="15"/>
      </Button>
-     <Button Style="{StaticResource RowIconButton}" ToolTip="整理桌面" Click="Arrange_Click">
+     <Button x:Name="CompactArrangeButton" Style="{StaticResource RowIconButton}" AutomationProperties.Name="整理桌面" ToolTip="整理桌面" Click="Arrange_Click">
       <Path Data="M2.5,3 L7,3 L7,7.5 L2.5,7.5 Z M9,3 L13.5,3 L13.5,7.5 L9,7.5 Z M2.5,9.5 L7,9.5 L7,13.5 L2.5,13.5 Z M9,9.5 L13.5,9.5 L13.5,13.5 L9,13.5 Z"
         Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.3" StrokeLineJoin="Round" Width="15" Height="15"/>
      </Button>

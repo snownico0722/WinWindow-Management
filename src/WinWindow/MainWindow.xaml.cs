@@ -185,8 +185,8 @@ public partial class MainWindow : Window
         {
             BrandTitleText.Text = totalManaged == 0 ? "WinWindow"
                 : parkedCount > 0 ? $"{pinnedCount} 置顶 · {parkedCount} 隐藏"
-                : pinnedCount > 0 ? $"WinWindow · {pinnedCount} 置顶"
-                : $"WinWindow · {totalManaged}";
+                : pinnedCount > 0 ? $"{pinnedCount} 置顶"
+                : $"已管理 {totalManaged}";
         }
         else
         {
@@ -350,10 +350,7 @@ public partial class MainWindow : Window
         _pickerTimer.Start();
     }
 
-    private void UpdatePickerOutline()
-    {
-        PreviewPickerTarget(Native.TargetUnderPointer());
-    }
+    private void UpdatePickerOutline() => PreviewPickerTarget(Native.TargetUnderPointer());
 
     internal void PreviewPickerTarget(nint target)
     {

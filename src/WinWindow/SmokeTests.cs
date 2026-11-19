@@ -187,6 +187,15 @@ internal static class SmokeTests
             ((Button)shell.FindName("BrandArea")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Task.Delay(100);
             nint own = new WindowInteropHelper(shell).Handle;
             Assert(shell.Width == 240 && Native.IsTopmost(own), "compact mode pins the native HWND, independently of WPF Topmost");
+            shell.UpdateLayout();
+            var compactPick = (Button)shell.FindName("CompactPickerButton");
+            var compactArrange = (Button)shell.FindName("CompactArrangeButton");
+            Rect InShell(FrameworkElement control) => control.TransformToAncestor(shell).TransformBounds(new Rect(control.RenderSize));
+            var pickBounds = InShell(compactPick);
+            var arrangeBounds = InShell(compactArrange);
+            Assert(compactPick.IsVisible && compactArrange.IsVisible && pickBounds.Width >= 24 && arrangeBounds.Width >= 24 &&
+                InShell((Button)shell.FindName("BrandArea")).Right <= pickBounds.Left && pickBounds.Right <= arrangeBounds.Left &&
+                arrangeBounds.Right <= shell.ActualWidth, "both capsule actions fit beside the managed-window count");
             Capture(shell, Path.Combine(output, "compact-dark.png"));
             ((Button)shell.FindName("BrandArea")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert(shell.Width >= 500 && shell.MinWidth == 500 && double.IsPositiveInfinity(shell.MaxWidth), "workbench respects compact minimum and has no maximum width");
