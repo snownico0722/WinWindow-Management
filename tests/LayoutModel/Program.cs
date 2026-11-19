@@ -59,6 +59,9 @@ IntentLayoutPlan Arrange(TaskLayoutContext ctx) => LayoutDispatch.Create(LayoutR
     new VisibilityAnalyzer().SelectForManualArrange(windows, true), new(), null, windows, ctx);
 RectI Target(IntentLayoutPlan plan, int index) =>
     plan.Moves.FirstOrDefault(m => m.Window.Handle == windows[index].Handle)?.TargetVisualRect ?? windows[index].VisualRect;
+Check(Arrange(new(ExplicitArrange: true, Placement: [habit])).Groups.Any(g =>
+    g.Task?.Relations.Any(r => r.Source == "learned-working-pair") == true),
+    "a learned companion can be selected when live switch history is missing");
 var mainLeft = Arrange(context with { Placement = [habit] });
 var mainRight = Arrange(context with { Placement = [habit with { Order = 1, Center = 1 - habit.Center }] });
 Check(Target(mainLeft, 0).X < Target(mainLeft, 1).X && Target(mainRight, 0).X > Target(mainRight, 1).X,

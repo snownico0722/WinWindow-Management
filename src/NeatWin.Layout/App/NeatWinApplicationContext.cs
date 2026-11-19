@@ -227,6 +227,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             IReadOnlyList<TidyMove> plan;
             IntentLayoutPlan? detailed = null;
             IntentLayoutPlan? baseline = null;
+            IntentLayoutPlan? scored = null;
             if (tiling)
             {
                 detailed = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, null, snapshot, null);
@@ -250,6 +251,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 }
                 detailed = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, reference, snapshot, taskContext);
                 plan = detailed.Moves;
+                scored = detailed;
                 // The task objective replaces the old geometry-only fill pass. A video refinement
                 // is retained only when task utility and screen-aware access survive.
                 var beforeVideoPlan = plan;
@@ -285,7 +287,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             }
             if (smart)
                 _taskSession.Requested(snapshot, detailed, DateTimeOffset.UtcNow, explicitSmart);
-            _journal.Record(snapshot, detailed, trigger, application.Notes, baseline ?? proposed, proposed);
+            _journal.Record(snapshot, detailed, trigger, application.Notes, baseline ?? scored ?? proposed, proposed, scored);
             if (showActivity)
             {
                 var kinds = string.Join(TextCatalog.Culture.TwoLetterISOLanguageName == "zh" ? "、" : ", ", detailed.Groups.Select(g => KindName(g.Selected)).Distinct());

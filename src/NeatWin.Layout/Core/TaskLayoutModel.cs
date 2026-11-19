@@ -6,8 +6,20 @@ internal static partial class IntentLayoutPlanner
     {
         // A crowded desktop can already have two readable working surfaces above a parked stack.
         // Preserve this cue when the utility owns focus and there is no stronger interaction history.
-        if (!context.ExplicitArrange || windows.Length < 4 || context.Focus is { Companion: not 0 } ||
+        if (!context.ExplicitArrange || context.Focus is { Companion: not 0 } ||
             context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true) return context;
+        var mainHandle = context.Focus?.Main ?? 0;
+        var learned = context.Placement?.Where(p => p.Confidence >= .4 && p.Partner != 0 &&
+            (mainHandle == 0 || p.Window == mainHandle || p.Partner == mainHandle) &&
+            windows.Any(w => w.Window.Handle == p.Window) && windows.Any(w => w.Window.Handle == p.Partner))
+            .OrderByDescending(p => p.Confidence).FirstOrDefault();
+        if (learned != null)
+        {
+            var primary = mainHandle != 0 ? mainHandle : learned.Window;
+            var companion = primary == learned.Window ? learned.Partner : learned.Window;
+            return context with { Focus = new(primary, companion, 0, "learned-working-pair") };
+        }
+        if (windows.Length < 4) return context;
         var visible = windows.Where(w => w.VisibleRatio >= .4 && w.Window.VisualRect.Area >= .12 * w.Window.WorkArea.Area).ToArray();
         if (visible.Length != 2 || visible[0] != windows[0] || visible[1] != windows[1] ||
             !windows.Skip(2).Any(w => w.VisibleRatio < .08)) return context;

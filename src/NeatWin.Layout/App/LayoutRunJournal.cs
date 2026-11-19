@@ -32,7 +32,7 @@ internal sealed class LayoutRunJournal : IDisposable
     }
 
     internal void Record(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan, string trigger, string[] notes,
-        IntentLayoutPlan? baseline = null, IntentLayoutPlan? proposal = null)
+        IntentLayoutPlan? baseline = null, IntentLayoutPlan? proposal = null, IntentLayoutPlan? scored = null)
     {
         try
         {
@@ -47,7 +47,7 @@ internal sealed class LayoutRunJournal : IDisposable
                 p.Layers.Select(l => l.FrontToBack.Select(w => ids[w.Handle]).ToArray()).ToArray(),
                 p.Groups.Select(g => g.Selected).ToArray());
             var observation = new LayoutRunObservation(3, _session, Guid.NewGuid().ToString("N"), trigger,
-                frame, targets, layers, groups, null, "requested-not-yet-verified", notes, Project(baseline), Project(proposal));
+                frame, targets, layers, groups, null, "requested-not-yet-verified", notes, Project(baseline), Project(proposal), Project(scored));
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);
             if (recorded && (plan.Moves.Count > 0 || trigger == "undo"))
