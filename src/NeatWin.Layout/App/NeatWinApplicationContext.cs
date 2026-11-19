@@ -207,10 +207,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var tiling = route == LayoutRoute.FullTiling;
             var effectiveOptions = route == LayoutRoute.Smart ? _tidyOptions with { AlgorithmMode = TidyAlgorithmMode.Smart } : _tidyOptions;
             var smart = !tiling && effectiveOptions.AlgorithmMode == TidyAlgorithmMode.Smart;
+            var explicitSmart = smart && route == LayoutRoute.ManualAlgorithm;
             var trigger = source ?? (showActivity ? tiling ? "explicit-tiling" : smart ? "explicit" : "explicit-classic" : "classic-follow");
             var snapshot = _windowManager.Capture();
-            var visibleWorkingSet = _visibilityAnalyzer.SelectVisibleWorkingSet(snapshot,
-                includeStackAccess: smart);
+            var visibleWorkingSet = explicitSmart
+                ? _visibilityAnalyzer.SelectForManualArrange(snapshot, effectiveOptions.RescueOffscreenWindows)
+                : _visibilityAnalyzer.SelectVisibleWorkingSet(snapshot, includeStackAccess: smart);
             VideoBlackBarHint? videoHint = null;
             if (smart && _smartBehaviorOptions.RemoveVideoBlackBars)
                 videoHint = _videoBlackBarDetector.TryDetect(visibleWorkingSet);
@@ -224,7 +226,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             else if (smart)
             {
                 var taskContext = _taskSession.Capture(snapshot, _taskPreferences.Profile, Displays(snapshot),
-                    _taskPreferences.Calibration, DateTimeOffset.UtcNow) with
+                    _taskPreferences.Calibration, DateTimeOffset.UtcNow, explicitSmart) with
                 { PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill };
                 if (videoHint is { Confidence: >= .82 })
                     taskContext = taskContext with { WindowHints = [new(videoHint.WindowHandle, PassiveVisual: true)], VideoHint = videoHint };
@@ -263,15 +265,19 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 _undoChanged?.Invoke(true);
             }
             if (smart)
-                _taskSession.Requested(snapshot, detailed, DateTimeOffset.UtcNow);
+                _taskSession.Requested(snapshot, detailed, DateTimeOffset.UtcNow, explicitSmart);
             _journal.Record(snapshot, detailed, trigger, application.Notes);
             if (showActivity)
             {
                 var kinds = string.Join("、", detailed.Groups.Select(g => KindName(g.Selected)).Distinct());
-                var message = plan.Count == 0 && layerOrders.Count == 0
-                    ? $"已检查 {visibleWorkingSet.Count} 个当前可见窗口，本次保留原状，未找到更合适的可执行方案。"
-                    : $"{kinds}：已请求调整 {plan.Count} 个窗口、{layerOrders.Count} 组层级。";
-                _report(application.Notes.Any(n => n.Contains("未")) ? message + " " + string.Join(" ", application.Notes) : message);
+                var notes = string.Join(" ", application.Notes.Where(n => n.Contains("未")));
+                if (plan.Count != 0 || layerOrders.Count != 0)
+                    _report($"{(kinds.Length > 0 ? kinds : "桌面整理")}：已请求调整 {plan.Count} 个窗口、{layerOrders.Count} 组层级。 {notes}".TrimEnd());
+                else if (notes.Length > 0) _report(notes);
+                else if (visibleWorkingSet.Count == 0)
+                    _report("当前没有可整理的普通窗口。置顶、最大化和全屏窗口会保留位置。");
+                else
+                    _report($"已检查 {visibleWorkingSet.Count} 个可整理窗口，按当前偏好保留现有布局。");
             }
         }
         catch (Exception exception)
@@ -328,6 +334,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             if (observation.Outcome == "observed-match") _taskSession.Verify(_windowManager.Capture());
             else _taskSession.Invalidate();
         }
+        // An empty request has no positions to confirm. Keep its original explanation on screen.
+        if (observation.Targets.Length == 0 && observation.Layers.Length == 0) return;
         var actual = observation.Actual.Windows;
         var matched = observation.Targets.Count(t => actual.Any(w => w.Id == t.Id && SameRect(w.Rect, t.Target)));
         var description = string.Join("、", observation.Groups.Select(g => KindName(g.Selected)).Distinct());

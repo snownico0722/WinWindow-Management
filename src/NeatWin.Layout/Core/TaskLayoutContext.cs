@@ -57,7 +57,7 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     ViewingCalibration? Calibration = null, TaskPairHint[]? PairHints = null,
     TaskWindowHint[]? WindowHints = null, ManualWindowGesture? RecentGesture = null,
     bool VerifiedRepeat = false, string[]? RejectedLayouts = null, VideoBlackBarHint? VideoHint = null,
-    bool PreferReversibleVerticalFill = false)
+    bool PreferReversibleVerticalFill = false, bool ExplicitArrange = false)
 {
     public TaskLayoutProfile Preferences => (Profile ?? new()).Normalize();
 }
@@ -67,6 +67,7 @@ public sealed class TaskLayoutSession
 {
     private WindowSnapshot[]? _pending;
     private string? _verified;
+    private bool _lastRequestWasExplicit;
     private FeedbackGroup[] _pendingGroups = [];
     private readonly Queue<string> _rejected = new();
     private ManualWindowGesture? _gesture;
@@ -81,14 +82,15 @@ public sealed class TaskLayoutSession
     }
 
     public TaskLayoutContext Capture(IReadOnlyList<WindowSnapshot> windows, TaskLayoutProfile profile,
-        TaskDisplay[] displays, ViewingCalibration? calibration, DateTimeOffset now) =>
+        TaskDisplay[] displays, ViewingCalibration? calibration, DateTimeOffset now, bool explicitArrange = false) =>
         new(profile, displays, calibration, RecentGesture: now - _gestureTime <= TimeSpan.FromSeconds(20) ? _gesture : null,
-            VerifiedRepeat: _verified == Fingerprint(windows) && now - _appliedTime < TimeSpan.FromMinutes(5),
-            RejectedLayouts: _rejected.ToArray());
+            VerifiedRepeat: (!explicitArrange || _lastRequestWasExplicit) && _verified == Fingerprint(windows) && now - _appliedTime < TimeSpan.FromMinutes(5),
+            RejectedLayouts: _rejected.ToArray(), ExplicitArrange: explicitArrange);
 
-    public void Requested(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan, DateTimeOffset now)
+    public void Requested(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan, DateTimeOffset now, bool explicitArrange = false)
     {
         if (plan.Moves.Count == 0 && plan.Layers.Count == 0) return;
+        _lastRequestWasExplicit = explicitArrange;
         var placed = Project(before, plan);
         _pending = placed; _verified = null; _appliedTime = now;
         var changed = plan.Moves.Where(m => m.TargetVisualRect != m.Window.VisualRect)

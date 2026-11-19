@@ -8,17 +8,26 @@ public sealed class VisibilityAnalyzer
 {
     public IReadOnlyList<VisibleWindow> SelectVisibleWorkingSet(
         IReadOnlyList<WindowSnapshot> windows,
-        VisibilityOptions? options = null, bool includeStackAccess = false)
+        VisibilityOptions? options = null, bool includeStackAccess = false) =>
+        Select(windows, options ?? new(), includeStackAccess, includeCoveredWindows: false, rescueOffscreenWindows: false);
+
+    public IReadOnlyList<VisibleWindow> SelectForManualArrange(IReadOnlyList<WindowSnapshot> windows,
+        bool rescueOffscreenWindows) =>
+        Select(windows, new(), includeStackAccess: false, includeCoveredWindows: true, rescueOffscreenWindows);
+
+    private static IReadOnlyList<VisibleWindow> Select(IReadOnlyList<WindowSnapshot> windows, VisibilityOptions options,
+        bool includeStackAccess, bool includeCoveredWindows, bool rescueOffscreenWindows)
     {
-        options ??= new VisibilityOptions();
         var result = new List<VisibleWindow>();
 
         for (var i = 0; i < windows.Count; i++)
         {
             var window = windows[i];
+            if (!window.IsManageable || window.WorkArea.IsEmpty || window.VisualRect.IsEmpty) continue;
             var baseRect = window.VisualRect.Intersect(window.WorkArea);
             if (baseRect.IsEmpty)
             {
+                if (rescueOffscreenWindows) result.Add(new(window, 0, 0, 0));
                 continue;
             }
 
@@ -38,11 +47,6 @@ public sealed class VisibilityAnalyzer
             var largestFragment = fragments.Count == 0 ? 0 : fragments.Max(static fragment => fragment.Area);
             var visibleRatio = baseRect.Area == 0 ? 0 : (double)visibleArea / baseRect.Area;
 
-            if (!window.IsManageable || visibleArea == 0)
-            {
-                continue;
-            }
-
             var scale = Math.Clamp(window.Dpi / 96.0, 0.5, 4);
             var topBand = new RectI(window.VisualRect.X, window.VisualRect.Y, window.VisualRect.Width,
                 Math.Min(window.VisualRect.Height, (int)Math.Round(32 * scale)));
@@ -53,7 +57,18 @@ public sealed class VisibilityAnalyzer
                 visibleRatio >= options.MinimumVisibleRatio &&
                 largestFragment >= options.MinimumLargestVisibleFragmentArea;
 
-            if (window.IsForeground || isVisuallyPresent || stackAccess)
+            // An explicit arrange can move the ordinary windows hiding this one. A fixed
+            // foreground surface (for example a maximized app) must still shield its background.
+            var available = visibleArea > 0;
+            if (includeCoveredWindows && !available)
+            {
+                var uncoveredByFixed = new List<RectI> { baseRect };
+                for (var j = 0; j < i && uncoveredByFixed.Count > 0; j++)
+                    if (!windows[j].IsManageable)
+                        uncoveredByFixed = RectRegion.Subtract(uncoveredByFixed, windows[j].VisualRect);
+                available = uncoveredByFixed.Count > 0;
+            }
+            if (available && (includeCoveredWindows || window.IsForeground || isVisuallyPresent || stackAccess))
             {
                 result.Add(new VisibleWindow(window, visibleArea, largestFragment, visibleRatio));
             }

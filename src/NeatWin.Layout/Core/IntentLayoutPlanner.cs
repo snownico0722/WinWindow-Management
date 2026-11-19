@@ -35,6 +35,9 @@ internal static partial class IntentLayoutPlanner
                 var original = group.Select(v => v.Window.VisualRect).ToArray();
                 var task = InferTask(group, original, taskContext);
                 var order = Enumerable.Range(0, group.Length).ToArray();
+                var trySmallerRows = group.Length >= 3 && taskContext.ExplicitArrange &&
+                    taskContext.Preferences.AllowUsefulResize && group.All(v => v.Window.IsResizable) &&
+                    task.Any(r => r.Joint >= .8 && CoversHalfOfRear(original[r.First], original[r.Second]));
                 var blockers = desktop?.Where(w => !all.Any(v => v.Window.Handle == w.Handle) &&
                     w.MonitorHandle == group[0].Window.MonitorHandle && w.ZOrder < group.Max(v => v.Window.ZOrder)).ToArray() ?? [];
                 var obstacles = desktop?.Where(w => !group.Any(v => v.Window.Handle == w.Handle) &&
@@ -54,6 +57,8 @@ internal static partial class IntentLayoutPlanner
                     AddPackedCandidate("rows", 1, false);
                     for (var columns = 2; columns < group.Length; columns++)
                         AddPackedCandidate("grid", columns, false);
+                    if (taskContext.ExplicitArrange && group.Length > 2)
+                        AddCoveredPairCandidates(candidates, group, rescue, task, area, hint.GapPixels, order);
                     AddOverlapping(candidates, group, original, area, hint);
                     AddOrders(candidates, "restack", original, group);
                     AddTaskCandidates(candidates, group, original, area, task, taskContext, hint.GapPixels);
@@ -84,6 +89,8 @@ internal static partial class IntentLayoutPlanner
                         var kind = columns == 1 ? "rows" : columns == group.Length ? "columns" : "grid";
                         foreach (var rects in packed) AddOrders(completion, kind, rects, group);
                     }
+                    if (taskContext.ExplicitArrange && group.Length > 2)
+                        AddCoveredPairCandidates(completion, group, seed.Rects, task, area, hint.GapPixels, order);
                     AddTaskCandidates(completion, group, seed.Rects, area, task, taskContext, hint.GapPixels);
                     AddOverlapping(completion, group, seed.Rects, area, hint);
                     foreach (var proposal in completion)
@@ -127,6 +134,8 @@ internal static partial class IntentLayoutPlanner
                 {
                     var packed = new List<RectI[]>();
                     AddPacked(packed, group, original, area, hint.GapPixels, columns, equalize);
+                    if (trySmallerRows && packed.Count == 0)
+                        AddPacked(packed, group, original, area, hint.GapPixels, columns, equalize, shrinkToFit: true);
                     if (packed.Count == 0) generationNotes.Add(new(kind, null, "no-size-safe-packing"));
                     foreach (var rects in packed) candidates.Add(new(kind, rects, order));
                 }
@@ -231,7 +240,7 @@ internal static partial class IntentLayoutPlanner
     }
 
     private static void AddPacked(List<RectI[]> candidates, VisibleWindow[] windows, RectI[] original,
-        RectI area, int gap, int columns, bool equalize)
+        RectI area, int gap, int columns, bool equalize, bool shrinkToFit = false)
     {
         var horizontal = columns == windows.Length;
         var order = Enumerable.Range(0, windows.Length);
@@ -246,6 +255,20 @@ internal static partial class IntentLayoutPlanner
             for (var i = 0; i < windows.Length; i++)
                 if (windows[i].Window.IsResizable && Math.Abs(median - sizes[i].Height) <= sizes[i].Height * 0.12)
                     sizes[i] = sizes[i] with { Height = median };
+        }
+        if (shrinkToFit)
+        {
+            // Three large overlapping windows can fit in two rows even when neither the
+            // original heights nor a single row fit. Shrink uniformly, only as much as needed.
+            var heightScale = (area.Height - gap * (rows.Length - 1)) /
+                (double)rows.Sum(row => row.Max(i => sizes[i].Height));
+            var widthScale = rows.Min(row => (area.Width - gap * (row.Length - 1)) /
+                (double)row.Sum(i => sizes[i].Width));
+            var scale = Math.Min(1, Math.Min(heightScale, widthScale));
+            if (scale <= 0) return;
+            for (var i = 0; i < sizes.Length; i++)
+                sizes[i] = sizes[i] with { Width = (int)Math.Floor(sizes[i].Width * scale),
+                    Height = (int)Math.Floor(sizes[i].Height * scale) };
         }
         foreach (var row in rows)
         {
