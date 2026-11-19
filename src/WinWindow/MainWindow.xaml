@@ -3,7 +3,7 @@
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:local="clr-namespace:WinWindow"
  xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
- Title="WinWindow Management" Width="580" Height="500" MinWidth="500" MinHeight="380"
+ Icon="Assets/WinWindow.ico" Title="WinWindow Management" Width="580" Height="500" MinWidth="500" MinHeight="380"
  WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterScreen" PreviewKeyDown="Window_PreviewKeyDown">
  <shell:WindowChrome.WindowChrome>
   <shell:WindowChrome CaptionHeight="44" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="12" UseAeroCaptionButtons="False"/>
@@ -38,11 +38,7 @@
       <Grid.ColumnDefinitions>
        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
-      <Border Width="22" Height="22" CornerRadius="6" Background="{DynamicResource Selection}" BorderBrush="{DynamicResource Line}" BorderThickness="1">
-       <Path Data="M4,5.5 L11.5,5.5 L11.5,12 L4,12 Z M6.5,3.5 L13.5,3.5 L13.5,9.5"
-         Stroke="{DynamicResource Accent}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-         Width="15" Height="15" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-      </Border>
+      <Image Width="22" Height="22" Source="{Binding Icon, RelativeSource={RelativeSource AncestorType=Window}}" RenderOptions.BitmapScalingMode="HighQuality"/>
       <TextBlock Grid.Column="1" TextTrimming="CharacterEllipsis" x:Name="BrandTitleText" Text="WinWindow" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="8,0,0,0"/>
       <Border Grid.Column="2" x:Name="BrandCollapseHint" Background="{DynamicResource Surface}" CornerRadius="4" Padding="4,2" Margin="7,0,0,0" VerticalAlignment="Center">
        <Path x:Name="BrandHintIcon" Data="M2,7.5 L7.5,2 M7.5,2 L3.5,2 M7.5,2 L7.5,6"
@@ -169,7 +165,14 @@
         <Path Data="M2,2.5 L6.5,2.5 L6.5,7 L2,7 Z M8.5,2.5 L13,2.5 L13,7 L8.5,7 Z M2,9 L6.5,9 L6.5,13 L2,13 Z M8.5,9 L13,9 L13,13 L8.5,13 Z"
           Stroke="{DynamicResource Muted}" StrokeThickness="1.3" StrokeLineJoin="Round" Width="14" Height="14" VerticalAlignment="Center"/>
         <TextBlock Text="整个桌面" FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center" Margin="7,0,0,0"/>
-        <TextBlock x:Name="FooterHintText" Text="· 手动" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="6,0,0,0"/>
+        <Border Background="{DynamicResource Panel}" CornerRadius="6" Padding="2" Margin="8,0,0,0">
+         <StackPanel x:Name="FooterModes" Orientation="Horizontal" AutomationProperties.Name="自动整理档位">
+          <RadioButton Style="{StaticResource FooterModeChoice}" GroupName="FooterMode" Content="手动" Tag="Off" IsChecked="True" ToolTip="仅点击整理桌面或按快捷键时整理" AutomationProperties.Name="手动整理" Checked="FooterMode_Checked"/>
+          <RadioButton Style="{StaticResource FooterModeChoice}" GroupName="FooterMode" Content="轻度" Tag="LightAssist" ToolTip="拖动或缩放结束后，微调刚操作的窗口" AutomationProperties.Name="轻度辅助" Checked="FooterMode_Checked"/>
+          <RadioButton Style="{StaticResource FooterModeChoice}" GroupName="FooterMode" Content="完整" Tag="FullAssist" ToolTip="拖动或缩放结束后，智能整理同组窗口" AutomationProperties.Name="完整辅助" Checked="FooterMode_Checked"/>
+          <RadioButton Style="{StaticResource FooterModeChoice}" GroupName="FooterMode" Content="自动" Tag="AutoFullAssist" ToolTip="随窗口打开、关闭、移动或前后台变化自动整理桌面" AutomationProperties.Name="自动整理" Checked="FooterMode_Checked"/>
+         </StackPanel>
+        </Border>
        </StackPanel>
        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
         <Button x:Name="UndoArrangeButton" IsEnabled="False" Content="撤销整理" Margin="0,0,6,0" Style="{StaticResource QuietButton}" FontSize="12" Click="UndoLayout_Click" ToolTip="还原上一次桌面整理调整"/>
@@ -217,15 +220,7 @@
         </ScrollViewer>
         <ScrollViewer x:Name="LayoutSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
           <StackPanel Margin="18,0,10,14">
-            <TextBlock Text="何时整理" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
-            <WrapPanel x:Name="AutoChoices" Margin="0,0,0,6">
-              <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AutoChoices" Content="仅手动" Tag="Off" Click="LayoutPreference_Click"/>
-              <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AutoChoices" Content="轻度辅助" Tag="LightAssist" Click="LayoutPreference_Click"/>
-              <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AutoChoices" Content="完整辅助" Tag="FullAssist" Click="LayoutPreference_Click"/>
-              <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AutoChoices" Content="自动整理" Tag="AutoFullAssist" Click="LayoutPreference_Click"/>
-            </WrapPanel>
-            <TextBlock x:Name="ModeHint" Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
-            <TextBlock Text="整理算法" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
+            <TextBlock Text="整理算法" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
             <WrapPanel x:Name="AlgorithmChoices" Margin="0,0,0,6">
               <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AlgorithmChoices" Content="智能整理" Tag="Smart" Click="LayoutPreference_Click"/>
               <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AlgorithmChoices" Content="经典吸附" Tag="Classic" Click="LayoutPreference_Click"/>

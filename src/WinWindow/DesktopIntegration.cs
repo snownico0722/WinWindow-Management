@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -21,7 +20,6 @@ internal sealed class DesktopIntegration : IDisposable
     private readonly HwndSource _source;
     private readonly Forms.NotifyIcon _tray;
     private readonly Icon _trayIcon;
-    private readonly nint _trayIconHandle;
     private readonly Forms.ToolStripItem _undo;
     private readonly Forms.ContextMenuStrip _menu = new();
     private readonly Native.EventProc _eventCallback;
@@ -43,7 +41,7 @@ internal sealed class DesktopIntegration : IDisposable
         // Only this parameterless Show request is permitted across UIPI.
         if (!Native.ChangeWindowMessageFilterEx(_hwnd, WakeMessage, 1, 0))
             window.ShowStatus($"跨权限唤醒未启用（{Marshal.GetLastPInvokeError()}）。");
-        _trayIcon = CreateBrandIcon(out _trayIconHandle);
+        _trayIcon = LoadTrayIcon();
         _tray = new Forms.NotifyIcon { Text = "WinWindow", Icon = _trayIcon, Visible = true, ContextMenuStrip = _menu };
         _tray.DoubleClick += (_, _) => Dispatch("show");
         _menu.Items.Add("打开主面板", null, (_, _) => Dispatch("show"));
@@ -92,39 +90,12 @@ internal sealed class DesktopIntegration : IDisposable
         AddHook(3, 3); AddHook(0x16, 0x17); AddHook(0x8000, 0x8003); AddHook(0x800C, 0x800C);
     }
 
-    private static Icon CreateBrandIcon(out nint handle)
+    private static Icon LoadTrayIcon()
     {
-        using var bmp = new Bitmap(32, 32);
-        using (var g = Graphics.FromImage(bmp))
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(Color.Transparent);
-            using var bg = new SolidBrush(Color.FromArgb(255, 154, 99, 56));
-            using var path = new GraphicsPath();
-            int r = 14;
-            path.AddArc(2, 2, r, r, 180, 90);
-            path.AddArc(30 - r, 2, r, r, 270, 90);
-            path.AddArc(30 - r, 30 - r, r, r, 0, 90);
-            path.AddArc(2, 30 - r, r, r, 90, 90);
-            path.CloseFigure();
-            g.FillPath(bg, path);
-
-            using var pen = new Pen(Color.FromArgb(255, 255, 252, 248), 2.3f)
-            {
-                StartCap = LineCap.Round,
-                EndCap = LineCap.Round,
-                LineJoin = LineJoin.Round
-            };
-            g.DrawLine(pen, 11f, 8.5f, 21f, 8.5f);
-            g.DrawLine(pen, 12.5f, 8.5f, 12.5f, 15f);
-            g.DrawLine(pen, 19.5f, 8.5f, 19.5f, 15f);
-            g.DrawLine(pen, 9.5f, 18.5f, 22.5f, 18.5f);
-            g.DrawLine(pen, 12.5f, 15f, 9.5f, 18.5f);
-            g.DrawLine(pen, 19.5f, 15f, 22.5f, 18.5f);
-            g.DrawLine(pen, 16f, 18.5f, 16f, 24.5f);
-        }
-        handle = bmp.GetHicon();
-        return Icon.FromHandle(handle);
+        var uri = new Uri("pack://application:,,,/WinWindow;component/Assets/WinWindow.ico");
+        using var stream = System.Windows.Application.GetResourceStream(uri).Stream;
+        using var icon = new Icon(stream, Forms.SystemInformation.SmallIconSize);
+        return (Icon)icon.Clone();
     }
 
     internal void SetUndoAvailable(bool available) => _undo.Enabled = available;
@@ -211,6 +182,5 @@ internal sealed class DesktopIntegration : IDisposable
         _source.RemoveHook(Message);
         _tray.Visible = false; _tray.Dispose(); _menu.Dispose();
         _trayIcon.Dispose();
-        if (_trayIconHandle != 0) Native.DestroyIcon(_trayIconHandle);
     }
 }

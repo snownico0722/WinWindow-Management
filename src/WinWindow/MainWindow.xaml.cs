@@ -136,7 +136,7 @@ public partial class MainWindow : Window
         if (!_testMode) await Manager.RecoverPreviousSessionAsync();
         await Manager.RefreshAsync();
         if (_quitting) return;
-        if (!_testMode && DesktopLayout.NeedsBackgroundSession(LayoutDirectory)) await LoadLayoutSettingsAsync();
+        if (DesktopLayout.NeedsBackgroundSession(LayoutDirectory)) await LoadLayoutSettingsAsync();
         if (_store.Preferences.Maximized && !_compact) WindowState = WindowState.Maximized;
         if (_store.LoadWarning.Length != 0) ShowStatus(_store.LoadWarning);
     });
