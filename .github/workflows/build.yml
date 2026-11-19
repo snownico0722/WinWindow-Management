@@ -40,7 +40,12 @@ jobs:
         run: |
           $testApp = Join-Path $env:RUNNER_TEMP 'WinWindowPackageTest'
           Expand-Archive artifacts/WinWindow-win-x64.zip -DestinationPath $testApp
-          $p = Start-Process (Join-Path $testApp 'WinWindow.exe') -ArgumentList '--self-test TestResults' -Wait -PassThru
+          $p = Start-Process (Join-Path $testApp 'WinWindow.exe') -ArgumentList '--self-test TestResults' -PassThru
+          if (-not $p.WaitForExit(180000)) {
+            if (Test-Path TestResults/smoke-tests.txt) { Get-Content TestResults/smoke-tests.txt -Tail 20 }
+            $p.Kill($true)
+            throw 'Packaged desktop tests timed out. See the last recorded check.'
+          }
           if (Test-Path TestResults/smoke-tests.txt) { Get-Content TestResults/smoke-tests.txt }
           if ($p.ExitCode -ne 0) { throw "Smoke tests failed ($($p.ExitCode))" }
       - uses: actions/upload-artifact@v4

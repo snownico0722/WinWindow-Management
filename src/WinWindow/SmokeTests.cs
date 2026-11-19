@@ -22,14 +22,16 @@ namespace WinWindow;
 
 internal static class SmokeTests
 {
-    private static readonly List<string> Results = new();
+    private static StreamWriter? _results;
+    private static void Report(string message) => _results!.WriteLine(message);
     private static void Assert(bool condition, string name)
     {
         if (!condition) throw new InvalidOperationException("FAIL: " + name);
-        Results.Add("PASS: " + name);
+        Report("PASS: " + name);
     }
     private static async Task WaitAsync(string name, Func<bool> condition, int milliseconds = 3000)
     {
+        Report("CHECK: " + name);
         var clock = Stopwatch.StartNew();
         while (!condition())
         {
@@ -68,6 +70,8 @@ internal static class SmokeTests
     public static async Task<int> RunAsync(string output)
     {
         output = Path.GetFullPath(output); Directory.CreateDirectory(output);
+        using var report = new StreamWriter(Path.Combine(output, "smoke-tests.txt")) { AutoFlush = true };
+        _results = report;
         string data = Path.Combine(output, "isolated-state-" + Guid.NewGuid().ToString("N"));
         var processes = new List<Process>();
         WindowManager? manager = null; MainWindow? shell = null;
@@ -343,13 +347,13 @@ internal static class SmokeTests
             foreach (var p in processes) { Stop(p); await p.WaitForExitAsync(); }
             await DesktopRegressionAsync(output, processes);
         }
-        catch (Exception e) { Results.Add(e.ToString()); exit = 1; }
+        catch (Exception e) { Report(e.ToString()); exit = 1; }
         finally
         {
             if (shell is not null) { await shell.Manager.ShutdownAsync(); shell.Cleanup(); shell.Close(); }
             if (manager is not null) await manager.ShutdownAsync();
             foreach (var process in processes) { Stop(process); process.Dispose(); }
-            await File.WriteAllLinesAsync(Path.Combine(output, "smoke-tests.txt"), Results);
+            _results = null;
         }
         return exit;
     }
@@ -491,7 +495,7 @@ internal static class SmokeTests
         if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" &&
             desktop.Any(w => w.IsManageable && w.Handle != first && w.Handle != second))
         {
-            Results.Add("SKIP: desktop-wide button test found other applications on the local desktop");
+            Report("SKIP: desktop-wide button test found other applications on the local desktop");
             return;
         }
         var area = desktop.Single(w => w.Handle == first).WorkArea;
@@ -530,7 +534,7 @@ internal static class SmokeTests
         undo.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
         await WaitAsync("footer undo restores both overlapping windows", () => !undo.IsEnabled && before.All(w =>
             Pair().Any(a => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))), 8000);
-        Results.Add("PASS: the arrange and undo buttons separate overlapping native windows and restore their positions");
+        Report("PASS: the arrange and undo buttons separate overlapping native windows and restore their positions");
     }
 
     private static async Task CheckFooterModesAsync(MainWindow shell, StateStore store, string output)
