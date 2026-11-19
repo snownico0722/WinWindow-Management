@@ -91,6 +91,24 @@ namespace
         return args.hwnd;
     }
 
+    HWND ResolveTargetWindow(LPVOID parameter)
+    {
+        if (parameter)
+        {
+            HWND candidate = static_cast<HWND>(parameter);
+            DWORD processId = 0;
+            if (IsWindow(candidate) &&
+                GetWindowThreadProcessId(candidate, &processId) != 0 &&
+                processId == GetCurrentProcessId())
+            {
+                return candidate;
+            }
+            return nullptr;
+        }
+
+        return GetMainWindow();
+    }
+
     template <typename T>
     MH_STATUS MH_CreateHookEx(LPVOID target, LPVOID detour, T** original)
     {
@@ -130,6 +148,15 @@ namespace
     void SetUnfocused(bool value)
     {
         InterlockedExchange(&g_unfocused, value ? TRUE : FALSE);
+    }
+
+    bool IsWindowActuallyForeground()
+    {
+        if (!g_mainWindow)
+            return false;
+
+        HWND foreground = real_GetForegroundWindow();
+        return foreground == g_mainWindow || (foreground && IsChild(g_mainWindow, foreground));
     }
 
     void SetInjectedMarker()
@@ -188,13 +215,20 @@ namespace
     LRESULT CALLBACK GameWindowSubclassProc(HWND hWnd, UINT message, WPARAM wParam,
                                             LPARAM lParam, UINT_PTR, DWORD_PTR)
     {
+        if (hWnd == g_mainWindow && message == WM_NCDESTROY)
+        {
+            InterlockedExchange(&g_enabled, FALSE);
+            RemoveWindowSubclass(hWnd, GameWindowSubclassProc, 0);
+            InterlockedExchange(&g_subclassInstalled, FALSE);
+        }
+
         if (!IsEnabled() || hWnd != g_mainWindow)
             return DefSubclassProc(hWnd, message, wParam, lParam);
 
         switch (message)
         {
         case WM_SETFOCUS:
-            SetUnfocused(false);
+            SetUnfocused(!IsWindowActuallyForeground());
             break;
 
         case WM_KILLFOCUS:
@@ -207,7 +241,7 @@ namespace
                 SetUnfocused(true);
                 return 0;
             }
-            SetUnfocused(false);
+            SetUnfocused(!IsWindowActuallyForeground());
             break;
 
         case WM_ACTIVATE:
@@ -216,7 +250,7 @@ namespace
                 SetUnfocused(true);
                 return 0;
             }
-            SetUnfocused(false);
+            SetUnfocused(!IsWindowActuallyForeground());
             break;
 
         case WM_NCACTIVATE:
@@ -309,13 +343,16 @@ namespace
         return disableOk && uninitOk;
     }
 
-    DWORD InitializeNoFocusLoss()
+    DWORD InitializeNoFocusLoss(LPVOID parameter = nullptr)
     {
         if (ReadFlag(&g_unsafeToUnload))
             return kInitializeUnsafeToUnload;
 
         if (ReadFlag(&g_initialized))
-            return kInitializeSucceeded;
+        {
+            return IsEnabled() && (!parameter || parameter == g_mainWindow)
+                ? kInitializeSucceeded : kInitializeUnsafeToUnload;
+        }
 
         if (InterlockedCompareExchange(&g_operationInProgress, TRUE, FALSE) != FALSE)
             return kInitializeFailed;
@@ -325,7 +362,7 @@ namespace
 
         do
         {
-            g_mainWindow = GetMainWindow();
+            g_mainWindow = ResolveTargetWindow(parameter);
             if (!g_mainWindow)
                 break;
 
@@ -375,7 +412,7 @@ namespace
                 break;
 
             InterlockedExchange(&g_subclassInstalled, TRUE);
-            SetUnfocused(false);
+            SetUnfocused(!IsWindowActuallyForeground());
             InterlockedExchange(&g_enabled, TRUE);
             InterlockedExchange(&g_initialized, TRUE);
             result = kInitializeSucceeded;
@@ -447,9 +484,9 @@ namespace
     }
 }
 
-extern "C" __declspec(dllexport) DWORD WINAPI NoFocusLoss_Initialize(LPVOID)
+extern "C" __declspec(dllexport) DWORD WINAPI NoFocusLoss_Initialize(LPVOID parameter)
 {
-    return InitializeNoFocusLoss();
+    return InitializeNoFocusLoss(parameter);
 }
 
 extern "C" __declspec(dllexport) DWORD WINAPI NoFocusLoss_DisableCursorBlocking(LPVOID)

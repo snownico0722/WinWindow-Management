@@ -199,9 +199,15 @@ internal static class SmokeTests
                 shell.ShowShell();
                 await WaitAsync("fixture pauses when another window is active", () => Native.Title(game.Hwnd).StartsWith("activity:paused:"));
                 var gameRow = await FindRowAsync(shell, gameItem);
+                bool nativeKeep = Native.HasNoFocusLossSupport();
                 var keepRunning = (ToggleButton)gameRow.FindName("BackgroundToggle");
                 keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                await WaitAsync("row toggle resumes a background fixture", () => Native.Title(game.Hwnd).StartsWith("activity:running:"));
+                await WaitAsync("row toggle resumes a background fixture", () =>
+                    gameItem.BackgroundEnabled && !gameItem.IsBusy &&
+                    Native.Title(game.Hwnd).StartsWith(nativeKeep ? "activity:running:focused:" : "activity:running:"), 5000);
+                if (nativeKeep)
+                    Assert(Native.IsNoFocusLossInjected(game.Hwnd) && Native.HasLoadedNoFocusLossModule(game.Process.Id),
+                        "native NoFocusLoss library is loaded and active in the background target");
                 Native.SetForegroundWindow(game.Hwnd);
                 await WaitAsync("fixture becomes foreground", () => Native.GetForegroundWindow() == game.Hwnd);
                 shell.ShowShell();
@@ -209,14 +215,24 @@ internal static class SmokeTests
                 await Task.Delay(150);
                 var title = Native.Title(game.Hwnd);
                 await WaitAsync("background fixture heartbeat advances after switching away",
-                    () => Native.Title(game.Hwnd).StartsWith("activity:running:") && Native.Title(game.Hwnd) != title);
+                    () => Native.Title(game.Hwnd).StartsWith(nativeKeep ? "activity:running:focused:" : "activity:running:") &&
+                        Native.Title(game.Hwnd) != title);
                 Assert(Native.GetForegroundWindow() != game.Hwnd && !Native.IsTopmost(game.Hwnd), "background keep leaves keyboard focus and z-order alone");
                 keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                await WaitAsync("turning off the row toggle restores the background pause", () => !gameItem.BackgroundEnabled && Native.Title(game.Hwnd).StartsWith("activity:paused:"));
+                await WaitAsync("turning off the row toggle restores the background pause", () =>
+                    !gameItem.BackgroundEnabled && !gameItem.IsBusy && Native.Title(game.Hwnd).StartsWith("activity:paused:unfocused:"), 5000);
+                if (nativeKeep)
+                    Assert(!Native.IsNoFocusLossInjected(game.Hwnd) && !Native.HasLoadedNoFocusLossModule(game.Process.Id),
+                        "turning off the row toggle unloads the native NoFocusLoss library");
                 keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                await WaitAsync("enabling the row toggle again resumes the same window", () => gameItem.BackgroundEnabled && Native.Title(game.Hwnd).StartsWith("activity:running:"));
+                await WaitAsync("enabling the row toggle again resumes the same window", () =>
+                    gameItem.BackgroundEnabled && !gameItem.IsBusy &&
+                    Native.Title(game.Hwnd).StartsWith(nativeKeep ? "activity:running:focused:" : "activity:running:"), 5000);
                 await shell.Manager.RemoveAsync(gameItem);
-                await WaitAsync("removal restores the fixture's background pause", () => Native.Title(game.Hwnd).StartsWith("activity:paused:"));
+                await WaitAsync("removal restores the fixture's background pause", () => Native.Title(game.Hwnd).StartsWith("activity:paused:unfocused:"));
+                if (nativeKeep)
+                    Assert(!Native.IsNoFocusLossInjected(game.Hwnd) && !Native.HasLoadedNoFocusLossModule(game.Process.Id),
+                        "removing a managed window unloads the native NoFocusLoss library");
             }
             Stop(game.Process);
             await game.Process.WaitForExitAsync();

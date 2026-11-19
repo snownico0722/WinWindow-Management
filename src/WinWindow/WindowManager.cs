@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -10,6 +11,7 @@ internal sealed class WindowManager
 {
     private readonly StateStore _store;
     private readonly Dictionary<WindowItem, Task> _operations = new();
+    private readonly HashSet<int> _backgroundOperations = new();
     private bool _refreshing, _rulesActive;
     private volatile bool _stopping;
     private Task<int>? _shutdown;
@@ -18,6 +20,7 @@ internal sealed class WindowManager
     public event Action? Changed;
     public bool HasRules => _store.Preferences.Rules.Count != 0;
     public WindowManager(StateStore store) => _store = store;
+    private string NativeDirectory => Path.GetFullPath(Path.Combine(_store.DirectoryPath, "Native"));
     private static bool Same(WindowIdentity? a, WindowIdentity? b) => a is not null && b is not null && a.Handle == b.Handle && a.ProcessId == b.ProcessId && a.ProcessStarted == b.ProcessStarted && a.ClassName == b.ClassName;
     // State and journal stay on the dispatcher; foreign HWND work does not.
     private async Task OperateAsync(WindowItem item, Func<Task> action)
@@ -38,7 +41,7 @@ internal sealed class WindowManager
     {
         foreach (var snapshot in _store.ReadRecovery())
         {
-            if (!Native.Matches(snapshot.Identity)) continue;
+            if (!Native.Matches(snapshot.Identity) && !(snapshot.RestoreActivation && Native.MatchesProcess(snapshot.Identity))) continue;
             var item = new WindowItem { Identity = snapshot.Identity, Title = snapshot.Title, Original = snapshot, Listed = true, IsHidden = !Native.IsWindowVisible(snapshot.Identity.Hwnd), IsMinimized = Native.IsIconic(snapshot.Identity.Hwnd) };
             Items.Add(item);
         }
@@ -70,6 +73,11 @@ internal sealed class WindowManager
                 if (item.IsBusy) continue;
                 if (!Native.Matches(item.Identity!))
                 {
+                    if (item.Original?.RestoreActivation == true && Native.MatchesProcess(item.Identity!))
+                    {
+                        _ = RecoverOneAsync(item);
+                        continue;
+                    }
                     removed |= item.Original is not null; Items.Remove(item); continue;
                 }
                 var live = found.FirstOrDefault(x => Same(x.Identity, item.Identity));
@@ -104,7 +112,7 @@ internal sealed class WindowManager
                 _ = ApplyRuleAsync(item, rule);
             }
             else if (placeholder is null)
-                Items.Add(new() { Title = rule.Title, RuleId = rule.Id, IsAvailable = false, Pinned = rule.Pinned, Opacity = rule.Opacity, ClickThrough = rule.ClickThrough });
+                Items.Add(new() { Title = rule.Title, RuleId = rule.Id, IsAvailable = false, Pinned = rule.Pinned, Opacity = rule.Opacity, ClickThrough = rule.ClickThrough, BackgroundEnabled = rule.KeepRunning });
         }
         foreach (var pending in Items.Where(x => x.Identity is null && !_store.Preferences.Rules.Any(r => r.Id == x.RuleId)).ToArray()) Items.Remove(pending);
     }
@@ -131,9 +139,9 @@ internal sealed class WindowManager
         {
             await OperateAsync(item, async () =>
             {
-                bool pin = rule.Pinned, through = rule.ClickThrough, keep = rule.KeepRunning;
+                bool pin = rule.Pinned, through = rule.ClickThrough;
                 int opacity = Math.Clamp(rule.Opacity, 0, 100);
-                Track(item, s => { s.EditedTopmost = true; s.EditedOpacity |= opacity != item.Opacity; s.EditedClickThrough |= through != item.ClickThrough; s.RestoreActivation |= keep; });
+                Track(item, s => { s.EditedTopmost = true; s.EditedOpacity |= opacity != item.Opacity; s.EditedClickThrough |= through != item.ClickThrough; });
                 var original = item.Original!;
                 await Task.Run(() =>
                 {
@@ -144,10 +152,10 @@ internal sealed class WindowManager
                 });
                 if (_stopping) return;
                 item.WantsPin = pin;
-                if (keep) Native.SetBackgroundActivity(original.Identity, true);
-                item.BackgroundEnabled = keep;
-                item.Pinned = Native.IsTopmost(item.Hwnd); item.Opacity = opacity; item.ClickThrough = through; item.NotifyState();
+                item.Pinned = Native.IsTopmost(item.Hwnd); item.Opacity = opacity; item.ClickThrough = through;
+                item.NotifyState();
             });
+            if (rule.KeepRunning) await SetBackgroundEnabledAsync(item, true, updateRule: false);
         }
         catch (Exception e) { if (!_stopping) Notice?.Invoke(UiText.Format("RuleError", item.Title, e.Message)); }
     }
@@ -193,34 +201,48 @@ internal sealed class WindowManager
         Changed?.Invoke();
     }
 
-    public void SetBackgroundEnabled(WindowItem item, bool enabled)
+    public async Task SetBackgroundEnabledAsync(WindowItem item, bool enabled, bool updateRule = true)
     {
         if (_stopping || item.BackgroundEnabled == enabled) return;
         EnsureIdle(item);
-        bool wasTracked = item.Original?.RestoreActivation == true;
-        if (enabled) Track(item, s => s.RestoreActivation = true);
-        try { Native.SetBackgroundActivity(item.Identity!, enabled); }
-        catch
+        var identity = item.Identity ?? throw new InvalidOperationException(UiText.Get("WindowPending"));
+        if (!_backgroundOperations.Add(identity.ProcessId)) throw new InvalidOperationException(UiText.Get("WindowBusy"));
+        try
         {
-            if (enabled && !wasTracked && item.Original is { } snapshot)
+            if (enabled)
+            {
+                foreach (var other in Items.Where(x => x != item && x.Original?.RestoreActivation == true &&
+                    x.Identity?.ProcessId == identity.ProcessId).ToArray())
+                    await ChangeBackgroundAsync(other, false, updateRule);
+            }
+            await ChangeBackgroundAsync(item, enabled, updateRule);
+        }
+        finally { _backgroundOperations.Remove(identity.ProcessId); }
+    }
+
+    private Task ChangeBackgroundAsync(WindowItem item, bool enabled, bool updateRule) =>
+        OperateAsync(item, async () =>
+        {
+            if (_stopping) return;
+            if (enabled) Track(item, s => s.RestoreActivation = true);
+            var identity = item.Identity!;
+            await Task.Run(() => Native.SetBackgroundActivity(identity, enabled, NativeDirectory));
+            item.BackgroundEnabled = enabled;
+            if (!enabled && item.Original is { } snapshot)
             {
                 snapshot.RestoreActivation = false;
                 Journal();
             }
-            throw;
-        }
-        item.BackgroundEnabled = enabled;
-        if (!enabled) Track(item, s => s.RestoreActivation = false);
-        Finish(item, true);
-        Changed?.Invoke();
-    }
+            Finish(item, updateRule);
+        });
 
     internal void OnApplicationDeactivated(uint processId)
     {
         if (_stopping) return;
-        foreach (var item in Items.Where(i => i.BackgroundEnabled && i.Identity?.ProcessId == processId))
+        foreach (var item in Items.Where(i => i.BackgroundEnabled && i.Identity?.ProcessId == processId).ToArray())
         {
-            try { Native.SetBackgroundActivity(item.Identity!, true); }
+            if (Native.IsNoFocusLossInjected(item.Hwnd)) continue;
+            try { Native.PostAppActivation(item.Identity!, true, throwOnError: true); }
             catch (Exception e)
             {
                 item.BackgroundEnabled = false;
@@ -286,13 +308,13 @@ internal sealed class WindowManager
     }
     public Task RemoveAsync(WindowItem item) => OperateAsync(item, async () =>
     {
-        item.BackgroundEnabled = false;
         if (item.Original is not null) await RestoreSnapshotAsync(item.Original, true);
         else if (item.Identity is not null && Native.Matches(item.Identity))
         {
             Track(item, s => s.EditedTopmost = true);
             await Task.Run(() => { Native.EnsureIdentity(item.Identity); Native.SetTopmost(item.Hwnd, false); });
         }
+        item.BackgroundEnabled = false;
         // X unpins and removes. It never sends WM_CLOSE or restores TOPMOST=true.
         _store.Preferences.Rules.RemoveAll(r => r.Id == item.RuleId);
         item.RuleId = null; item.Original = null; item.Listed = false;
@@ -376,10 +398,11 @@ internal sealed class WindowManager
         });
         return result;
     }
-    private static async Task RestoreSnapshotAsync(WindowSnapshot s, bool unpin = false)
+    private async Task RestoreSnapshotAsync(WindowSnapshot s, bool unpin = false)
     {
+        if (s.RestoreActivation)
+            await Task.Run(() => Native.SetBackgroundActivity(s.Identity, false, NativeDirectory));
         if (!Native.Matches(s.Identity)) return;
-        if (s.RestoreActivation) Native.SetBackgroundActivity(s.Identity, false);
         if (s.Parked)
         {
             Native.ApplyPlacement(s.Identity.Hwnd, s.BeforeParking);
@@ -401,7 +424,6 @@ internal sealed class WindowManager
     });
     public Task ReleaseAsync(WindowItem item, bool forgetRule = false, bool updateRule = true) => OperateAsync(item, async () =>
     {
-        item.BackgroundEnabled = false;
         if (item.Original is { } s)
         {
             await RestoreSnapshotAsync(s);
@@ -411,6 +433,7 @@ internal sealed class WindowManager
             item.IsHidden = false; item.IsMinimized = Native.IsIconic(item.Hwnd);
             item.Original = null; Journal();
         }
+        item.BackgroundEnabled = false;
         item.WantsPin = false;
         if (forgetRule) SetRemembered(item, false);
         else if (!_stopping && updateRule) UpdateRule(item);

@@ -251,7 +251,7 @@ public partial class MainWindow : Window
                 PinFeedback(item, nextPin);
                 break;
             case "through": await Manager.SetClickThroughAsync(item, !item.ClickThrough); break;
-            case "background": Manager.SetBackgroundEnabled(item, !item.BackgroundEnabled); break;
+            case "background": await Manager.SetBackgroundEnabledAsync(item, !item.BackgroundEnabled); break;
             case "park":
                 if (item.IsMinimized || item.IsHidden)
                 {

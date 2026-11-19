@@ -97,6 +97,7 @@ int wmain(int argc, wchar_t** argv)
         Check(GetForegroundWindow() == window && GetActiveWindow() == window && GetFocus() == window,
               "all three UI-thread focus queries return the fixture");
         Check(SendDeactivation(window) == 0, "deactivation messages do not reach the fixture");
+        SendMessageW(window, WM_ACTIVATEAPP, TRUE, 0);
         CheckCursor(true);
         Check(allowCursor(nullptr) == TRUE, "original option allows background cursor movement");
         CheckCursor(false);
@@ -109,7 +110,17 @@ int wmain(int argc, wchar_t** argv)
               "foreground, active and focus queries restored");
         Check(SendDeactivation(window) == 7, "all three deactivation messages restored");
         CheckCursor(false);
-        DestroyWindow(window);
+
+        library = LoadLibraryW(argv[1]);
+        Check(library != nullptr, "fixture reloaded its native library");
+        initialize = FindEntry(library, "NoFocusLoss_Initialize", "_NoFocusLoss_Initialize@4");
+        shutdown = FindEntry(library, "NoFocusLoss_ShutdownAndUnload", "_NoFocusLoss_ShutdownAndUnload@4");
+        Check(initialize(window) == 1, "explicit target window initialization completed");
+        Check(GetPropW(window, L"NoFocusLoss_Injected_8A11C8C7") != nullptr, "injected window property is present");
+        Check(DestroyWindow(window) != 0 && GetForegroundWindow() != window,
+              "destroying the selected window stops focus overrides");
+        CheckUnload(shutdown);
+        Check(GetModuleHandleW(argv[1]) == nullptr, "library unloads after its selected window closes");
         return 0;
     }
     catch (const std::exception& error)

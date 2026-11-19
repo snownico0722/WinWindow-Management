@@ -120,7 +120,10 @@ public partial class App : Application
             _clock.Tick += (_, _) =>
             {
                 if (_running) _ticks++;
-                Text = $"activity:{(_running ? "running" : "paused")}:{_ticks}";
+                bool focused = Native.GetForegroundWindow() == Handle &&
+                    Native.GetActiveWindow() == Handle &&
+                    Native.GetFocus() == Handle;
+                Text = $"activity:{(_running ? "running" : "paused")}:{(focused ? "focused" : "unfocused")}:{_ticks}";
             };
             _clock.Start();
         }
@@ -128,6 +131,8 @@ public partial class App : Application
         protected override void WndProc(ref Forms.Message message)
         {
             if (message.Msg == Native.AppActivationMessage) _running = message.WParam != 0;
+            else if (message.Msg == 0x0006 && ((int)message.WParam & 0xFFFF) == 0) _running = false;
+            else if (message.Msg == 0x0008) _running = false;
             base.WndProc(ref message);
         }
         protected override void Dispose(bool disposing)

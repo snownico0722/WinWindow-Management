@@ -30,9 +30,11 @@
   <data name="Back" xml:space="preserve"><value>返回</value></data>
   <data name="BackToList" xml:space="preserve"><value>返回窗口列表</value></data>
   <data name="BackgroundActivity" xml:space="preserve"><value>后台保持</value></data>
-  <data name="BackgroundActivityHint" xml:space="preserve"><value>后台保持：切到其他应用后继续维持窗口激活通知</value></data>
-  <data name="BackgroundRejected" xml:space="preserve"><value>窗口未接受后台保持通知，请检查目标权限。</value></data>
+  <data name="BackgroundActivityHint" xml:space="preserve"><value>后台保持：切到其他应用后阻止失焦暂停与后台锁鼠</value></data>
+  <data name="BackgroundRejected" xml:space="preserve"><value>未能启用后台保持，请检查目标权限或反作弊限制。</value></data>
   <data name="BackgroundStopped" xml:space="preserve"><value>“{0}”后台保持已停止：{1}</value></data>
+  <data name="BackgroundUnloadFailed" xml:space="preserve"><value>未能确认后台保持组件已卸载。</value></data>
+  <data name="BackgroundUnsupported" xml:space="preserve"><value>当前目标进程架构不支持后台保持。</value></data>
   <data name="Balanced" xml:space="preserve"><value>平衡</value></data>
   <data name="Busy" xml:space="preserve"><value>处理中</value></data>
   <data name="Calibrate" xml:space="preserve"><value>使用当前显示器的实际观看尺寸</value></data>

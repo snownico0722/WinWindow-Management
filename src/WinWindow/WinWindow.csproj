@@ -26,4 +26,8 @@
     <EmbeddedResource Include="$(NoFocusLossResourceDirectory)/NoFocusLoss.dll" LogicalName="WinWindow.Native.NoFocusLoss.x86.dll" />
     <EmbeddedResource Include="$(NoFocusLossResourceDirectory)/NoFocusLoss64.dll" LogicalName="WinWindow.Native.NoFocusLoss.x64.dll" />
   </ItemGroup>
+  <ItemGroup Condition="'$(NoFocusLossResourceDirectory)' == '' and Exists('../../artifacts/native-Win32/Release/NoFocusLoss.dll') and Exists('../../artifacts/native-x64/Release/NoFocusLoss64.dll')">
+    <EmbeddedResource Include="../../artifacts/native-Win32/Release/NoFocusLoss.dll" LogicalName="WinWindow.Native.NoFocusLoss.x86.dll" />
+    <EmbeddedResource Include="../../artifacts/native-x64/Release/NoFocusLoss64.dll" LogicalName="WinWindow.Native.NoFocusLoss.x64.dll" />
+  </ItemGroup>
 </Project>

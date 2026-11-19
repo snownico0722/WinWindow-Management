@@ -30,9 +30,11 @@
   <data name="Back" xml:space="preserve"><value>Back</value></data>
   <data name="BackToList" xml:space="preserve"><value>Back to windows</value></data>
   <data name="BackgroundActivity" xml:space="preserve"><value>Keep active</value></data>
-  <data name="BackgroundActivityHint" xml:space="preserve"><value>Send an activation notice when you switch away</value></data>
-  <data name="BackgroundRejected" xml:space="preserve"><value>The window rejected the activation notice. Check its permissions.</value></data>
+  <data name="BackgroundActivityHint" xml:space="preserve"><value>Keep running when unfocused and suppress background cursor lock</value></data>
+  <data name="BackgroundRejected" xml:space="preserve"><value>Could not enable keep-active. Check the target's permissions or anti-cheat restrictions.</value></data>
   <data name="BackgroundStopped" xml:space="preserve"><value>Background activity stopped for “{0}”. {1}</value></data>
+  <data name="BackgroundUnloadFailed" xml:space="preserve"><value>Could not confirm that the keep-active library was unloaded.</value></data>
+  <data name="BackgroundUnsupported" xml:space="preserve"><value>This window's process architecture is not supported for keep-active.</value></data>
   <data name="Balanced" xml:space="preserve"><value>Balanced</value></data>
   <data name="Busy" xml:space="preserve"><value>Working</value></data>
   <data name="Calibrate" xml:space="preserve"><value>Use physical display dimensions</value></data>
