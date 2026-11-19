@@ -90,6 +90,88 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint CreateRemoteThread(nint process, nint attributes, nuint stackSize, nint startAddress, nint parameter, uint creationFlags, out uint threadId);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeThread(nint thread, out uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern nint CreateToolhelp32Snapshot(uint flags, uint processId);
+    [DllImport("kernel32.dll", EntryPoint = "Process32FirstW", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Process32First(nint snapshot, ref ProcessEntry32 entry);
+    [DllImport("kernel32.dll", EntryPoint = "Process32NextW", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Process32Next(nint snapshot, ref ProcessEntry32 entry);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct ProcessEntry32
+    {
+        public uint Size;
+        public uint Usage;
+        public uint ProcessId;
+        public nuint DefaultHeapId;
+        public uint ModuleId;
+        public uint Threads;
+        public uint ParentProcessId;
+        public int BasePriority;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string ExeFile;
+    }
+
+    [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDeviceEnumerator
+    {
+        [PreserveSig] int EnumAudioEndpoints(int dataFlow, int stateMask, out IMMDeviceCollection? devices);
+        [PreserveSig] int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice? endpoint);
+    }
+
+    [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDeviceCollection
+    {
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int Item(uint index, out IMMDevice? device);
+    }
+
+    [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDevice
+    {
+        [PreserveSig] int Activate(in Guid iid, int clsCtx, nint activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object? iface);
+    }
+
+    [ComImport, Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioSessionManager2
+    {
+        [PreserveSig] int GetAudioSessionControl(nint sessionGuid, uint streamFlags, out nint sessionControl);
+        [PreserveSig] int GetSimpleAudioVolume(nint sessionGuid, uint streamFlags, out nint audioVolume);
+        [PreserveSig] int GetSessionEnumerator(out IAudioSessionEnumerator? sessionEnum);
+    }
+
+    [ComImport, Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioSessionEnumerator
+    {
+        [PreserveSig] int GetCount(out int sessionCount);
+        [PreserveSig] int GetSession(int sessionIndex, [MarshalAs(UnmanagedType.IUnknown)] out object? session);
+    }
+
+    [ComImport, Guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioSessionControl2
+    {
+        [PreserveSig] int GetState(out int state);
+        [PreserveSig] int GetDisplayName(out nint name);
+        [PreserveSig] int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string value, in Guid context);
+        [PreserveSig] int GetIconPath(out nint path);
+        [PreserveSig] int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string value, in Guid context);
+        [PreserveSig] int GetGroupingParam(out Guid grouping);
+        [PreserveSig] int SetGroupingParam(in Guid grouping, in Guid context);
+        [PreserveSig] int RegisterAudioSessionNotification(nint client);
+        [PreserveSig] int UnregisterAudioSessionNotification(nint client);
+        [PreserveSig] int GetSessionIdentifier(out nint id);
+        [PreserveSig] int GetSessionInstanceIdentifier(out nint instanceId);
+        [PreserveSig] int GetProcessId(out uint processId);
+        [PreserveSig] int IsSystemSoundsSession();
+        [PreserveSig] int SetDuckingPreference([MarshalAs(UnmanagedType.Bool)] bool optOut);
+    }
+
+    [ComImport, Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ISimpleAudioVolume
+    {
+        [PreserveSig] int SetMasterVolume(float level, nint eventContext);
+        [PreserveSig] int GetMasterVolume(out float level);
+        [PreserveSig] int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, nint eventContext);
+        [PreserveSig] int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
+    }
 
     [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
     private static extern nint SendMessageTimeout(nint hwnd, uint message, nint wp, nint lp, uint flags, uint timeout, out nint result);
@@ -251,15 +333,65 @@ internal static class Native
         finally { CloseHandle(process); }
     }
 
-    internal static void SetBackgroundActivity(WindowIdentity identity, bool enabled, string storageDirectory)
+    private static readonly string[] AntiCheatDirectories =
+        ["EasyAntiCheat", "BattlEye", "AntiCheatExpert", "GameGuard"];
+    private static readonly string[] AntiCheatPatterns =
+        ["EasyAntiCheat*", "BEService*", "BEClient*", "HoYoKProtect.sys", "mhyprot*.sys", "ACE-Base.sys", "vgk.sys", "eaanticheat*"];
+    private static readonly HashSet<string> SharedDirectoryNames = new(StringComparer.OrdinalIgnoreCase)
+        { "Windows", "Program Files", "Program Files (x86)", "ProgramData", "Users", "common", "steamapps" };
+
+    internal static bool HasAntiCheatProtection(WindowIdentity identity)
     {
+        if (string.IsNullOrWhiteSpace(identity.ProcessPath) || !Path.IsPathRooted(identity.ProcessPath))
+            return false;
+        try
+        {
+            var current = Directory.GetParent(identity.ProcessPath);
+            for (int depth = 0; depth < 3 && current is not null && current.Parent is not null; depth++, current = current.Parent)
+            {
+                if (SharedDirectoryNames.Contains(current.Name)) break;
+                foreach (string folder in AntiCheatDirectories)
+                    if (Directory.Exists(Path.Combine(current.FullName, folder))) return true;
+                foreach (string pattern in AntiCheatPatterns)
+                    if (Directory.GetFiles(current.FullName, pattern).Length != 0) return true;
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { }
+        return false;
+    }
+
+    internal static bool SetBackgroundActivity(
+        WindowIdentity identity,
+        bool enabled,
+        bool enhancedInjection,
+        bool lockCursorPosition,
+        bool wasInjected,
+        string storageDirectory,
+        out bool antiCheatSkipped)
+    {
+        antiCheatSkipped = false;
         if (enabled)
         {
             EnsureIdentity(identity);
+            if (!enhancedInjection)
+            {
+                if (Directory.Exists(storageDirectory) && (wasInjected || IsNoFocusLossInjected(identity.Hwnd)))
+                    DisableAndUnloadNoFocusLoss(identity, storageDirectory);
+                PostAppActivation(identity, true, throwOnError: true);
+                return false;
+            }
+            if (HasAntiCheatProtection(identity))
+            {
+                antiCheatSkipped = true;
+                if (Directory.Exists(storageDirectory) && (wasInjected || IsNoFocusLossInjected(identity.Hwnd)))
+                    DisableAndUnloadNoFocusLoss(identity, storageDirectory);
+                PostAppActivation(identity, true, throwOnError: true);
+                return false;
+            }
             if (!HasNoFocusLossSupport() && !string.IsNullOrEmpty(typeof(App).Assembly.Location))
             {
                 PostAppActivation(identity, true, throwOnError: true);
-                return;
+                return false;
             }
             nint process = OpenProcess(ProcessInjectAccess, false, (uint)identity.ProcessId);
             if (process == 0)
@@ -270,16 +402,160 @@ internal static class Native
                 bool is64Bit = ResolveTargetBitness(process);
                 string dllPath = MaterializeNoFocusLossLibrary(is64Bit, storageDirectory)
                     ?? throw new FileNotFoundException(UiText.Get("BackgroundRejected"));
-                InjectAndInitializeNoFocusLoss(process, is64Bit, dllPath, identity.Hwnd);
+                InjectAndInitializeNoFocusLoss(process, is64Bit, dllPath, identity.Hwnd, lockCursorPosition);
             }
             finally { CloseHandle(process); }
             PostAppActivation(identity, true, throwOnError: false);
+            return true;
         }
-        else
+
+        if (Directory.Exists(storageDirectory) && (wasInjected || IsNoFocusLossInjected(identity.Hwnd)))
+            DisableAndUnloadNoFocusLoss(identity, storageDirectory);
+        PostAppActivation(identity, false, throwOnError: false);
+        return false;
+    }
+
+    internal static Dictionary<string, bool> GetProcessMutes(WindowIdentity identity)
+    {
+        var result = new Dictionary<string, bool>(StringComparer.Ordinal);
+        if (MatchesProcess(identity))
         {
-            if (Directory.Exists(storageDirectory)) DisableAndUnloadNoFocusLoss(identity, storageDirectory);
-            PostAppActivation(identity, false, throwOnError: false);
+            VisitProcessAudioSessions(CollectProcessTreeIds((uint)identity.ProcessId), (id, volume) =>
+            {
+                if (volume.GetMute(out bool muted) == 0) result[id] = muted;
+            });
         }
+        return result;
+    }
+
+    internal static void SetProcessMutes(WindowIdentity identity, IReadOnlyDictionary<string, bool> sessions, bool? mute = null)
+    {
+        if (sessions.Count == 0 || !MatchesProcess(identity)) return;
+        VisitProcessAudioSessions(CollectProcessTreeIds((uint)identity.ProcessId), (id, volume) =>
+        {
+            if (sessions.TryGetValue(id, out bool original))
+                Marshal.ThrowExceptionForHR(volume.SetMute(mute ?? original, 0));
+        });
+    }
+
+    private static HashSet<uint> CollectProcessTreeIds(uint rootPid)
+    {
+        var result = new HashSet<uint> { rootPid };
+        nint snapshot = CreateToolhelp32Snapshot(2, 0);
+        if (snapshot == 0 || snapshot == -1) return result;
+        try
+        {
+            var children = new Dictionary<uint, List<uint>>();
+            var entry = new ProcessEntry32 { Size = (uint)Marshal.SizeOf<ProcessEntry32>() };
+            if (Process32First(snapshot, ref entry))
+            {
+                do
+                {
+                    if (entry.ProcessId == 0 || entry.ProcessId == entry.ParentProcessId) continue;
+                    if (!children.TryGetValue(entry.ParentProcessId, out var list))
+                        children[entry.ParentProcessId] = list = new List<uint>();
+                    list.Add(entry.ProcessId);
+                } while (Process32Next(snapshot, ref entry));
+            }
+            var queue = new Queue<uint>();
+            queue.Enqueue(rootPid);
+            while (queue.Count != 0 && result.Count < 64)
+            {
+                uint current = queue.Dequeue();
+                if (!children.TryGetValue(current, out var kids)) continue;
+                foreach (uint child in kids)
+                    if (result.Add(child)) queue.Enqueue(child);
+            }
+        }
+        finally { CloseHandle(snapshot); }
+        return result;
+    }
+
+    private static void VisitProcessAudioSessions(HashSet<uint> targetPids, Action<string, ISimpleAudioVolume> visitor)
+    {
+        object? enumeratorObj = null;
+        IMMDeviceCollection? collection = null;
+        try
+        {
+            var clsid = Type.GetTypeFromCLSID(new Guid("BCDE0395-E52F-467C-8E3D-C4579291692E"));
+            enumeratorObj = clsid is null ? null : Activator.CreateInstance(clsid);
+            if (enumeratorObj is not IMMDeviceEnumerator devices) return;
+
+            if (devices.EnumAudioEndpoints(0, 1, out collection) == 0 && collection is not null &&
+                collection.GetCount(out uint deviceCount) == 0 && deviceCount > 0)
+            {
+                for (uint d = 0; d < Math.Min(deviceCount, 16u); d++)
+                {
+                    if (collection.Item(d, out var endpoint) != 0 || endpoint is null) continue;
+                    try { VisitEndpointSessions(endpoint, targetPids, visitor); }
+                    finally { ReleaseCom(endpoint); }
+                }
+                return;
+            }
+
+            if (devices.GetDefaultAudioEndpoint(0, 1, out var fallback) == 0 && fallback is not null)
+            {
+                try { VisitEndpointSessions(fallback, targetPids, visitor); }
+                finally { ReleaseCom(fallback); }
+            }
+        }
+        finally
+        {
+            ReleaseCom(collection);
+            ReleaseCom(enumeratorObj);
+        }
+    }
+
+    private static void VisitEndpointSessions(IMMDevice endpoint, HashSet<uint> targetPids, Action<string, ISimpleAudioVolume> visitor)
+    {
+        object? managerObj = null;
+        IAudioSessionEnumerator? sessions = null;
+        try
+        {
+            var iid = typeof(IAudioSessionManager2).GUID;
+            if (endpoint.Activate(in iid, 23, 0, out managerObj) != 0 ||
+                managerObj is not IAudioSessionManager2 audio ||
+                audio.GetSessionEnumerator(out sessions) != 0 ||
+                sessions is null ||
+                sessions.GetCount(out int count) != 0)
+                return;
+
+            for (int i = 0; i < Math.Min(count, 128); i++)
+            {
+                if (sessions.GetSession(i, out var session) != 0 || session is null) continue;
+                try
+                {
+                    if (session is IAudioSessionControl2 control &&
+                        session is ISimpleAudioVolume volume &&
+                        control.IsSystemSoundsSession() != 0 &&
+                        control.GetProcessId(out uint pid) == 0 &&
+                        pid != 0 &&
+                        targetPids.Contains(pid) &&
+                        control.GetSessionInstanceIdentifier(out nint sessionId) == 0 &&
+                        sessionId != 0)
+                    {
+                        try
+                        {
+                            if (Marshal.PtrToStringUni(sessionId) is { Length: > 0 } id)
+                                visitor(id, volume);
+                        }
+                        finally { Marshal.FreeCoTaskMem(sessionId); }
+                    }
+                }
+                finally { ReleaseCom(session); }
+            }
+        }
+        finally
+        {
+            ReleaseCom(sessions);
+            ReleaseCom(managerObj);
+        }
+    }
+
+    private static void ReleaseCom(object? instance)
+    {
+        if (instance is not null && Marshal.IsComObject(instance))
+            Marshal.ReleaseComObject(instance);
     }
 
     internal static void PostAppActivation(WindowIdentity identity, bool enabled, bool throwOnError)
@@ -365,7 +641,7 @@ internal static class Native
         catch (IOException) { return false; }
     }
 
-    private static void InjectAndInitializeNoFocusLoss(nint process, bool is64Bit, string dllPath, nint hwnd)
+    private static void InjectAndInitializeNoFocusLoss(nint process, bool is64Bit, string dllPath, nint hwnd, bool lockCursorPosition)
     {
         var modules = EnumerateRemoteModules(process, is64Bit);
         var loaded = modules.Find(m => string.Equals(m.Path, dllPath, StringComparison.OrdinalIgnoreCase));
@@ -406,9 +682,17 @@ internal static class Native
         if (!RunRemoteThread(process, initialize, targetParam, RemoteTimeoutMs, out uint initResult, out _))
             throw new InvalidOperationException(UiText.Get("BackgroundRejected"));
 
-        if (initResult == 1) return;
-        if (initResult == 0) TryUnloadLoadedModule(process, modules, loaded);
-        throw new InvalidOperationException(UiText.Get("BackgroundRejected"));
+        if (initResult != 1)
+        {
+            if (initResult == 0) TryUnloadLoadedModule(process, modules, loaded);
+            throw new InvalidOperationException(UiText.Get("BackgroundRejected"));
+        }
+
+        nint setCursorLock = ResolveRemoteExport(modules, loaded.Base, loaded.Path,
+            ["NoFocusLoss_SetCursorPositionLock", "_NoFocusLoss_SetCursorPositionLock@4"]);
+        if (!RunRemoteThread(process, setCursorLock, lockCursorPosition ? 1 : 0, RemoteTimeoutMs, out uint lockResult, out _) ||
+            lockResult != 1)
+            throw new InvalidOperationException(UiText.Get("BackgroundRejected"));
     }
 
     private static void DisableAndUnloadNoFocusLoss(WindowIdentity identity, string storageDirectory)

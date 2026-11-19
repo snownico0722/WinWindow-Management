@@ -125,6 +125,13 @@ namespace
     volatile LONG g_unfocused = FALSE;
     volatile LONG g_subclassInstalled = FALSE;
     volatile LONG g_blockCursorWhenUnfocused = TRUE;
+    volatile LONG g_lockCursorPosWhenUnfocused = FALSE;
+    volatile LONG g_hasLockedCursorPos = FALSE;
+    volatile LONG g_lockedCursorX = 0;
+    volatile LONG g_lockedCursorY = 0;
+    SRWLOCK g_cursorClipLock = SRWLOCK_INIT;
+    RECT g_ownedCursorClip{};
+    bool g_hasOwnedCursorClip = false;
     volatile LONG g_operationInProgress = FALSE;
     volatile LONG g_unsafeToUnload = FALSE;
     volatile LONG g_subclassOperation = 0;
@@ -133,7 +140,25 @@ namespace
     static decltype(GetForegroundWindow)* real_GetForegroundWindow = GetForegroundWindow;
     static decltype(GetActiveWindow)* real_GetActiveWindow = GetActiveWindow;
     static decltype(GetFocus)* real_GetFocus = GetFocus;
+    static decltype(GetGUIThreadInfo)* real_GetGUIThreadInfo = GetGUIThreadInfo;
     static decltype(SetCursorPos)* real_SetCursorPos = SetCursorPos;
+    static decltype(ClipCursor)* real_ClipCursor = ClipCursor;
+    static decltype(GetCursorPos)* real_GetCursorPos = GetCursorPos;
+    static decltype(GetAsyncKeyState)* real_GetAsyncKeyState = GetAsyncKeyState;
+    static decltype(GetKeyState)* real_GetKeyState = GetKeyState;
+
+    void ResetRealPointers()
+    {
+        real_GetForegroundWindow = GetForegroundWindow;
+        real_GetActiveWindow = GetActiveWindow;
+        real_GetFocus = GetFocus;
+        real_GetGUIThreadInfo = GetGUIThreadInfo;
+        real_SetCursorPos = SetCursorPos;
+        real_ClipCursor = ClipCursor;
+        real_GetCursorPos = GetCursorPos;
+        real_GetAsyncKeyState = GetAsyncKeyState;
+        real_GetKeyState = GetKeyState;
+    }
 
     bool ReadFlag(volatile LONG* flag)
     {
@@ -145,18 +170,144 @@ namespace
         return ReadFlag(&g_enabled);
     }
 
-    void SetUnfocused(bool value)
-    {
-        InterlockedExchange(&g_unfocused, value ? TRUE : FALSE);
-    }
-
     bool IsWindowActuallyForeground()
     {
         if (!g_mainWindow)
             return false;
 
         HWND foreground = real_GetForegroundWindow();
-        return foreground == g_mainWindow || (foreground && IsChild(g_mainWindow, foreground));
+        if (!foreground)
+            return false;
+        if (foreground == g_mainWindow || IsChild(g_mainWindow, foreground))
+            return true;
+
+        DWORD processId = 0;
+        return GetWindowThreadProcessId(foreground, &processId) != 0 &&
+               processId == GetCurrentProcessId();
+    }
+
+    bool IsCurrentlyUnfocused()
+    {
+        if (IsWindowActuallyForeground())
+        {
+            if (ReadFlag(&g_unfocused))
+                InterlockedExchange(&g_unfocused, FALSE);
+            return false;
+        }
+        return true;
+    }
+
+    bool TryGetSafeInteriorBox(RECT* safeBox, POINT* center)
+    {
+        if (!g_mainWindow || !IsWindow(g_mainWindow))
+            return false;
+
+        RECT bounds{};
+        RECT client{};
+        POINT topLeft{}, bottomRight{};
+        if (GetClientRect(g_mainWindow, &client) &&
+            client.right > client.left && client.bottom > client.top &&
+            ClientToScreen(g_mainWindow, &topLeft))
+        {
+            bottomRight.x = client.right;
+            bottomRight.y = client.bottom;
+            if (ClientToScreen(g_mainWindow, &bottomRight) &&
+                bottomRight.x > topLeft.x && bottomRight.y > topLeft.y)
+            {
+                bounds = { topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
+            }
+        }
+
+        if (bounds.right <= bounds.left || bounds.bottom <= bounds.top)
+        {
+            if (!GetWindowRect(g_mainWindow, &bounds) ||
+                bounds.right <= bounds.left || bounds.bottom <= bounds.top)
+            {
+                return false;
+            }
+        }
+
+        const LONG width = bounds.right - bounds.left;
+        const LONG height = bounds.bottom - bounds.top;
+        const LONG marginX = (width * 15) / 100;
+        const LONG marginY = (height * 15) / 100;
+        if (safeBox)
+        {
+            safeBox->left = bounds.left + marginX;
+            safeBox->top = bounds.top + marginY;
+            safeBox->right = bounds.right - marginX;
+            safeBox->bottom = bounds.bottom - marginY;
+            if (safeBox->right <= safeBox->left)
+            {
+                safeBox->left = bounds.left;
+                safeBox->right = bounds.right;
+            }
+            if (safeBox->bottom <= safeBox->top)
+            {
+                safeBox->top = bounds.top;
+                safeBox->bottom = bounds.bottom;
+            }
+        }
+        if (center)
+        {
+            center->x = bounds.left + width / 2;
+            center->y = bounds.top + height / 2;
+        }
+        return true;
+    }
+
+    void RememberSafeCursorPoint(const POINT& pt)
+    {
+        RECT safe{};
+        if (!TryGetSafeInteriorBox(&safe, nullptr))
+            return;
+
+        if (pt.x >= safe.left && pt.x < safe.right && pt.y >= safe.top && pt.y < safe.bottom)
+        {
+            InterlockedExchange(&g_lockedCursorX, pt.x);
+            InterlockedExchange(&g_lockedCursorY, pt.y);
+            InterlockedExchange(&g_hasLockedCursorPos, TRUE);
+        }
+    }
+
+    void RefreshLockedCursorPosition()
+    {
+        POINT current{};
+        if (IsWindowActuallyForeground() && real_GetCursorPos(&current))
+        {
+            RememberSafeCursorPoint(current);
+            if (ReadFlag(&g_hasLockedCursorPos))
+                return;
+        }
+
+        POINT center{};
+        if (TryGetSafeInteriorBox(nullptr, &center))
+        {
+            InterlockedExchange(&g_lockedCursorX, center.x);
+            InterlockedExchange(&g_lockedCursorY, center.y);
+            InterlockedExchange(&g_hasLockedCursorPos, TRUE);
+        }
+    }
+
+    void ReleaseWindowCursorClip()
+    {
+        AcquireSRWLockExclusive(&g_cursorClipLock);
+        RECT current{};
+        if (g_hasOwnedCursorClip && GetClipCursor(&current) && EqualRect(&current, &g_ownedCursorClip))
+            real_ClipCursor(nullptr);
+        g_hasOwnedCursorClip = false;
+        ReleaseSRWLockExclusive(&g_cursorClipLock);
+    }
+
+    void SetUnfocused(bool value)
+    {
+        const LONG previous = InterlockedExchange(&g_unfocused, value ? TRUE : FALSE);
+        if (value && previous == FALSE)
+        {
+            if (ReadFlag(&g_lockCursorPosWhenUnfocused) && !ReadFlag(&g_hasLockedCursorPos))
+                RefreshLockedCursorPosition();
+            ReleaseWindowCursorClip();
+        }
     }
 
     void SetInjectedMarker()
@@ -171,9 +322,14 @@ namespace
             RemovePropW(g_mainWindow, kInjectedWindowProperty);
     }
 
+    bool ShouldSpoofFocus()
+    {
+        return IsEnabled() && g_mainWindow && IsCurrentlyUnfocused();
+    }
+
     HWND WINAPI DetourGetForegroundWindow()
     {
-        if (IsEnabled() && g_mainWindow)
+        if (ShouldSpoofFocus())
             return g_mainWindow;
 
         return real_GetForegroundWindow();
@@ -181,7 +337,7 @@ namespace
 
     HWND WINAPI DetourGetActiveWindow()
     {
-        if (!IsEnabled() || !g_mainWindow)
+        if (!ShouldSpoofFocus())
             return real_GetActiveWindow();
 
         if (GetCurrentThreadId() == g_uiThreadId)
@@ -192,7 +348,7 @@ namespace
 
     HWND WINAPI DetourGetFocus()
     {
-        if (!IsEnabled() || !g_mainWindow)
+        if (!ShouldSpoofFocus())
             return real_GetFocus();
 
         if (GetCurrentThreadId() == g_uiThreadId)
@@ -201,15 +357,102 @@ namespace
         return nullptr;
     }
 
+    BOOL WINAPI DetourGetGUIThreadInfo(DWORD idThread, PGUITHREADINFO pgui)
+    {
+        const BOOL ok = real_GetGUIThreadInfo(idThread, pgui);
+        if (!ok || !pgui || !ShouldSpoofFocus())
+            return ok;
+
+        const bool isTargetUiThread = idThread == 0
+            ? GetCurrentThreadId() == g_uiThreadId
+            : idThread == g_uiThreadId;
+        if (isTargetUiThread)
+        {
+            pgui->hwndActive = g_mainWindow;
+            pgui->hwndFocus = g_mainWindow;
+        }
+        return TRUE;
+    }
+
     BOOL WINAPI DetourSetCursorPos(int x, int y)
     {
-        const bool blockCursor = ReadFlag(&g_blockCursorWhenUnfocused);
-        const bool unfocused = ReadFlag(&g_unfocused);
-
-        if (IsEnabled() && blockCursor && unfocused)
+        if (IsEnabled() && ReadFlag(&g_blockCursorWhenUnfocused) && IsCurrentlyUnfocused())
             return TRUE;
 
         return real_SetCursorPos(x, y);
+    }
+
+    BOOL WINAPI DetourClipCursor(const RECT* rect)
+    {
+        if (!IsEnabled() || !ReadFlag(&g_blockCursorWhenUnfocused))
+            return real_ClipCursor(rect);
+
+        AcquireSRWLockExclusive(&g_cursorClipLock);
+        if (IsCurrentlyUnfocused())
+        {
+            ReleaseSRWLockExclusive(&g_cursorClipLock);
+            if (rect == nullptr)
+                ReleaseWindowCursorClip();
+            return TRUE;
+        }
+
+        const BOOL ok = real_ClipCursor(rect);
+        if (ok)
+            g_hasOwnedCursorClip = rect != nullptr && GetClipCursor(&g_ownedCursorClip);
+        ReleaseSRWLockExclusive(&g_cursorClipLock);
+        return ok;
+    }
+
+    BOOL WINAPI DetourGetCursorPos(LPPOINT point)
+    {
+        if (!IsEnabled() || !point || !ReadFlag(&g_lockCursorPosWhenUnfocused))
+            return real_GetCursorPos(point);
+
+        if (!IsCurrentlyUnfocused())
+        {
+            const BOOL ok = real_GetCursorPos(point);
+            if (ok)
+                RememberSafeCursorPoint(*point);
+            return ok;
+        }
+
+        RECT safe{};
+        POINT center{};
+        if (!TryGetSafeInteriorBox(&safe, &center))
+            return real_GetCursorPos(point);
+
+        if (ReadFlag(&g_hasLockedCursorPos))
+        {
+            const LONG x = InterlockedCompareExchange(&g_lockedCursorX, 0, 0);
+            const LONG y = InterlockedCompareExchange(&g_lockedCursorY, 0, 0);
+            if (x >= safe.left && x < safe.right && y >= safe.top && y < safe.bottom)
+            {
+                point->x = x;
+                point->y = y;
+                return TRUE;
+            }
+        }
+
+        point->x = center.x;
+        point->y = center.y;
+        return TRUE;
+    }
+
+    SHORT WINAPI DetourGetAsyncKeyState(int vKey)
+    {
+        if (IsEnabled() && IsCurrentlyUnfocused())
+            return 0;
+
+        return real_GetAsyncKeyState(vKey);
+    }
+
+    SHORT WINAPI DetourGetKeyState(int nVirtKey)
+    {
+        const SHORT state = real_GetKeyState(nVirtKey);
+        if (IsEnabled() && IsCurrentlyUnfocused())
+            return static_cast<SHORT>(state & 0x0001);
+
+        return state;
     }
 
     LRESULT CALLBACK GameWindowSubclassProc(HWND hWnd, UINT message, WPARAM wParam,
@@ -218,6 +461,7 @@ namespace
         if (hWnd == g_mainWindow && message == WM_NCDESTROY)
         {
             InterlockedExchange(&g_enabled, FALSE);
+            ReleaseWindowCursorClip();
             RemoveWindowSubclass(hWnd, GameWindowSubclassProc, 0);
             InterlockedExchange(&g_subclassInstalled, FALSE);
         }
@@ -340,6 +584,8 @@ namespace
                                disableStatus == MH_ERROR_NOT_CREATED ||
                                disableStatus == MH_ERROR_NOT_INITIALIZED;
         const bool uninitOk = uninitStatus == MH_OK || uninitStatus == MH_ERROR_NOT_INITIALIZED;
+        if (disableOk && uninitOk)
+            ResetRealPointers();
         return disableOk && uninitOk;
     }
 
@@ -380,6 +626,8 @@ namespace
                 break;
 
             InterlockedExchange(&g_blockCursorWhenUnfocused, TRUE);
+            InterlockedExchange(&g_lockCursorPosWhenUnfocused, FALSE);
+            InterlockedExchange(&g_hasLockedCursorPos, FALSE);
 
             const MH_STATUS initStatus = MH_Initialize();
             if (initStatus != MH_OK && initStatus != MH_ERROR_ALREADY_INITIALIZED)
@@ -392,8 +640,18 @@ namespace
                                 &real_GetActiveWindow) != MH_OK ||
                 MH_CreateHookEx(GetFocus, DetourGetFocus,
                                 &real_GetFocus) != MH_OK ||
+                MH_CreateHookEx(GetGUIThreadInfo, DetourGetGUIThreadInfo,
+                                &real_GetGUIThreadInfo) != MH_OK ||
                 MH_CreateHookEx(SetCursorPos, DetourSetCursorPos,
-                                &real_SetCursorPos) != MH_OK)
+                                &real_SetCursorPos) != MH_OK ||
+                MH_CreateHookEx(ClipCursor, DetourClipCursor,
+                                &real_ClipCursor) != MH_OK ||
+                MH_CreateHookEx(GetCursorPos, DetourGetCursorPos,
+                                &real_GetCursorPos) != MH_OK ||
+                MH_CreateHookEx(GetAsyncKeyState, DetourGetAsyncKeyState,
+                                &real_GetAsyncKeyState) != MH_OK ||
+                MH_CreateHookEx(GetKeyState, DetourGetKeyState,
+                                &real_GetKeyState) != MH_OK)
             {
                 break;
             }
@@ -412,6 +670,7 @@ namespace
                 break;
 
             InterlockedExchange(&g_subclassInstalled, TRUE);
+            InterlockedExchange(&g_unfocused, FALSE);
             SetUnfocused(!IsWindowActuallyForeground());
             InterlockedExchange(&g_enabled, TRUE);
             InterlockedExchange(&g_initialized, TRUE);
@@ -448,6 +707,7 @@ namespace
 
         // From this point on, even a failed shutdown leaves the feature inert.
         InterlockedExchange(&g_enabled, FALSE);
+        ReleaseWindowCursorClip();
 
         if (ReadFlag(&g_subclassInstalled))
         {
@@ -477,7 +737,9 @@ namespace
         ClearInjectedMarker();
         g_mainWindow = nullptr;
         g_uiThreadId = 0;
-        SetUnfocused(false);
+        InterlockedExchange(&g_unfocused, FALSE);
+        InterlockedExchange(&g_lockCursorPosWhenUnfocused, FALSE);
+        InterlockedExchange(&g_hasLockedCursorPos, FALSE);
         InterlockedExchange(&g_initialized, FALSE);
         InterlockedExchange(&g_operationInProgress, FALSE);
         return true;
@@ -492,6 +754,14 @@ extern "C" __declspec(dllexport) DWORD WINAPI NoFocusLoss_Initialize(LPVOID para
 extern "C" __declspec(dllexport) DWORD WINAPI NoFocusLoss_DisableCursorBlocking(LPVOID)
 {
     InterlockedExchange(&g_blockCursorWhenUnfocused, FALSE);
+    return TRUE;
+}
+
+extern "C" __declspec(dllexport) DWORD WINAPI NoFocusLoss_SetCursorPositionLock(LPVOID enabled)
+{
+    if (enabled != nullptr)
+        RefreshLockedCursorPosition();
+    InterlockedExchange(&g_lockCursorPosWhenUnfocused, enabled != nullptr ? TRUE : FALSE);
     return TRUE;
 }
 

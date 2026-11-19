@@ -78,7 +78,10 @@ public partial class MainWindow : Window
         DarkBox.IsChecked = p.Dark; TrayBox.IsChecked = !p.CloseToTray; StartupBox.IsChecked = p.StartWithWindows;
         FocusPinBox.IsChecked = p.PinWhenFocused; AbsoluteBox.IsChecked = p.AbsoluteTopmost; AggressiveBox.IsChecked = p.AggressiveTopmost;
         SoundBox.IsChecked = p.EnablePinSound; NotificationBox.IsChecked = p.ShowPinNotifications;
+        EnhancedBackgroundBox.IsChecked = p.EnhancedBackgroundKeep;
+        LockCursorPosBox.IsChecked = p.LockBackgroundCursorPos;
         AggressiveBox.IsEnabled = p.AbsoluteTopmost;
+        LockCursorPosBox.IsEnabled = p.EnhancedBackgroundKeep;
         foreach (var pair in _keyEditors) pair.Value.Text = p.Hotkeys.GetValueOrDefault(pair.Key, "");
         Palette.Apply(p.Dark);
         Manager.Changed += RefreshView; Manager.Notice += ShowStatus; store.Error += ShowStatus;
@@ -251,6 +254,7 @@ public partial class MainWindow : Window
                 PinFeedback(item, nextPin);
                 break;
             case "through": await Manager.SetClickThroughAsync(item, !item.ClickThrough); break;
+            case "mute": await Manager.SetMuteAsync(item, !item.Muted); break;
             case "background": await Manager.SetBackgroundEnabledAsync(item, !item.BackgroundEnabled); break;
             case "park":
                 if (item.IsMinimized || item.IsHidden)
@@ -565,11 +569,18 @@ public partial class MainWindow : Window
     {
         if (!_ready) return;
         var p = _store.Preferences;
+        bool nextEnhanced = EnhancedBackgroundBox.IsChecked == true;
+        bool nextLockCursor = LockCursorPosBox.IsChecked == true;
+        bool backgroundChanged = p.EnhancedBackgroundKeep != nextEnhanced || p.LockBackgroundCursorPos != nextLockCursor;
         p.Dark = DarkBox.IsChecked == true; p.CloseToTray = TrayBox.IsChecked != true;
         p.PinWhenFocused = FocusPinBox.IsChecked == true; p.AbsoluteTopmost = AbsoluteBox.IsChecked == true;
         p.AggressiveTopmost = AggressiveBox.IsChecked == true; AggressiveBox.IsEnabled = p.AbsoluteTopmost;
         p.EnablePinSound = SoundBox.IsChecked == true; p.ShowPinNotifications = NotificationBox.IsChecked == true;
+        p.EnhancedBackgroundKeep = nextEnhanced;
+        p.LockBackgroundCursorPos = nextLockCursor;
+        LockCursorPosBox.IsEnabled = p.EnhancedBackgroundKeep;
         Palette.Apply(p.Dark); ApplyOwnPolicy(); _store.SaveSoon();
+        if (backgroundChanged) _ = RunAsync(Manager.ApplyBackgroundPreferencesAsync);
     }
 
     private void Startup_Click(object sender, RoutedEventArgs e)

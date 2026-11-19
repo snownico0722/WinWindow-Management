@@ -25,6 +25,7 @@
         <ColumnDefinition Width="30"/>
         <ColumnDefinition Width="30"/>
         <ColumnDefinition Width="30"/>
+        <ColumnDefinition Width="30"/>
       </Grid.ColumnDefinitions>
 
       <Button x:Name="TitleButton" Style="{StaticResource RowTitleButton}" Click="Title_Click" ToolTip="{Binding Title}" IsEnabled="{Binding CanOperate}">
@@ -74,26 +75,33 @@
         </StackPanel>
       </ToggleButton>
 
-      <Button x:Name="ParkButton" Grid.Column="4" Style="{StaticResource RowIconButton}" Click="Park_Click" IsEnabled="{Binding CanOperate}">
+      <ToggleButton x:Name="MuteButton" Grid.Column="4" Style="{StaticResource IconToggle}" Click="Mute_Click" IsEnabled="{Binding CanOperate}"
+        AutomationProperties.Name="{DynamicResource Text.WindowMute}">
+        <Path x:Name="MuteIcon" Data="M2.8,6.2 L5.4,6.2 L8.8,3.4 L8.8,12.6 L5.4,9.8 L2.8,9.8 Z M11,5.5 A3.4,3.4 0 0 1 11,10.5 M12.8,3.8 A5.8,5.8 0 0 1 12.8,12.2"
+          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+          StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="16" Height="16"/>
+      </ToggleButton>
+
+      <Button x:Name="ParkButton" Grid.Column="5" Style="{StaticResource RowIconButton}" Click="Park_Click" IsEnabled="{Binding CanOperate}">
         <Path x:Name="ParkIcon" Data="M3,13 L13,13 M8,2.5 L8,9.8 M5,7 L8,10 L11,7"
           Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
           StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="16" Height="16"/>
       </Button>
 
-      <ToggleButton x:Name="ThroughButton" Grid.Column="5" Style="{StaticResource IconToggle}" Click="Through_Click" IsEnabled="{Binding CanOperate}"
+      <ToggleButton x:Name="ThroughButton" Grid.Column="6" Style="{StaticResource IconToggle}" Click="Through_Click" IsEnabled="{Binding CanOperate}"
         ToolTip="{DynamicResource Text.ClickThrough}" AutomationProperties.Name="{DynamicResource Text.ClickThrough}">
         <Path Data="M3.5,2 L3.5,12.8 L6.4,9.8 L8.6,14.2 L10.3,13.3 L8.1,8.9 L12.4,8.9 Z"
           Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
           StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="16" Height="16"/>
       </ToggleButton>
 
-      <ToggleButton x:Name="PinButton" Grid.Column="6" Style="{StaticResource IconToggle}" Click="Pin_Click" AutomationProperties.Name="{DynamicResource Text.WindowPin}">
+      <ToggleButton x:Name="PinButton" Grid.Column="7" Style="{StaticResource IconToggle}" Click="Pin_Click" AutomationProperties.Name="{DynamicResource Text.WindowPin}">
         <Path x:Name="PinIcon" Data="M5.2,2.2 L10.8,2.2 M6,2.2 L6,6.8 L3.6,9.5 L12.4,9.5 L10,6.8 L10,2.2 M8,9.5 L8,14.5"
           Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
           StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="16" Height="16"/>
       </ToggleButton>
 
-      <Button x:Name="RemoveButton" Grid.Column="7" Style="{StaticResource DangerIconButton}" Click="Remove_Click"
+      <Button x:Name="RemoveButton" Grid.Column="8" Style="{StaticResource DangerIconButton}" Click="Remove_Click"
         ToolTip="{DynamicResource Text.RemoveHint}" AutomationProperties.Name="{DynamicResource Text.RemoveWindow}">
         <Path Data="M4,4 L12,12 M12,4 L4,12"
           Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"

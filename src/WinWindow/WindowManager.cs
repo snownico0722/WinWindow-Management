@@ -41,7 +41,8 @@ internal sealed class WindowManager
     {
         foreach (var snapshot in _store.ReadRecovery())
         {
-            if (!Native.Matches(snapshot.Identity) && !(snapshot.RestoreActivation && Native.MatchesProcess(snapshot.Identity))) continue;
+            if (!Native.Matches(snapshot.Identity) &&
+                !((snapshot.RestoreActivation || snapshot.OriginalAudioMutes is not null) && Native.MatchesProcess(snapshot.Identity))) continue;
             var item = new WindowItem { Identity = snapshot.Identity, Title = snapshot.Title, Original = snapshot, Listed = true, IsHidden = !Native.IsWindowVisible(snapshot.Identity.Hwnd), IsMinimized = Native.IsIconic(snapshot.Identity.Hwnd) };
             Items.Add(item);
         }
@@ -73,7 +74,8 @@ internal sealed class WindowManager
                 if (item.IsBusy) continue;
                 if (!Native.Matches(item.Identity!))
                 {
-                    if (item.Original?.RestoreActivation == true && Native.MatchesProcess(item.Identity!))
+                    if ((item.Original?.RestoreActivation == true || item.Original?.OriginalAudioMutes is not null) &&
+                        Native.MatchesProcess(item.Identity!))
                     {
                         _ = RecoverOneAsync(item);
                         continue;
@@ -90,6 +92,8 @@ internal sealed class WindowManager
                 else if ((Native.Style(item.Hwnd) & Native.Layered) == 0) item.Opacity = 100;
             }
             foreach (var item in found) if (!Items.Any(x => Same(x.Identity, item.Identity))) Items.Add(item);
+            await RefreshAudioMutesAsync();
+            if (_stopping) return;
             if (removed) Journal();
             _rulesActive = true;
             ApplyRules(); Changed?.Invoke();
@@ -112,7 +116,7 @@ internal sealed class WindowManager
                 _ = ApplyRuleAsync(item, rule);
             }
             else if (placeholder is null)
-                Items.Add(new() { Title = rule.Title, RuleId = rule.Id, IsAvailable = false, Pinned = rule.Pinned, Opacity = rule.Opacity, ClickThrough = rule.ClickThrough, BackgroundEnabled = rule.KeepRunning });
+                Items.Add(new() { Title = rule.Title, RuleId = rule.Id, IsAvailable = false, Pinned = rule.Pinned, Opacity = rule.Opacity, ClickThrough = rule.ClickThrough, Muted = rule.Muted, BackgroundEnabled = rule.KeepRunning });
         }
         foreach (var pending in Items.Where(x => x.Identity is null && !_store.Preferences.Rules.Any(r => r.Id == x.RuleId)).ToArray()) Items.Remove(pending);
     }
@@ -141,7 +145,12 @@ internal sealed class WindowManager
             {
                 bool pin = rule.Pinned, through = rule.ClickThrough;
                 int opacity = Math.Clamp(rule.Opacity, 0, 100);
-                Track(item, s => { s.EditedTopmost = true; s.EditedOpacity |= opacity != item.Opacity; s.EditedClickThrough |= through != item.ClickThrough; });
+                Track(item, s =>
+                {
+                    s.EditedTopmost = true;
+                    s.EditedOpacity |= opacity != item.Opacity;
+                    s.EditedClickThrough |= through != item.ClickThrough;
+                });
                 var original = item.Original!;
                 await Task.Run(() =>
                 {
@@ -155,6 +164,7 @@ internal sealed class WindowManager
                 item.Pinned = Native.IsTopmost(item.Hwnd); item.Opacity = opacity; item.ClickThrough = through;
                 item.NotifyState();
             });
+            if (rule.Muted) await SetMuteAsync(item, true, updateRule: false);
             if (rule.KeepRunning) await SetBackgroundEnabledAsync(item, true, updateRule: false);
         }
         catch (Exception e) { if (!_stopping) Notice?.Invoke(UiText.Format("RuleError", item.Title, e.Message)); }
@@ -182,12 +192,12 @@ internal sealed class WindowManager
     private void Track(WindowItem item, Action<WindowSnapshot> edit)
     {
         var s = Manage(item);
-        var previous = (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.RestoreActivation, s.Parked, s.BeforeParking);
+        var previous = (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.OriginalAudioMutes, s.RestoreActivation, s.InjectedBackground, s.Parked, s.BeforeParking);
         edit(s);
-        var next = (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.RestoreActivation, s.Parked, s.BeforeParking);
+        var next = (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.OriginalAudioMutes, s.RestoreActivation, s.InjectedBackground, s.Parked, s.BeforeParking);
         if (previous.Equals(next)) return;
         try { Journal(); }
-        catch { (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.RestoreActivation, s.Parked, s.BeforeParking) = previous; throw; }
+        catch { (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.OriginalAudioMutes, s.RestoreActivation, s.InjectedBackground, s.Parked, s.BeforeParking) = previous; throw; }
     }
     private void Journal() => _store.WriteRecovery(Items.Where(x => x.Original is not null).Select(x => x.Original!));
     private void Finish(WindowItem item, bool updateRule)
@@ -224,17 +234,98 @@ internal sealed class WindowManager
         OperateAsync(item, async () =>
         {
             if (_stopping) return;
-            if (enabled) Track(item, s => s.RestoreActivation = true);
+            bool enhanced = _store.Preferences.EnhancedBackgroundKeep;
+            bool lockCursor = _store.Preferences.LockBackgroundCursorPos;
+            bool wasInjected = item.Original is { RestoreActivation: true } previous &&
+                previous.InjectedBackground != false;
+            if (enabled)
+                Track(item, s => { s.RestoreActivation = true; s.InjectedBackground = wasInjected || enhanced; });
             var identity = item.Identity!;
-            await Task.Run(() => Native.SetBackgroundActivity(identity, enabled, NativeDirectory));
+            bool antiCheatSkipped = false;
+            bool injected = await Task.Run(() => Native.SetBackgroundActivity(
+                identity, enabled, enhanced, lockCursor, wasInjected, NativeDirectory, out antiCheatSkipped));
             item.BackgroundEnabled = enabled;
-            if (!enabled && item.Original is { } snapshot)
+            if (item.Original is { } snapshot)
             {
-                snapshot.RestoreActivation = false;
+                snapshot.RestoreActivation = enabled;
+                snapshot.InjectedBackground = enabled && injected;
                 Journal();
             }
+            if (antiCheatSkipped && !_stopping)
+                Notice?.Invoke(UiText.Format("BackgroundAntiCheatFallback", item.Title));
             Finish(item, updateRule);
         });
+
+    public async Task ApplyBackgroundPreferencesAsync()
+    {
+        if (_stopping) return;
+        foreach (var item in Items.Where(x => x.Identity is not null && (x.BackgroundEnabled || x.IsBusy)).ToArray())
+        {
+            if (_operations.TryGetValue(item, out var pending)) await pending;
+            if (_stopping || !item.BackgroundEnabled || item.Identity is not { } identity ||
+                !_backgroundOperations.Add(identity.ProcessId)) continue;
+            try { await ChangeBackgroundAsync(item, true, updateRule: false); }
+            catch (Exception e) { if (!_stopping) Notice?.Invoke(UiText.Format("BackgroundStopped", item.Title, e.Message)); }
+            finally { _backgroundOperations.Remove(identity.ProcessId); }
+        }
+    }
+
+    private IEnumerable<WindowItem> AudioRows(WindowIdentity identity) => Items.Where(x =>
+        x.Identity is { } id && id.ProcessId == identity.ProcessId && id.ProcessStarted == identity.ProcessStarted);
+
+    private async Task RefreshAudioMutesAsync()
+    {
+        var targets = Items.Where(x => x.IsManaged && x.Identity is not null)
+            .Select(x => x.Identity!).DistinctBy(id => (id.ProcessId, id.ProcessStarted)).ToArray();
+        foreach (var identity in targets)
+        {
+            if (_stopping) return;
+            try
+            {
+                var current = await Task.Run(() => Native.GetProcessMutes(identity));
+                if (_stopping) return;
+                var owner = AudioRows(identity).FirstOrDefault(x => x.Original?.OriginalAudioMutes is not null);
+                if (owner is null)
+                {
+                    foreach (var row in AudioRows(identity))
+                        row.Muted = current.Count != 0 && current.Values.All(x => x);
+                }
+                else if (owner.Muted && !owner.IsBusy && current.Values.Any(x => !x))
+                    await OperateAsync(owner, () => ApplyMuteAsync(owner, current, true));
+            }
+            catch (Exception e) { if (!_stopping) Notice?.Invoke(e.Message); }
+        }
+    }
+
+    public Task SetMuteAsync(WindowItem item, bool value, bool updateRule = true)
+    {
+        EnsureIdle(item);
+        var identity = item.Identity ?? throw new InvalidOperationException(UiText.Get("WindowPending"));
+        var owner = AudioRows(identity).FirstOrDefault(x => x.Original?.OriginalAudioMutes is not null) ?? item;
+        return OperateAsync(owner, async () =>
+        {
+            Native.EnsureIdentity(identity);
+            Track(owner, s => s.OriginalAudioMutes ??= new(StringComparer.Ordinal));
+            var current = await Task.Run(() => Native.GetProcessMutes(identity));
+            if (_stopping) return;
+            await ApplyMuteAsync(owner, current, value);
+            if (updateRule)
+            {
+                if (value) AutoRemember(owner);
+                foreach (var row in AudioRows(identity)) Finish(row, true);
+            }
+        });
+    }
+
+    private async Task ApplyMuteAsync(WindowItem owner, Dictionary<string, bool> current, bool value)
+    {
+        var snapshot = owner.Original!;
+        var baseline = new Dictionary<string, bool>(snapshot.OriginalAudioMutes!, StringComparer.Ordinal);
+        foreach (var (id, muted) in current) baseline.TryAdd(id, muted);
+        if (baseline.Count != snapshot.OriginalAudioMutes!.Count) Track(owner, s => s.OriginalAudioMutes = baseline);
+        await Task.Run(() => Native.SetProcessMutes(snapshot.Identity, current, value));
+        foreach (var row in AudioRows(snapshot.Identity)) row.Muted = value;
+    }
 
     internal void OnApplicationDeactivated(uint processId)
     {
@@ -347,7 +438,7 @@ internal sealed class WindowManager
     {
         var rule = new WindowRule { ProcessPath = item.ProcessPath, ClassName = item.Identity!.ClassName,
             Title = item.Title, Pinned = item.Pinned, Opacity = item.Opacity, ClickThrough = item.ClickThrough,
-            KeepRunning = item.BackgroundEnabled };
+            Muted = item.Muted, KeepRunning = item.BackgroundEnabled };
         _store.Preferences.Rules.Add(rule);
         item.RuleId = rule.Id;
     }
@@ -356,7 +447,8 @@ internal sealed class WindowManager
     {
         var rule = _store.Preferences.Rules.FirstOrDefault(x => x.Id == item.RuleId);
         if (rule is null) return;
-        rule.Pinned = item.Pinned; rule.Opacity = item.Opacity; rule.ClickThrough = item.ClickThrough; rule.KeepRunning = item.BackgroundEnabled;
+        rule.Pinned = item.Pinned; rule.Opacity = item.Opacity; rule.ClickThrough = item.ClickThrough;
+        rule.Muted = item.Muted; rule.KeepRunning = item.BackgroundEnabled;
         _store.SaveSoon();
     }
     private static async Task<bool> WaitForAsync(WindowIdentity id, Func<nint, bool> predicate)
@@ -401,7 +493,14 @@ internal sealed class WindowManager
     private async Task RestoreSnapshotAsync(WindowSnapshot s, bool unpin = false)
     {
         if (s.RestoreActivation)
-            await Task.Run(() => Native.SetBackgroundActivity(s.Identity, false, NativeDirectory));
+            await Task.Run(() => Native.SetBackgroundActivity(
+                s.Identity, false, false, false, s.InjectedBackground != false, NativeDirectory, out _));
+        if (s.OriginalAudioMutes is { } baseline)
+        {
+            await Task.Run(() => Native.SetProcessMutes(s.Identity, baseline));
+            foreach (var row in AudioRows(s.Identity))
+                row.Muted = baseline.Count != 0 && baseline.Values.All(x => x);
+        }
         if (!Native.Matches(s.Identity)) return;
         if (s.Parked)
         {

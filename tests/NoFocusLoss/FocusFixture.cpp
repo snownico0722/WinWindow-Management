@@ -50,6 +50,18 @@ void CheckCursor(bool blocked)
           blocked ? "background cursor move is suppressed" : "normal cursor movement works");
 }
 
+void CheckClipSuppression()
+{
+    RECT before{}, after{};
+    Check(GetClipCursor(&before) && before.right - before.left > 200, "desktop clip bounds readable");
+    RECT trap{ before.left + 10, before.top + 10, before.left + 110, before.top + 110 };
+    bool accepted = ClipCursor(&trap) != FALSE && GetClipCursor(&after) != FALSE;
+    if (after.right - after.left <= 120)
+        ClipCursor(nullptr);
+    Check(accepted && after.left == before.left && after.right == before.right,
+          "background ClipCursor confinement is suppressed");
+}
+
 void CheckUnload(LPTHREAD_START_ROUTINE shutdown)
 {
     // The upstream shutdown export exits its calling thread. Keep dispatching
@@ -83,7 +95,7 @@ int wmain(int argc, wchar_t** argv)
         cls.lpszClassName = L"WinWindowNoFocusLossTest";
         Check(RegisterClassW(&cls) != 0, "window class registered");
         HWND window = CreateWindowW(cls.lpszClassName, L"Focus fixture", WS_OVERLAPPEDWINDOW,
-                                    0, 0, 800, 600, nullptr, nullptr, cls.hInstance, nullptr);
+                                    100, 100, 800, 600, nullptr, nullptr, cls.hInstance, nullptr);
         Check(window && GetForegroundWindow() != window && GetFocus() != window, "fixture starts in the background");
         Check(SendDeactivation(window) == 7, "baseline receives all three deactivation messages");
         CheckCursor(false);
@@ -92,13 +104,30 @@ int wmain(int argc, wchar_t** argv)
         Check(library != nullptr, "fixture loaded its own native library");
         auto initialize = FindEntry(library, "NoFocusLoss_Initialize", "_NoFocusLoss_Initialize@4");
         auto allowCursor = FindEntry(library, "NoFocusLoss_DisableCursorBlocking", "_NoFocusLoss_DisableCursorBlocking@4");
+        auto lockCursorPos = FindEntry(library, "NoFocusLoss_SetCursorPositionLock", "_NoFocusLoss_SetCursorPositionLock@4");
         auto shutdown = FindEntry(library, "NoFocusLoss_ShutdownAndUnload", "_NoFocusLoss_ShutdownAndUnload@4");
         Check(initialize(nullptr) == 1, "original initialization completed");
         Check(GetForegroundWindow() == window && GetActiveWindow() == window && GetFocus() == window,
               "all three UI-thread focus queries return the fixture");
+        GUITHREADINFO gui{ sizeof(gui) };
+        Check(GetGUIThreadInfo(0, &gui) && gui.hwndActive == window && gui.hwndFocus == window,
+              "GetGUIThreadInfo reports the fixture active and focused while unfocused");
+        Check(GetAsyncKeyState(VK_SPACE) == 0 && (GetKeyState(VK_SPACE) & 0x8000) == 0,
+              "unfocused key polling returns unpressed");
         Check(SendDeactivation(window) == 0, "deactivation messages do not reach the fixture");
         SendMessageW(window, WM_ACTIVATEAPP, TRUE, 0);
         CheckCursor(true);
+        CheckClipSuppression();
+
+        RECT winRect{};
+        POINT locked{};
+        Check(GetWindowRect(window, &winRect) != FALSE, "fixture window rect readable");
+        Check(lockCursorPos(reinterpret_cast<LPVOID>(1)) == TRUE && GetCursorPos(&locked) != FALSE &&
+              locked.x > winRect.left && locked.x < winRect.right &&
+              locked.y > winRect.top && locked.y < winRect.bottom,
+              "optional cursor position lock pins GetCursorPos inside the window");
+        Check(lockCursorPos(nullptr) == TRUE, "cursor position lock can be disabled live");
+
         Check(allowCursor(nullptr) == TRUE, "original option allows background cursor movement");
         CheckCursor(false);
         Check(GetFocus() == window && SendDeactivation(window) == 0,
@@ -125,6 +154,7 @@ int wmain(int argc, wchar_t** argv)
     }
     catch (const std::exception& error)
     {
+        ClipCursor(nullptr);
         std::fprintf(stderr, "FAIL %s\n", error.what());
         return 1;
     }

@@ -199,15 +199,34 @@ internal static class SmokeTests
                 shell.ShowShell();
                 await WaitAsync("fixture pauses when another window is active", () => Native.Title(game.Hwnd).StartsWith("activity:paused:"));
                 var gameRow = await FindRowAsync(shell, gameItem);
+                Assert(!store.Preferences.EnhancedBackgroundKeep && !store.Preferences.LockBackgroundCursorPos,
+                    "enhanced injection and cursor coordinate lock are off by default");
                 bool nativeKeep = Native.HasNoFocusLossSupport();
                 var keepRunning = (ToggleButton)gameRow.FindName("BackgroundToggle");
+                var muteToggle = (ToggleButton)gameRow.FindName("MuteButton");
                 keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                await WaitAsync("row toggle resumes a background fixture", () =>
+                await WaitAsync("default gentle toggle resumes a background fixture without injection", () =>
+                    gameItem.BackgroundEnabled && !gameItem.IsBusy &&
+                    Native.Title(game.Hwnd).StartsWith("activity:running:unfocused:"), 5000);
+                Assert(!Native.IsNoFocusLossInjected(game.Hwnd) && !Native.HasLoadedNoFocusLossModule(game.Process.Id),
+                    "default background keep does not inject native hooks");
+
+                var enhancedBox = (CheckBox)shell.FindName("EnhancedBackgroundBox");
+                var lockCursorBox = (CheckBox)shell.FindName("LockCursorPosBox");
+                Assert(!lockCursorBox.IsEnabled, "cursor coordinate lock requires enhanced injection");
+                enhancedBox.IsChecked = true;
+                enhancedBox.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert(lockCursorBox.IsEnabled, "enabling enhanced injection unlocks the cursor lock option");
+                await WaitAsync("enabling enhanced injection upgrades the active background target", () =>
                     gameItem.BackgroundEnabled && !gameItem.IsBusy &&
                     Native.Title(game.Hwnd).StartsWith(nativeKeep ? "activity:running:focused:" : "activity:running:"), 5000);
                 if (nativeKeep)
                     Assert(Native.IsNoFocusLossInjected(game.Hwnd) && Native.HasLoadedNoFocusLossModule(game.Process.Id),
-                        "native NoFocusLoss library is loaded and active in the background target");
+                        "native NoFocusLoss library is loaded when enhanced injection is enabled");
+                lockCursorBox.IsChecked = true;
+                lockCursorBox.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("cursor coordinate lock applies live", () => !gameItem.IsBusy, 5000);
+
                 Native.SetForegroundWindow(game.Hwnd);
                 await WaitAsync("fixture becomes foreground", () => Native.GetForegroundWindow() == game.Hwnd);
                 shell.ShowShell();
@@ -218,6 +237,27 @@ internal static class SmokeTests
                     () => Native.Title(game.Hwnd).StartsWith(nativeKeep ? "activity:running:focused:" : "activity:running:") &&
                         Native.Title(game.Hwnd) != title);
                 Assert(Native.GetForegroundWindow() != game.Hwnd && !Native.IsTopmost(game.Hwnd), "background keep leaves keyboard focus and z-order alone");
+
+                enhancedBox.IsChecked = false;
+                enhancedBox.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("disabling enhanced mode unloads hooks and keeps the default activation notice", () =>
+                    gameItem.BackgroundEnabled && !gameItem.IsBusy &&
+                    Native.Title(game.Hwnd).StartsWith("activity:running:unfocused:"), 5000);
+                Assert(!Native.HasLoadedNoFocusLossModule(game.Process.Id), "switching to default mode unloads the library");
+                enhancedBox.IsChecked = true;
+                enhancedBox.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("enhanced mode can be reapplied", () => !gameItem.IsBusy &&
+                    (!nativeKeep || Native.Title(game.Hwnd).StartsWith("activity:running:focused:")), 5000);
+
+                muteToggle.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("row mute button toggles mute state and remembers rule", () =>
+                    gameItem.Muted && !gameItem.IsBusy && store.Preferences.Rules.Any(r => r.Id == gameItem.RuleId && r.Muted));
+                muteToggle.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("row mute button unmutes cleanly", () =>
+                    !gameItem.Muted && !gameItem.IsBusy && store.Preferences.Rules.Any(r => r.Id == gameItem.RuleId && !r.Muted));
+                muteToggle.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("row mute button re-mutes before removal", () => gameItem.Muted && !gameItem.IsBusy);
+
                 keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 await WaitAsync("turning off the row toggle restores the background pause", () =>
                     !gameItem.BackgroundEnabled && !gameItem.IsBusy && Native.Title(game.Hwnd).StartsWith("activity:paused:unfocused:"), 5000);
@@ -230,9 +270,15 @@ internal static class SmokeTests
                     Native.Title(game.Hwnd).StartsWith(nativeKeep ? "activity:running:focused:" : "activity:running:"), 5000);
                 await shell.Manager.RemoveAsync(gameItem);
                 await WaitAsync("removal restores the fixture's background pause", () => Native.Title(game.Hwnd).StartsWith("activity:paused:unfocused:"));
+                Assert(!gameItem.Muted, "removal restores mute state");
                 if (nativeKeep)
                     Assert(!Native.IsNoFocusLossInjected(game.Hwnd) && !Native.HasLoadedNoFocusLossModule(game.Process.Id),
                         "removing a managed window unloads the native NoFocusLoss library");
+
+                lockCursorBox.IsChecked = false;
+                enhancedBox.IsChecked = false;
+                enhancedBox.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                store.SavePreferences();
             }
             Stop(game.Process);
             await game.Process.WaitForExitAsync();
