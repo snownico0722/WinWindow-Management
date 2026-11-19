@@ -397,11 +397,30 @@ internal static class SmokeTests
         var offscreen = Window(0, rect with { X = area.Right + 50 });
         Assert(Manual([offscreen]).Moves.Single().TargetVisualRect.Intersect(area).Area == rect.Area &&
             analyzer.SelectForManualArrange([offscreen], false).Count == 0, "off-screen rescue honors the preference");
+
+        // Smaller workspace with two off-screen background windows, as observed on Windows.
+        var smallArea = new RectI(0, 0, 1024, 720);
+        RectI[] mixedRects = [new(87, 90, 482, 413), new(87, 90, 482, 413), new(36, 104, 1074, 628),
+            new(2, 52, 1074, 628), new(318, 319, 406, 185)];
+        var mixed = mixedRects.Select((r, i) => Window(i, r) with { WorkArea = smallArea }).ToArray();
+        var moves = Manual(mixed).Moves.ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
+        var first = moves.GetValueOrDefault(mixed[0].Handle, mixedRects[0]);
+        var second = moves.GetValueOrDefault(mixed[1].Handle, mixedRects[1]);
+        Assert(first.Intersect(second).IsEmpty && mixed.Skip(2).Take(2).All(w =>
+            moves.TryGetValue(w.Handle, out var dest) && dest.Intersect(smallArea) == dest),
+            "one arrange uncovers the front pair and rescues the larger background windows");
     }
 
     private static async Task CheckArrangeButtonAsync(MainWindow shell, NeatWin.Windows.WindowManager layout, nint first, nint second)
     {
-        var area = layout.Capture().Single(w => w.Handle == first).WorkArea;
+        var desktop = layout.Capture();
+        if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" &&
+            desktop.Any(w => w.IsManageable && w.Handle != first && w.Handle != second))
+        {
+            Results.Add("SKIP: desktop-wide button test found other applications on the local desktop");
+            return;
+        }
+        var area = desktop.Single(w => w.Handle == first).WorkArea;
         await Task.Run(() =>
         {
             foreach (var hwnd in new[] { first, second })
