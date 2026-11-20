@@ -776,6 +776,18 @@ internal static class SmokeTests
         row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
             { RoutedEvent = Mouse.MouseLeaveEvent });
         await WaitAsync("leaving the row hides its hover outline", () => !shell.IsHoverPreviewVisible);
+
+        Assert(Native.SetForegroundWindow(item.Hwnd), "fixture can take foreground before inactive-workbench hover");
+        await WaitAsync("fixture is foreground while workbench remains visible", () => Native.GetForegroundWindow() == item.Hwnd);
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseEnterEvent });
+        await WaitAsync("hover preview also works over an inactive workbench", () => shell.IsHoverPreviewVisible, 2000);
+        Assert(Native.GetForegroundWindow() == item.Hwnd,
+            "hover preview never activates the workbench or the outlined window");
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseLeaveEvent });
+        await WaitAsync("inactive-workbench hover outline is dismissed on leave", () => !shell.IsHoverPreviewVisible);
+        shell.ShowShell();
     }
 
     private static async Task CheckPickerOutlineAsync(MainWindow shell, nint target)
