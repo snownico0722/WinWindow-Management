@@ -33,6 +33,7 @@
   <data name="BackgroundActivityHint" xml:space="preserve"><value>后台保持：切到其他应用后维持运行（可在设置中开启增强注入）</value></data>
   <data name="BackgroundRejected" xml:space="preserve"><value>未能启用后台保持，请检查目标权限或兼容性。</value></data>
   <data name="BackgroundSection" xml:space="preserve"><value>后台保持</value></data>
+  <data name="BackgroundModeChangeFailed" xml:space="preserve"><value>“{0}”未能切换后台保持模式：{1}</value></data>
   <data name="BackgroundStopped" xml:space="preserve"><value>“{0}”后台保持已停止：{1}</value></data>
   <data name="BackgroundCleanupPending" xml:space="preserve"><value>已移出“{0}”。后台保持的恢复仍待确认：{1}</value></data>
   <data name="BackgroundUnloadFailed" xml:space="preserve"><value>未能确认后台保持组件已卸载。</value></data>

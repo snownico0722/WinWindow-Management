@@ -33,6 +33,7 @@
   <data name="BackgroundActivityHint" xml:space="preserve"><value>Keep running when unfocused (optional enhanced injection in Settings)</value></data>
   <data name="BackgroundRejected" xml:space="preserve"><value>Could not enable keep-active. Check the target's permissions and compatibility.</value></data>
   <data name="BackgroundSection" xml:space="preserve"><value>Background keep-active</value></data>
+  <data name="BackgroundModeChangeFailed" xml:space="preserve"><value>Could not switch the keep-active mode for “{0}”. {1}</value></data>
   <data name="BackgroundStopped" xml:space="preserve"><value>Background activity stopped for “{0}”. {1}</value></data>
   <data name="BackgroundCleanupPending" xml:space="preserve"><value>Removed “{0}”. Keep-active cleanup is still pending: {1}</value></data>
   <data name="BackgroundUnloadFailed" xml:space="preserve"><value>Could not confirm that the keep-active library was unloaded.</value></data>

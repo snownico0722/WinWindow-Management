@@ -401,8 +401,11 @@ internal static class Native
 
     internal static void SetProcessMutes(WindowIdentity identity, IReadOnlyDictionary<string, bool> sessions, bool? mute = null)
     {
-        if (sessions.Count == 0 || !MatchesProcess(identity)) return;
-        VisitProcessAudioSessions(CollectProcessTreeIds((uint)identity.ProcessId), (id, volume) =>
+        if (sessions.Count == 0 || (mute.HasValue && !MatchesProcess(identity))) return;
+        // Undo is keyed by the exact WASAPI session instance, including a child
+        // that is still playing after its launcher has exited.
+        var targets = mute.HasValue ? CollectProcessTreeIds((uint)identity.ProcessId) : null;
+        VisitProcessAudioSessions(targets, (id, volume) =>
         {
             if (sessions.TryGetValue(id, out bool original))
                 Marshal.ThrowExceptionForHR(volume.SetMute(mute ?? original, 0));
@@ -442,7 +445,7 @@ internal static class Native
         return result;
     }
 
-    private static void VisitProcessAudioSessions(HashSet<uint> targetPids, Action<string, ISimpleAudioVolume> visitor)
+    private static void VisitProcessAudioSessions(HashSet<uint>? targetPids, Action<string, ISimpleAudioVolume> visitor)
     {
         object? enumeratorObj = null;
         IMMDeviceCollection? collection = null;
@@ -477,7 +480,7 @@ internal static class Native
         }
     }
 
-    private static void VisitEndpointSessions(IMMDevice endpoint, HashSet<uint> targetPids, Action<string, ISimpleAudioVolume> visitor)
+    private static void VisitEndpointSessions(IMMDevice endpoint, HashSet<uint>? targetPids, Action<string, ISimpleAudioVolume> visitor)
     {
         object? managerObj = null;
         IAudioSessionEnumerator? sessions = null;
@@ -501,7 +504,7 @@ internal static class Native
                         control.IsSystemSoundsSession() != 0 &&
                         control.GetProcessId(out uint pid) == 0 &&
                         pid != 0 &&
-                        targetPids.Contains(pid) &&
+                        (targetPids is null || targetPids.Contains(pid)) &&
                         control.GetSessionInstanceIdentifier(out nint sessionId) == 0 &&
                         sessionId != 0)
                     {

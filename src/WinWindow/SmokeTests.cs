@@ -766,13 +766,15 @@ internal static class SmokeTests
         // Hosted Windows runners may have no render endpoint. Drive the same
         // manager operations with observable per-session values in that case too.
         var sessions = new Dictionary<string, bool> { ["music"] = true, ["voice"] = false };
-        var manager = new WindowManager(ChildStore(output, false),
-            _ => new Dictionary<string, bool>(sessions),
+        var store = ChildStore(output, false);
+        WindowManager NewManager() => new WindowManager(store,
+            identity => Native.MatchesProcess(identity) ? new Dictionary<string, bool>(sessions) : new(),
             (_, saved, mute) =>
             {
                 foreach (var (id, original) in saved)
                     if (sessions.ContainsKey(id)) sessions[id] = mute ?? original;
             });
+        var manager = NewManager();
         var item = manager.SelectTarget(hwnd);
         await manager.SetMuteAsync(item, true, updateRule: false);
         Assert(sessions.Values.All(muted => muted), "modeled sessions both muted through the manager");
@@ -785,9 +787,40 @@ internal static class SmokeTests
         sessions["music"] = false;
         sessions["voice"] = true;
         await manager.SetMuteAsync(item, true, updateRule: false);
+        sessions["voice"] = false; // Already muted before the workbench took control.
+        sessions["music"] = false; // Changed by the workbench, then by the player.
+        await manager.RefreshAsync();
+        Assert(!item.Muted && !sessions["music"] && !sessions["voice"] && sessions["late"],
+            "refresh respects mixer changes and leaves other sessions alone");
+        sessions["music"] = true;
         await manager.ShutdownAsync();
-        Assert(!sessions["music"] && sessions["voice"] && !sessions["late"],
-            "a later mute takes a fresh baseline and restores it on exit");
+        Assert(sessions["music"] && !sessions["voice"] && !sessions["late"],
+            "exit preserves subsequent mixer choices and restores only the remaining owned session");
+
+        var launcher = await FixtureAsync(output, false);
+        using var launcherProcess = launcher.Process;
+        try
+        {
+            manager = NewManager();
+            var target = manager.SelectTarget(launcher.Hwnd);
+            await manager.SetMuteAsync(target, true, updateRule: false);
+            var journal = store.ReadRecovery();
+            Stop(launcherProcess);
+            await launcherProcess.WaitForExitAsync();
+            await manager.RefreshAsync();
+            await WaitAsync("launcher exit restores surviving modeled sessions", () => store.ReadRecovery().Count == 0);
+            Assert(sessions["music"] && !sessions["voice"] && !sessions["late"],
+                "closing a launcher restores only its captured session instances");
+
+            sessions["voice"] = sessions["late"] = true;
+            sessions["unrelated"] = true;
+            store.WriteRecovery(journal);
+            var restarted = NewManager();
+            await restarted.RecoverPreviousSessionAsync();
+            await WaitAsync("restart restores sessions after their launcher has exited", () => store.ReadRecovery().Count == 0);
+            Assert(!sessions["voice"] && !sessions["late"] && sessions["unrelated"], "unrelated audio remains untouched");
+        }
+        finally { Stop(launcherProcess); }
     }
 
     private static async Task CheckGameRecoveryAsync(string output, List<Process> processes)
@@ -822,6 +855,17 @@ internal static class SmokeTests
         await manager.SetMuteAsync(item, false, updateRule: false);
         if (audio) await WaitAsync("unmute restores silent music and audible voice", () => Native.GetProp(hwnd, "WinWindow.Test.Mix") == 2);
         Assert(item.Original?.OriginalAudioMutes is null, "unmute releases the saved audio baseline");
+        if (audio)
+        {
+            var identity = item.Identity!;
+            var voice = Native.GetProcessMutes(identity).Where(pair => !pair.Value).ToDictionary();
+            Native.SetProcessMutes(identity, voice, true);
+            await WaitAsync("recorded voice session muted", () => Native.GetProp(hwnd, "WinWindow.Test.Mix") == 4);
+            // The original identity can no longer be used to enumerate a process tree.
+            Native.SetProcessMutes(identity with { ProcessStarted = 0 }, voice);
+            await WaitAsync("WASAPI undo by session instance no longer needs the launcher", () =>
+                Native.GetProp(hwnd, "WinWindow.Test.Mix") == 2);
+        }
 
         bool nativeKeep = Native.HasNoFocusLossSupport();
         store.Preferences.EnhancedBackgroundKeep = true;

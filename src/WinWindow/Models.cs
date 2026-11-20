@@ -61,6 +61,7 @@ internal sealed class WindowItem : Observable
 {
     public WindowIdentity? Identity { get; init; }
     public WindowSnapshot? Original { get; set; }
+    public HashSet<string>? MutedSessionIds { get; set; }
     public string? RuleId { get; set; }
     public nint Hwnd => Identity?.Hwnd ?? 0;
     public string ProcessName => Identity is null ? UiText.Get("WaitingForWindow") : Path.GetFileName(Identity.ProcessPath);
