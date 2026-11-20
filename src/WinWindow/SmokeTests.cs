@@ -42,7 +42,7 @@ internal static class SmokeTests
     }
     private static Process Start(params string[] args)
     {
-        string executable = Path.Combine(AppContext.BaseDirectory, typeof(App).Assembly.GetName().Name + ".exe");
+        string executable = Environment.ProcessPath ?? throw new InvalidOperationException("无法确定当前可执行文件路径。");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         foreach (string arg in args) start.ArgumentList.Add(arg);
         return Process.Start(start) ?? throw new InvalidOperationException("无法启动测试进程。");
