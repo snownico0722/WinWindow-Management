@@ -102,9 +102,6 @@ jobs:
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || (github.event_name == 'workflow_dispatch' && inputs.release_tag) || 'v0.1.0' }}
           PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || false }}
         run: |
-          for legacy in WinWindow-win-x64.zip WinWindow-win-x64-self-contained.zip; do
-            gh release delete-asset --repo "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$legacy" --yes 2>/dev/null || true
-          done
           assets=(
             bundle/artifacts/WinWindow-win-x64.exe
             bundle/artifacts/NoFocusLoss-LICENSE.txt
@@ -113,4 +110,9 @@ jobs:
           if [[ "$PRERELEASE" == "false" ]]; then
             assets+=(bundle/artifacts/WinWindow-win-x64-self-contained.exe)
           fi
+          # Upload the replacement assets before removing old archives so a failed
+          # upload never leaves the published release without working downloads.
           gh release upload --repo "$GITHUB_REPOSITORY" --clobber -- "$RELEASE_TAG" "${assets[@]}"
+          for legacy in WinWindow-win-x64.zip WinWindow-win-x64-self-contained.zip; do
+            gh release delete-asset --repo "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$legacy" --yes 2>/dev/null || true
+          done
