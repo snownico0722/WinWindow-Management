@@ -211,6 +211,11 @@ internal static class SmokeTests
                 Assert(!Native.IsNoFocusLossInjected(game.Hwnd) && !Native.HasLoadedNoFocusLossModule(game.Process.Id),
                     "default background keep does not inject native hooks");
 
+                var peer = await FixtureAsync(output, false);
+                processes.Add(peer.Process);
+                await shell.AddTargetAsync(peer.Hwnd, pin: false);
+                var peerItem = shell.Manager.Items.Single(w => w.Hwnd == peer.Hwnd);
+                await shell.Manager.SetBackgroundEnabledAsync(peerItem, true, updateRule: false);
                 var enhancedBox = (CheckBox)shell.FindName("EnhancedBackgroundBox");
                 var lockCursorBox = (CheckBox)shell.FindName("LockCursorPosBox");
                 Assert(!lockCursorBox.IsEnabled, "cursor coordinate lock requires enhanced injection");
@@ -223,6 +228,10 @@ internal static class SmokeTests
                 if (nativeKeep)
                     Assert(Native.IsNoFocusLossInjected(game.Hwnd) && Native.HasLoadedNoFocusLossModule(game.Process.Id),
                         "native NoFocusLoss library is loaded when enhanced injection is enabled");
+                if (nativeKeep)
+                    await WaitAsync("the global switch also updates the second opted-in game", () =>
+                        Native.IsNoFocusLossInjected(peer.Hwnd) && !peerItem.IsBusy, 5000);
+                Assert(!Native.IsNoFocusLossInjected(normal.Hwnd), "a managed window with keep-active off is unaffected");
                 lockCursorBox.IsChecked = true;
                 lockCursorBox.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 await WaitAsync("cursor coordinate lock applies live", () => !gameItem.IsBusy, 5000);
@@ -244,6 +253,10 @@ internal static class SmokeTests
                     gameItem.BackgroundEnabled && !gameItem.IsBusy &&
                     Native.Title(game.Hwnd).StartsWith("activity:running:unfocused:"), 5000);
                 Assert(!Native.HasLoadedNoFocusLossModule(game.Process.Id), "switching to default mode unloads the library");
+                await WaitAsync("turning global enhancement off returns both games to gentle mode", () =>
+                    peerItem.BackgroundEnabled && !peerItem.IsBusy && !Native.HasLoadedNoFocusLossModule(peer.Process.Id), 5000);
+                await shell.Manager.RemoveAsync(peerItem);
+                Stop(peer.Process); await peer.Process.WaitForExitAsync();
                 enhancedBox.IsChecked = true;
                 enhancedBox.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 await WaitAsync("enhanced mode can be reapplied", () => !gameItem.IsBusy &&
@@ -415,6 +428,7 @@ internal static class SmokeTests
             await manager.RestoreAllAsync(); manager = null;
             foreach (var p in processes) { Stop(p); await p.WaitForExitAsync(); }
             await DesktopRegressionAsync(output, processes);
+            await CheckGameRecoveryAsync(output, processes);
         }
         catch (Exception e) { Report(e.ToString()); exit = 1; }
         finally
@@ -742,6 +756,92 @@ internal static class SmokeTests
             shell.PreviewPickerTarget(0);
             await Task.Run(() => Native.SetWindowPos(target, 0, original.Left, original.Top, 0, 0, Native.NoSize | Native.NoActivate | 4));
         }
+    }
+
+    private static async Task CheckGameRecoveryAsync(string output, List<Process> processes)
+    {
+        string? fixturePath = Environment.GetEnvironmentVariable("WINWINDOW_RECOVERY_FIXTURE");
+        if (fixturePath is null)
+        {
+            fixturePath = Path.GetFullPath("artifacts/native-x64/Release/AudioFixture.exe");
+            if (!File.Exists(fixturePath)) { Report("SKIP: build the native recovery fixture for the exit and audio checks"); return; }
+        }
+        var game = Process.Start(new ProcessStartInfo(fixturePath) { UseShellExecute = false })!;
+        processes.Add(game);
+        nint hwnd = 0;
+        await WaitAsync("recovery fixture publishes its real window", () =>
+        {
+            if (game.HasExited) throw new InvalidOperationException($"Recovery fixture exited with {game.ExitCode}");
+            game.Refresh();
+            hwnd = game.MainWindowHandle;
+            return hwnd != 0 && (Native.GetProp(hwnd, "WinWindow.Test.Mix") == 2 ||
+                Native.GetProp(hwnd, "WinWindow.Test.NoEndpoint") != 0);
+        }, 6000);
+        bool audio = Native.GetProp(hwnd, "WinWindow.Test.Mix") == 2;
+        if (!audio) Report("SKIP: no Windows render endpoint for the two real WASAPI sessions");
+
+        var store = ChildStore(output, false);
+        var manager = new WindowManager(store);
+        var item = manager.SelectTarget(hwnd);
+        manager.AddToList(item);
+        await manager.SetMuteAsync(item, true, updateRule: false);
+        if (audio) await WaitAsync("both audio sessions muted", () => Native.GetProp(hwnd, "WinWindow.Test.Mix") == 4);
+        await manager.SetMuteAsync(item, false, updateRule: false);
+        if (audio) await WaitAsync("unmute restores silent music and audible voice", () => Native.GetProp(hwnd, "WinWindow.Test.Mix") == 2);
+        Assert(item.Original?.OriginalAudioMutes is null, "unmute releases the saved audio baseline");
+
+        bool nativeKeep = Native.HasNoFocusLossSupport();
+        store.Preferences.EnhancedBackgroundKeep = true;
+        if (nativeKeep)
+        {
+            string nativeDirectory = Path.Combine(store.DirectoryPath, "Native");
+            File.WriteAllText(nativeDirectory, "fixture blocks component extraction");
+            try
+            {
+                await manager.SetBackgroundEnabledAsync(item, true, updateRule: false);
+                throw new InvalidOperationException("Expected component preparation to fail");
+            }
+            catch (IOException) { }
+            File.Delete(nativeDirectory);
+            Assert(!item.BackgroundEnabled && item.Original?.RestoreActivation == false &&
+                !Native.HasLoadedNoFocusLossModule(game.Id), "preparation failure leaves no new cleanup obligation");
+        }
+        await manager.RemoveAsync(item);
+        Assert(!manager.Items.Contains(item) && store.ReadRecovery().Count == 0, "failed target can be removed normally");
+
+        var rule = Rule(hwnd);
+        rule.KeepRunning = true;
+        rule.Muted = true;
+        store.Preferences.Rules.Add(rule);
+        store.SavePreferences();
+        var app = await StartMainAsync(store, processes);
+        await WaitAsync("running workbench enabled background keep, pin and mute", () =>
+            store.ReadRecovery().Any(s => s.Identity.Hwnd == hwnd && s.OriginalAudioMutes is not null && s.RestoreActivation) &&
+            Native.IsTopmost(hwnd) && (!nativeKeep || Native.IsNoFocusLossInjected(hwnd)) &&
+            (!audio || Native.GetProp(hwnd, "WinWindow.Test.Mix") == 4), 6000);
+        // A real Quit, without first disabling the options or removing the game.
+        Native.PostMessage(app.Hwnd, 0x10, 0, 0);
+        await WaitAsync("workbench exited with the game still managed", () => app.Process.HasExited);
+        Assert(app.Process.ExitCode == 0 && !game.HasExited && !Native.IsTopmost(hwnd) &&
+            !Native.HasLoadedNoFocusLossModule(game.Id) && store.ReadRecovery().Count == 0,
+            "clean exit releases the live game and finishes its recovery journal");
+        if (audio) await WaitAsync("game independently observes original mix after exit", () => Native.GetProp(hwnd, "WinWindow.Test.Mix") == 2);
+
+        if (!nativeKeep) return;
+        item = manager.SelectTarget(hwnd);
+        await manager.SetBackgroundEnabledAsync(item, true, updateRule: false);
+        await manager.SetMuteAsync(item, true, updateRule: false);
+        Native.PostMessage(hwnd, 0x8000 + 91, 0, 0);
+        await WaitAsync("game is temporarily unresponsive", () => Native.GetProp(hwnd, "WinWindow.Test.Stalled") != 0);
+        await manager.RemoveAsync(item);
+        var pending = store.ReadRecovery().Single(s => s.Identity.Hwnd == hwnd);
+        Assert(!item.IsManaged && pending.RemovedPendingBackground && pending.RestoreActivation &&
+            pending.OriginalAudioMutes is null && !pending.EditedTopmost, "removal keeps only unresolved background cleanup");
+        if (audio) await WaitAsync("other settings recover despite background timeout", () => Native.GetProp(hwnd, "WinWindow.Test.Mix") == 2, 6000);
+        Stop(game);
+        await game.WaitForExitAsync();
+        await manager.RefreshAsync();
+        Assert(!store.ReadRecovery().Any(s => s.Identity.Hwnd == hwnd), "pending cleanup expires when the original game exits");
     }
 
     private static async Task DesktopRegressionAsync(string output, List<Process> processes)

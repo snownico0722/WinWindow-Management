@@ -40,6 +40,7 @@ jobs:
       - name: Native window and UI smoke tests from the published ZIP
         shell: pwsh
         run: |
+          $env:WINWINDOW_RECOVERY_FIXTURE = (Resolve-Path 'artifacts/native-x64/Release/AudioFixture.exe').Path
           $testApp = Join-Path $env:RUNNER_TEMP 'WinWindowPackageTest'
           Expand-Archive artifacts/WinWindow-win-x64.zip -DestinationPath $testApp
           $p = Start-Process (Join-Path $testApp 'WinWindow.exe') -ArgumentList '--self-test TestResults' -PassThru

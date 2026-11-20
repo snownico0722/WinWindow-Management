@@ -35,10 +35,11 @@
   <data name="BackgroundRejected" xml:space="preserve"><value>Could not enable keep-active. Check the target's permissions or anti-cheat restrictions.</value></data>
   <data name="BackgroundSection" xml:space="preserve"><value>Background keep-active</value></data>
   <data name="BackgroundStopped" xml:space="preserve"><value>Background activity stopped for “{0}”. {1}</value></data>
+  <data name="BackgroundCleanupPending" xml:space="preserve"><value>Removed “{0}”. Keep-active cleanup is still pending: {1}</value></data>
   <data name="BackgroundUnloadFailed" xml:space="preserve"><value>Could not confirm that the keep-active library was unloaded.</value></data>
   <data name="BackgroundUnsupported" xml:space="preserve"><value>This window's process architecture is not supported for keep-active.</value></data>
   <data name="EnhancedBackground" xml:space="preserve"><value>Enable enhanced injection (intercept focus checks and cursor lock; avoid in online games)</value></data>
-  <data name="EnhancedBackgroundHint" xml:space="preserve"><value>Uses gentle activation notices by default; when enabled, injects native hooks to prevent pause and cursor confinement, falling back automatically when anti-cheat files are present</value></data>
+  <data name="EnhancedBackgroundHint" xml:space="preserve"><value>Switch modes for all windows with keep-active on. Turning enhancement off returns them to gentle mode. Games with detected anti-cheat components use gentle mode.</value></data>
   <data name="LockBackgroundCursor" xml:space="preserve"><value>Lock in-window cursor coordinates while unfocused (prevent edge scrolling)</value></data>
   <data name="LockBackgroundCursorHint" xml:space="preserve"><value>In enhanced mode, report a fixed interior coordinate while unfocused so camera edges do not scroll</value></data>
   <data name="MuteWindow" xml:space="preserve"><value>Mute window</value></data>

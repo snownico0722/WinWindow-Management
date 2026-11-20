@@ -31,6 +31,7 @@ internal sealed class WindowSnapshot
     public uint ColorKey { get; set; }
     public byte Alpha { get; set; } = 255;
     public uint LayeredFlags { get; set; }
+    public bool RemovedPendingBackground { get; set; }
     public bool RestoreActivation { get; set; }
     public bool? InjectedBackground { get; set; }
     public bool EditedTopmost { get; set; }
@@ -107,7 +108,7 @@ internal sealed class WindowItem : Observable
     public bool IsAvailable { get => _available; set { if (Set(ref _available, value)) NotifyState(); } }
     // Membership is independent from TOPMOST and the recovery snapshot.
     public bool Listed { get; set; }
-    public bool IsManaged => Listed || Original is not null;
+    public bool IsManaged => Listed || Original is { RemovedPendingBackground: false };
     public bool AutoRemember { get; set; } = true;
     public bool WantsPin { get; set; }
     public bool Remembered => RuleId is not null;

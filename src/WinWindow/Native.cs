@@ -42,7 +42,7 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
     [DllImport("user32.dll")] internal static extern nint GetActiveWindow();
     [DllImport("user32.dll")] internal static extern nint GetFocus();
-    [DllImport("user32.dll", EntryPoint = "GetPropW", CharSet = CharSet.Unicode)] private static extern nint GetProp(nint hwnd, string name);
+    [DllImport("user32.dll", EntryPoint = "GetPropW", CharSet = CharSet.Unicode)] internal static extern nint GetProp(nint hwnd, string name);
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(nint hwnd, StringBuilder text, int length);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(nint hwnd, StringBuilder text, int length);
@@ -367,14 +367,17 @@ internal static class Native
         bool lockCursorPosition,
         bool wasInjected,
         string storageDirectory,
-        out bool antiCheatSkipped)
+        out bool antiCheatSkipped,
+        out bool targetMayHaveChanged)
     {
         antiCheatSkipped = false;
+        targetMayHaveChanged = false;
         if (enabled)
         {
             EnsureIdentity(identity);
             if (!enhancedInjection)
             {
+                targetMayHaveChanged = true;
                 if (Directory.Exists(storageDirectory) && (wasInjected || IsNoFocusLossInjected(identity.Hwnd)))
                     DisableAndUnloadNoFocusLoss(identity, storageDirectory);
                 PostAppActivation(identity, true, throwOnError: true);
@@ -383,6 +386,7 @@ internal static class Native
             if (HasAntiCheatProtection(identity))
             {
                 antiCheatSkipped = true;
+                targetMayHaveChanged = true;
                 if (Directory.Exists(storageDirectory) && (wasInjected || IsNoFocusLossInjected(identity.Hwnd)))
                     DisableAndUnloadNoFocusLoss(identity, storageDirectory);
                 PostAppActivation(identity, true, throwOnError: true);
@@ -402,6 +406,7 @@ internal static class Native
                 bool is64Bit = ResolveTargetBitness(process);
                 string dllPath = MaterializeNoFocusLossLibrary(is64Bit, storageDirectory)
                     ?? throw new FileNotFoundException(UiText.Get("BackgroundRejected"));
+                targetMayHaveChanged = true;
                 InjectAndInitializeNoFocusLoss(process, is64Bit, dllPath, identity.Hwnd, lockCursorPosition);
             }
             finally { CloseHandle(process); }
@@ -409,6 +414,7 @@ internal static class Native
             return true;
         }
 
+        targetMayHaveChanged = true;
         if (Directory.Exists(storageDirectory) && (wasInjected || IsNoFocusLossInjected(identity.Hwnd)))
             DisableAndUnloadNoFocusLoss(identity, storageDirectory);
         PostAppActivation(identity, false, throwOnError: false);

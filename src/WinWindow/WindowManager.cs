@@ -43,7 +43,7 @@ internal sealed class WindowManager
         {
             if (!Native.Matches(snapshot.Identity) &&
                 !((snapshot.RestoreActivation || snapshot.OriginalAudioMutes is not null) && Native.MatchesProcess(snapshot.Identity))) continue;
-            var item = new WindowItem { Identity = snapshot.Identity, Title = snapshot.Title, Original = snapshot, Listed = true, IsHidden = !Native.IsWindowVisible(snapshot.Identity.Hwnd), IsMinimized = Native.IsIconic(snapshot.Identity.Hwnd) };
+            var item = new WindowItem { Identity = snapshot.Identity, Title = snapshot.Title, Original = snapshot, Listed = !snapshot.RemovedPendingBackground, IsHidden = !Native.IsWindowVisible(snapshot.Identity.Hwnd), IsMinimized = Native.IsIconic(snapshot.Identity.Hwnd) };
             Items.Add(item);
         }
         Journal();
@@ -77,13 +77,13 @@ internal sealed class WindowManager
                     if ((item.Original?.RestoreActivation == true || item.Original?.OriginalAudioMutes is not null) &&
                         Native.MatchesProcess(item.Identity!))
                     {
-                        _ = RecoverOneAsync(item);
+                        if (item.Original?.RemovedPendingBackground != true) _ = RecoverOneAsync(item);
                         continue;
                     }
                     removed |= item.Original is not null; Items.Remove(item); continue;
                 }
                 var live = found.FirstOrDefault(x => Same(x.Identity, item.Identity));
-                if (live is null && !item.IsManaged) { Items.Remove(item); continue; }
+                if (live is null && !item.IsManaged && item.Original is null) { Items.Remove(item); continue; }
                 item.Title = live?.Title ?? Native.Title(item.Hwnd);
                 item.IsMinimized = Native.IsIconic(item.Hwnd); item.IsHidden = !Native.IsWindowVisible(item.Hwnd);
                 item.Pinned = Native.IsTopmost(item.Hwnd);
@@ -108,7 +108,7 @@ internal sealed class WindowManager
             if (Items.Any(x => x.Identity is not null && x.RuleId == rule.Id)) continue;
             var placeholder = Items.FirstOrDefault(x => x.Identity is null && x.RuleId == rule.Id);
             var item = Items.FirstOrDefault(x => x.IsAvailable && !x.IsBusy && x.AutoRemember &&
-                x.RuleId is null && rule.Matches(x));
+                x.Original?.RemovedPendingBackground != true && x.RuleId is null && rule.Matches(x));
             if (item is not null)
             {
                 if (placeholder is not null) Items.Remove(placeholder);
@@ -186,6 +186,15 @@ internal sealed class WindowManager
     {
         if (item.Identity is null) throw new InvalidOperationException(UiText.Get("WindowPending"));
         Native.EnsureIdentity(item.Identity);
+        if (item.Original is { RemovedPendingBackground: true } detached)
+        {
+            // A new management session needs a fresh baseline for styles and placement.
+            var fresh = Native.Capture(item.Identity);
+            fresh.RestoreActivation = detached.RestoreActivation;
+            fresh.InjectedBackground = detached.InjectedBackground;
+            item.Original = fresh;
+            Journal();
+        }
         item.Original ??= Native.Capture(item.Identity); item.Listed = true;
         item.NotifyState(); return item.Original;
     }
@@ -236,14 +245,29 @@ internal sealed class WindowManager
             if (_stopping) return;
             bool enhanced = _store.Preferences.EnhancedBackgroundKeep;
             bool lockCursor = _store.Preferences.LockBackgroundCursorPos;
+            bool restoreBefore = item.Original?.RestoreActivation == true;
+            bool? injectedBefore = item.Original?.InjectedBackground;
             bool wasInjected = item.Original is { RestoreActivation: true } previous &&
                 previous.InjectedBackground != false;
             if (enabled)
                 Track(item, s => { s.RestoreActivation = true; s.InjectedBackground = wasInjected || enhanced; });
             var identity = item.Identity!;
             bool antiCheatSkipped = false;
-            bool injected = await Task.Run(() => Native.SetBackgroundActivity(
-                identity, enabled, enhanced, lockCursor, wasInjected, NativeDirectory, out antiCheatSkipped));
+            bool targetMayHaveChanged = false;
+            bool injected;
+            try
+            {
+                injected = await Task.Run(() => Native.SetBackgroundActivity(
+                    identity, enabled, enhanced, lockCursor, wasInjected, NativeDirectory, out antiCheatSkipped, out targetMayHaveChanged));
+            }
+            catch when (enabled && !targetMayHaveChanged)
+            {
+                var original = item.Original!;
+                original.RestoreActivation = restoreBefore;
+                original.InjectedBackground = injectedBefore;
+                Journal();
+                throw;
+            }
             item.BackgroundEnabled = enabled;
             if (item.Original is { } snapshot)
             {
@@ -290,7 +314,7 @@ internal sealed class WindowManager
                     foreach (var row in AudioRows(identity))
                         row.Muted = current.Count != 0 && current.Values.All(x => x);
                 }
-                else if (owner.Muted && !owner.IsBusy && current.Values.Any(x => !x))
+                else if (owner.Muted && !owner.IsBusy && current.Any(pair => !pair.Value || !owner.Original!.OriginalAudioMutes!.ContainsKey(pair.Key)))
                     await OperateAsync(owner, () => ApplyMuteAsync(owner, current, true));
             }
             catch (Exception e) { if (!_stopping) Notice?.Invoke(e.Message); }
@@ -305,10 +329,15 @@ internal sealed class WindowManager
         return OperateAsync(owner, async () =>
         {
             Native.EnsureIdentity(identity);
-            Track(owner, s => s.OriginalAudioMutes ??= new(StringComparer.Ordinal));
-            var current = await Task.Run(() => Native.GetProcessMutes(identity));
-            if (_stopping) return;
-            await ApplyMuteAsync(owner, current, value);
+            if (!value && owner.Muted && owner.Original is { OriginalAudioMutes: not null } snapshot)
+                await RestoreAudioAsync(snapshot);
+            else
+            {
+                Track(owner, s => s.OriginalAudioMutes ??= new(StringComparer.Ordinal));
+                var current = await Task.Run(() => Native.GetProcessMutes(identity));
+                if (_stopping) return;
+                await ApplyMuteAsync(owner, current, value);
+            }
             if (updateRule)
             {
                 if (value) AutoRemember(owner);
@@ -399,17 +428,36 @@ internal sealed class WindowManager
     }
     public Task RemoveAsync(WindowItem item) => OperateAsync(item, async () =>
     {
-        if (item.Original is not null) await RestoreSnapshotAsync(item.Original, true);
+        bool pendingBackground = false;
+        if (item.Original is { } snapshot)
+        {
+            item.BackgroundEnabled = false;
+            try { await RestoreSnapshotAsync(snapshot, unpin: true); }
+            catch (Exception e) when (snapshot.RestoreActivation && !snapshot.Parked &&
+                snapshot.OriginalAudioMutes is null && !snapshot.EditedTopmost &&
+                !snapshot.EditedOpacity && !snapshot.EditedClickThrough)
+            {
+                snapshot.RemovedPendingBackground = true;
+                pendingBackground = true;
+                Notice?.Invoke(UiText.Format("BackgroundCleanupPending", item.Title, e.Message));
+            }
+        }
         else if (item.Identity is not null && Native.Matches(item.Identity))
         {
             Track(item, s => s.EditedTopmost = true);
             await Task.Run(() => { Native.EnsureIdentity(item.Identity); Native.SetTopmost(item.Hwnd, false); });
         }
         item.BackgroundEnabled = false;
-        // X unpins and removes. It never sends WM_CLOSE or restores TOPMOST=true.
+        item.WantsPin = false;
         _store.Preferences.Rules.RemoveAll(r => r.Id == item.RuleId);
-        item.RuleId = null; item.Original = null; item.Listed = false;
-        Items.Remove(item); Journal(); _store.SaveSoon();
+        item.RuleId = null; item.Listed = false;
+        if (!pendingBackground)
+        {
+            item.Original = null;
+            Items.Remove(item);
+        }
+        item.NotifyState();
+        Journal(); _store.SaveSoon();
     });
     public void SetRemembered(WindowItem item, bool remember)
     {
@@ -490,26 +538,50 @@ internal sealed class WindowManager
         });
         return result;
     }
+    private async Task RestoreAudioAsync(WindowSnapshot snapshot)
+    {
+        if (snapshot.OriginalAudioMutes is not { } baseline) return;
+        await Task.Run(() => Native.SetProcessMutes(snapshot.Identity, baseline));
+        snapshot.OriginalAudioMutes = null;
+        foreach (var row in AudioRows(snapshot.Identity))
+            row.Muted = baseline.Count != 0 && baseline.Values.All(x => x);
+        Journal();
+    }
+
     private async Task RestoreSnapshotAsync(WindowSnapshot s, bool unpin = false)
     {
-        if (s.RestoreActivation)
+        // Activation cleanup may outlast the entire exit budget. Start independent
+        // restoration now and checkpoint each completed part on the dispatcher.
+        async Task RestoreActivationAsync()
+        {
+            if (!s.RestoreActivation) return;
             await Task.Run(() => Native.SetBackgroundActivity(
-                s.Identity, false, false, false, s.InjectedBackground != false, NativeDirectory, out _));
-        if (s.OriginalAudioMutes is { } baseline)
-        {
-            await Task.Run(() => Native.SetProcessMutes(s.Identity, baseline));
-            foreach (var row in AudioRows(s.Identity))
-                row.Muted = baseline.Count != 0 && baseline.Values.All(x => x);
+                s.Identity, false, false, false, s.InjectedBackground != false, NativeDirectory, out _, out _));
+            s.RestoreActivation = false;
+            s.InjectedBackground = false;
+            Journal();
         }
-        if (!Native.Matches(s.Identity)) return;
-        if (s.Parked)
+
+        async Task RestoreWindowAsync()
         {
-            Native.ApplyPlacement(s.Identity.Hwnd, s.BeforeParking);
-            Native.ShowWindowAsync(s.Identity.Hwnd, (int)s.BeforeParking.ShowCmd);
-            if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h)))
-                throw new InvalidOperationException(UiText.Get("RestorePending"));
+            if (!Native.Matches(s.Identity)) return;
+            if (s.Parked)
+            {
+                Native.ApplyPlacement(s.Identity.Hwnd, s.BeforeParking);
+                Native.ShowWindowAsync(s.Identity.Hwnd, (int)s.BeforeParking.ShowCmd);
+                if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h)))
+                    throw new InvalidOperationException(UiText.Get("RestorePending"));
+                s.Parked = false;
+                Journal();
+            }
+            if (!unpin && !s.EditedTopmost && !s.EditedOpacity && !s.EditedClickThrough) return;
+            if (unpin) s.EditedTopmost = true;
+            await Task.Run(() => { if (Native.Matches(s.Identity)) Native.RestoreStyles(s, unpin); });
+            s.EditedTopmost = s.EditedOpacity = s.EditedClickThrough = false;
+            Journal();
         }
-        await Task.Run(() => { if (Native.Matches(s.Identity)) Native.RestoreStyles(s, unpin); });
+
+        await Task.WhenAll(RestoreActivationAsync(), RestoreAudioAsync(s), RestoreWindowAsync());
     }
     public Task RestoreParkingAsync(WindowItem item, bool activate = true) => OperateAsync(item, async () =>
     {
@@ -525,6 +597,7 @@ internal sealed class WindowManager
     {
         if (item.Original is { } s)
         {
+            item.BackgroundEnabled = false;
             await RestoreSnapshotAsync(s);
             item.Pinned = s.Topmost;
             item.Opacity = s.LayeredReadable && (s.LayeredFlags & 2) != 0 ? Native.ToPercent(s.Alpha) : 100;
