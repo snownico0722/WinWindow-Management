@@ -162,9 +162,12 @@ public sealed class IntentEvidenceTests
             var zip = Path.Combine(path, "export.zip");
             store.ExportRecords(zip);
             using var archive = System.IO.Compression.ZipFile.OpenRead(zip);
-            Assert.Equal(2, archive.Entries.Count);
             Assert.Contains(archive.Entries, e => e.Name.EndsWith(".jsonl", StringComparison.Ordinal));
             Assert.Contains(archive.Entries, e => e.Name == "intent-reference.json");
+            Assert.Contains(archive.Entries, e => e.Name == "layout-guide.md");
+            Assert.Contains(archive.Entries, e => e.Name == "compiled-rules.json");
+            Assert.Contains(archive.Entries, e => e.Name == "placement-v1.json");
+            Assert.DoesNotContain(archive.Entries, e => e.Name == "settings.json");
         });
     }
 

@@ -52,7 +52,7 @@ public partial class WindowRow : UserControl
 
     private void ItemChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (_item is not { IsAvailable: true, IsBusy: false }) CancelHoverPreview();
+        if (_item is not { IsAvailable: true, IsBusy: false, IsHidden: false, IsMinimized: false }) CancelHoverPreview();
         else if (IsMouseOver && _hoverCandidate is null && _hoverPreview is null) ScheduleHoverPreview();
         Sync();
     }
@@ -63,7 +63,7 @@ public partial class WindowRow : UserControl
     private void ScheduleHoverPreview()
     {
         CancelHoverPreview();
-        if (_item is not { IsAvailable: true, IsBusy: false } item) return;
+        if (_item is not { IsAvailable: true, IsBusy: false, IsHidden: false, IsMinimized: false } item) return;
         _hoverCandidate = item;
         _hoverTimer.Start();
     }
@@ -73,7 +73,7 @@ public partial class WindowRow : UserControl
         _hoverTimer.Stop();
         var item = _hoverCandidate;
         _hoverCandidate = null;
-        if (item is null || !ReferenceEquals(_item, item) || !item.IsAvailable || item.IsBusy) return;
+        if (item is null || !ReferenceEquals(_item, item) || !item.IsAvailable || item.IsBusy || item.IsHidden || item.IsMinimized) return;
         _hoverPreview = item;
         Owner?.ShowHoverPreview(item);
     }

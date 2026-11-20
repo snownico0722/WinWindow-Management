@@ -116,7 +116,8 @@ public partial class MainWindow : Window
     internal void ShowHoverPreview(WindowItem item)
     {
         if (_quitting || !_ready || !IsVisible || _compact || WindowPage.Visibility != Visibility.Visible ||
-            !item.IsAvailable || item.IsBusy || item.Identity is not { } identity ||
+            Native.GetForegroundWindow() != _hwnd || !item.IsAvailable || item.IsBusy || item.IsHidden || item.IsMinimized ||
+            item.Identity is not { } identity ||
             !Native.Matches(identity) || !Native.IsWindowVisible(identity.Hwnd) || Native.IsIconic(identity.Hwnd) ||
             !Native.TryGetFrameBounds(identity.Hwnd, out _))
         {
