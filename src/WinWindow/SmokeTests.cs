@@ -381,6 +381,7 @@ internal static class SmokeTests
             Assert(slider.IsEnabled && slider.Value == 73, "slider keeps accepting input and applies the latest value");
             await WaitAsync("slider completion", () => !chosen.IsBusy);
             await CheckPickerOutlineAsync(shell, chosen.Hwnd);
+            await CheckHoverPreviewAsync(shell, chosen);
             await shell.AddTargetAsync(chosen.Hwnd); await shell.AddTargetAsync(chosen.Hwnd);
             Assert(chosen.Pinned && shell.Manager.Items.Count(x => x.Hwnd == chosen.Hwnd) == 1, "adding an existing row never unpins or duplicates it");
             row = await FindRowAsync(shell, chosen);
@@ -736,6 +737,78 @@ internal static class SmokeTests
         Assert(saved["show"] == originalPin && saved["pin"] == originalShow, "two shortcuts can be swapped and saved together");
         show.Text = originalShow; pin.Text = originalPin;
         apply.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+    }
+
+    private static async Task CheckHoverPreviewAsync(MainWindow shell, WindowItem item)
+    {
+        shell.ShowShell();
+        nint own = new WindowInteropHelper(shell).Handle;
+        await WaitAsync("workbench has focus before hover preview", () => Native.GetForegroundWindow() == own);
+        var row = await FindRowAsync(shell, item);
+        long originalStyle = Native.Style(item.Hwnd);
+        bool originalTopmost = Native.IsTopmost(item.Hwnd);
+
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseEnterEvent });
+        await Task.Delay(120);
+        Assert(!shell.IsHoverPreviewVisible, "hover preview waits for the 350 ms dwell");
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseLeaveEvent });
+        await Task.Delay(400);
+        Assert(!shell.IsHoverPreviewVisible, "leaving before the dwell cancels the preview");
+
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseEnterEvent });
+        await WaitAsync("hover preview appears after the dwell", () => shell.IsHoverPreviewVisible, 2000);
+        nint outlineHwnd = shell.HoverPreviewHandle;
+        bool Aligned() => Native.TryGetFrameBounds(item.Hwnd, out var targetRect) &&
+            Native.GetWindowRect(outlineHwnd, out var outline) &&
+            outline.Left == targetRect.Left - 5 && outline.Top == targetRect.Top - 5 &&
+            outline.Right == targetRect.Right + 5 && outline.Bottom == targetRect.Bottom + 5;
+        await WaitAsync("hover outline matches the target's screen pixels", Aligned);
+        Assert(Native.GetForegroundWindow() == own &&
+            (Native.Style(outlineHwnd) & (Native.Transparent | Native.NoActivateStyle)) ==
+                (Native.Transparent | Native.NoActivateStyle),
+            "hover outline does not take focus or intercept mouse input");
+        Assert(Native.Style(item.Hwnd) == originalStyle && Native.IsTopmost(item.Hwnd) == originalTopmost,
+            "hover preview does not modify the target window");
+
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseLeaveEvent });
+        await WaitAsync("leaving the row hides its hover outline", () => !shell.IsHoverPreviewVisible);
+
+        Assert(Native.SetForegroundWindow(item.Hwnd), "fixture can take foreground before inactive-workbench hover");
+        await WaitAsync("fixture is foreground while workbench remains visible", () => Native.GetForegroundWindow() == item.Hwnd);
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseEnterEvent });
+        await WaitAsync("hover preview also works over an inactive workbench", () => shell.IsHoverPreviewVisible, 2000);
+        Assert(Native.GetForegroundWindow() == item.Hwnd,
+            "hover preview never activates the workbench or the outlined window");
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseLeaveEvent });
+        await WaitAsync("inactive-workbench hover outline is dismissed on leave", () => !shell.IsHoverPreviewVisible);
+        shell.ShowShell();
+
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseEnterEvent });
+        await WaitAsync("hover preview is visible before minimizing", () => shell.IsHoverPreviewVisible, 2000);
+        shell.WindowState = WindowState.Minimized;
+        await WaitAsync("minimizing the workbench immediately hides hover preview", () => !shell.IsHoverPreviewVisible);
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseLeaveEvent });
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseEnterEvent });
+        await Task.Delay(400);
+        Assert(!shell.IsHoverPreviewVisible, "a pending hover callback cannot reopen the preview while minimized");
+        shell.ShowShell();
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseLeaveEvent });
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseEnterEvent });
+        await WaitAsync("hover preview works again after restoring the workbench", () => shell.IsHoverPreviewVisible, 2000);
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseLeaveEvent });
+        await WaitAsync("restored hover preview closes on leave", () => !shell.IsHoverPreviewVisible);
     }
 
     private static async Task CheckPickerOutlineAsync(MainWindow shell, nint target)

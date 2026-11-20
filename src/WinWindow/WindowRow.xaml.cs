@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Threading;
 
 namespace WinWindow;
 
@@ -19,11 +20,16 @@ public partial class WindowRow : UserControl
 
     private WindowItem? _item;
     private bool _syncing, _dirty;
+    private readonly DispatcherTimer _hoverTimer = new(DispatcherPriority.Background)
+        { Interval = TimeSpan.FromMilliseconds(350) };
+    private WindowItem? _hoverCandidate;
+    private WindowItem? _hoverPreview;
     private MainWindow? Owner => Window.GetWindow(this) as MainWindow;
 
     public WindowRow()
     {
         InitializeComponent();
+        _hoverTimer.Tick += HoverTimer_Tick;
         OpacitySlider.LostMouseCapture += (_, _) => Sync();
         Loaded += (_, _) => Attach(DataContext as WindowItem);
         Unloaded += (_, _) => Attach(null);
@@ -34,15 +40,51 @@ public partial class WindowRow : UserControl
     private void Attach(WindowItem? item)
     {
         if (ReferenceEquals(_item, item)) { Sync(); return; }
+        CancelHoverPreview();
         CommitNumber();
         CloseInlineNumber();
         if (_item is not null) _item.PropertyChanged -= ItemChanged;
         _item = item; _dirty = false;
         if (_item is not null) _item.PropertyChanged += ItemChanged;
         Sync();
+        if (IsMouseOver) ScheduleHoverPreview();
     }
 
-    private void ItemChanged(object? sender, PropertyChangedEventArgs e) => Sync();
+    private void ItemChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (_item is not { IsAvailable: true, IsBusy: false, IsHidden: false, IsMinimized: false }) CancelHoverPreview();
+        else if (IsMouseOver && _hoverCandidate is null && _hoverPreview is null) ScheduleHoverPreview();
+        Sync();
+    }
+
+    private void Row_MouseEnter(object sender, MouseEventArgs e) => ScheduleHoverPreview();
+    private void Row_MouseLeave(object sender, MouseEventArgs e) => CancelHoverPreview();
+
+    private void ScheduleHoverPreview()
+    {
+        CancelHoverPreview();
+        if (_item is not { IsAvailable: true, IsBusy: false, IsHidden: false, IsMinimized: false } item) return;
+        _hoverCandidate = item;
+        _hoverTimer.Start();
+    }
+
+    private void HoverTimer_Tick(object? sender, EventArgs e)
+    {
+        _hoverTimer.Stop();
+        var item = _hoverCandidate;
+        _hoverCandidate = null;
+        if (item is null || !ReferenceEquals(_item, item) || !item.IsAvailable || item.IsBusy || item.IsHidden || item.IsMinimized) return;
+        _hoverPreview = item;
+        Owner?.ShowHoverPreview(item);
+    }
+
+    private void CancelHoverPreview()
+    {
+        _hoverTimer.Stop();
+        _hoverCandidate = null;
+        if (_hoverPreview is { } item) Owner?.HideHoverPreview(item);
+        _hoverPreview = null;
+    }
 
     private void Sync()
     {
