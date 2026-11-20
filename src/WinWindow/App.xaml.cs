@@ -84,6 +84,12 @@ public partial class App : Application
         {
             Forms.Form form = args.Contains("stall") ? new StalledTarget(args[3])
                 : args.Contains("activity") ? new ActivityTarget() : new Forms.Form();
+            if (form is ActivityTarget && uint.TryParse(args.ElementAtOrDefault(3), out var controllerPid) && controllerPid != 0)
+            {
+                // The fixture can become foreground when shown. Give its test controller a
+                // foreground handoff before the controller verifies the transition to background.
+                form.Activated += (_, _) => Native.AllowSetForegroundWindow(controllerPid);
+            }
             form.Text = "窗口测试 · 文档工作区"; form.Width = 640; form.Height = 420;
             form.Controls.Add(new Forms.Label { Text = "WinWindow 原生窗口验证", Dock = Forms.DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleCenter });
             form.FormClosed += (_, _) => Shutdown();

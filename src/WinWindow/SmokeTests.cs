@@ -52,7 +52,11 @@ internal static class SmokeTests
         string file = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".hwnd");
         var args = new List<string> { "--fixture", file };
         if (reject) args.Add("reject");
-        if (activity) args.Add("activity");
+        if (activity)
+        {
+            args.Add("activity");
+            args.Add(Environment.ProcessId.ToString());
+        }
         if (twins) args.Add("twins");
         if (stall is not null) { args.Add("stall"); args.Add(stall); }
         var process = Start(args.ToArray());
@@ -203,8 +207,24 @@ internal static class SmokeTests
                 await shell.AddTargetAsync(game.Hwnd, pin: false);
                 var gameItem = shell.Manager.Items.Single(w => w.Hwnd == game.Hwnd);
                 Assert(gameItem.IsManaged && !Native.IsTopmost(game.Hwnd), "adding a background target does not pin it");
-                shell.ShowShell();
-                await WaitAsync("fixture pauses when another window is active", () => Native.Title(game.Hwnd).StartsWith("activity:paused:"));
+                var workbench = new WindowInteropHelper(shell).Handle;
+                try
+                {
+                    await WaitAsync("fixture pauses after the workbench takes foreground", () =>
+                    {
+                        if (Native.GetForegroundWindow() != workbench)
+                        {
+                            shell.ShowShell();
+                            return false;
+                        }
+                        return Native.Title(game.Hwnd).StartsWith("activity:paused:unfocused:");
+                    }, 5000);
+                }
+                catch (TimeoutException ex)
+                {
+                    throw new TimeoutException(
+                        $"Foreground handoff did not settle. Foreground={Native.GetForegroundWindow()}, workbench={workbench}, fixture={game.Hwnd}, state={Native.Title(game.Hwnd)}.", ex);
+                }
                 var gameRow = await FindRowAsync(shell, gameItem);
                 Assert(!store.Preferences.EnhancedBackgroundKeep && !store.Preferences.LockBackgroundCursorPos,
                     "enhanced injection and cursor coordinate lock are off by default");
