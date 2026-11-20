@@ -673,16 +673,34 @@ internal static class SmokeTests
                     throw new InvalidOperationException("Could not position the overlapping test windows.");
         });
         await OverlapAsync();
-        NeatWin.Core.WindowSnapshot[] Pair() => layout.Capture().Where(w => w.Handle == first || w.Handle == second).ToArray();
-        bool Separated()
-        {
-            var pair = Pair();
-            return pair.Length == 2 && pair[0].VisualRect.Intersect(pair[1].VisualRect).IsEmpty;
-        }
-        var before = Pair();
+        bool IsFixture(NeatWin.Core.WindowSnapshot w) => w.Handle == first || w.Handle == second;
+        bool HasOtherWindows(IEnumerable<NeatWin.Core.WindowSnapshot> windows) =>
+            windows.Any(w => !IsFixture(w) && !w.VisualRect.Intersect(area).IsEmpty);
+        NeatWin.Core.WindowSnapshot[] Pair() => layout.Capture().Where(IsFixture).ToArray();
+        static OcclusionMetrics.Exposure Exposure(NeatWin.Core.WindowSnapshot w, IReadOnlyList<NeatWin.Core.WindowSnapshot> windows) =>
+            IntentLayoutPlanner.ScreenExposure(w.VisualRect, windows.Where(c => c.ZOrder < w.ZOrder).Select(c => c.VisualRect),
+                w.WorkArea, w.Dpi);
+        var initialDesktop = layout.Capture();
+        var before = initialDesktop.Where(IsFixture).ToArray();
         Assert(before.Length == 2 && before.All(w => w.IsManageable) &&
             before[0].VisualRect.Intersect(before[1].VisualRect).Area > .90 * before[1].VisualRect.Area,
             "two native windows start almost completely covered");
+        var initiallyCovered = Exposure(before[1], initialDesktop);
+        var hadOtherWindows = HasOtherWindows(initialDesktop);
+        bool Improved()
+        {
+            var current = layout.Capture();
+            var pair = current.Where(IsFixture).ToArray();
+            if (pair.Length != 2 || !pair.Any(w => before.Any(old => old.Handle == w.Handle && !WindowStateRules.Near(old.VisualRect, w.VisualRect))))
+                return false;
+            if (!hadOtherWindows && !HasOtherWindows(current))
+                return pair[0].VisualRect.Intersect(pair[1].VisualRect).IsEmpty;
+            // A shared runner desktop may have an unrelated window using part of the screen.
+            // Verify that both fixtures remain usable and their worst exposure actually improves.
+            var exposure = pair.Select(w => Exposure(w, current)).ToArray();
+            return exposure.Min(e => e.Visible) >= initiallyCovered.Visible + .15 &&
+                exposure.Min(e => e.AccessWidth) >= 80 * pair[1].Dpi / 96.0;
+        }
         var arrange = (Button)shell.FindName("ArrangeButton");
         var undo = (Button)shell.FindName("UndoArrangeButton");
         var status = (TextBlock)shell.FindName("StatusText");
@@ -690,15 +708,15 @@ internal static class SmokeTests
         arrange.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
         try
         {
-            await WaitAsync("manual Smart separates real windows through the footer", () =>
+            await WaitAsync("manual Smart improves exposure of real windows through the footer", () =>
             {
                 if (status.Text.Length != 0) messages.Add(status.Text);
-                return undo.IsEnabled && Separated();
+                return undo.IsEnabled && Improved();
             }, 8000);
         }
         catch (TimeoutException ex)
         {
-            var observations = layout.Capture().Select(w => $"{w.Handle}: {w.VisualRect} movable={w.IsManageable} z={w.ZOrder}");
+            var observations = layout.Capture().Select(w => $"{w.Handle}: {w.VisualRect} movable={w.IsManageable} z={w.ZOrder} title={Native.Title(w.Handle)}");
             throw new TimeoutException($"{ex.Message}. Work area {area}, targets {first}/{second}, " +
                 $"undo={undo.IsEnabled}. {string.Join(" | ", messages)}. {string.Join(" | ", observations)}", ex);
         }
@@ -708,15 +726,15 @@ internal static class SmokeTests
         var modes = ((Panel)shell.FindName("FooterModes")).Children.OfType<RadioButton>().ToArray();
         RadioButton Mode(AutomaticLayoutMode mode) => modes.Single(b => Equals(b.Tag, mode.ToString()));
         Mode(AutomaticLayoutMode.AutoFullAssist).IsChecked = true;
-        await WaitAsync("automatic mode opens up the same covered native windows", Separated, 8000);
+        await WaitAsync("automatic mode opens up the same covered native windows", Improved, 8000);
         var stable = Pair();
         await Task.Delay(1250);
         Assert(Pair().All(a => stable.Any(w => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))),
             "automatic arrangement settles without reacting to its own native moves");
         await OverlapAsync();
-        await WaitAsync("automatic mode responds to actual external window moves", Separated, 8000);
+        await WaitAsync("automatic mode responds to actual external window moves", Improved, 8000);
         Mode(AutomaticLayoutMode.Off).IsChecked = true;
-        Report("PASS: manual and automatic arrangement separate overlapping native windows, and undo restores their positions");
+        Report("PASS: manual and automatic arrangement expose overlapping native windows, and undo restores their positions");
     }
 
     private static async Task CheckFooterModesAsync(MainWindow shell, StateStore store, string output)
