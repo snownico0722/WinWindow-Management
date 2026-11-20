@@ -78,6 +78,7 @@ internal static class Native
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] private static extern int DwmGetWindowAttributeRect(nint hwnd, int attribute, out Rect rect, int size);
     [DllImport("dwmapi.dll")] internal static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(uint access, bool inherit, uint id);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(nint process, out uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetProcessTimes(nint process, out long creation, out long exit, out long kernel, out long user);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageName(nint process, uint flags, StringBuilder name, ref uint size);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
@@ -295,7 +296,9 @@ internal static class Native
     {
         nint process = OpenProcess(0x1000, false, (uint)identity.ProcessId);
         if (process == 0) return false;
-        try { return MatchesProcess(identity, process); }
+        // Windows retains the process object while an observer still holds a handle.
+        const uint stillActive = 259;
+        try { return MatchesProcess(identity, process) && GetExitCodeProcess(process, out uint code) && code == stillActive; }
         finally { CloseHandle(process); }
     }
 

@@ -19,7 +19,18 @@ internal sealed class WindowManager
     public event Action<string>? Notice;
     public event Action? Changed;
     public bool HasRules => _store.Preferences.Rules.Count != 0;
-    public WindowManager(StateStore store) => _store = store;
+    private readonly Func<WindowIdentity, Dictionary<string, bool>> _readMutes;
+    private readonly Action<WindowIdentity, IReadOnlyDictionary<string, bool>, bool?> _writeMutes;
+
+    public WindowManager(StateStore store) : this(store, Native.GetProcessMutes, Native.SetProcessMutes) { }
+
+    internal WindowManager(StateStore store, Func<WindowIdentity, Dictionary<string, bool>> readMutes,
+        Action<WindowIdentity, IReadOnlyDictionary<string, bool>, bool?> writeMutes)
+    {
+        _store = store;
+        _readMutes = readMutes;
+        _writeMutes = writeMutes;
+    }
     private string NativeDirectory => Path.GetFullPath(Path.Combine(_store.DirectoryPath, "Native"));
     private static bool Same(WindowIdentity? a, WindowIdentity? b) => a is not null && b is not null && a.Handle == b.Handle && a.ProcessId == b.ProcessId && a.ProcessStarted == b.ProcessStarted && a.ClassName == b.ClassName;
     // State and journal stay on the dispatcher; foreign HWND work does not.
@@ -306,7 +317,7 @@ internal sealed class WindowManager
             if (_stopping) return;
             try
             {
-                var current = await Task.Run(() => Native.GetProcessMutes(identity));
+                var current = await Task.Run(() => _readMutes(identity));
                 if (_stopping) return;
                 var owner = AudioRows(identity).FirstOrDefault(x => x.Original?.OriginalAudioMutes is not null);
                 if (owner is null)
@@ -334,7 +345,7 @@ internal sealed class WindowManager
             else
             {
                 Track(owner, s => s.OriginalAudioMutes ??= new(StringComparer.Ordinal));
-                var current = await Task.Run(() => Native.GetProcessMutes(identity));
+                var current = await Task.Run(() => _readMutes(identity));
                 if (_stopping) return;
                 await ApplyMuteAsync(owner, current, value);
             }
@@ -352,7 +363,7 @@ internal sealed class WindowManager
         var baseline = new Dictionary<string, bool>(snapshot.OriginalAudioMutes!, StringComparer.Ordinal);
         foreach (var (id, muted) in current) baseline.TryAdd(id, muted);
         if (baseline.Count != snapshot.OriginalAudioMutes!.Count) Track(owner, s => s.OriginalAudioMutes = baseline);
-        await Task.Run(() => Native.SetProcessMutes(snapshot.Identity, current, value));
+        await Task.Run(() => _writeMutes(snapshot.Identity, current, value));
         foreach (var row in AudioRows(snapshot.Identity)) row.Muted = value;
     }
 
@@ -541,7 +552,7 @@ internal sealed class WindowManager
     private async Task RestoreAudioAsync(WindowSnapshot snapshot)
     {
         if (snapshot.OriginalAudioMutes is not { } baseline) return;
-        await Task.Run(() => Native.SetProcessMutes(snapshot.Identity, baseline));
+        await Task.Run(() => _writeMutes(snapshot.Identity, baseline, null));
         snapshot.OriginalAudioMutes = null;
         foreach (var row in AudioRows(snapshot.Identity))
             row.Muted = baseline.Count != 0 && baseline.Values.All(x => x);

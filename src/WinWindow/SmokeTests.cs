@@ -761,6 +761,35 @@ internal static class SmokeTests
         }
     }
 
+    private static async Task CheckMixedSessionRestoreAsync(nint hwnd, string output)
+    {
+        // Hosted Windows runners may have no render endpoint. Drive the same
+        // manager operations with observable per-session values in that case too.
+        var sessions = new Dictionary<string, bool> { ["music"] = true, ["voice"] = false };
+        var manager = new WindowManager(ChildStore(output, false),
+            _ => new Dictionary<string, bool>(sessions),
+            (_, saved, mute) =>
+            {
+                foreach (var (id, original) in saved)
+                    if (sessions.ContainsKey(id)) sessions[id] = mute ?? original;
+            });
+        var item = manager.SelectTarget(hwnd);
+        await manager.SetMuteAsync(item, true, updateRule: false);
+        Assert(sessions.Values.All(muted => muted), "modeled sessions both muted through the manager");
+        sessions["late"] = false;
+        await manager.RefreshAsync();
+        Assert(sessions["late"], "a new audio session joins the existing mute");
+        await manager.SetMuteAsync(item, false, updateRule: false);
+        Assert(sessions["music"] && !sessions["voice"] && !sessions["late"],
+            "mute off restores the independent baseline of each modeled session");
+        sessions["music"] = false;
+        sessions["voice"] = true;
+        await manager.SetMuteAsync(item, true, updateRule: false);
+        await manager.ShutdownAsync();
+        Assert(!sessions["music"] && sessions["voice"] && !sessions["late"],
+            "a later mute takes a fresh baseline and restores it on exit");
+    }
+
     private static async Task CheckGameRecoveryAsync(string output, List<Process> processes)
     {
         string? fixturePath = Environment.GetEnvironmentVariable("WINWINDOW_RECOVERY_FIXTURE");
@@ -780,6 +809,7 @@ internal static class SmokeTests
             return hwnd != 0 && (Native.GetProp(hwnd, "WinWindow.Test.Mix") == 2 ||
                 Native.GetProp(hwnd, "WinWindow.Test.NoEndpoint") != 0);
         }, 6000);
+        await CheckMixedSessionRestoreAsync(hwnd, output);
         bool audio = Native.GetProp(hwnd, "WinWindow.Test.Mix") == 2;
         if (!audio) Report("SKIP: no Windows render endpoint for the two real WASAPI sessions");
 
