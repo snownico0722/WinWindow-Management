@@ -336,33 +336,6 @@ internal static class Native
         finally { CloseHandle(process); }
     }
 
-    private static readonly string[] AntiCheatDirectories =
-        ["EasyAntiCheat", "BattlEye", "AntiCheatExpert", "GameGuard"];
-    private static readonly string[] AntiCheatPatterns =
-        ["EasyAntiCheat*", "BEService*", "BEClient*", "HoYoKProtect.sys", "mhyprot*.sys", "ACE-Base.sys", "vgk.sys", "eaanticheat*"];
-    private static readonly HashSet<string> SharedDirectoryNames = new(StringComparer.OrdinalIgnoreCase)
-        { "Windows", "Program Files", "Program Files (x86)", "ProgramData", "Users", "common", "steamapps" };
-
-    internal static bool HasAntiCheatProtection(WindowIdentity identity)
-    {
-        if (string.IsNullOrWhiteSpace(identity.ProcessPath) || !Path.IsPathRooted(identity.ProcessPath))
-            return false;
-        try
-        {
-            var current = Directory.GetParent(identity.ProcessPath);
-            for (int depth = 0; depth < 3 && current is not null && current.Parent is not null; depth++, current = current.Parent)
-            {
-                if (SharedDirectoryNames.Contains(current.Name)) break;
-                foreach (string folder in AntiCheatDirectories)
-                    if (Directory.Exists(Path.Combine(current.FullName, folder))) return true;
-                foreach (string pattern in AntiCheatPatterns)
-                    if (Directory.GetFiles(current.FullName, pattern).Length != 0) return true;
-            }
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { }
-        return false;
-    }
-
     internal static bool SetBackgroundActivity(
         WindowIdentity identity,
         bool enabled,
@@ -370,25 +343,14 @@ internal static class Native
         bool lockCursorPosition,
         bool wasInjected,
         string storageDirectory,
-        out bool antiCheatSkipped,
         out bool targetMayHaveChanged)
     {
-        antiCheatSkipped = false;
         targetMayHaveChanged = false;
         if (enabled)
         {
             EnsureIdentity(identity);
             if (!enhancedInjection)
             {
-                targetMayHaveChanged = true;
-                if (Directory.Exists(storageDirectory) && (wasInjected || IsNoFocusLossInjected(identity.Hwnd)))
-                    DisableAndUnloadNoFocusLoss(identity, storageDirectory);
-                PostAppActivation(identity, true, throwOnError: true);
-                return false;
-            }
-            if (HasAntiCheatProtection(identity))
-            {
-                antiCheatSkipped = true;
                 targetMayHaveChanged = true;
                 if (Directory.Exists(storageDirectory) && (wasInjected || IsNoFocusLossInjected(identity.Hwnd)))
                     DisableAndUnloadNoFocusLoss(identity, storageDirectory);

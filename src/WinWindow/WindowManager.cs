@@ -263,13 +263,12 @@ internal sealed class WindowManager
             if (enabled)
                 Track(item, s => { s.RestoreActivation = true; s.InjectedBackground = wasInjected || enhanced; });
             var identity = item.Identity!;
-            bool antiCheatSkipped = false;
             bool targetMayHaveChanged = false;
             bool injected;
             try
             {
                 injected = await Task.Run(() => Native.SetBackgroundActivity(
-                    identity, enabled, enhanced, lockCursor, wasInjected, NativeDirectory, out antiCheatSkipped, out targetMayHaveChanged));
+                    identity, enabled, enhanced, lockCursor, wasInjected, NativeDirectory, out targetMayHaveChanged));
             }
             catch when (enabled && !targetMayHaveChanged)
             {
@@ -286,8 +285,6 @@ internal sealed class WindowManager
                 snapshot.InjectedBackground = enabled && injected;
                 Journal();
             }
-            if (antiCheatSkipped && !_stopping)
-                Notice?.Invoke(UiText.Format("BackgroundAntiCheatFallback", item.Title));
             Finish(item, updateRule);
         });
 
@@ -567,7 +564,7 @@ internal sealed class WindowManager
         {
             if (!s.RestoreActivation) return;
             await Task.Run(() => Native.SetBackgroundActivity(
-                s.Identity, false, false, false, s.InjectedBackground != false, NativeDirectory, out _, out _));
+                s.Identity, false, false, false, s.InjectedBackground != false, NativeDirectory, out _));
             s.RestoreActivation = false;
             s.InjectedBackground = false;
             Journal();

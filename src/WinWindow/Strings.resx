@@ -31,15 +31,14 @@
   <data name="BackToList" xml:space="preserve"><value>返回窗口列表</value></data>
   <data name="BackgroundActivity" xml:space="preserve"><value>后台保持</value></data>
   <data name="BackgroundActivityHint" xml:space="preserve"><value>后台保持：切到其他应用后维持运行（可在设置中开启增强注入）</value></data>
-  <data name="BackgroundAntiCheatFallback" xml:space="preserve"><value>“{0}”检测到反作弊组件，已自动改用无注入兼容模式。</value></data>
-  <data name="BackgroundRejected" xml:space="preserve"><value>未能启用后台保持，请检查目标权限或反作弊限制。</value></data>
+  <data name="BackgroundRejected" xml:space="preserve"><value>未能启用后台保持，请检查目标权限或兼容性。</value></data>
   <data name="BackgroundSection" xml:space="preserve"><value>后台保持</value></data>
   <data name="BackgroundStopped" xml:space="preserve"><value>“{0}”后台保持已停止：{1}</value></data>
   <data name="BackgroundCleanupPending" xml:space="preserve"><value>已移出“{0}”。后台保持的恢复仍待确认：{1}</value></data>
   <data name="BackgroundUnloadFailed" xml:space="preserve"><value>未能确认后台保持组件已卸载。</value></data>
   <data name="BackgroundUnsupported" xml:space="preserve"><value>当前目标进程架构不支持后台保持。</value></data>
   <data name="EnhancedBackground" xml:space="preserve"><value>启用增强注入模式（拦截失焦查询与锁鼠，网游慎用）</value></data>
-  <data name="EnhancedBackgroundHint" xml:space="preserve"><value>统一切换所有已开启「后台保持」的窗口。关闭增强后改用温和模式。检测到反作弊组件的游戏使用温和模式。</value></data>
+  <data name="EnhancedBackgroundHint" xml:space="preserve"><value>统一切换所有已开启「后台保持」的窗口。关闭增强后改用温和模式。</value></data>
   <data name="LockBackgroundCursor" xml:space="preserve"><value>失焦时锁定窗口内光标坐标（防止贴边滚屏）</value></data>
   <data name="LockBackgroundCursorHint" xml:space="preserve"><value>增强注入模式下，目标在后台读取光标位置时固定返回窗口内部安全坐标</value></data>
   <data name="MuteWindow" xml:space="preserve"><value>静音窗口</value></data>
