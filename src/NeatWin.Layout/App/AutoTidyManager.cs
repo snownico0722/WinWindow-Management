@@ -70,8 +70,6 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     internal event Action<ManualWindowGesture>? GestureObserved;
     internal event Action<ManualWindowGesture>? TidyRequested;
 
-    internal bool IsGestureActive => _activeGesture is not null;
-
     internal bool IsAvailable => _eventHook != nint.Zero;
     internal bool PointerTrackingActive => _attentionTimer.Enabled || _dragTimer.Enabled || _mouseHook != nint.Zero;
 

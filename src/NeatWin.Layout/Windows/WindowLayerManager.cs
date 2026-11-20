@@ -2,18 +2,22 @@ using NeatWin.Core;
 
 namespace NeatWin.Windows;
 
-public sealed record LayoutApplication(IntentLayoutPlan Plan, string[] Notes);
+public sealed record LayoutApplication(IntentLayoutPlan Plan, string[] Notes)
+{
+    internal bool SnapshotChanged { get; init; }
+}
 
 public sealed partial class WindowManager
 {
     public LayoutApplication ApplyLayout(IntentLayoutPlan plan)
     {
+        if (plan.Moves.Count == 0 && plan.Layers.Count == 0) return new(plan, []);
         var current = Capture();
         var needed = plan.Moves.Select(m => m.Window).Concat(plan.Layers.SelectMany(l => l.FrontToBack))
             .GroupBy(w => w.Handle).Select(g => g.First()).ToArray();
         if (NativeWindowActivity.IsMoving || needed.Any(w => !current.Any(c => c.Handle == w.Handle &&
             c.IsManageable && WindowStateRules.Matches(w, c, w.VisualRect))))
-            return new(plan with { Moves = [], Layers = [] }, ["桌面在规划后发生变化，本次未执行。"]);
+            return new(plan with { Moves = [], Layers = [] }, ["桌面在规划后发生变化，本次未执行。"]) { SnapshotChanged = true };
 
         var targetRects = plan.Moves.ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
         var notes = ApplyLayers(plan.Layers, targetRects).ToList();

@@ -57,7 +57,7 @@ public sealed class VisibilityAnalyzer
                 visibleRatio >= options.MinimumVisibleRatio &&
                 largestFragment >= options.MinimumLargestVisibleFragmentArea;
 
-            // An explicit arrange can move the ordinary windows hiding this one. A fixed
+            // A full arrange can move the ordinary windows hiding this one. A fixed
             // foreground surface (for example a maximized app) must still shield its background.
             var available = visibleArea > 0;
             if (includeCoveredWindows && !available)

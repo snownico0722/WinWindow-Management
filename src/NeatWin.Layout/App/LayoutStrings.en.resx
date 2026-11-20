@@ -20,7 +20,8 @@
   <data name="LayerPlacementFailed" xml:space="preserve"><value>The stacking order was unavailable. Dependent moves were skipped.</value></data>
   <data name="LayerSkipped" xml:space="preserve"><value>Stacking was skipped because the group changed.</value></data>
   <data name="LayerVerified" xml:space="preserve"><value>The group order was verified without pinning windows.</value></data>
-  <data name="LayoutKept" xml:space="preserve"><value>Checked {0} eligible windows. The current layout fits your preferences.</value></data>
+  <data name="NoPlacement" xml:space="preserve"><value>No alternative placement fits the available space and window size limits.</value></data>
+  <data name="Repositioned" xml:space="preserve"><value>Reposition windows</value></data>
   <data name="LayoutRequested" xml:space="preserve"><value>{0}: adjusting {1} windows and {2} stacking groups. {3}</value></data>
   <data name="LayoutStopped" xml:space="preserve"><value>Desktop arrangement stopped. {0}</value></data>
   <data name="LocalAdjust" xml:space="preserve"><value>Local adjustment</value></data>
