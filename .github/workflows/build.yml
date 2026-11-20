@@ -8,9 +8,14 @@ on:
   workflow_dispatch:
     inputs:
       include_runtime:
-        description: '额外打包一份内置 .NET 的 Windows x64 版本'
+        description: '额外构建一份内置 .NET 的 Windows x64 版本'
         type: boolean
         default: false
+      release_tag:
+        description: '可选：将构建结果上传到已存在的 GitHub Release，例如 v0.1.0'
+        type: string
+        required: false
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -34,56 +39,78 @@ jobs:
         run: dotnet test tests/NeatWin.Tests/NeatWin.Tests.csproj -c Release --logger "console;verbosity=minimal"
       - name: Build WPF
         run: dotnet build src/WinWindow/WinWindow.csproj -c Release
-      - name: Package Windows x64
+      - name: Publish standalone Windows executables
         shell: pwsh
         env:
-          INCLUDE_RUNTIME: ${{ (github.event_name == 'release' && !github.event.release.prerelease) || (github.event_name == 'workflow_dispatch' && inputs.include_runtime) }}
+          INCLUDE_RUNTIME: ${{ (github.event_name == 'release' && !github.event.release.prerelease) || (github.event_name == 'workflow_dispatch' && (inputs.include_runtime || inputs.release_tag != '')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-assets]')) }}
         run: ./scripts/package.ps1 -TestNative -IncludeRuntime:($env:INCLUDE_RUNTIME -eq 'true')
-      - name: Native window and UI smoke tests from the published ZIP
+      - name: Native window and UI smoke tests from the published executables
         shell: pwsh
         run: |
           $env:WINWINDOW_RECOVERY_FIXTURE = (Resolve-Path 'artifacts/native-x64/Release/AudioFixture.exe').Path
-          $testApp = Join-Path $env:RUNNER_TEMP 'WinWindowPackageTest'
-          Expand-Archive artifacts/WinWindow-win-x64.zip -DestinationPath $testApp
-          $p = Start-Process (Join-Path $testApp 'WinWindow.exe') -ArgumentList '--self-test TestResults' -PassThru
-          if (-not $p.WaitForExit(180000)) {
-            if (Test-Path TestResults/smoke-tests.txt) { Get-Content TestResults/smoke-tests.txt -Tail 20 }
-            $p.Kill($true)
-            throw 'Packaged desktop tests timed out. See the last recorded check.'
+          $executables = @(
+            @{ Name = 'standard'; Path = 'artifacts/WinWindow-win-x64.exe' }
+          )
+          if (Test-Path 'artifacts/WinWindow-win-x64-self-contained.exe') {
+            $executables += @{ Name = 'self-contained'; Path = 'artifacts/WinWindow-win-x64-self-contained.exe' }
           }
-          if (Test-Path TestResults/smoke-tests.txt) { Get-Content TestResults/smoke-tests.txt }
-          if ($p.ExitCode -ne 0) { throw "Smoke tests failed ($($p.ExitCode))" }
+          foreach ($entry in $executables) {
+            $results = Join-Path 'TestResults' $entry.Name
+            if (Test-Path $results) { Remove-Item $results -Recurse -Force }
+            $exe = (Resolve-Path $entry.Path).Path
+            $p = Start-Process -FilePath $exe -ArgumentList @('--self-test', $results) -PassThru
+            if (-not $p.WaitForExit(180000)) {
+              $log = Join-Path $results 'smoke-tests.txt'
+              if (Test-Path $log) { Get-Content $log -Tail 20 }
+              $p.Kill($true)
+              throw "Packaged desktop tests timed out for $($entry.Name)."
+            }
+            $log = Join-Path $results 'smoke-tests.txt'
+            if (Test-Path $log) { Get-Content $log }
+            if ($p.ExitCode -ne 0) { throw "Smoke tests failed for $($entry.Name) ($($p.ExitCode))" }
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: WinWindow-preview-and-tests
+          name: WinWindow-executables-and-tests
           path: |
-            artifacts/WinWindow-win-x64.zip
-            artifacts/WinWindow-win-x64-self-contained.zip
-            TestResults/*.png
-            TestResults/smoke-tests.txt
+            artifacts/WinWindow-win-x64.exe
+            artifacts/WinWindow-win-x64-self-contained.exe
+            artifacts/NoFocusLoss-LICENSE.txt
+            artifacts/MinHook-LICENSE.txt
+            TestResults/**/*.png
+            TestResults/**/smoke-tests.txt
           if-no-files-found: warn
           retention-days: 14
 
   release-assets:
     needs: windows
-    if: github.event_name == 'release'
+    # The marker supports refreshing an existing release's assets after the release event
+    # has already fired. Normal pushes never rewrite release downloads.
+    if: github.event_name == 'release' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-assets]')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: WinWindow-preview-and-tests
+          name: WinWindow-executables-and-tests
           path: bundle
-      - name: Attach packages to the published release
+      - name: Replace release archives with standalone executables
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || (github.event_name == 'workflow_dispatch' && inputs.release_tag) || 'v0.1.0' }}
+          PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || false }}
         run: |
-          assets=(bundle/artifacts/WinWindow-win-x64.zip)
+          for legacy in WinWindow-win-x64.zip WinWindow-win-x64-self-contained.zip; do
+            gh release delete-asset --repo "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$legacy" --yes 2>/dev/null || true
+          done
+          assets=(
+            bundle/artifacts/WinWindow-win-x64.exe
+            bundle/artifacts/NoFocusLoss-LICENSE.txt
+            bundle/artifacts/MinHook-LICENSE.txt
+          )
           if [[ "$PRERELEASE" == "false" ]]; then
-            assets+=(bundle/artifacts/WinWindow-win-x64-self-contained.zip)
+            assets+=(bundle/artifacts/WinWindow-win-x64-self-contained.exe)
           fi
           gh release upload --repo "$GITHUB_REPOSITORY" --clobber -- "$RELEASE_TAG" "${assets[@]}"
