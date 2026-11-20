@@ -2,6 +2,128 @@ namespace NeatWin.Core;
 
 internal static partial class IntentLayoutPlanner
 {
+    private static void AddAccessRepairs(List<Candidate> candidates, VisibleWindow[] windows, RectI[] original,
+        OcclusionMetrics.Exposure[] exposure, WindowSnapshot[] obstacles, RectI area, int gap, int[] order)
+    {
+        for (var i = 0; i < windows.Length; i++)
+        {
+            var w = windows[i].Window;
+            var rect = original[i];
+            var access = Math.Min(rect.Width / 2, (int)Math.Round(140 * w.Dpi / 96.0));
+            if (access < 1 || exposure[i].AccessWidth >= access || rect.Width > area.Width || rect.Height > area.Height) continue;
+            var title = rect with { Height = Math.Min(rect.Height, (int)Math.Round(32 * w.Dpi / 96.0)) };
+            var covers = original.Take(i).Concat(obstacles.Where(o => o.ZOrder < w.ZOrder).Select(o => o.VisualRect))
+                .Where(r => !r.Intersect(title).IsEmpty).Reverse().Take(3).ToArray();
+            if (covers.Length == 0) continue;
+            var occupied = original.Where((_, other) => other != i).Concat(obstacles.Select(o => o.VisualRect));
+            foreach (var target in RectRegion.FreeRectangles(area, occupied, rect.Width, rect.Height)
+                .Select(region => ClampTo(rect, region)).Where(target => target != rect).Distinct()
+                .OrderBy(target => Math.Abs((long)rect.X - target.X) + Math.Abs((long)rect.Y - target.Y)).Take(4))
+                AddTarget(target);
+
+            foreach (var cover in covers)
+            {
+                RectI[] openings = [
+                    rect with { X = cover.Left - access - gap },
+                    rect with { X = cover.Right - rect.Width + access + gap },
+                    rect with { Y = cover.Top - title.Height - gap },
+                    rect with { Y = cover.Bottom + gap },
+                ];
+                foreach (var opening in openings) AddTarget(ClampTo(opening, area));
+            }
+
+            void AddTarget(RectI target)
+            {
+                if (target == rect) return;
+                var layout = original.ToArray();
+                layout[i] = target;
+                candidates.Add(new("window-access", layout, order));
+            }
+        }
+
+        static RectI ClampTo(RectI rect, RectI free) => rect with
+        {
+            X = Math.Clamp(rect.X, free.Left, free.Right - rect.Width),
+            Y = Math.Clamp(rect.Y, free.Top, free.Bottom - rect.Height),
+        };
+    }
+
+    private static IEnumerable<int> RowShapes(int count, RectI area)
+    {
+        if (count <= 8) return Enumerable.Range(1, count);
+        var middle = (int)Math.Round(Math.Sqrt(count * (area.Width / (double)area.Height) / 1.5));
+        return new[] { 1, count, 2, (count + 1) / 2, middle - 1, middle, middle + 1 }
+            .Select(columns => Math.Clamp(columns, 1, count)).Distinct();
+    }
+
+    private static void AddDisplayLayouts(List<Candidate> candidates, VisibleWindow[] windows, RectI[] original,
+        RectI area, TaskEvidence[] relations, TidyOptions options, TaskLayoutContext context, int gap, int[] order)
+    {
+        var indices = order.OrderBy(i => CenterY(original[i])).ThenBy(i => CenterX(original[i])).ToArray();
+        var minWidths = new int[windows.Length];
+        var minHeights = new int[windows.Length];
+        var profile = context.Preferences;
+        for (var i = 0; i < windows.Length; i++)
+        {
+            var w = windows[i].Window;
+            var floor = context.MinimumSize(w.Handle);
+            var scale = w.Dpi / 96.0;
+            var canResize = w.IsResizable && profile.AllowUsefulResize;
+            minWidths[i] = canResize ? Minimum(original[i].Width, floor.Width, options.MinimumWidth * scale, profile.ComfortableWidthDip * scale) : original[i].Width;
+            minHeights[i] = canResize ? Minimum(original[i].Height, floor.Height, options.MinimumHeight * scale, profile.ComfortableHeightDip * scale) : original[i].Height;
+        }
+        foreach (var columns in RowShapes(windows.Length, area))
+        {
+            var rows = columns == windows.Length
+                ? new[] { order.OrderBy(i => CenterX(original[i])).ToArray() }
+                : indices.Chunk(columns).Select(row => row.OrderBy(i => CenterX(original[i])).ToArray()).ToArray();
+            var heights = FitLengths(rows.Select(row => row.Max(i => original[i].Height)).ToArray(),
+                rows.Select(row => row.Max(i => minHeights[i])).ToArray(), area.Height - (rows.Length - 1) * gap);
+            if (heights is null) continue;
+            var widths = rows.Select(row => FitLengths(row.Select(i => original[i].Width).ToArray(),
+                row.Select(i => minWidths[i]).ToArray(), area.Width - (row.Length - 1) * gap)).ToArray();
+            if (widths.Any(row => row is null)) continue;
+            var spans = widths.Select(row => row!.Sum() + (row!.Length - 1) * gap).ToArray();
+            var height = heights.Sum() + (rows.Length - 1) * gap;
+            var span = spans.Max();
+            var bounds = Bounds(original);
+            var screenCenter = context.Focus is { Main: not 0 } focus &&
+                relations.Any(r => r.Joint * (1 - r.Uncertainty) > .55)
+                ? windows.FirstOrDefault(w => w.Window.Handle == focus.Main)?.Window.VisualRect ?? bounds
+                : bounds;
+            var left = Math.Clamp((int)Math.Round(CenterX(screenCenter) - span / 2d), area.Left, area.Right - span);
+            var y = Math.Clamp((int)Math.Round(CenterY(screenCenter) - height / 2d), area.Top, area.Bottom - height);
+            var targets = new RectI[windows.Length];
+            for (var row = 0; row < rows.Length; row++)
+            {
+                var x = left;
+                for (var col = 0; col < rows[row].Length; col++)
+                {
+                    var i = rows[row][col];
+                    var width = widths[row]![col];
+                    targets[i] = new(x, y, width, Math.Min(original[i].Height, heights[row]));
+                    x += width + gap;
+                }
+                y += heights[row] + gap;
+            }
+            candidates.Add(new("display-reflow", targets, order));
+        }
+
+        static int Minimum(int original, int observed, double floor, double comfortable) =>
+            Math.Min(original, Math.Max(observed, (int)Math.Ceiling(Math.Max(floor, .60 * Math.Min(original, comfortable)))));
+    }
+
+    // Distribute compression across the space each window can actually give up.
+    private static int[]? FitLengths(int[] preferred, int[] floors, int available)
+    {
+        int minimum = floors.Sum();
+        if (available < minimum) return null;
+        int natural = preferred.Sum();
+        if (available >= natural) return preferred;
+        var keep = (available - minimum) / (double)(natural - minimum);
+        return preferred.Select((size, i) => floors[i] + (int)Math.Floor((size - floors[i]) * keep)).ToArray();
+    }
+
     private static void AddCoveredPairCandidates(List<Candidate> candidates, VisibleWindow[] group,
         RectI[] seed, TaskEvidence[] relations, RectI area, int gap, int[] order)
     {
@@ -68,7 +190,6 @@ internal static partial class IntentLayoutPlanner
                 .OrderByDescending(p => p.Confidence).FirstOrDefault();
             if (mirror != null) peer = Array.FindIndex(windows, w => w.Window.Handle == mirror.Window);
         }
-        if (peer < 0 && windows.Length == 2) peer = 1 - main;
         if (peer < 0 || peer == main) return;
         AddPartialOverlap(candidates, windows, seed, main, peer, area, context, order);
         var a = seed[main]; var b = seed[peer];

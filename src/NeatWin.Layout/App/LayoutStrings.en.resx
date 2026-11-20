@@ -11,6 +11,9 @@
   <data name="ContentFit" xml:space="preserve"><value>Fit to content</value></data>
   <data name="DesktopChanged" xml:space="preserve"><value>The desktop changed after planning. No changes were made.</value></data>
   <data name="DesktopLayout" xml:space="preserve"><value>Desktop layout</value></data>
+  <data name="DisplayReflow" xml:space="preserve"><value>Rearrange display</value></data>
+  <data name="WindowAccess" xml:space="preserve"><value>Expose window controls</value></data>
+  <data name="NoLayoutImprovement" xml:space="preserve"><value>Checked the desktop. No better arrangement at the current strength.</value></data>
   <data name="EdgeBleed" xml:space="preserve"><value>Edge overflow adjustment</value></data>
   <data name="EdgeRow" xml:space="preserve"><value>Side by side</value></data>
   <data name="Grid" xml:space="preserve"><value>Grid</value></data>

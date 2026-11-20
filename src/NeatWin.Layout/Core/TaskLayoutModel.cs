@@ -26,8 +26,6 @@ internal static partial class IntentLayoutPlanner
 
     private static TaskLayoutContext ResolveWorkingPair(VisibleWindow[] windows, TaskLayoutContext context)
     {
-        // A crowded desktop can already have two readable working surfaces above a parked stack.
-        // Preserve this cue when the utility owns focus and there is no stronger interaction history.
         if (!context.PairPlanningEnabled || context.Focus is { Companion: not 0 } ||
             context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true) return context;
         var mainHandle = context.Focus?.Main ?? 0;
@@ -54,16 +52,7 @@ internal static partial class IntentLayoutPlanner
             members.Contains(h.Handle)).Take(2).ToArray();
         if (mainHandle != 0 && members.Contains(mainHandle) && passive is { Length: 1 })
             return context with { Focus = new(mainHandle, passive[0].Handle, 0, "visible-media-pair") };
-        if (!context.ExplicitArrange || windows.Length < 4) return context;
-        var visible = windows.Where(w => w.VisibleRatio >= .4 && w.Window.VisualRect.Area >= .12 * w.Window.WorkArea.Area).ToArray();
-        if (visible.Length != 2 || visible[0] != windows[0] || visible[1] != windows[1] ||
-            !windows.Skip(2).Any(w => w.VisibleRatio < .08)) return context;
-        var main = visible.FirstOrDefault(w => w.Window.Handle == context.Focus?.Main) ?? visible[0];
-        if (context.Focus is { Main: not 0 } f && main.Window.Handle != f.Main) return context;
-        var peer = visible.First(w => w.Window.Handle != main.Window.Handle);
-        var a = main.Window.VisualRect; var b = peer.Window.VisualRect;
-        if (a.VerticalOverlapRatio(b) < .5 || Math.Abs(CenterX(a) - CenterX(b)) < .4 * Math.Min(a.Width, b.Width)) return context;
-        return context with { Focus = new(main.Window.Handle, peer.Window.Handle, 0, "co-visible-working-pair") };
+        return context;
     }
 
     private static TaskEvidence[] InferTask(VisibleWindow[] windows, RectI[] rects, TaskLayoutContext context)
@@ -81,33 +70,28 @@ internal static partial class IntentLayoutPlanner
             var dy = Math.Abs(CenterY(a) - CenterY(b)) / Math.Max(1, Math.Min(a.Height, b.Height));
             var topDifference = Math.Abs(a.Top - b.Top) / (windows[i].Window.Dpi / 96.0);
             var column = dx < .3 && topDifference >= 20 && a.HorizontalOverlapRatio(b) >= .65;
-            // Competing hypotheses, not calibrated psychological probabilities. Overlap alone
-            // cannot distinguish a parked deck from a space-constrained rough row.
-            var parked = dx < .28 && a.Intersect(b).Area > 0 && topDifference is >= 20 and <= 140 ? .85 :
-                dx < .20 && dy < .20 && a.Intersect(b).Area > 0 ? .65 : .12;
-            var joint = parked > .6 ? .15 : Math.Clamp(.35 + .50 * Math.Min(1, dx) + .12 * a.VerticalOverlapRatio(b), .35, .92);
+            var title = b with { Height = Math.Min(b.Height, (int)Math.Round(32 * windows[j].Window.Dpi / 96.0)) };
+            var titleExposed = a.Intersect(title).Area < title.Area * .75;
+            var deep = CoversHalfOfRear(a, b);
+            var offsetDeck = deep && dx < .28 && dy < .28 && titleExposed;
+            var parked = offsetDeck ? .85 : deep && dx < .28 ? .48 : .12;
+            var joint = offsetDeck ? .20 : deep ? .76 :
+                Math.Clamp(.35 + .50 * Math.Min(1, dx) + .12 * a.VerticalOverlapRatio(b), .35, .92);
             if (column && dy > .55) { joint = .80; parked = .15; }
             var source = "geometry-hypotheses";
-            var uncertainty = .40;
-            // A click is evidence that a heavily covered rear window should be readable.
-            // Drag assistance may still infer an intentional stack; explicit pair hints win below.
+            var uncertainty = deep ? .55 : .40;
             var focus = context.Focus;
             bool activePair = focus is { Companion: not 0 } &&
                 (windows[i].Window.Handle == focus.Main && windows[j].Window.Handle == focus.Companion ||
                  windows[j].Window.Handle == focus.Main && windows[i].Window.Handle == focus.Companion);
-            if (context.ExplicitArrange && CoversHalfOfRear(a, b) && (focus?.Companion is null or 0 || activePair))
-            {
-                joint = Math.Max(joint, .85);
-                parked = .12;
-                column = false;
-                source = "explicit-arrange-overlap";
-            }
             if (activePair)
             {
-                // Switching supports association. Joint visibility additionally needs spatial evidence.
                 bool coVisible = windows[i].VisibleRatio >= .25 && windows[j].VisibleRatio >= .25;
-                joint = Math.Max(joint, coVisible || context.PairPlanningEnabled ? .85 : .52);
-                source = focus!.Evidence; uncertainty = focus.Switches > 0 ? .30 : .45;
+                bool configured = focus!.Evidence == "configured-pair";
+                joint = Math.Max(joint, coVisible || configured ? .88 : .78);
+                parked = Math.Min(parked, coVisible || configured ? .18 : .45);
+                source = focus.Evidence;
+                uncertainty = configured ? .10 : focus.Switches > 0 ? coVisible ? .24 : .38 : .40;
             }
             var passive = context.WindowHints?.Any(h => h.PassiveVisual &&
                 (h.Handle == windows[i].Window.Handle || h.Handle == windows[j].Window.Handle)) == true;
@@ -128,6 +112,13 @@ internal static partial class IntentLayoutPlanner
 
     private static bool CoversHalfOfRear(RectI front, RectI rear) =>
         front.Intersect(rear).Area >= rear.Area * .50;
+
+    private static RectI InnerEdgeOverlap(RectI first, RectI second)
+    {
+        if (first.Left > second.Left) (first, second) = (second, first);
+        return first.Left < second.Left && first.Right < second.Right && first.VerticalOverlapRatio(second) >= .50
+            ? first.Intersect(second) : default;
+    }
 
     // Off-screen pixels must never earn visible-information utility.
     internal static OcclusionMetrics.Exposure ScreenExposure(RectI rect, IEnumerable<RectI> occluders,
@@ -188,7 +179,7 @@ internal static partial class IntentLayoutPlanner
                 (!window.IsResizable || !context.Preferences.AllowUsefulResize) &&
                 (a.Width > area.Width || a.Height > area.Height) &&
                 b == Fit(a, window, options, allowResize: false);
-            if (!IntentEvidence.IsValidRect(b) || (!oversizedRescue &&
+            if (!IntentEvidence.IsValidRect(b) || ((b != a || options.RescueOffscreenWindows) && !oversizedRescue &&
                 (b.Left < area.Left - bleed.Left || b.Right > area.Right + bleed.Right ||
                  b.Top < area.Top || b.Bottom > area.Bottom))) return false;
             if (window.IsTopmost && b != a) return false;
@@ -221,21 +212,42 @@ internal static partial class IntentLayoutPlanner
         return true;
     }
 
+    private readonly record struct WindowDemand(double Joint, double Parked, double Ambiguity);
+
+    private static WindowDemand[] MeasureDemand(int count, TaskEvidence[] relations)
+    {
+        var demand = new WindowDemand[count];
+        foreach (var relation in relations)
+        {
+            Accumulate(relation.First, relation);
+            Accumulate(relation.Second, relation);
+        }
+        return demand;
+
+        void Accumulate(int index, TaskEvidence evidence)
+        {
+            var old = demand[index];
+            demand[index] = new(Math.Max(old.Joint, evidence.Joint), Math.Max(old.Parked, evidence.Parked),
+                Math.Max(old.Ambiguity, evidence.Uncertainty * Math.Min(evidence.Joint, evidence.Parked)));
+        }
+    }
+
     private static TaskCostBreakdown TaskCost(VisibleWindow[] windows, RectI[] original, Candidate candidate,
-        TaskEvidence[] relations, RectI area, TaskLayoutContext context, IntentHint hint, WindowSnapshot[]? obstacles = null)
+        TaskEvidence[] relations, WindowDemand[] demands, RectI area, TaskLayoutContext context, IntentHint hint,
+        WindowSnapshot[]? obstacles = null)
     {
         var profile = context.Preferences;
         var information = 0.0; var switching = 0.0; var continuity = 0.0; var reflow = 0.0;
         var peripheral = 0.0; var alignment = 0.0; var uncertainty = 0.0;
         var front = new List<RectI>();
-        foreach (var i in candidate.Order)
+        for (var rank = 0; rank < candidate.Order.Length; rank++)
         {
+            var i = candidate.Order[rank];
             var w = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             var scale = w.Dpi / 96.0;
-            var relevant = relations.Where(r => r.First == i || r.Second == i).ToArray();
-            var joint = relevant.Length == 0 ? 0 : relevant.Max(r => r.Joint);
-            var park = relevant.Length == 0 ? 0 : relevant.Max(r => r.Parked);
-            var exposure = ScreenExposure(b, front.Concat((obstacles ?? []).Where(o => o.ZOrder < windows[Array.IndexOf(candidate.Order, i)].Window.ZOrder).Select(o => o.VisualRect)), area, w.Dpi);
+            var intent = demands[i];
+            var blockers = (obstacles ?? []).Where(o => o.ZOrder < windows[rank].Window.ZOrder).Select(o => o.VisualRect);
+            var exposure = ScreenExposure(b, front.Concat(blockers), area, w.Dpi);
             var windowHint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
             var geometricSmall = a.Area < area.Area * .15;
             // Without content evidence, a generic minimum must not invent a need to enlarge
@@ -258,39 +270,53 @@ internal static partial class IntentLayoutPlanner
             double thirdPartyLoss = occlusionLoss;
             if (context.PairPlanningEnabled && !context.Preferences.ProtectWindowEdges && windowHint?.ProtectPeriphery != true)
             {
-                // When a working pair authorizes inner-edge overlap (personal habit, rule, or media default),
-                // do not triple-charge that authorized edge slice as accidental occlusion; penalize only
-                // third-window covers and overlap exceeding the authorized target.
-                int rankOfI = Array.IndexOf(candidate.Order, i);
-                for (int rIdx = 0; rIdx < rankOfI; rIdx++)
+                // Allow only the configured strip at a facing inner edge. Keep the remainder of
+                // that window and all other covers in the geometry used for readability scoring.
+                List<RectI>? remainingFront = null;
+                double allowedFraction = 0;
+                for (int rIdx = 0; rIdx < rank; rIdx++)
                 {
-                    int frontIdx = candidate.Order[rIdx];
-                    var pref = PairPreferenceFor(windows[frontIdx].Window.Handle, w.Handle, context);
+                    var partnerRect = front[rIdx];
+                    var overlap = InnerEdgeOverlap(b, partnerRect);
+                    if (overlap.IsEmpty) continue;
+                    var pref = PairPreferenceFor(windows[candidate.Order[rIdx]].Window.Handle, w.Handle, context);
                     if (pref?.Overlap is not double authOverlap || authOverlap <= 0) continue;
-                    var partnerRect = candidate.Rects[frontIdx];
-                    double actualOv = b.VerticalOverlapRatio(partnerRect) >= .5 ? partnerRect.HorizontalOverlapRatio(b) : 0;
-                    double allowedOv = Math.Min(actualOv, authOverlap);
-                    double excessOv = Math.Max(0, actualOv - authOverlap);
-                    var otherFront = candidate.Order.Take(rankOfI).Where(k => k != frontIdx).Select(k => candidate.Rects[k])
-                        .Concat((obstacles ?? []).Where(o => o.ZOrder < windows[rankOfI].Window.ZOrder).Select(o => o.VisualRect));
-                    var otherExp = ScreenExposure(b, otherFront, area, w.Dpi);
-                    double baseOtherLoss = 1 - (.65 * otherExp.CenterVisible + .35 * otherExp.Visible);
-                    occlusionLoss = Math.Clamp(baseOtherLoss + .12 * allowedOv + 1.35 * excessOv, 0, 1);
-                    thirdPartyLoss = Math.Clamp(baseOtherLoss + excessOv, 0, 1);
-                    break;
+                    var narrow = Math.Min(b.Width, partnerRect.Width);
+                    var allowance = (int)Math.Round(Math.Min(overlap.Width, narrow * authOverlap));
+                    if (allowance <= 0) continue;
+                    remainingFront ??= front.ToList();
+                    remainingFront[rIdx] = overlap with
+                    {
+                        X = b.Left < partnerRect.Left ? overlap.X : overlap.X + allowance,
+                        Width = overlap.Width - allowance,
+                    };
+                    allowedFraction += (double)allowance / narrow;
+                }
+                if (remainingFront is not null)
+                {
+                    var remaining = ScreenExposure(b, remainingFront.Concat(blockers), area, w.Dpi);
+                    thirdPartyLoss = 1 - (.65 * remaining.CenterVisible + .35 * remaining.Visible);
+                    occlusionLoss = Math.Min(occlusionLoss, thirdPartyLoss + .12 * allowedFraction);
                 }
             }
-            var demand = windows.Length == 1 ? 0 : Math.Max(joint * profile.JointVisibilityWeight,
-                i == 0 ? .85 : .18 * park);
+            var demand = windows.Length == 1 ? 0 : Math.Max(intent.Joint * profile.JointVisibilityWeight,
+                w.IsForeground ? .85 : .18 * intent.Parked);
+            var alternativeDemand = intent.Ambiguity;
             if (context.PairPlanningEnabled && context.Focus is { Companion: not 0 } pair &&
                 w.Handle != pair.Main && w.Handle != pair.Companion && windows[i].VisibleRatio < .08 &&
                 context.PairHints?.Any(h => h.First == w.Handle || h.Second == w.Handle) != true)
             {
                 demand *= .25;
+                alternativeDemand *= .5;
                 continuity += .6 * (Math.Abs(CenterX(a) - CenterX(b)) / area.Width +
                     Math.Abs(CenterY(a) - CenterY(b)) / area.Height);
             }
-            information += demand * (3.4 * occlusionLoss + 1.8 * (1 - capacity));
+            var readingLoss = 3.4 * occlusionLoss + 1.8 * (1 - capacity);
+            var accessLoss = Math.Max(0, 1 - exposure.AccessWidth / Math.Max(1, Math.Min(140 * scale, b.Width * .30)));
+            information += demand * readingLoss;
+            // Read-together and quick-switch interpretations share the title/access outcome.
+            // Ambiguous evidence also charges the worse residual of the two interpretations.
+            uncertainty += alternativeDemand * Math.Max(.35 * readingLoss, accessLoss);
             if (context.PairPlanningEnabled && context.Focus is { Companion: not 0 } working &&
                 w.Handle == working.Companion && context.PairHints?.Any(h => h.Relation == TaskRelation.Alternating &&
                     (h.First == w.Handle || h.Second == w.Handle)) != true &&
@@ -306,7 +332,7 @@ internal static partial class IntentLayoutPlanner
                 var aspect = Math.Max(1, b.Width - chromeX) / (double)Math.Max(1, b.Height - chromeY);
                 information += 1.5 * Math.Abs(Math.Log(aspect / video.ContentAspectRatio));
             }
-            switching += .8 * Math.Max(0, 1 - exposure.AccessWidth / Math.Max(1, Math.Min(140 * scale, b.Width * .30)));
+            switching += .8 * accessLoss;
             peripheral += 1.4 * (1 - b.Intersect(area).Area / (double)b.Area);
             var distance = Math.Sqrt(Math.Pow(CenterX(a) - CenterX(b), 2) + Math.Pow(CenterY(a) - CenterY(b), 2));
             continuity += .35 * profile.SpatialContinuityWeight * distance / Math.Max(300 * scale, Math.Min(area.Width, area.Height));
@@ -323,7 +349,7 @@ internal static partial class IntentLayoutPlanner
             front.Add(b);
         }
         var n = Math.Max(1, windows.Length);
-        information /= n; switching /= n; continuity /= n; reflow /= n; peripheral /= n;
+        information /= n; switching /= n; continuity /= n; reflow /= n; peripheral /= n; uncertainty /= n;
         double pairCost = 0;
         foreach (var r in relations)
         {
@@ -331,22 +357,20 @@ internal static partial class IntentLayoutPlanner
             var oa = original[r.First]; var ob = original[r.Second];
             var choice = PairPreferenceFor(windows[r.First].Window.Handle, windows[r.Second].Window.Handle, context);
             if (choice != null) pairCost += PairPlacementCost(a, b, oa, ob, area, choice);
-            // Manual arrange treats a heavily stacked pair as a request to see both windows.
-            // A larger window behind the pair can otherwise make a partly overlapped row score better.
-            if (context.ExplicitArrange && r.Joint > r.Parked &&
-                oa.Intersect(ob).Area >= .5 * Math.Max(oa.Area, ob.Area))
+            // Deep coverage with no usable rear title is an observable access problem
+            // under either reading or alternating. Deliberate overlap still earns credit.
+            if (r.Joint > r.Parked && oa.Intersect(ob).Area >= .50 * Math.Max(oa.Area, ob.Area))
             {
                 double rawOverlap = a.Intersect(b).Area / Math.Max(1d, Math.Min(a.Area, b.Area));
-                double unpermitted = choice?.Overlap is double permitted && permitted > 0
-                    ? Math.Max(0, (a.VerticalOverlapRatio(b) >= .5 ? a.HorizontalOverlapRatio(b) : rawOverlap) - permitted)
+                double unpermitted = choice?.Overlap is double permitted && permitted > 0 && !InnerEdgeOverlap(a, b).IsEmpty
+                    ? Math.Max(0, a.HorizontalOverlapRatio(b) - permitted)
                     : rawOverlap;
-                information += (3.4 * r.Joint * unpermitted) / n;
+                information += (2.6 * (r.Joint - .5 * r.Parked) * unpermitted) / n;
             }
             var dx = CenterX(oa) - CenterX(ob); var dy = CenterY(oa) - CenterY(ob);
             // Inside a larger background window, a smaller window's center can be to either
             // side without establishing a reading order. Penalize reversals only for distinct positions.
-            var preserveHorizontalOrder = !context.ExplicitArrange ||
-                oa.Intersect(ob).Area < .50 * Math.Min(oa.Area, ob.Area);
+            var preserveHorizontalOrder = oa.Intersect(ob).Area < .50 * Math.Min(oa.Area, ob.Area);
             if ((choice?.Order ?? 0) == 0 && preserveHorizontalOrder && Math.Abs(dx) > .20 * Math.Min(oa.Width, ob.Width) &&
                 dx * (CenterX(a) - CenterX(b)) < 0) continuity += 1.8 * r.Affinity;
             if (r.SameColumn)
@@ -368,6 +392,14 @@ internal static partial class IntentLayoutPlanner
                 alignment += .13 * r.Affinity * Math.Min(1, Math.Min(Math.Abs(a.Top - b.Top), Math.Abs(a.Bottom - b.Bottom)) / Math.Max(1, 80 * windows[r.First].Window.Dpi / 96.0));
                 var gap = CenterX(a) < CenterX(b) ? b.Left - a.Right : a.Left - b.Right;
                 if (gap >= 0) alignment += .12 * r.Affinity * Math.Min(1, Math.Abs(gap - hint.GapPixels) / (160 * windows[r.First].Window.Dpi / 96.0));
+            }
+            else if (a.HorizontalOverlapRatio(b) >= .4)
+            {
+                var gap = RectI.IntervalGap(a.Top, a.Bottom, b.Top, b.Bottom);
+                var edge = Math.Min(Math.Abs(a.Left - b.Left), Math.Abs(a.Right - b.Right));
+                var scale = windows[r.First].Window.Dpi / 96.0;
+                alignment += r.Affinity * (.10 * Math.Min(1, edge / (80 * scale)) +
+                    .08 * Math.Min(1, Math.Abs(gap - hint.GapPixels) / (160 * scale)));
             }
             uncertainty += r.Uncertainty * .04 * Math.Abs(newDistance - oldDistance) / Math.Max(1, Math.Min(area.Width, area.Height));
         }
@@ -406,7 +438,7 @@ internal static partial class IntentLayoutPlanner
         IntentLayoutPlan planned, IReadOnlyList<TidyMove> refined, TidyOptions options,
         TaskLayoutContext context, IReadOnlyList<WindowSnapshot> desktop)
     {
-        if (context.VerifiedRepeat) return refined.Count == 0;
+        if (context.VerifiedRepeat && !context.ExplicitArrange) return refined.Count == 0;
         visible = IncludeWorkingCompanion(visible, desktop, context);
         var known = planned.Groups.SelectMany(g => g.Handles).ToHashSet();
         if (refined.Any(m => !known.Contains(m.Window.Handle))) return false;
@@ -437,20 +469,21 @@ internal static partial class IntentLayoutPlanner
                 layer.FrontToBack.Select(w => Array.FindIndex(group, v => v.Window.Handle == w.Handle)).ToArray();
             if (order.Length != group.Length || order.Any(i => i < 0)) return false;
             var area = group[0].Window.WorkArea;
-            var beforeObstacles = plannedDesktop.Where(w => !trace.Handles.Contains(w.Handle) &&
-                w.MonitorHandle == group[0].Window.MonitorHandle).ToArray();
-            var afterObstacles = refinedDesktop.Where(w => !trace.Handles.Contains(w.Handle) &&
-                w.MonitorHandle == group[0].Window.MonitorHandle).ToArray();
+            var beforeObstacles = plannedDesktop.Where(w => !trace.Handles.Contains(w.Handle) && !w.VisualRect.Intersect(area).IsEmpty).ToArray();
+            var afterObstacles = refinedDesktop.Where(w => !trace.Handles.Contains(w.Handle) && !w.VisualRect.Intersect(area).IsEmpty).ToArray();
+            var previousObstacleRects = beforeObstacles.ToDictionary(w => w.Handle, w => w.VisualRect);
             var c = new Candidate("refined", after, order);
             if (!TaskSafe(group, original, c, area, options, context, afterObstacles)) return false;
             for (var i = 0; i < group.Length; i++)
-                for (var j = 0; j < afterObstacles.Length; j++)
-                    if (after[i].Intersect(afterObstacles[j].VisualRect).Area >
-                        before[i].Intersect(beforeObstacles[j].VisualRect).Area) return false;
-            var task = InferTask(group, original, context);
+                foreach (var obstacle in afterObstacles)
+                    if (after[i].Intersect(obstacle.VisualRect).Area >
+                        before[i].Intersect(previousObstacleRects.GetValueOrDefault(obstacle.Handle)).Area) return false;
+            var groupContext = ResolveWorkingPair(group, context);
+            var task = trace.Task?.Relations ?? InferTask(group, original, groupContext);
+            var demands = MeasureDemand(group.Length, task);
             var hint = new IntentHint((int)Math.Round(8 * group[0].Window.Dpi / 96.0), 0, 0);
-            if (TaskScore(TaskCost(group, original, c, task, area, context, hint, afterObstacles), options.SmartStrength, task) >
-                TaskScore(TaskCost(group, original, new("planned", before, order), task, area, context, hint, beforeObstacles), options.SmartStrength, task) + .01) return false;
+            if (TaskScore(TaskCost(group, original, c, task, demands, area, groupContext, hint, afterObstacles), options.SmartStrength, task) >
+                TaskScore(TaskCost(group, original, new("planned", before, order), task, demands, area, groupContext, hint, beforeObstacles), options.SmartStrength, task) + .01) return false;
         }
         return true;
     }

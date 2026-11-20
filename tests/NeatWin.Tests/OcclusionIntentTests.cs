@@ -64,7 +64,7 @@ public sealed class OcclusionIntentTests
     {
         var p = Plan(W(1, new(1120, 240, 1320, 1090)), W(2, new(540, 100, 1280, 1190)), W(3, new(0, 80, 1380, 1200)));
         Assert.Contains(p.Groups.SelectMany(g => g.Candidates), c => c.Kind == "stack" && c.Rejection is null);
-        Assert.Contains(p.Groups.SelectMany(g => g.Candidates), c => c.Kind == "columns" && c.Rejection == "no-size-safe-packing");
+        Assert.Contains(p.Groups.SelectMany(g => g.Candidates), c => c.Kind is "columns" or "grid" && c.Rejection is null);
         Assert.NotEmpty(p.Moves);
     }
 

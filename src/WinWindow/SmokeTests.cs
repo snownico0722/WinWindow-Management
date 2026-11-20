@@ -149,10 +149,17 @@ internal static class SmokeTests
             Assert(rejectedOpacity && stubborn.Opacity == 100 && (Native.Style(stubborn.Hwnd) & Native.Layered) == 0, "WPF opacity veto is reported without claiming success");
             await manager.ReleaseAsync(stubborn);
             Assert(stubborn.Original is null, "an unchanged unsupported window does not block release");
-            await manager.ParkAsync(stubborn);
-            Assert(!Native.IsWindowVisible(stubborn.Hwnd) && stubborn.IsHidden && stubborn.IsParked, "refused minimization falls back to hidden");
+            // User32 may minimize a real WPF HWND even when the fixture tries to restore itself.
+            // Withhold both minimize requests to exercise the real hide and restore paths deterministically.
+            var minimizeAttempts = new List<string>(2);
+            await manager.ParkAsync(stubborn, forceMinimize: _ => minimizeAttempts.Add("force"),
+                minimizeWithoutActivation: (_, _) => minimizeAttempts.Add("placement"));
+            Assert(minimizeAttempts.SequenceEqual(new[] { "force", "placement" }), "both minimize requests are tried before hiding");
+            Assert(!Native.IsWindowVisible(stubborn.Hwnd) && !Native.IsIconic(stubborn.Hwnd) &&
+                stubborn.IsHidden && stubborn.IsParked, "refused minimization falls back to hidden");
             await manager.RestoreParkingAsync(stubborn, false);
-            Assert(Native.IsWindowVisible(stubborn.Hwnd), "hidden fallback can be restored");
+            Assert(Native.IsWindowVisible(stubborn.Hwnd) && !Native.IsIconic(stubborn.Hwnd) &&
+                !stubborn.IsHidden && !stubborn.IsParked, "hidden fallback can be restored");
             await manager.ReleaseAsync(stubborn);
             await manager.SetOpacityAsync(item, 0);
             var recovered = new WindowManager(store);
@@ -579,8 +586,9 @@ internal static class SmokeTests
             "explicit Smart fits a three-window cascade into readable nonoverlapping rows");
         Assert(Manual(stack, allowResize: false).Moves.All(m => m.TargetVisualRect.Width == m.Window.VisualRect.Width &&
             m.TargetVisualRect.Height == m.Window.VisualRect.Height), "manual arrange respects disabled resizing");
-        Assert(analyzer.SelectVisibleWorkingSet(stack, includeStackAccess: true).Count == 1,
-            "automatic Smart leaves the covered background out of its working set");
+        Assert(analyzer.SelectForManualArrange(stack, true).Count == 3 &&
+            analyzer.SelectVisibleWorkingSet(stack, includeStackAccess: true).Count == 1,
+            "full desktop and gesture-only assistance have distinct working sets");
         var session = new TaskLayoutSession();
         var now = DateTimeOffset.UtcNow;
         var placed = stack.Select((w, i) => w with { VisualRect = targets[i] }).ToArray();
@@ -637,14 +645,20 @@ internal static class SmokeTests
             return;
         }
         var area = desktop.Single(w => w.Handle == first).WorkArea;
-        await Task.Run(() =>
+        Task OverlapAsync() => Task.Run(() =>
         {
             foreach (var hwnd in new[] { first, second })
                 if (!Native.SetWindowPos(hwnd, 0, area.X + 80, area.Y + 90, Math.Min(600, area.Width / 2 - 16),
                     Math.Min(420, area.Height - 100), Native.NoActivate))
                     throw new InvalidOperationException("Could not position the overlapping test windows.");
         });
+        await OverlapAsync();
         NeatWin.Core.WindowSnapshot[] Pair() => layout.Capture().Where(w => w.Handle == first || w.Handle == second).ToArray();
+        bool Separated()
+        {
+            var pair = Pair();
+            return pair.Length == 2 && pair[0].VisualRect.Intersect(pair[1].VisualRect).IsEmpty;
+        }
         var before = Pair();
         Assert(before.Length == 2 && before.All(w => w.IsManageable) &&
             before[0].VisualRect.Intersect(before[1].VisualRect).Area > .90 * before[1].VisualRect.Area,
@@ -659,8 +673,7 @@ internal static class SmokeTests
             await WaitAsync("manual Smart separates real windows through the footer", () =>
             {
                 if (status.Text.Length != 0) messages.Add(status.Text);
-                var pair = Pair();
-                return undo.IsEnabled && pair.Length == 2 && pair[0].VisualRect.Intersect(pair[1].VisualRect).IsEmpty;
+                return undo.IsEnabled && Separated();
             }, 8000);
         }
         catch (TimeoutException ex)
@@ -672,7 +685,18 @@ internal static class SmokeTests
         undo.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
         await WaitAsync("footer undo restores both overlapping windows", () => !undo.IsEnabled && before.All(w =>
             Pair().Any(a => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))), 8000);
-        Report("PASS: the arrange and undo buttons separate overlapping native windows and restore their positions");
+        var modes = ((Panel)shell.FindName("FooterModes")).Children.OfType<RadioButton>().ToArray();
+        RadioButton Mode(AutomaticLayoutMode mode) => modes.Single(b => Equals(b.Tag, mode.ToString()));
+        Mode(AutomaticLayoutMode.AutoFullAssist).IsChecked = true;
+        await WaitAsync("automatic mode opens up the same covered native windows", Separated, 8000);
+        var stable = Pair();
+        await Task.Delay(1250);
+        Assert(Pair().All(a => stable.Any(w => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))),
+            "automatic arrangement settles without reacting to its own native moves");
+        await OverlapAsync();
+        await WaitAsync("automatic mode responds to actual external window moves", Separated, 8000);
+        Mode(AutomaticLayoutMode.Off).IsChecked = true;
+        Report("PASS: manual and automatic arrangement separate overlapping native windows, and undo restores their positions");
     }
 
     private static async Task CheckFooterModesAsync(MainWindow shell, StateStore store, string output)

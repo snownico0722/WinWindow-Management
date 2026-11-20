@@ -16,7 +16,8 @@ public sealed record PlannedGroup(int[] Ids, string Selected, double StackEviden
 public sealed record ProjectedPlan(PlannedWindow[] Targets, int[][] Layers, string[] Selected);
 public sealed record LayoutRunObservation(int Version, string Session, string RequestId, string Trigger,
     WorkspaceFrame Before, PlannedWindow[] Targets, int[][] Layers, PlannedGroup[] Groups,
-    WorkspaceFrame? Actual, string Outcome, string[] ApplyNotes, ProjectedPlan? BasePlan = null, ProjectedPlan? Proposal = null, ProjectedPlan? ScoredPlan = null, CompiledLayoutRules? Rules = null, RecordedTaskSignals? Signals = null);
+    WorkspaceFrame? Actual, string Outcome, string[] ApplyNotes, ProjectedPlan? BasePlan = null, ProjectedPlan? Proposal = null, ProjectedPlan? ScoredPlan = null,
+    CompiledLayoutRules? Rules = null, RecordedTaskSignals? Signals = null, SmartTidyStrength? Strength = null, bool? FullDesktop = null);
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
 public sealed class ObservationIdentityTracker

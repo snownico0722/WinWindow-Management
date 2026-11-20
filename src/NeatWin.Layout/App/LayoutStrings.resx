@@ -11,6 +11,9 @@
   <data name="ContentFit" xml:space="preserve"><value>内容尺度调整</value></data>
   <data name="DesktopChanged" xml:space="preserve"><value>桌面在规划后发生变化，本次未执行。</value></data>
   <data name="DesktopLayout" xml:space="preserve"><value>桌面整理</value></data>
+  <data name="DisplayReflow" xml:space="preserve"><value>重排显示器窗口</value></data>
+  <data name="WindowAccess" xml:space="preserve"><value>露出窗口操作区</value></data>
+  <data name="NoLayoutImprovement" xml:space="preserve"><value>已分析桌面，当前整理强度下没有更合适的摆法。</value></data>
   <data name="EdgeBleed" xml:space="preserve"><value>边缘空间交换</value></data>
   <data name="EdgeRow" xml:space="preserve"><value>叠边并排</value></data>
   <data name="Grid" xml:space="preserve"><value>多行排布</value></data>

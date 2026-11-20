@@ -42,6 +42,41 @@ public sealed class TaskLayoutTests
         Assert.Equal(a, b); Assert.Equal(.8, a.Visible, 6);
     }
 
+    [Theory]
+    [InlineData(100, 690, 1450, false, false)] // Partial vertical overlap.
+    [InlineData(100, 100, 1240, false, false)] // Horizontal containment.
+    [InlineData(1220, 100, 1330, true, false)] // Facing edge on one side.
+    [InlineData(1220, 100, 1330, true, true)] // Facing edge on the other side after reversing layers.
+    public void PairOverlapCreditIsLimitedToTheFacingInnerEdge(int rearX, int rearY, int rearWidth, bool hasEdge, bool reverse)
+    {
+        var front = new RectI(100, 80, 1450, 860);
+        var rear = new RectI(rearX, rearY, rearWidth, 670);
+        var windows = reverse ? new[] { W(1, rear), W(2, front) } : new[] { W(1, front), W(2, rear) };
+        var context = Context(TaskRelation.JointView) with { ExplicitArrange = true };
+        TaskCostBreakdown Current(TaskLayoutContext c) => Assert.Single(Plan(c, windows).Groups)
+            .Candidates.Single(candidate => candidate.Kind == "keep").Breakdown!;
+        var ordinary = Current(context);
+        var allowed = Current(context with { RulePairs = [new(1, 2, "either", .25)] });
+        Assert.True(ordinary.InformationLoss > 0);
+        if (hasEdge) Assert.True(allowed.InformationLoss < ordinary.InformationLoss);
+        else Assert.Equal(ordinary.InformationLoss, allowed.InformationLoss, 8);
+    }
+
+    [Fact]
+    public void RefinementProtectsThePartOfAnAdjacentScreenWindowThatSpillsIntoTheWorkArea()
+    {
+        var visibleWindow = W(2, new(268, 100, 800, 640));
+        var pinned = W(1, new(-440, 80, 700, 640)) with
+        {
+            WorkArea = Area with { X = -Area.Width }, MonitorHandle = 2, IsTopmost = true, IsManageable = false,
+        };
+        var plan = new IntentLayoutPlan([], [], [new([visibleWindow.Handle], "keep", 0, [])]);
+        var visible = new[] { V(visibleWindow) };
+        var refined = new[] { new TidyMove(visibleWindow, visibleWindow.VisualRect with { X = 253 }) };
+        Assert.True(IntentLayoutPlanner.TaskRefinementAcceptable(visible, plan, refined, new(), new(), [visibleWindow]));
+        Assert.False(IntentLayoutPlanner.TaskRefinementAcceptable(visible, plan, refined, new(), new(), [pinned, visibleWindow]));
+    }
+
     [Fact]
     public void SameGeometryCanCarryDifferentExplicitTaskHypotheses()
     {

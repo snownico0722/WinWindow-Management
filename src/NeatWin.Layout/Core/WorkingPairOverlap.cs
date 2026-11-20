@@ -12,7 +12,7 @@ internal static partial class IntentLayoutPlanner
             (h.First == first && h.Second == second || h.First == second && h.Second == first)) == true) return null;
         if (context.RulePairs is not { Length: > 0 } && context.Placement is not { Length: > 0 } &&
             context.WindowHints is not { Length: > 0 }) return null;
-        double minConfidence = context.ExplicitArrange ? .40 : .48;
+        const double minConfidence = .45;
         var rule = context.RulePairs?.FirstOrDefault(p => p.Matches(first, second));
         var personal = context.Placement?.Where(p => p.Confidence >= minConfidence &&
             (p.Window == first && p.Partner == second || p.Window == second && p.Partner == first))
@@ -135,7 +135,7 @@ internal static partial class IntentLayoutPlanner
         if (preference.Overlap is not double desired || originalA.Width + originalB.Width <= area.Width) return cost;
         // Zero overlap is always available. Under horizontal pressure, compare the benefit of
         // preserving reading width against the cost of hiding part of the adjacent edge.
-        double overlap = a.VerticalOverlapRatio(b) >= .5 ? a.HorizontalOverlapRatio(b) : 0;
+        double overlap = InnerEdgeOverlap(a, b).Width / (double)Math.Max(1, Math.Min(a.Width, b.Width));
         cost += 5 * Math.Abs(overlap - desired);
         return cost;
     }

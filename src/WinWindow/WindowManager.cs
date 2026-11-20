@@ -556,7 +556,16 @@ internal sealed class WindowManager
         }
         return false;
     }
-    public async Task<string> ParkAsync(WindowItem item)
+    public Task<string> ParkAsync(WindowItem item) => ParkAsync(item,
+        hwnd => Native.ShowWindowAsync(hwnd, Native.ForceMinimize),
+        (hwnd, placement) =>
+        {
+            placement.ShowCmd = 7;
+            Native.ApplyPlacement(hwnd, placement);
+        });
+
+    internal async Task<string> ParkAsync(WindowItem item, Action<nint> forceMinimize,
+        Action<nint, Native.Placement> minimizeWithoutActivation)
     {
         string result = "";
         await OperateAsync(item, async () =>
@@ -565,11 +574,11 @@ internal sealed class WindowManager
             if (Native.IsIconic(item.Hwnd) || !Native.IsWindowVisible(item.Hwnd)) { result = UiText.Get("AlreadyParked"); return; }
             var placement = Native.GetPlacement(item.Hwnd);
             Track(item, s => { s.BeforeParking = placement; s.Parked = true; });
-            Native.ShowWindowAsync(item.Hwnd, Native.ForceMinimize);
+            forceMinimize(item.Hwnd);
             bool minimized = await WaitForAsync(snapshot.Identity, Native.IsIconic);
             if (!minimized && !_stopping)
             {
-                var fallback = placement; fallback.ShowCmd = 7; Native.ApplyPlacement(item.Hwnd, fallback);
+                minimizeWithoutActivation(item.Hwnd, placement);
                 minimized = await WaitForAsync(snapshot.Identity, Native.IsIconic);
             }
             if (!minimized && !_stopping)

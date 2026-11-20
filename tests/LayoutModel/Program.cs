@@ -362,9 +362,10 @@ static void Replay(string path, string? rulesPath)
                 var slotPrefs = activeRules.BindSlots(keyed);
                 var mergedPrefs = CompiledLayoutRules.ApplySlots(ctx.Placement ?? [], slotPrefs);
                 ctx = ctx with { Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities), Placement = mergedPrefs };
-                var workingSet = explicitRun ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);
+                var fullDesktop = run.FullDesktop ?? explicitRun;
+                var workingSet = fullDesktop ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);
                 var plan = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : LayoutRoute.Smart,
-                    workingSet, new(), null, desktop, ctx);
+                    workingSet, new(SmartStrength: run.Strength ?? SmartTidyStrength.Balanced), null, desktop, ctx);
                 var projected = TaskLayoutSession.Project(desktop, plan);
                 bool? regionsPreserved = !frame.Truncated && ctx.WindowHints?.Any(h => h.ProtectedRegions is { Length: > 0 }) == true
                     ? IntentLayoutPlanner.DesktopRegionsPreserved(desktop, projected, ctx) : null;
