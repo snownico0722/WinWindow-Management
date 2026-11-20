@@ -106,20 +106,23 @@ jobs:
             let release;
             if (createRelease) {
               const body = fs.readFileSync(`docs/releases/${tag}.md`, 'utf8');
-              const existingTag = await github.rest.repos.getCommit({ owner, repo, ref: `tags/${tag}` })
+              const tagRef = await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` })
                 .then(r => r.data, error => { if (error.status !== 404) throw error; return null; });
-              if (existingTag && existingTag.sha !== context.sha)
+              const taggedCommit = tagRef?.object.type === 'tag'
+                ? (await github.rest.repos.getCommit({ owner, repo, ref: `tags/${tag}` })).data.sha
+                : tagRef?.object.sha;
+              if (taggedCommit && taggedCommit !== context.sha)
                 throw new Error(`${tag} already refers to another commit.`);
               const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo });
               release = releases.find(item => item.tag_name === tag);
               if (release && !release.draft) {
-                if (release.prerelease || !existingTag || files.some(file => !release.assets.some(
+                if (release.prerelease || !taggedCommit || files.some(file => !release.assets.some(
                   asset => asset.name === file.name && asset.state === 'uploaded' && asset.size > 0)))
                   throw new Error(`${tag} already exists with different release contents.`);
                 core.info(`${tag} is already published.`);
                 return;
               }
-              if (release && release.target_commitish !== context.sha && !existingTag)
+              if (release && release.target_commitish !== context.sha && !taggedCommit)
                 throw new Error(`The draft for ${tag} targets another commit.`);
               if (!release) {
                 ({ data: release } = await github.rest.repos.createRelease({
