@@ -581,7 +581,7 @@ internal static class SmokeTests
             m.TargetVisualRect.Height == m.Window.VisualRect.Height), "manual arrange respects disabled resizing");
         Assert(analyzer.SelectForManualArrange(stack, true).Count == 3 &&
             analyzer.SelectVisibleWorkingSet(stack, includeStackAccess: true).Count == 1,
-            "full-desktop arrangement can include windows completely covered by ordinary windows");
+            "full desktop and gesture-only assistance have distinct working sets");
         var session = new TaskLayoutSession();
         var now = DateTimeOffset.UtcNow;
         var placed = stack.Select((w, i) => w with { VisualRect = targets[i] }).ToArray();
@@ -593,6 +593,8 @@ internal static class SmokeTests
         var fixedCover = Window(0, area) with { IsManageable = false, IsTopmost = true };
         Assert(analyzer.SelectForManualArrange([fixedCover, stack[1]], true).Count == 0,
             "a fixed covering surface shields windows behind it from manual arrange");
+        Assert(Manual([Window(0, new(0, 0, 956, 1040)), Window(1, new(964, 0, 956, 1040))]).Moves.Count == 0,
+            "already aligned windows stay in place after a manual arrange");
         var offscreen = Window(0, rect with { X = area.Right + 50 });
         Assert(Manual([offscreen]).Moves.Single().TargetVisualRect.Intersect(area).Area == rect.Area &&
             analyzer.SelectForManualArrange([offscreen], false).Count == 0, "off-screen rescue honors the preference");
@@ -645,8 +647,11 @@ internal static class SmokeTests
         });
         await OverlapAsync();
         NeatWin.Core.WindowSnapshot[] Pair() => layout.Capture().Where(w => w.Handle == first || w.Handle == second).ToArray();
-        static bool Separated(NeatWin.Core.WindowSnapshot[] pair) =>
-            pair.Length == 2 && pair[0].VisualRect.Intersect(pair[1].VisualRect).IsEmpty;
+        bool Separated()
+        {
+            var pair = Pair();
+            return pair.Length == 2 && pair[0].VisualRect.Intersect(pair[1].VisualRect).IsEmpty;
+        }
         var before = Pair();
         Assert(before.Length == 2 && before.All(w => w.IsManageable) &&
             before[0].VisualRect.Intersect(before[1].VisualRect).Area > .90 * before[1].VisualRect.Area,
@@ -661,7 +666,7 @@ internal static class SmokeTests
             await WaitAsync("manual Smart separates real windows through the footer", () =>
             {
                 if (status.Text.Length != 0) messages.Add(status.Text);
-                return undo.IsEnabled && Separated(Pair());
+                return undo.IsEnabled && Separated();
             }, 8000);
         }
         catch (TimeoutException ex)
@@ -670,37 +675,21 @@ internal static class SmokeTests
             throw new TimeoutException($"{ex.Message}. Work area {area}, targets {first}/{second}, " +
                 $"undo={undo.IsEnabled}. {string.Join(" | ", messages)}. {string.Join(" | ", observations)}", ex);
         }
-        var firstLayout = Pair();
-        arrange.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-        await WaitAsync("a second footer arrange visibly reflows already separated windows", () =>
-        {
-            var pair = Pair();
-            return Separated(pair) && pair.Any(w => firstLayout.Any(old => old.Handle == w.Handle &&
-                !WindowStateRules.Near(old.VisualRect, w.VisualRect)));
-        }, 8000);
-        undo.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-        await WaitAsync("footer undo restores the previous arranged positions", () => !undo.IsEnabled && firstLayout.All(w =>
-            Pair().Any(a => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))), 8000);
-
-        await OverlapAsync();
-        arrange.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-        await WaitAsync("footer arranges the overlapping windows again", () => undo.IsEnabled && Separated(Pair()), 8000);
         undo.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
         await WaitAsync("footer undo restores both overlapping windows", () => !undo.IsEnabled && before.All(w =>
             Pair().Any(a => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))), 8000);
-
         var modes = ((Panel)shell.FindName("FooterModes")).Children.OfType<RadioButton>().ToArray();
-        RadioButton Mode(AutomaticLayoutMode mode) => modes.Single(button => Equals(button.Tag, mode.ToString()));
+        RadioButton Mode(AutomaticLayoutMode mode) => modes.Single(b => Equals(b.Tag, mode.ToString()));
         Mode(AutomaticLayoutMode.AutoFullAssist).IsChecked = true;
-        await WaitAsync("enabling automatic arrangement separates fully covered native windows", () => Separated(Pair()), 8000);
-        var automaticLayout = Pair();
+        await WaitAsync("automatic mode opens up the same covered native windows", Separated, 8000);
+        var stable = Pair();
         await Task.Delay(1250);
-        Assert(Pair().All(a => automaticLayout.Any(w => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))),
-            "automatic arrangement ignores its own window changes");
+        Assert(Pair().All(a => stable.Any(w => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))),
+            "automatic arrangement settles without reacting to its own native moves");
         await OverlapAsync();
-        await WaitAsync("automatic arrangement reacts to external window moves", () => Separated(Pair()), 8000);
+        await WaitAsync("automatic mode responds to actual external window moves", Separated, 8000);
         Mode(AutomaticLayoutMode.Off).IsChecked = true;
-        Report("PASS: manual and automatic arrangement move real windows, and undo restores the layout before the latest click");
+        Report("PASS: manual and automatic arrangement separate overlapping native windows, and undo restores their positions");
     }
 
     private static async Task CheckFooterModesAsync(MainWindow shell, StateStore store, string output)

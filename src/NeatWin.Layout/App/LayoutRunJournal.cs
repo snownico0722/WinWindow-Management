@@ -32,7 +32,8 @@ internal sealed class LayoutRunJournal : IDisposable
     }
 
     internal void Record(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan, string trigger, string[] notes,
-        IntentLayoutPlan? baseline = null, IntentLayoutPlan? proposal = null, IntentLayoutPlan? scored = null, TaskLayoutContext? context = null)
+        IntentLayoutPlan? baseline = null, IntentLayoutPlan? proposal = null, IntentLayoutPlan? scored = null,
+        TaskLayoutContext? context = null, SmartTidyStrength? strength = null, bool? fullDesktop = null)
     {
         try
         {
@@ -48,7 +49,7 @@ internal sealed class LayoutRunJournal : IDisposable
                 p.Groups.Select(g => g.Selected).ToArray());
             var observation = new LayoutRunObservation(5, _session, Guid.NewGuid().ToString("N"), trigger,
                 frame, targets, layers, groups, null, "requested-not-yet-verified", notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
-                context == null ? null : RecordedTaskSignals.From(context, ids));
+                context == null ? null : RecordedTaskSignals.From(context, ids), strength, fullDesktop);
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);
             if (recorded && (plan.Moves.Count > 0 || trigger == "undo"))

@@ -12,7 +12,7 @@ internal static partial class IntentLayoutPlanner
             (h.First == first && h.Second == second || h.First == second && h.Second == first)) == true) return null;
         if (context.RulePairs is not { Length: > 0 } && context.Placement is not { Length: > 0 } &&
             context.WindowHints is not { Length: > 0 }) return null;
-        double minConfidence = context.ExplicitArrange ? .40 : .48;
+        const double minConfidence = .45;
         var rule = context.RulePairs?.FirstOrDefault(p => p.Matches(first, second));
         var personal = context.Placement?.Where(p => p.Confidence >= minConfidence &&
             (p.Window == first && p.Partner == second || p.Window == second && p.Partner == first))

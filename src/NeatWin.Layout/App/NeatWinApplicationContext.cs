@@ -166,7 +166,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
 
     private bool ConfigureAutomation(AutomaticLayoutMode mode, bool arrangeNow = false)
     {
-        if (mode != AutomaticLayoutMode.Off && !_autoTidyManager.IsAvailable) return false;
+        if (mode is AutomaticLayoutMode.LightAssist or AutomaticLayoutMode.FullAssist && !_autoTidyManager.IsAvailable) return false;
         if (!_workspaceMonitor.SetMode(mode, arrangeNow))
         {
             _autoTidyManager.Enabled = false;
@@ -217,7 +217,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
 
     internal void RunTidy() => RunTidy(showActivity: true, LayoutRoute.ManualAlgorithm);
 
-    private void RunTidy(bool showActivity, LayoutRoute route, string? source = null, bool retryOnChange = true)
+    private void RunTidy(bool showActivity, LayoutRoute route = LayoutRoute.ManualAlgorithm, string? source = null)
     {
         if (_stopping.IsCancellationRequested) return;
         if (_tidyRunning || NativeWindowActivity.IsMoving)
@@ -233,10 +233,10 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var effectiveOptions = route == LayoutRoute.Smart ? _tidyOptions with { AlgorithmMode = TidyAlgorithmMode.Smart } : _tidyOptions;
             var smart = !tiling && effectiveOptions.AlgorithmMode == TidyAlgorithmMode.Smart;
             var explicitSmart = smart && route == LayoutRoute.ManualAlgorithm;
-            var arrangeRequired = showActivity || _automaticMode == AutomaticLayoutMode.AutoFullAssist;
+            var fullDesktop = explicitSmart || (smart && _automaticMode == AutomaticLayoutMode.AutoFullAssist);
             var trigger = source ?? (showActivity ? tiling ? "explicit-tiling" : smart ? "explicit" : "explicit-classic" : "classic-follow");
             var snapshot = _windowManager.Capture();
-            var visibleWorkingSet = arrangeRequired
+            var visibleWorkingSet = fullDesktop
                 ? _visibilityAnalyzer.SelectForManualArrange(snapshot, effectiveOptions.RescueOffscreenWindows)
                 : _visibilityAnalyzer.SelectVisibleWorkingSet(snapshot, includeStackAccess: smart);
             VideoBlackBarHint? videoHint = null;
@@ -247,7 +247,6 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             TaskLayoutContext? recordedContext = null;
             IntentLayoutPlan? baseline = null;
             IntentLayoutPlan? scored = null;
-            TaskLayoutContext? taskContext = null;
             if (tiling)
             {
                 detailed = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, null, snapshot, null);
@@ -269,8 +268,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 bool pairSmart = explicitSmart || trigger is "automatic-gesture" or "automatic-workspace";
                 var pairs = pairSmart ? _recorder.BindRules(rules, snapshot, liveHints, activities) : [];
                 var floors = _recorder.BindSizeFloors(snapshot);
-                var minConfidence = trigger == "automatic-workspace" ? .50 : .10;
-                var learned = pairSmart ? _recorder.Preferences(snapshot, focus).Where(p => p.Confidence >= minConfidence).ToArray() : [];
+                var learned = pairSmart ? _recorder.Preferences(snapshot, focus).Where(p => p.Confidence >= .40).ToArray() : [];
                 var slots = pairSmart ? _recorder.BindSlots(rules, snapshot) : [];
                 var placements = CompiledLayoutRules.ApplySlots(learned, slots);
                 if (!_lastPairs.SequenceEqual(pairs) || !_lastFloors.SequenceEqual(floors) ||
@@ -281,7 +279,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 _lastRules = rules;
                 _lastFocus = focus;
                 _lastLiveHints = liveHints;
-                taskContext = _taskSession.Capture(snapshot, _taskPreferences.Profile, Displays(snapshot),
+                var taskContext = _taskSession.Capture(snapshot, _taskPreferences.Profile, Displays(snapshot),
                     _taskPreferences.Calibration, DateTimeOffset.UtcNow, explicitSmart) with
                 {
                     PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill,
@@ -326,23 +324,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             else plan = _tidyEngine.CreatePlan(visibleWorkingSet, effectiveOptions);
 
             detailed = detailed is null ? new(plan, [], []) : detailed with { Moves = plan };
-            if (arrangeRequired && !tiling)
-                detailed = FullTilingPlanner.EnsureMovement(detailed, visibleWorkingSet, snapshot, effectiveOptions,
-                    taskContext ?? new(Profile: _taskPreferences.Profile));
+            _autoTidyManager.SuppressFor(650);
+            _workspaceMonitor.ApplicationRequested(snapshot, detailed);
             if (_stopping.IsCancellationRequested) return;
             var proposed = detailed;
             var application = _windowManager.ApplyLayout(detailed);
-            if (arrangeRequired && application.SnapshotChanged && retryOnChange)
-            {
-                _ = _dispatch.BeginInvoke(() => RunTidy(showActivity, route, source, retryOnChange: false));
-                return;
-            }
             detailed = application.Plan; plan = detailed.Moves;
-            if (plan.Count > 0 || detailed.Layers.Count > 0)
-            {
-                _autoTidyManager.SuppressFor(650);
-                _workspaceMonitor.ApplicationRequested(snapshot, detailed);
-            }
             _verticalFillManager.Track(plan, smart && _smartBehaviorOptions.PreferReversibleVerticalFill);
             var layerOrders = detailed.Layers;
             if (plan.Count > 0 || layerOrders.Count > 0)
@@ -352,7 +339,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             }
             if (smart)
                 _taskSession.Requested(snapshot, detailed, DateTimeOffset.UtcNow, explicitSmart);
-            _journal.Record(snapshot, detailed, trigger, application.Notes, baseline ?? scored ?? proposed, proposed, scored, recordedContext);
+            _journal.Record(snapshot, detailed, trigger, application.Notes, baseline ?? scored ?? proposed, proposed, scored, recordedContext,
+                smart ? effectiveOptions.SmartStrength : null, smart ? fullDesktop : null);
             if (showActivity)
             {
                 var kinds = string.Join(TextCatalog.Culture.TwoLetterISOLanguageName == "zh" ? "、" : ", ", detailed.Groups.Select(g => KindName(g.Selected)).Distinct());
@@ -363,8 +351,10 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 else if (notes.Length > 0) _report(notes);
                 else if (visibleWorkingSet.Count == 0)
                     _report(LayoutText.Get("NoWindows"));
+                else if (smart)
+                    _report(LayoutText.Get("NoLayoutImprovement"));
                 else
-                    _report(LayoutText.Get("NoPlacement"));
+                    _report(LayoutText.Format("LayoutKept", visibleWorkingSet.Count));
             }
         }
         catch (Exception exception)
@@ -416,7 +406,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private static string KindName(string kind) => kind switch
     {
         "full-tiling" => LayoutText.Get("Tiled"), "tiling-insufficient-space" => LayoutText.Get("InsufficientSpace"),
-        "reposition" => LayoutText.Get("Repositioned"),
+        "window-access" => LayoutText.Get("WindowAccess"), "display-reflow" => LayoutText.Get("DisplayReflow"),
         "learned-position" => LayoutText.Get("LearnedPosition"),
         "working-overlap" => LayoutText.Get("WorkingOverlap"),
         "working-pair" => LayoutText.Get("WorkingPair"), "working-region" => LayoutText.Get("WatchedRegion"),
@@ -429,7 +419,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
 
     private void OnLayoutVerified(LayoutRunObservation observation)
     {
-        if (observation.Trigger is not ("explicit" or "explicit-classic" or "automatic-gesture" or "automatic-workspace" or "explicit-tiling") ||
+        if (observation.Trigger is not ("explicit" or "automatic-gesture" or "automatic-workspace" or "explicit-tiling") ||
             observation.Actual is null || observation.Outcome == "intervened") return;
         if (observation.Trigger is "explicit" or "automatic-gesture" or "automatic-workspace")
         {

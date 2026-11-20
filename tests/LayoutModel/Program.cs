@@ -14,29 +14,6 @@ void Check(bool condition, string description)
     Console.WriteLine("PASS " + description);
 }
 
-var arrangeVisibility = new VisibilityAnalyzer();
-IntentLayoutPlan RequireMovement(WindowSnapshot[] desktop, TaskLayoutContext? context = null) =>
-    FullTilingPlanner.EnsureMovement(new([], [], []), arrangeVisibility.SelectForManualArrange(desktop, true),
-        desktop, new(), context);
-
-WindowSnapshot[] covered = [Window(1, home), Window(2, home)];
-var tiledFallback = RequireMovement(covered, new(VerifiedRepeat: true));
-Check(tiledFallback.Moves.Count == 2 && tiledFallback.Moves[0].TargetVisualRect.Intersect(tiledFallback.Moves[1].TargetVisualRect).IsEmpty,
-    "a no-op Smart result still separates two completely covered ordinary windows");
-var tiledDesktop = TaskLayoutSession.Project(covered, tiledFallback);
-var nextArrangement = RequireMovement(tiledDesktop);
-var nextDesktop = TaskLayoutSession.Project(tiledDesktop, nextArrangement);
-Check(nextArrangement.Moves.Count == 2 && nextDesktop[0].VisualRect.Intersect(nextDesktop[1].VisualRect).IsEmpty &&
-    LayoutUndoPlanner.Create(nextArrangement, nextDesktop).Moves.Count == 2,
-    "a new arrange request reflows an already tiled desktop without overlap and can be undone");
-var fixedSize = covered.Select(w => w with { IsResizable = false }).ToArray();
-var shift = RequireMovement(fixedSize, new(Profile: new(AllowUsefulResize: false))).Moves.Single();
-Check(shift.TargetVisualRect.Width == home.Width && shift.TargetVisualRect.Height == home.Height &&
-    shift.TargetVisualRect.Intersect(home).Area < home.Area, "fixed-size windows can be separated without resizing");
-var protectedSurface = Window(3, area) with { IsManageable = false, IsTopmost = true, ZOrder = -1 };
-Check(RequireMovement([protectedSurface, .. covered]).Moves.Count == 0,
-    "forced arrangement leaves a protected covering surface and its background alone");
-
 var rect = new RectI(0, 0, 400, 400);
 var corner = WindowExposure.Measure(rect, [rect, rect], [new(0, 100, 400, 300), new(100, 0, 300, 100)]);
 Check(corner.Visible == 1d / 16 && corner.Cells == "F000000000000000" &&
@@ -385,9 +362,10 @@ static void Replay(string path, string? rulesPath)
                 var slotPrefs = activeRules.BindSlots(keyed);
                 var mergedPrefs = CompiledLayoutRules.ApplySlots(ctx.Placement ?? [], slotPrefs);
                 ctx = ctx with { Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities), Placement = mergedPrefs };
-                var workingSet = explicitRun ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);
+                var fullDesktop = run.FullDesktop ?? explicitRun;
+                var workingSet = fullDesktop ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);
                 var plan = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : LayoutRoute.Smart,
-                    workingSet, new(), null, desktop, ctx);
+                    workingSet, new(SmartStrength: run.Strength ?? SmartTidyStrength.Balanced), null, desktop, ctx);
                 var projected = TaskLayoutSession.Project(desktop, plan);
                 bool? regionsPreserved = !frame.Truncated && ctx.WindowHints?.Any(h => h.ProtectedRegions is { Length: > 0 }) == true
                     ? IntentLayoutPlanner.DesktopRegionsPreserved(desktop, projected, ctx) : null;
