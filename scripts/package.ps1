@@ -23,30 +23,37 @@ function Build-NoFocusLoss([string] $Platform, [string] $LibraryName) {
     Copy-Item (Join-Path $build "Release/$LibraryName") -Destination $nativeResources
 }
 
-function Write-Package([bool] $SelfContained) {
+function Publish-Application([bool] $SelfContained) {
     $name = if ($SelfContained) { 'WinWindow-win-x64-self-contained' } else { 'WinWindow-win-x64' }
     $publish = Join-Path $stage $name
     $bundleRuntime = $SelfContained.ToString().ToLowerInvariant()
     dotnet publish $project -c Release -r win-x64 --self-contained $bundleRuntime '-p:PublishSingleFile=true' "-p:NoFocusLossResourceDirectory=$nativeResources" -p:IncludeNativeLibrariesForSelfExtract=true -o $publish
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $name ($LASTEXITCODE)" }
 
-    Copy-Item (Join-Path $root 'README.md'), (Join-Path $root 'docs/MANUAL_TESTS.md') -Destination $publish
-    $notices = Join-Path $publish 'licenses/NoFocusLoss'
-    New-Item -ItemType Directory -Path $notices -Force | Out-Null
-    Copy-Item (Join-Path $root 'native/NoFocusLoss/*LICENSE.txt') -Destination $notices
+    $executable = Join-Path $publish 'WinWindow.exe'
+    if (-not (Test-Path $executable -PathType Leaf)) { throw "Single-file executable was not produced for $name" }
     Get-ChildItem $publish -Filter '*.pdb' -File | Remove-Item
-    $zip = Join-Path $stage "$name.zip"
-    Compress-Archive -Path (Join-Path $publish '*') -DestinationPath $zip
-    Move-Item $zip -Destination (Join-Path $output "$name.zip") -Force
+    Copy-Item $executable -Destination (Join-Path $output "$name.exe") -Force
 }
 
 try {
     New-Item -ItemType Directory -Path $output -Force | Out-Null
+
+    # Remove legacy archive outputs so a local or CI run cannot leave stale ZIPs
+    # that look like current release downloads.
+    Get-ChildItem $output -Filter 'WinWindow-*.zip' -File -ErrorAction SilentlyContinue | Remove-Item -Force
+    Get-ChildItem $output -Filter 'WinWindow-win-x64*.exe' -File -ErrorAction SilentlyContinue | Remove-Item -Force
+    Get-ChildItem $output -Filter '*-LICENSE.txt' -File -ErrorAction SilentlyContinue | Remove-Item -Force
+
     New-Item -ItemType Directory -Path $nativeResources -Force | Out-Null
     Build-NoFocusLoss 'Win32' 'NoFocusLoss.dll'
     Build-NoFocusLoss 'x64' 'NoFocusLoss64.dll'
-    Write-Package $false
-    if ($IncludeRuntime) { Write-Package $true }
+    Publish-Application $false
+    if ($IncludeRuntime) { Publish-Application $true }
+
+    # Keep the upstream notices beside the downloadable executable assets.
+    Copy-Item (Join-Path $root 'native/NoFocusLoss/LICENSE.txt') (Join-Path $output 'NoFocusLoss-LICENSE.txt')
+    Copy-Item (Join-Path $root 'native/NoFocusLoss/MinHook-LICENSE.txt') (Join-Path $output 'MinHook-LICENSE.txt')
 }
 finally {
     if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
