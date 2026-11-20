@@ -4,8 +4,12 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -36,6 +40,9 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern bool IsWindowVisible(nint hwnd);
     [DllImport("user32.dll")] internal static extern bool IsIconic(nint hwnd);
     [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")] internal static extern nint GetActiveWindow();
+    [DllImport("user32.dll")] internal static extern nint GetFocus();
+    [DllImport("user32.dll", EntryPoint = "GetPropW", CharSet = CharSet.Unicode)] internal static extern nint GetProp(nint hwnd, string name);
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(nint hwnd, StringBuilder text, int length);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(nint hwnd, StringBuilder text, int length);
@@ -71,8 +78,101 @@ internal static class Native
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] private static extern int DwmGetWindowAttributeRect(nint hwnd, int attribute, out Rect rect, int size);
     [DllImport("dwmapi.dll")] internal static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(uint access, bool inherit, uint id);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(nint process, out uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetProcessTimes(nint process, out long creation, out long exit, out long kernel, out long user);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageName(nint process, uint flags, StringBuilder name, ref uint size);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool IsWow64Process2(nint process, out ushort processMachine, out ushort nativeMachine);
+    [DllImport("kernel32.dll", EntryPoint = "K32EnumProcessModulesEx", SetLastError = true)] private static extern bool EnumProcessModulesEx(nint process, [Out] nint[] modules, uint cb, out uint needed, uint filter);
+    [DllImport("kernel32.dll", EntryPoint = "K32GetModuleFileNameExW", CharSet = CharSet.Unicode, SetLastError = true)] private static extern uint GetModuleFileNameEx(nint process, nint module, StringBuilder fileName, int size);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern nint VirtualAllocEx(nint process, nint address, nuint size, uint allocationType, uint protect);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool VirtualFreeEx(nint process, nint address, nuint size, uint freeType);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool WriteProcessMemory(nint process, nint baseAddress, byte[] buffer, nuint size, out nuint written);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern nint CreateRemoteThread(nint process, nint attributes, nuint stackSize, nint startAddress, nint parameter, uint creationFlags, out uint threadId);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeThread(nint thread, out uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern nint CreateToolhelp32Snapshot(uint flags, uint processId);
+    [DllImport("kernel32.dll", EntryPoint = "Process32FirstW", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Process32First(nint snapshot, ref ProcessEntry32 entry);
+    [DllImport("kernel32.dll", EntryPoint = "Process32NextW", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Process32Next(nint snapshot, ref ProcessEntry32 entry);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct ProcessEntry32
+    {
+        public uint Size;
+        public uint Usage;
+        public uint ProcessId;
+        public nuint DefaultHeapId;
+        public uint ModuleId;
+        public uint Threads;
+        public uint ParentProcessId;
+        public int BasePriority;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string ExeFile;
+    }
+
+    [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDeviceEnumerator
+    {
+        [PreserveSig] int EnumAudioEndpoints(int dataFlow, int stateMask, out IMMDeviceCollection? devices);
+        [PreserveSig] int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice? endpoint);
+    }
+
+    [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDeviceCollection
+    {
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int Item(uint index, out IMMDevice? device);
+    }
+
+    [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDevice
+    {
+        [PreserveSig] int Activate(in Guid iid, int clsCtx, nint activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object? iface);
+    }
+
+    [ComImport, Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioSessionManager2
+    {
+        [PreserveSig] int GetAudioSessionControl(nint sessionGuid, uint streamFlags, out nint sessionControl);
+        [PreserveSig] int GetSimpleAudioVolume(nint sessionGuid, uint streamFlags, out nint audioVolume);
+        [PreserveSig] int GetSessionEnumerator(out IAudioSessionEnumerator? sessionEnum);
+    }
+
+    [ComImport, Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioSessionEnumerator
+    {
+        [PreserveSig] int GetCount(out int sessionCount);
+        [PreserveSig] int GetSession(int sessionIndex, [MarshalAs(UnmanagedType.IUnknown)] out object? session);
+    }
+
+    [ComImport, Guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioSessionControl2
+    {
+        [PreserveSig] int GetState(out int state);
+        [PreserveSig] int GetDisplayName(out nint name);
+        [PreserveSig] int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string value, in Guid context);
+        [PreserveSig] int GetIconPath(out nint path);
+        [PreserveSig] int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string value, in Guid context);
+        [PreserveSig] int GetGroupingParam(out Guid grouping);
+        [PreserveSig] int SetGroupingParam(in Guid grouping, in Guid context);
+        [PreserveSig] int RegisterAudioSessionNotification(nint client);
+        [PreserveSig] int UnregisterAudioSessionNotification(nint client);
+        [PreserveSig] int GetSessionIdentifier(out nint id);
+        [PreserveSig] int GetSessionInstanceIdentifier(out nint instanceId);
+        [PreserveSig] int GetProcessId(out uint processId);
+        [PreserveSig] int IsSystemSoundsSession();
+        [PreserveSig] int SetDuckingPreference([MarshalAs(UnmanagedType.Bool)] bool optOut);
+    }
+
+    [ComImport, Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ISimpleAudioVolume
+    {
+        [PreserveSig] int SetMasterVolume(float level, nint eventContext);
+        [PreserveSig] int GetMasterVolume(out float level);
+        [PreserveSig] int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, nint eventContext);
+        [PreserveSig] int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
+    }
 
     [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
     private static extern nint SendMessageTimeout(nint hwnd, uint message, nint wp, nint lp, uint flags, uint timeout, out nint result);
@@ -192,18 +292,552 @@ internal static class Native
         var current = Identity(identity.Hwnd);
         return current is not null && current.ProcessId == identity.ProcessId && current.ProcessStarted == identity.ProcessStarted && current.ClassName == identity.ClassName;
     }
-    internal const uint AppActivationMessage = 0x001C;
-
-    internal static void SetBackgroundActivity(WindowIdentity identity, bool enabled)
+    internal static bool MatchesProcess(WindowIdentity identity)
     {
-        EnsureIdentity(identity);
+        nint process = OpenProcess(0x1000, false, (uint)identity.ProcessId);
+        if (process == 0) return false;
+        // Windows retains the process object while an observer still holds a handle.
+        const uint stillActive = 259;
+        try { return MatchesProcess(identity, process) && GetExitCodeProcess(process, out uint code) && code == stillActive; }
+        finally { CloseHandle(process); }
+    }
+
+    private static bool MatchesProcess(WindowIdentity identity, nint process) =>
+        GetProcessTimes(process, out long created, out _, out _, out _) &&
+        DateTime.FromFileTimeUtc(created).Ticks == identity.ProcessStarted;
+
+    internal const uint AppActivationMessage = 0x001C;
+    internal const string NoFocusLossProperty = "NoFocusLoss_Injected_8A11C8C7";
+    private const uint ProcessInjectAccess = 0x0002 | 0x0008 | 0x0010 | 0x0020 | 0x0400;
+    private const uint MemCommitReserve = 0x3000, MemRelease = 0x8000, PageReadWrite = 0x04;
+    private const uint ListModules32Bit = 0x01, ListModules64Bit = 0x02, RemoteTimeoutMs = 5000;
+    private const ushort MachineI386 = 0x014C, MachineAmd64 = 0x8664;
+    private static readonly object NativeExtractSync = new();
+    private static readonly ConcurrentDictionary<bool, (byte[] Bytes, string Hash)?> CachedNoFocusLoss = new();
+
+    internal static bool IsNoFocusLossInjected(nint hwnd) =>
+        hwnd != 0 && IsWindow(hwnd) && GetProp(hwnd, NoFocusLossProperty) != 0;
+
+    internal static bool HasNoFocusLossSupport() =>
+        LoadNoFocusLossPayload(true) is not null && LoadNoFocusLossPayload(false) is not null;
+
+    internal static bool HasLoadedNoFocusLossModule(int processId)
+    {
+        nint process = OpenProcess(0x0400 | 0x0010, false, (uint)processId);
+        if (process == 0) return false;
+        try
+        {
+            if (!IsWow64Process2(process, out ushort procMachine, out ushort nativeMachine)) return false;
+            ushort machine = procMachine == 0 ? nativeMachine : procMachine;
+            if (machine != MachineAmd64 && machine != MachineI386) return false;
+            return EnumerateRemoteModules(process, machine == MachineAmd64).Exists(m => IsNoFocusLossName(m.Path));
+        }
+        catch (Win32Exception) { return false; }
+        finally { CloseHandle(process); }
+    }
+
+    internal static bool SetBackgroundActivity(
+        WindowIdentity identity,
+        bool enabled,
+        bool enhancedInjection,
+        bool lockCursorPosition,
+        bool wasInjected,
+        string storageDirectory,
+        out bool targetMayHaveChanged)
+    {
+        targetMayHaveChanged = false;
+        if (enabled)
+        {
+            EnsureIdentity(identity);
+            if (!enhancedInjection)
+            {
+                targetMayHaveChanged = true;
+                if (Directory.Exists(storageDirectory) && (wasInjected || IsNoFocusLossInjected(identity.Hwnd)))
+                    DisableAndUnloadNoFocusLoss(identity, storageDirectory);
+                PostAppActivation(identity, true, throwOnError: true);
+                return false;
+            }
+            if (!HasNoFocusLossSupport() && !string.IsNullOrEmpty(typeof(App).Assembly.Location))
+            {
+                PostAppActivation(identity, true, throwOnError: true);
+                return false;
+            }
+            nint process = OpenProcess(ProcessInjectAccess, false, (uint)identity.ProcessId);
+            if (process == 0)
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), UiText.Get("BackgroundRejected"));
+            try
+            {
+                if (!MatchesProcess(identity, process)) throw new InvalidOperationException(UiText.Get("IdentityUnavailable"));
+                bool is64Bit = ResolveTargetBitness(process);
+                string dllPath = MaterializeNoFocusLossLibrary(is64Bit, storageDirectory)
+                    ?? throw new FileNotFoundException(UiText.Get("BackgroundRejected"));
+                targetMayHaveChanged = true;
+                InjectAndInitializeNoFocusLoss(process, is64Bit, dllPath, identity.Hwnd, lockCursorPosition);
+            }
+            finally { CloseHandle(process); }
+            PostAppActivation(identity, true, throwOnError: false);
+            return true;
+        }
+
+        targetMayHaveChanged = true;
+        if (Directory.Exists(storageDirectory) && (wasInjected || IsNoFocusLossInjected(identity.Hwnd)))
+            DisableAndUnloadNoFocusLoss(identity, storageDirectory);
+        PostAppActivation(identity, false, throwOnError: false);
+        return false;
+    }
+
+    internal static Dictionary<string, bool> GetProcessMutes(WindowIdentity identity)
+    {
+        var result = new Dictionary<string, bool>(StringComparer.Ordinal);
+        if (MatchesProcess(identity))
+        {
+            VisitProcessAudioSessions(CollectProcessTreeIds((uint)identity.ProcessId), (id, volume) =>
+            {
+                if (volume.GetMute(out bool muted) == 0) result[id] = muted;
+            });
+        }
+        return result;
+    }
+
+    internal static void SetProcessMutes(WindowIdentity identity, IReadOnlyDictionary<string, bool> sessions, bool? mute = null)
+    {
+        if (sessions.Count == 0 || (mute.HasValue && !MatchesProcess(identity))) return;
+        // Undo is keyed by the exact WASAPI session instance, including a child
+        // that is still playing after its launcher has exited.
+        var targets = mute.HasValue ? CollectProcessTreeIds((uint)identity.ProcessId) : null;
+        VisitProcessAudioSessions(targets, (id, volume) =>
+        {
+            if (sessions.TryGetValue(id, out bool original))
+                Marshal.ThrowExceptionForHR(volume.SetMute(mute ?? original, 0));
+        });
+    }
+
+    private static HashSet<uint> CollectProcessTreeIds(uint rootPid)
+    {
+        var result = new HashSet<uint> { rootPid };
+        nint snapshot = CreateToolhelp32Snapshot(2, 0);
+        if (snapshot == 0 || snapshot == -1) return result;
+        try
+        {
+            var children = new Dictionary<uint, List<uint>>();
+            var entry = new ProcessEntry32 { Size = (uint)Marshal.SizeOf<ProcessEntry32>() };
+            if (Process32First(snapshot, ref entry))
+            {
+                do
+                {
+                    if (entry.ProcessId == 0 || entry.ProcessId == entry.ParentProcessId) continue;
+                    if (!children.TryGetValue(entry.ParentProcessId, out var list))
+                        children[entry.ParentProcessId] = list = new List<uint>();
+                    list.Add(entry.ProcessId);
+                } while (Process32Next(snapshot, ref entry));
+            }
+            var queue = new Queue<uint>();
+            queue.Enqueue(rootPid);
+            while (queue.Count != 0 && result.Count < 64)
+            {
+                uint current = queue.Dequeue();
+                if (!children.TryGetValue(current, out var kids)) continue;
+                foreach (uint child in kids)
+                    if (result.Add(child)) queue.Enqueue(child);
+            }
+        }
+        finally { CloseHandle(snapshot); }
+        return result;
+    }
+
+    private static void VisitProcessAudioSessions(HashSet<uint>? targetPids, Action<string, ISimpleAudioVolume> visitor)
+    {
+        object? enumeratorObj = null;
+        IMMDeviceCollection? collection = null;
+        try
+        {
+            var clsid = Type.GetTypeFromCLSID(new Guid("BCDE0395-E52F-467C-8E3D-C4579291692E"));
+            enumeratorObj = clsid is null ? null : Activator.CreateInstance(clsid);
+            if (enumeratorObj is not IMMDeviceEnumerator devices) return;
+
+            if (devices.EnumAudioEndpoints(0, 1, out collection) == 0 && collection is not null &&
+                collection.GetCount(out uint deviceCount) == 0 && deviceCount > 0)
+            {
+                for (uint d = 0; d < Math.Min(deviceCount, 16u); d++)
+                {
+                    if (collection.Item(d, out var endpoint) != 0 || endpoint is null) continue;
+                    try { VisitEndpointSessions(endpoint, targetPids, visitor); }
+                    finally { ReleaseCom(endpoint); }
+                }
+                return;
+            }
+
+            if (devices.GetDefaultAudioEndpoint(0, 1, out var fallback) == 0 && fallback is not null)
+            {
+                try { VisitEndpointSessions(fallback, targetPids, visitor); }
+                finally { ReleaseCom(fallback); }
+            }
+        }
+        finally
+        {
+            ReleaseCom(collection);
+            ReleaseCom(enumeratorObj);
+        }
+    }
+
+    private static void VisitEndpointSessions(IMMDevice endpoint, HashSet<uint>? targetPids, Action<string, ISimpleAudioVolume> visitor)
+    {
+        object? managerObj = null;
+        IAudioSessionEnumerator? sessions = null;
+        try
+        {
+            var iid = typeof(IAudioSessionManager2).GUID;
+            if (endpoint.Activate(in iid, 23, 0, out managerObj) != 0 ||
+                managerObj is not IAudioSessionManager2 audio ||
+                audio.GetSessionEnumerator(out sessions) != 0 ||
+                sessions is null ||
+                sessions.GetCount(out int count) != 0)
+                return;
+
+            for (int i = 0; i < Math.Min(count, 128); i++)
+            {
+                if (sessions.GetSession(i, out var session) != 0 || session is null) continue;
+                try
+                {
+                    if (session is IAudioSessionControl2 control &&
+                        session is ISimpleAudioVolume volume &&
+                        control.IsSystemSoundsSession() != 0 &&
+                        control.GetProcessId(out uint pid) == 0 &&
+                        pid != 0 &&
+                        (targetPids is null || targetPids.Contains(pid)) &&
+                        control.GetSessionInstanceIdentifier(out nint sessionId) == 0 &&
+                        sessionId != 0)
+                    {
+                        try
+                        {
+                            if (Marshal.PtrToStringUni(sessionId) is { Length: > 0 } id)
+                                visitor(id, volume);
+                        }
+                        finally { Marshal.FreeCoTaskMem(sessionId); }
+                    }
+                }
+                finally { ReleaseCom(session); }
+            }
+        }
+        finally
+        {
+            ReleaseCom(sessions);
+            ReleaseCom(managerObj);
+        }
+    }
+
+    private static void ReleaseCom(object? instance)
+    {
+        if (instance is not null && Marshal.IsComObject(instance))
+            Marshal.ReleaseComObject(instance);
+    }
+
+    internal static void PostAppActivation(WindowIdentity identity, bool enabled, bool throwOnError)
+    {
+        if (!Matches(identity))
+        {
+            if (throwOnError) EnsureIdentity(identity);
+            return;
+        }
         var foreground = GetForegroundWindow();
         uint thread = GetWindowThreadProcessId(foreground, out uint pid);
         // Windows already supplies the real activation for the foreground process.
         // WM_ACTIVATEAPP has no default focus-transfer behavior.
         if (pid == identity.ProcessId) return;
-        if (!PostMessage(identity.Hwnd, AppActivationMessage, enabled ? 1 : 0, (nint)thread))
+        if (!PostMessage(identity.Hwnd, AppActivationMessage, enabled ? 1 : 0, (nint)thread) && throwOnError)
             throw new Win32Exception(Marshal.GetLastPInvokeError(), UiText.Get("BackgroundRejected"));
+    }
+
+    private static bool ResolveTargetBitness(nint process)
+    {
+        if (!IsWow64Process2(process, out ushort procMachine, out ushort nativeMachine))
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), UiText.Get("BackgroundRejected"));
+        ushort machine = procMachine == 0 ? nativeMachine : procMachine;
+        if (machine == MachineAmd64)
+        {
+            if (IntPtr.Size != 8) throw new InvalidOperationException(UiText.Get("BackgroundUnsupported"));
+            return true;
+        }
+        if (machine == MachineI386) return false;
+        throw new InvalidOperationException(UiText.Get("BackgroundUnsupported"));
+    }
+
+    private static (byte[] Bytes, string Hash)? LoadNoFocusLossPayload(bool is64Bit) =>
+        CachedNoFocusLoss.GetOrAdd(is64Bit, static bit64 =>
+        {
+            string resource = bit64 ? "WinWindow.Native.NoFocusLoss.x64.dll" : "WinWindow.Native.NoFocusLoss.x86.dll";
+            using var stream = typeof(App).Assembly.GetManifestResourceStream(resource);
+            if (stream is not null)
+            {
+                using var memory = new MemoryStream();
+                stream.CopyTo(memory);
+                byte[] data = memory.ToArray();
+                return (data, Convert.ToHexString(SHA256.HashData(data), 0, 4).ToLowerInvariant());
+            }
+            return null;
+        });
+
+    private static string? MaterializeNoFocusLossLibrary(bool is64Bit, string storageDirectory)
+    {
+        var payload = LoadNoFocusLossPayload(is64Bit);
+        if (payload is null) return null;
+        string prefix = is64Bit ? "NoFocusLoss64-" : "NoFocusLoss-";
+        string fileName = $"{prefix}{payload.Value.Hash}.dll";
+        lock (NativeExtractSync)
+        {
+            Directory.CreateDirectory(storageDirectory);
+            string path = Path.Combine(storageDirectory, fileName);
+            if (!MatchesPayload(path, payload.Value.Bytes))
+            {
+                string temp = Path.Combine(storageDirectory, $"{fileName}.{Guid.NewGuid():N}.tmp");
+                File.WriteAllBytes(temp, payload.Value.Bytes);
+                try { File.Move(temp, path, true); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    try { File.Delete(temp); } catch (IOException) { }
+                    if (!MatchesPayload(path, payload.Value.Bytes)) throw;
+                }
+            }
+            return path;
+        }
+    }
+
+    private static bool MatchesPayload(string path, byte[] payload)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (stream.Length != payload.Length) return false;
+            byte[] current = new byte[payload.Length];
+            stream.ReadExactly(current);
+            return current.AsSpan().SequenceEqual(payload);
+        }
+        catch (IOException) { return false; }
+    }
+
+    private static void InjectAndInitializeNoFocusLoss(nint process, bool is64Bit, string dllPath, nint hwnd, bool lockCursorPosition)
+    {
+        var modules = EnumerateRemoteModules(process, is64Bit);
+        var loaded = modules.Find(m => string.Equals(m.Path, dllPath, StringComparison.OrdinalIgnoreCase));
+        if (loaded.Base == 0)
+        {
+            if (modules.Exists(m => IsNoFocusLossName(m.Path)))
+                throw new InvalidOperationException(UiText.Get("BackgroundRejected"));
+            nint loadLibrary = ResolveRemoteLoadLibraryW(modules);
+            byte[] pathBytes = Encoding.Unicode.GetBytes(dllPath + '\0');
+            nint remotePath = VirtualAllocEx(process, 0, (nuint)pathBytes.Length, MemCommitReserve, PageReadWrite);
+            if (remotePath == 0)
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), UiText.Get("BackgroundRejected"));
+            bool canFree = true;
+            try
+            {
+                if (!WriteProcessMemory(process, remotePath, pathBytes, (nuint)pathBytes.Length, out nuint written) ||
+                    written != (nuint)pathBytes.Length)
+                    throw new Win32Exception(Marshal.GetLastPInvokeError(), UiText.Get("BackgroundRejected"));
+                if (!RunRemoteThread(process, loadLibrary, remotePath, RemoteTimeoutMs, out _, out bool threadMayStillRun))
+                {
+                    canFree = !threadMayStillRun;
+                    throw new InvalidOperationException(UiText.Get("BackgroundRejected"));
+                }
+            }
+            finally
+            {
+                if (canFree) VirtualFreeEx(process, remotePath, 0, MemRelease);
+            }
+            modules = EnumerateRemoteModules(process, is64Bit);
+            loaded = modules.Find(m => string.Equals(m.Path, dllPath, StringComparison.OrdinalIgnoreCase));
+            if (loaded.Base == 0)
+                throw new InvalidOperationException(UiText.Get("BackgroundRejected"));
+        }
+
+        nint initialize = ResolveRemoteExport(modules, loaded.Base, loaded.Path,
+            ["NoFocusLoss_Initialize", "_NoFocusLoss_Initialize@4"]);
+        nint targetParam = is64Bit ? hwnd : unchecked((nint)(uint)hwnd.ToInt64());
+        if (!RunRemoteThread(process, initialize, targetParam, RemoteTimeoutMs, out uint initResult, out _))
+            throw new InvalidOperationException(UiText.Get("BackgroundRejected"));
+
+        if (initResult != 1)
+        {
+            if (initResult == 0) TryUnloadLoadedModule(process, modules, loaded);
+            throw new InvalidOperationException(UiText.Get("BackgroundRejected"));
+        }
+
+        nint setCursorLock = ResolveRemoteExport(modules, loaded.Base, loaded.Path,
+            ["NoFocusLoss_SetCursorPositionLock", "_NoFocusLoss_SetCursorPositionLock@4"]);
+        if (!RunRemoteThread(process, setCursorLock, lockCursorPosition ? 1 : 0, RemoteTimeoutMs, out uint lockResult, out _) ||
+            lockResult != 1)
+            throw new InvalidOperationException(UiText.Get("BackgroundRejected"));
+    }
+
+    private static void DisableAndUnloadNoFocusLoss(WindowIdentity identity, string storageDirectory)
+    {
+        nint process = OpenProcess(ProcessInjectAccess, false, (uint)identity.ProcessId);
+        if (process == 0)
+        {
+            int error = Marshal.GetLastPInvokeError();
+            if (MatchesProcess(identity) || Matches(identity))
+                throw new Win32Exception(error, UiText.Get("BackgroundUnloadFailed"));
+            return;
+        }
+        try
+        {
+            if (!MatchesProcess(identity, process)) return;
+            if (!IsWow64Process2(process, out ushort procMachine, out ushort nativeMachine))
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), UiText.Get("BackgroundUnloadFailed"));
+            ushort machine = procMachine == 0 ? nativeMachine : procMachine;
+            if (machine != MachineAmd64 && machine != MachineI386) return;
+            bool is64Bit = machine == MachineAmd64;
+            if (is64Bit && IntPtr.Size != 8) return;
+
+            var modules = EnumerateRemoteModules(process, is64Bit);
+            var loaded = modules.Find(m => IsNoFocusLossName(m.Path) &&
+                string.Equals(Path.GetDirectoryName(m.Path), storageDirectory, StringComparison.OrdinalIgnoreCase));
+            if (loaded.Base == 0) return;
+
+            if (!TryUnloadLoadedModule(process, modules, loaded))
+                throw new InvalidOperationException(UiText.Get("BackgroundUnloadFailed"));
+        }
+        finally { CloseHandle(process); }
+    }
+
+    private static bool TryUnloadLoadedModule(nint process, List<(nint Base, string Path)> modules, (nint Base, string Path) loaded)
+    {
+        nint shutdown = ResolveRemoteExport(modules, loaded.Base, loaded.Path,
+            ["NoFocusLoss_ShutdownAndUnload", "_NoFocusLoss_ShutdownAndUnload@4"]);
+        return RunRemoteThread(process, shutdown, 0, RemoteTimeoutMs, out uint exitCode, out _) && exitCode == 1;
+    }
+
+    private static bool RunRemoteThread(nint process, nint startAddress, nint parameter, uint timeoutMs, out uint exitCode, out bool threadMayStillRun)
+    {
+        exitCode = 0;
+        threadMayStillRun = false;
+        nint thread = CreateRemoteThread(process, 0, 0, startAddress, parameter, 0, out _);
+        if (thread == 0) return false;
+        try
+        {
+            uint wait = WaitForSingleObject(thread, timeoutMs);
+            if (wait != 0)
+            {
+                threadMayStillRun = true;
+                return false;
+            }
+            return GetExitCodeThread(thread, out exitCode);
+        }
+        finally { CloseHandle(thread); }
+    }
+
+    private static List<(nint Base, string Path)> EnumerateRemoteModules(nint process, bool is64Bit)
+    {
+        uint filter = is64Bit ? ListModules64Bit : ListModules32Bit;
+        nint[] buffer = new nint[256];
+        uint needed = 0;
+        bool ok = false;
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            uint cb = (uint)(buffer.Length * IntPtr.Size);
+            if (EnumProcessModulesEx(process, buffer, cb, out needed, filter))
+            {
+                if (needed <= cb) { ok = true; break; }
+                buffer = new nint[(int)(needed / (uint)IntPtr.Size) + 16];
+                continue;
+            }
+            if (Marshal.GetLastPInvokeError() != 299) break;
+            Thread.Sleep(15);
+        }
+        if (!ok) Check(false, UiText.Get("BackgroundActivity"));
+        int count = Math.Min(buffer.Length, (int)(needed / (uint)IntPtr.Size));
+        var modules = new List<(nint Base, string Path)>(count);
+        var sb = new StringBuilder(32768);
+        for (int i = 0; i < count; i++)
+        {
+            if (buffer[i] == 0) continue;
+            sb.Clear();
+            if (GetModuleFileNameEx(process, buffer[i], sb, sb.Capacity) != 0)
+                modules.Add((buffer[i], sb.ToString()));
+        }
+        return modules;
+    }
+
+    private static bool IsNoFocusLossName(string path) =>
+        Path.GetFileName(path).StartsWith("NoFocusLoss", StringComparison.OrdinalIgnoreCase) &&
+        path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
+
+    private static nint ResolveRemoteLoadLibraryW(List<(nint Base, string Path)> modules)
+    {
+        var remoteKernel32 = modules.Find(m => string.Equals(Path.GetFileName(m.Path), "kernel32.dll", StringComparison.OrdinalIgnoreCase));
+        if (remoteKernel32.Base == 0) throw new InvalidOperationException(UiText.Get("BackgroundRejected"));
+        return ResolveRemoteExport(modules, remoteKernel32.Base, remoteKernel32.Path, ["LoadLibraryW"]);
+    }
+
+    private static string ReadAsciiString(BlobReader reader)
+    {
+        var sb = new StringBuilder(64);
+        while (reader.RemainingBytes > 0)
+        {
+            byte b = reader.ReadByte();
+            if (b == 0) break;
+            sb.Append((char)b);
+        }
+        return sb.ToString();
+    }
+
+    private static nint ResolveRemoteExport(List<(nint Base, string Path)> modules, nint moduleBase, string modulePath, string[] names, int depth = 0)
+    {
+        if (depth > 4) throw new InvalidDataException("Export forwarder chain too deep.");
+        using var stream = new FileStream(modulePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var pe = new PEReader(stream);
+        var dir = pe.PEHeaders.PEHeader?.ExportTableDirectory ?? default;
+        if (dir.RelativeVirtualAddress == 0 || dir.Size < 40)
+            throw new InvalidDataException($"Missing export directory in {Path.GetFileName(modulePath)}.");
+
+        var dirBlock = pe.GetSectionData(dir.RelativeVirtualAddress);
+        if (dirBlock.Length < 40)
+            throw new InvalidDataException($"Truncated export directory in {Path.GetFileName(modulePath)}.");
+        var header = dirBlock.GetReader();
+        header.Offset = 20;
+        int functionCount = header.ReadInt32();
+        int nameCount = header.ReadInt32();
+        int functionsRva = header.ReadInt32();
+        int namesRva = header.ReadInt32();
+        int ordinalsRva = header.ReadInt32();
+
+        var functionsBlock = pe.GetSectionData(functionsRva);
+        var namesBlock = pe.GetSectionData(namesRva);
+        var ordinalsBlock = pe.GetSectionData(ordinalsRva);
+
+        for (int i = 0; i < nameCount; i++)
+        {
+            var namePtrReader = namesBlock.GetReader();
+            namePtrReader.Offset = i * 4;
+            int nameRva = namePtrReader.ReadInt32();
+            string current = ReadAsciiString(pe.GetSectionData(nameRva).GetReader());
+            if (!Array.Exists(names, wanted => string.Equals(current, wanted, StringComparison.Ordinal))) continue;
+
+            var ordReader = ordinalsBlock.GetReader();
+            ordReader.Offset = i * 2;
+            ushort ordinalIndex = ordReader.ReadUInt16();
+            if (ordinalIndex >= functionCount) break;
+
+            var funcReader = functionsBlock.GetReader();
+            funcReader.Offset = ordinalIndex * 4;
+            uint rva = funcReader.ReadUInt32();
+
+            if (rva >= (uint)dir.RelativeVirtualAddress && rva < (uint)(dir.RelativeVirtualAddress + dir.Size))
+            {
+                string forward = ReadAsciiString(pe.GetSectionData((int)rva).GetReader());
+                int dot = forward.LastIndexOf('.');
+                if (dot <= 0 || dot >= forward.Length - 1)
+                    throw new InvalidDataException($"Invalid forwarded export {forward}.");
+                string fwdDll = forward[..dot] + ".dll";
+                string fwdFunc = forward[(dot + 1)..];
+                var target = modules.Find(m => string.Equals(Path.GetFileName(m.Path), fwdDll, StringComparison.OrdinalIgnoreCase));
+                if (target.Base == 0)
+                    throw new DllNotFoundException($"Forwarded module {fwdDll} is not loaded in target process.");
+                return ResolveRemoteExport(modules, target.Base, target.Path, [fwdFunc], depth + 1);
+            }
+            return unchecked((nint)((nuint)moduleBase + rva));
+        }
+        throw new EntryPointNotFoundException($"Export {names[0]} not found in {Path.GetFileName(modulePath)}.");
     }
 
     public static List<WindowItem> Enumerate()

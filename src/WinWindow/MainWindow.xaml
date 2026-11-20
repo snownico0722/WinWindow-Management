@@ -226,6 +226,9 @@
             <CheckBox x:Name="FocusPinBox" Content="{DynamicResource Text.PinOnFocus}" Click="Settings_Click" ToolTip="{DynamicResource Text.PinOnFocusHint}"/>
             <CheckBox x:Name="AbsoluteBox" Content="{DynamicResource Text.KeepAbove}" Click="Settings_Click" ToolTip="{DynamicResource Text.KeepAboveHint}"/>
             <CheckBox x:Name="AggressiveBox" Content="{DynamicResource Text.AggressiveCheck}" Click="Settings_Click" ToolTip="{DynamicResource Text.AggressiveHint}"/>
+            <TextBlock Text="{DynamicResource Text.BackgroundSection}" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
+            <CheckBox x:Name="EnhancedBackgroundBox" Content="{DynamicResource Text.EnhancedBackground}" Click="Settings_Click" ToolTip="{DynamicResource Text.EnhancedBackgroundHint}"/>
+            <CheckBox x:Name="LockCursorPosBox" Content="{DynamicResource Text.LockBackgroundCursor}" Click="Settings_Click" ToolTip="{DynamicResource Text.LockBackgroundCursorHint}"/>
           </StackPanel>
         </ScrollViewer>
         <ScrollViewer x:Name="LayoutSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">

@@ -31,10 +31,13 @@ internal sealed class WindowSnapshot
     public uint ColorKey { get; set; }
     public byte Alpha { get; set; } = 255;
     public uint LayeredFlags { get; set; }
+    public bool RemovedPendingBackground { get; set; }
     public bool RestoreActivation { get; set; }
+    public bool? InjectedBackground { get; set; }
     public bool EditedTopmost { get; set; }
     public bool EditedOpacity { get; set; }
     public bool EditedClickThrough { get; set; }
+    public Dictionary<string, bool>? OriginalAudioMutes { get; set; }
     public bool Parked { get; set; }
     public Native.Placement BeforeParking { get; set; }
 }
@@ -47,6 +50,7 @@ internal sealed class WindowRule
     public bool Pinned { get; set; }
     public int Opacity { get; set; } = 100;
     public bool ClickThrough { get; set; }
+    public bool Muted { get; set; }
     public bool KeepRunning { get; set; }
     public bool Matches(WindowItem item) => item.Identity is { } id &&
         string.Equals(ProcessPath, id.ProcessPath, StringComparison.OrdinalIgnoreCase) &&
@@ -57,6 +61,7 @@ internal sealed class WindowItem : Observable
 {
     public WindowIdentity? Identity { get; init; }
     public WindowSnapshot? Original { get; set; }
+    public HashSet<string>? MutedSessionIds { get; set; }
     public string? RuleId { get; set; }
     public nint Hwnd => Identity?.Hwnd ?? 0;
     public string ProcessName => Identity is null ? UiText.Get("WaitingForWindow") : Path.GetFileName(Identity.ProcessPath);
@@ -104,7 +109,7 @@ internal sealed class WindowItem : Observable
     public bool IsAvailable { get => _available; set { if (Set(ref _available, value)) NotifyState(); } }
     // Membership is independent from TOPMOST and the recovery snapshot.
     public bool Listed { get; set; }
-    public bool IsManaged => Listed || Original is not null;
+    public bool IsManaged => Listed || Original is { RemovedPendingBackground: false };
     public bool AutoRemember { get; set; } = true;
     public bool WantsPin { get; set; }
     public bool Remembered => RuleId is not null;
@@ -114,6 +119,8 @@ internal sealed class WindowItem : Observable
     public int Opacity { get => _opacity; set { if (Set(ref _opacity, value)) NotifyState(); } }
     private bool _clickThrough;
     public bool ClickThrough { get => _clickThrough; set { if (Set(ref _clickThrough, value)) NotifyState(); } }
+    private bool _muted;
+    public bool Muted { get => _muted; set { if (Set(ref _muted, value)) NotifyState(); } }
     private bool _minimized;
     public bool IsMinimized { get => _minimized; set { if (Set(ref _minimized, value)) NotifyState(); } }
     private bool _hidden;
@@ -145,6 +152,8 @@ internal sealed class Preferences
     public bool AggressiveTopmost { get; set; }
     public bool EnablePinSound { get; set; } = true;
     public bool ShowPinNotifications { get; set; }
+    public bool EnhancedBackgroundKeep { get; set; }
+    public bool LockBackgroundCursorPos { get; set; }
     public bool ManualTopmost { get; set; }
     public double Width { get; set; } = 580;
     public double Height { get; set; } = 500;

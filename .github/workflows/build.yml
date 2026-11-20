@@ -36,10 +36,11 @@ jobs:
         shell: pwsh
         env:
           INCLUDE_RUNTIME: ${{ (github.event_name == 'release' && !github.event.release.prerelease) || (github.event_name == 'workflow_dispatch' && inputs.include_runtime) }}
-        run: ./scripts/package.ps1 -IncludeRuntime:($env:INCLUDE_RUNTIME -eq 'true')
+        run: ./scripts/package.ps1 -TestNative -IncludeRuntime:($env:INCLUDE_RUNTIME -eq 'true')
       - name: Native window and UI smoke tests from the published ZIP
         shell: pwsh
         run: |
+          $env:WINWINDOW_RECOVERY_FIXTURE = (Resolve-Path 'artifacts/native-x64/Release/AudioFixture.exe').Path
           $testApp = Join-Path $env:RUNNER_TEMP 'WinWindowPackageTest'
           Expand-Archive artifacts/WinWindow-win-x64.zip -DestinationPath $testApp
           $p = Start-Process (Join-Path $testApp 'WinWindow.exe') -ArgumentList '--self-test TestResults' -PassThru

@@ -14,6 +14,8 @@ public partial class WindowRow : UserControl
     private const string PinInactiveGeometry = "M5.2,2.2 L10.8,2.2 M10,2.2 L10,6.8 L12.4,9.5 L9.6,9.5 M6,2.2 L6,4.4 M3.6,9.5 L6.8,9.5 M8,11.2 L8,14.5 M2.5,2.5 L13.5,13.5";
     private const string ParkMinimizeGeometry = "M3,13 L13,13 M8,2.5 L8,9.8 M5,7 L8,10 L11,7";
     private const string ParkRestoreGeometry = "M3,13 L13,13 M8,10.2 L8,3 M5,6 L8,3 L11,6";
+    private const string SpeakerActiveGeometry = "M2.8,6.2 L5.4,6.2 L8.8,3.4 L8.8,12.6 L5.4,9.8 L2.8,9.8 Z M11,5.5 A3.4,3.4 0 0 1 11,10.5 M12.8,3.8 A5.8,5.8 0 0 1 12.8,12.2";
+    private const string SpeakerMutedGeometry = "M2.8,6.2 L5.4,6.2 L8.8,3.4 L8.8,12.6 L5.4,9.8 L2.8,9.8 Z M11,6 L14.4,10 M14.4,6 L11,10";
 
     private WindowItem? _item;
     private bool _syncing, _dirty;
@@ -25,7 +27,7 @@ public partial class WindowRow : UserControl
         OpacitySlider.LostMouseCapture += (_, _) => Sync();
         Loaded += (_, _) => Attach(DataContext as WindowItem);
         Unloaded += (_, _) => Attach(null);
-        SizeChanged += (_, e) => BackgroundLabel.Visibility = e.NewSize.Width >= 500 ? Visibility.Visible : Visibility.Collapsed;
+        SizeChanged += (_, e) => BackgroundLabel.Visibility = e.NewSize.Width >= 530 ? Visibility.Visible : Visibility.Collapsed;
         DataContextChanged += (_, _) => { if (IsLoaded) Attach(DataContext as WindowItem); };
     }
 
@@ -75,6 +77,9 @@ public partial class WindowRow : UserControl
                 : "";
 
             BackgroundToggle.IsChecked = item.BackgroundEnabled;
+            MuteButton.IsChecked = item.Muted;
+            MuteButton.ToolTip = item.Muted ? UiText.Get("UnmuteWindow") : UiText.Get("MuteWindow");
+            MuteIcon.Data = System.Windows.Media.Geometry.Parse(item.Muted ? SpeakerMutedGeometry : SpeakerActiveGeometry);
 
             int value = Owner?.DesiredOpacity(item) ?? item.Opacity;
             if (!OpacitySlider.IsMouseCaptureWithin) OpacitySlider.Value = value;
@@ -101,6 +106,7 @@ public partial class WindowRow : UserControl
         if (_item is { ClickThrough: false }) Execute("through");
     }
     private void Background_Click(object sender, RoutedEventArgs e) => Execute("background");
+    private void Mute_Click(object sender, RoutedEventArgs e) => Execute("mute");
     private void Park_Click(object sender, RoutedEventArgs e) => Execute("park");
     private void Remove_Click(object sender, RoutedEventArgs e) => Execute("remove");
     private void Remember_Click(object sender, RoutedEventArgs e) => Execute("remember");
