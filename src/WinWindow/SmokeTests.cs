@@ -203,7 +203,6 @@ internal static class SmokeTests
                     "enhanced injection and cursor coordinate lock are off by default");
                 bool nativeKeep = Native.HasNoFocusLossSupport();
                 var keepRunning = (ToggleButton)gameRow.FindName("BackgroundToggle");
-                var muteToggle = (ToggleButton)gameRow.FindName("MuteButton");
                 keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 await WaitAsync("default gentle toggle resumes a background fixture without injection", () =>
                     gameItem.BackgroundEnabled && !gameItem.IsBusy &&
@@ -262,6 +261,10 @@ internal static class SmokeTests
                 await WaitAsync("enhanced mode can be reapplied", () => !gameItem.IsBusy &&
                     (!nativeKeep || Native.Title(game.Hwnd).StartsWith("activity:running:focused:")), 5000);
 
+                // Adding and removing the peer can recycle the original WPF row.
+                gameRow = await FindRowAsync(shell, gameItem);
+                keepRunning = (ToggleButton)gameRow.FindName("BackgroundToggle");
+                var muteToggle = (ToggleButton)gameRow.FindName("MuteButton");
                 muteToggle.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 await WaitAsync("row mute button toggles mute state and remembers rule", () =>
                     gameItem.Muted && !gameItem.IsBusy && store.Preferences.Rules.Any(r => r.Id == gameItem.RuleId && r.Muted));
