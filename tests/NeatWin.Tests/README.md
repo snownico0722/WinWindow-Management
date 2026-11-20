@@ -1,9 +1,13 @@
 # NeatWin layout regression tests
 
 This project carries the NeatWin automated tests that exercise code now hosted by
-`NeatWin.Layout`. It keeps the original test cases and test names for the shared
-layout engine, task model, recording/reference logic, automatic-layout scheduler,
-undo safety, and window-layer protection.
+`NeatWin.Layout`.
+
+It preserves 21 original test classes in full and retains another 24 applicable
+regression cases from three original suites whose remaining cases target removed
+legacy planner APIs. The suite covers layout planning, task/occlusion models,
+automatic-layout scheduling, follow-hand behavior, video-aspect correction,
+recording/reference logic, undo safety, and window-layer protection.
 
 Run on Windows with the .NET 10 SDK:
 
@@ -11,7 +15,6 @@ Run on Windows with the .NET 10 SDK:
 dotnet test tests/NeatWin.Tests/NeatWin.Tests.csproj -c Release
 ```
 
-The suite intentionally excludes tests coupled to the retired standalone NeatWin
-window/recorder UI, its application manifest, or implementation classes that are
-not part of the integrated layout assembly. Those are not silently replaced with
-tests for different behavior.
+Tests tied exclusively to the retired standalone NeatWin window/recorder UI,
+application manifest, or superseded planner implementations are excluded. The
+integrated app's native and WPF behavior is covered by the packaged smoke tests.
