@@ -1,6 +1,7 @@
 <UserControl x:Class="WinWindow.WindowRow"
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
- xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Focusable="False">
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Focusable="False"
+ MouseEnter="Row_MouseEnter" MouseLeave="Row_MouseLeave">
   <Border x:Name="CardFrame" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource CardLine}" BorderThickness="1" CornerRadius="10" Padding="10,7"
     ContextMenuOpening="RowMenu_Opening">
     <Border.ContextMenu>

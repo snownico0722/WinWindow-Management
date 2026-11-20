@@ -22,7 +22,7 @@ jobs:
     # A pre-release published from a draft is delivered as "published".
     if: github.event_name != 'release' || github.event.action == 'released' || github.event.release.prerelease
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -30,6 +30,8 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Check layout model and learning
         run: dotnet run --project tests/LayoutModel -c Release
+      - name: Run NeatWin regression tests
+        run: dotnet test tests/NeatWin.Tests/NeatWin.Tests.csproj -c Release --logger "console;verbosity=minimal"
       - name: Build WPF
         run: dotnet build src/WinWindow/WinWindow.csproj -c Release
       - name: Package Windows x64

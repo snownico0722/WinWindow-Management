@@ -37,6 +37,8 @@ public partial class MainWindow : Window
     private DesktopIntegration? _desktop;
     private DesktopLayout? _layout;
     private FlashOverlay? _flash;
+    private FlashOverlay? _hoverOutline;
+    private WindowItem? _hoverPreviewItem;
     private string LayoutDirectory => Path.Combine(_store.DirectoryPath, "Layout");
     private HwndSource? _source;
     private nint _hwnd;
@@ -94,8 +96,8 @@ public partial class MainWindow : Window
         SourceInitialized += OnSourceInitialized;
         Loaded += async (_, _) => await InitializeAsync();
         Activated += (_, _) => ApplyOwnPolicy();
-        Deactivated += (_, _) => { if (!_picking) _flash?.Hide(); ApplyOwnPolicy(); };
-        IsVisibleChanged += (_, _) => { if (!IsVisible) { AddPopup.IsOpen = false; _flash?.Hide(); } ApplyOwnPolicy(); };
+        Deactivated += (_, _) => { if (!_picking) _flash?.Hide(); HideHoverPreview(); ApplyOwnPolicy(); };
+        IsVisibleChanged += (_, _) => { if (!IsVisible) { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); };
         StateChanged += (_, _) => { if (WindowState != WindowState.Minimized) _lastState = WindowState; else { AddPopup.IsOpen = false; _flash?.Hide(); } ApplyOwnPolicy(); };
         Closing += OnClosing;
         _ready = true; RefreshView();
@@ -107,6 +109,35 @@ public partial class MainWindow : Window
     }
 
     private FlashOverlay Outline => _flash ??= new FlashOverlay();
+
+    internal bool IsHoverPreviewVisible => _hoverOutline?.IsVisible == true;
+    internal nint HoverPreviewHandle => _hoverOutline?.Handle ?? 0;
+
+    internal void ShowHoverPreview(WindowItem item)
+    {
+        if (_quitting || !_ready || !IsVisible || _compact || WindowPage.Visibility != Visibility.Visible ||
+            !item.IsAvailable || item.IsBusy || item.Identity is not { } identity ||
+            !Native.Matches(identity) || !Native.IsWindowVisible(identity.Hwnd) || Native.IsIconic(identity.Hwnd) ||
+            !Native.TryGetFrameBounds(identity.Hwnd, out _))
+        {
+            HideHoverPreview(item);
+            return;
+        }
+
+        _hoverPreviewItem = item;
+        (_hoverOutline ??= new FlashOverlay()).Show(identity.Hwnd, transient: false);
+    }
+
+    internal void HideHoverPreview(WindowItem item)
+    {
+        if (ReferenceEquals(_hoverPreviewItem, item)) HideHoverPreview();
+    }
+
+    private void HideHoverPreview()
+    {
+        _hoverPreviewItem = null;
+        _hoverOutline?.Hide();
+    }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
@@ -373,6 +404,7 @@ public partial class MainWindow : Window
 
     internal void PreviewPickerTarget(nint target)
     {
+        HideHoverPreview();
         if (target == 0) _flash?.Hide();
         else Outline.Show(target, transient: false);
     }
@@ -445,6 +477,7 @@ public partial class MainWindow : Window
     {
         AddPopup.IsOpen = false;
         _flash?.Hide();
+        if (show) HideHoverPreview();
         WindowPage.Visibility = show ? Visibility.Collapsed : Visibility.Visible;
         SettingsPage.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (show) SelectSettingsSection();
@@ -533,6 +566,7 @@ public partial class MainWindow : Window
     internal void ToggleCompact()
     {
         if (_quitting) return;
+        HideHoverPreview();
         AddPopup.IsOpen = false; CancelPicker(); _flash?.Hide();
         if (!_compact)
         {
@@ -704,7 +738,7 @@ public partial class MainWindow : Window
     private async void OnClosing(object? sender, CancelEventArgs e)
     {
         if (_allowClose || _testMode) return;
-        e.Cancel = true; SaveGeometry(); CancelPicker(); AddPopup.IsOpen = false; _flash?.Hide();
+        e.Cancel = true; HideHoverPreview(); SaveGeometry(); CancelPicker(); AddPopup.IsOpen = false; _flash?.Hide();
         if (!_quitting && _store.Preferences.CloseToTray && _desktop is not null) { Hide(); ApplyOwnPolicy(); return; }
         await QuitAsync();
     }
@@ -712,7 +746,7 @@ public partial class MainWindow : Window
     internal async Task QuitAsync()
     {
         if (_quitting) return;
-        _quitting = true; _layout?.Dispose(); AddPopup.IsOpen = false; _flash?.Dispose(); _flash = null;
+        _quitting = true; HideHoverPreview(); _layout?.Dispose(); AddPopup.IsOpen = false; _flash?.Dispose(); _flash = null;
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
         CancelPicker(); SaveGeometry(); ApplyOwnPolicy();
         int failures = await Manager.ShutdownAsync();
@@ -724,6 +758,7 @@ public partial class MainWindow : Window
     {
         _pickerTimer.Stop(); _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
         _flash?.Dispose(); _flash = null;
+        HideHoverPreview(); _hoverOutline?.Dispose(); _hoverOutline = null;
         _layout?.Dispose(); _layout = null;
         _desktop?.Dispose(); _desktop = null;
         _source?.RemoveHook(WindowMessage); _source = null;
@@ -739,6 +774,9 @@ public partial class MainWindow : Window
         private nint _hwnd;
         private bool _disposed;
         private bool _muted;
+
+        public nint Handle => _hwnd;
+        public bool IsVisible => _window.IsVisible;
 
         public FlashOverlay()
         {

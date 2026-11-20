@@ -11,5 +11,6 @@
   <ItemGroup>
     <EmbeddedResource Include="../../docs/LAYOUT_RECORDING.md" LogicalName="NeatWin.Layout.RecordingGuide" />
     <InternalsVisibleTo Include="WinWindow" />
+    <InternalsVisibleTo Include="NeatWin.Tests" />
   </ItemGroup>
 </Project>
