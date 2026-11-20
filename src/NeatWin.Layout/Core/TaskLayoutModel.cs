@@ -113,6 +113,13 @@ internal static partial class IntentLayoutPlanner
     private static bool CoversHalfOfRear(RectI front, RectI rear) =>
         front.Intersect(rear).Area >= rear.Area * .50;
 
+    private static RectI InnerEdgeOverlap(RectI first, RectI second)
+    {
+        if (first.Left > second.Left) (first, second) = (second, first);
+        return first.Left < second.Left && first.Right < second.Right && first.VerticalOverlapRatio(second) >= .50
+            ? first.Intersect(second) : default;
+    }
+
     // Off-screen pixels must never earn visible-information utility.
     internal static OcclusionMetrics.Exposure ScreenExposure(RectI rect, IEnumerable<RectI> occluders,
         RectI area, uint dpi)
@@ -239,7 +246,8 @@ internal static partial class IntentLayoutPlanner
             var w = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             var scale = w.Dpi / 96.0;
             var intent = demands[i];
-            var exposure = ScreenExposure(b, front.Concat((obstacles ?? []).Where(o => o.ZOrder < windows[rank].Window.ZOrder).Select(o => o.VisualRect)), area, w.Dpi);
+            var blockers = (obstacles ?? []).Where(o => o.ZOrder < windows[rank].Window.ZOrder).Select(o => o.VisualRect);
+            var exposure = ScreenExposure(b, front.Concat(blockers), area, w.Dpi);
             var windowHint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
             var geometricSmall = a.Area < area.Area * .15;
             // Without content evidence, a generic minimum must not invent a need to enlarge
@@ -262,25 +270,33 @@ internal static partial class IntentLayoutPlanner
             double thirdPartyLoss = occlusionLoss;
             if (context.PairPlanningEnabled && !context.Preferences.ProtectWindowEdges && windowHint?.ProtectPeriphery != true)
             {
-                // When a working pair authorizes inner-edge overlap (personal habit, rule, or media default),
-                // do not triple-charge that authorized edge slice as accidental occlusion; penalize only
-                // third-window covers and overlap exceeding the authorized target.
+                // Allow only the configured strip at a facing inner edge. Keep the remainder of
+                // that window and all other covers in the geometry used for readability scoring.
+                List<RectI>? remainingFront = null;
+                double allowedFraction = 0;
                 for (int rIdx = 0; rIdx < rank; rIdx++)
                 {
-                    int frontIdx = candidate.Order[rIdx];
-                    var pref = PairPreferenceFor(windows[frontIdx].Window.Handle, w.Handle, context);
+                    var partnerRect = front[rIdx];
+                    var overlap = InnerEdgeOverlap(b, partnerRect);
+                    if (overlap.IsEmpty) continue;
+                    var pref = PairPreferenceFor(windows[candidate.Order[rIdx]].Window.Handle, w.Handle, context);
                     if (pref?.Overlap is not double authOverlap || authOverlap <= 0) continue;
-                    var partnerRect = candidate.Rects[frontIdx];
-                    double actualOv = b.VerticalOverlapRatio(partnerRect) >= .5 ? partnerRect.HorizontalOverlapRatio(b) : 0;
-                    double allowedOv = Math.Min(actualOv, authOverlap);
-                    double excessOv = Math.Max(0, actualOv - authOverlap);
-                    var otherFront = candidate.Order.Take(rank).Where(k => k != frontIdx).Select(k => candidate.Rects[k])
-                        .Concat((obstacles ?? []).Where(o => o.ZOrder < windows[rank].Window.ZOrder).Select(o => o.VisualRect));
-                    var otherExp = ScreenExposure(b, otherFront, area, w.Dpi);
-                    double baseOtherLoss = 1 - (.65 * otherExp.CenterVisible + .35 * otherExp.Visible);
-                    occlusionLoss = Math.Clamp(baseOtherLoss + .12 * allowedOv + 1.35 * excessOv, 0, 1);
-                    thirdPartyLoss = Math.Clamp(baseOtherLoss + excessOv, 0, 1);
-                    break;
+                    var narrow = Math.Min(b.Width, partnerRect.Width);
+                    var allowance = (int)Math.Round(Math.Min(overlap.Width, narrow * authOverlap));
+                    if (allowance <= 0) continue;
+                    remainingFront ??= front.ToList();
+                    remainingFront[rIdx] = overlap with
+                    {
+                        X = b.Left < partnerRect.Left ? overlap.X : overlap.X + allowance,
+                        Width = overlap.Width - allowance,
+                    };
+                    allowedFraction += (double)allowance / narrow;
+                }
+                if (remainingFront is not null)
+                {
+                    var remaining = ScreenExposure(b, remainingFront.Concat(blockers), area, w.Dpi);
+                    thirdPartyLoss = 1 - (.65 * remaining.CenterVisible + .35 * remaining.Visible);
+                    occlusionLoss = Math.Min(occlusionLoss, thirdPartyLoss + .12 * allowedFraction);
                 }
             }
             var demand = windows.Length == 1 ? 0 : Math.Max(intent.Joint * profile.JointVisibilityWeight,
@@ -346,8 +362,8 @@ internal static partial class IntentLayoutPlanner
             if (r.Joint > r.Parked && oa.Intersect(ob).Area >= .50 * Math.Max(oa.Area, ob.Area))
             {
                 double rawOverlap = a.Intersect(b).Area / Math.Max(1d, Math.Min(a.Area, b.Area));
-                double unpermitted = choice?.Overlap is double permitted && permitted > 0
-                    ? Math.Max(0, (a.VerticalOverlapRatio(b) >= .5 ? a.HorizontalOverlapRatio(b) : rawOverlap) - permitted)
+                double unpermitted = choice?.Overlap is double permitted && permitted > 0 && !InnerEdgeOverlap(a, b).IsEmpty
+                    ? Math.Max(0, a.HorizontalOverlapRatio(b) - permitted)
                     : rawOverlap;
                 information += (2.6 * (r.Joint - .5 * r.Parked) * unpermitted) / n;
             }
@@ -453,16 +469,15 @@ internal static partial class IntentLayoutPlanner
                 layer.FrontToBack.Select(w => Array.FindIndex(group, v => v.Window.Handle == w.Handle)).ToArray();
             if (order.Length != group.Length || order.Any(i => i < 0)) return false;
             var area = group[0].Window.WorkArea;
-            var beforeObstacles = plannedDesktop.Where(w => !trace.Handles.Contains(w.Handle) &&
-                w.MonitorHandle == group[0].Window.MonitorHandle).ToArray();
-            var afterObstacles = refinedDesktop.Where(w => !trace.Handles.Contains(w.Handle) &&
-                w.MonitorHandle == group[0].Window.MonitorHandle).ToArray();
+            var beforeObstacles = plannedDesktop.Where(w => !trace.Handles.Contains(w.Handle) && !w.VisualRect.Intersect(area).IsEmpty).ToArray();
+            var afterObstacles = refinedDesktop.Where(w => !trace.Handles.Contains(w.Handle) && !w.VisualRect.Intersect(area).IsEmpty).ToArray();
+            var previousObstacleRects = beforeObstacles.ToDictionary(w => w.Handle, w => w.VisualRect);
             var c = new Candidate("refined", after, order);
             if (!TaskSafe(group, original, c, area, options, context, afterObstacles)) return false;
             for (var i = 0; i < group.Length; i++)
-                for (var j = 0; j < afterObstacles.Length; j++)
-                    if (after[i].Intersect(afterObstacles[j].VisualRect).Area >
-                        before[i].Intersect(beforeObstacles[j].VisualRect).Area) return false;
+                foreach (var obstacle in afterObstacles)
+                    if (after[i].Intersect(obstacle.VisualRect).Area >
+                        before[i].Intersect(previousObstacleRects.GetValueOrDefault(obstacle.Handle)).Area) return false;
             var groupContext = ResolveWorkingPair(group, context);
             var task = trace.Task?.Relations ?? InferTask(group, original, groupContext);
             var demands = MeasureDemand(group.Length, task);

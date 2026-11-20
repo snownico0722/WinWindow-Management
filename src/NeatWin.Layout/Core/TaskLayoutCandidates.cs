@@ -13,7 +13,14 @@ internal static partial class IntentLayoutPlanner
             if (access < 1 || exposure[i].AccessWidth >= access || rect.Width > area.Width || rect.Height > area.Height) continue;
             var title = rect with { Height = Math.Min(rect.Height, (int)Math.Round(32 * w.Dpi / 96.0)) };
             var covers = original.Take(i).Concat(obstacles.Where(o => o.ZOrder < w.ZOrder).Select(o => o.VisualRect))
-                .Where(r => !r.Intersect(title).IsEmpty).Reverse().Take(3);
+                .Where(r => !r.Intersect(title).IsEmpty).Reverse().Take(3).ToArray();
+            if (covers.Length == 0) continue;
+            var occupied = original.Where((_, other) => other != i).Concat(obstacles.Select(o => o.VisualRect));
+            foreach (var target in RectRegion.FreeRectangles(area, occupied, rect.Width, rect.Height)
+                .Select(region => ClampTo(rect, region)).Where(target => target != rect).Distinct()
+                .OrderBy(target => Math.Abs((long)rect.X - target.X) + Math.Abs((long)rect.Y - target.Y)).Take(4))
+                AddTarget(target);
+
             foreach (var cover in covers)
             {
                 RectI[] openings = [
@@ -22,20 +29,23 @@ internal static partial class IntentLayoutPlanner
                     rect with { Y = cover.Top - title.Height - gap },
                     rect with { Y = cover.Bottom + gap },
                 ];
-                foreach (var opening in openings)
-                {
-                    var target = rect with
-                    {
-                        X = Math.Clamp(opening.X, area.Left, area.Right - rect.Width),
-                        Y = Math.Clamp(opening.Y, area.Top, area.Bottom - rect.Height),
-                    };
-                    if (target == rect) continue;
-                    var layout = original.ToArray();
-                    layout[i] = target;
-                    candidates.Add(new("window-access", layout, order));
-                }
+                foreach (var opening in openings) AddTarget(ClampTo(opening, area));
+            }
+
+            void AddTarget(RectI target)
+            {
+                if (target == rect) return;
+                var layout = original.ToArray();
+                layout[i] = target;
+                candidates.Add(new("window-access", layout, order));
             }
         }
+
+        static RectI ClampTo(RectI rect, RectI free) => rect with
+        {
+            X = Math.Clamp(rect.X, free.Left, free.Right - rect.Width),
+            Y = Math.Clamp(rect.Y, free.Top, free.Bottom - rect.Height),
+        };
     }
 
     private static IEnumerable<int> RowShapes(int count, RectI area)

@@ -45,6 +45,52 @@ public sealed class TaskRegionAndAffinityTests
     }
 
     [Fact]
+    public void FreeRegionsKeepAnUnbrokenCorridorAlongOverlappingObstacles()
+    {
+        var area = new RectI(-1600, -80, 1600, 900);
+        RectI[] occupied = [new(-1050, 150, 620, 410), new(-890, 450, 590, 220)];
+        var regions = RectRegion.FreeRectangles(area, occupied, 500, 750);
+        Assert.Contains(new RectI(-1600, -80, 550, 900), regions);
+        Assert.All(regions, region =>
+        {
+            Assert.Equal(region, region.Intersect(area));
+            Assert.All(occupied, obstacle => Assert.True(region.Intersect(obstacle).IsEmpty));
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RealGroupFitsInAnOpenCorridorNextToAnObstacle(bool fromAdjacentDisplay)
+    {
+        var area = new RectI(-1600, 0, 1600, 900);
+        var first = W(1, new(-1100, 210, 560, 360)) with { WorkArea = area, IsResizable = false };
+        var second = W(2, new(-1070, 250, 560, 360)) with { WorkArea = area, IsResizable = false };
+        var obstacle = W(3, fromAdjacentDisplay ? new(-1020, 100, 2300, 700) : new(-1020, 100, 760, 700)) with
+        {
+            WorkArea = fromAdjacentDisplay ? new(0, 0, 1920, 1080) : area,
+            MonitorHandle = fromAdjacentDisplay ? (nint)2 : (nint)1,
+            IsManageable = false,
+            IsTopmost = true,
+            ZOrder = 0,
+        };
+        WindowSnapshot[] desktop = [obstacle, first, second];
+        var visible = new VisibilityAnalyzer().SelectForManualArrange(desktop, true);
+        var plan = IntentLayoutPlanner.CreateDetailedPlan(visible, new(), desktop: desktop,
+            taskContext: new(ExplicitArrange: true, PairHints: [new(first.Handle, second.Handle, TaskRelation.JointView)]));
+        var arranged = TaskLayoutSession.Project(desktop, plan);
+        Assert.Equal(obstacle.VisualRect, arranged[0].VisualRect);
+        Assert.True(arranged[1].VisualRect.Intersect(arranged[2].VisualRect).IsEmpty);
+        Assert.All(arranged.Skip(1), window =>
+        {
+            Assert.Equal(window.VisualRect, window.VisualRect.Intersect(area));
+            Assert.True(window.VisualRect.Intersect(obstacle.VisualRect).IsEmpty);
+            Assert.Equal(first.VisualRect.Width, window.VisualRect.Width);
+            Assert.Equal(first.VisualRect.Height, window.VisualRect.Height);
+        });
+    }
+
+    [Fact]
     public void ProtectedRegionUsesOcclusionUnionAndCountsOffscreenLoss()
     {
         var window = new RectI(-100, 0, 1000, 800); var region = new TaskContentRegion(0, 0, .2, 1);

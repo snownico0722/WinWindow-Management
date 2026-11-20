@@ -53,6 +53,42 @@ public readonly record struct RectI(int X, int Y, int Width, int Height)
 
 public static class RectRegion
 {
+    internal static IReadOnlyList<RectI> FreeRectangles(RectI area, IEnumerable<RectI> occupied,
+        int minWidth = 1, int minHeight = 1)
+    {
+        minWidth = Math.Max(1, minWidth);
+        minHeight = Math.Max(1, minHeight);
+        if (area.Width < minWidth || area.Height < minHeight) return [];
+        var free = new List<RectI> { area };
+        foreach (var obstacle in occupied)
+        {
+            if (free.Count == 0) break;
+            if (!free.Any(r => !r.Intersect(obstacle).IsEmpty)) continue;
+            var split = new List<RectI>();
+            foreach (var rect in free)
+            {
+                var cut = rect.Intersect(obstacle);
+                if (cut.IsEmpty) { split.Add(rect); continue; }
+
+                // Retain full-span strips. Their overlaps allow a placement to cross a
+                // partition seam while still avoiding every occupied pixel.
+                split.Add(RectI.FromEdges(rect.Left, rect.Top, cut.Left, rect.Bottom));
+                split.Add(RectI.FromEdges(cut.Right, rect.Top, rect.Right, rect.Bottom));
+                split.Add(RectI.FromEdges(rect.Left, rect.Top, rect.Right, cut.Top));
+                split.Add(RectI.FromEdges(rect.Left, cut.Bottom, rect.Right, rect.Bottom));
+            }
+            free.Clear();
+            foreach (var rect in split.Where(r => r.Width >= minWidth && r.Height >= minHeight)
+                .OrderByDescending(r => r.Area).ThenBy(r => r.Left).ThenBy(r => r.Top))
+            {
+                if (free.Any(other => other.Intersect(rect) == rect)) continue;
+                free.Add(rect);
+                if (free.Count == 64) break;
+            }
+        }
+        return free;
+    }
+
     public static List<RectI> Subtract(IReadOnlyList<RectI> pieces, RectI cut, int maxFragments = 256)
     {
         if (pieces.Count == 0 || cut.IsEmpty)

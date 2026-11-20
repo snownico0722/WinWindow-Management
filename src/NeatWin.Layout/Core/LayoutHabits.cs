@@ -23,9 +23,9 @@ public sealed class ForegroundHistory
         lock (_visits)
         {
             if (_visits.Count > 0 && _visits[^1].Handle == handle && _visits[^1].Pid == pid)
-                _visits.RemoveAt(_visits.Count - 1);
+                return;
             // Collapse transient Alt+Tab pass-throughs (A -> B -> C where B dwelled < 450ms and A != C).
-            else if (_visits.Count >= 2 && _visits[^2].Handle != handle &&
+            if (_visits.Count >= 2 && _visits[^1].Handle != 0 && _visits[^2].Handle != handle &&
                 now - _visits[^1].Time is >= 0 and < 450)
                 _visits.RemoveAt(_visits.Count - 1);
             _visits.Add((handle, pid, now));
@@ -33,35 +33,58 @@ public sealed class ForegroundHistory
         }
     }
 
-    public void Retire(nint handle) { lock (_visits) _visits.RemoveAll(v => v.Handle == handle); }
+    public void Retire(nint handle)
+    {
+        lock (_visits)
+            // Keep the interruption in the sequence without trusting a reused handle.
+            for (var i = 0; i < _visits.Count; i++)
+                if (_visits[i].Handle == handle) _visits[i] = (0, 0, _visits[i].Time);
+    }
 
     public LayoutFocus Resolve(IReadOnlyList<WindowSnapshot> windows, long now)
     {
         lock (_visits)
         {
             var valid = windows.Where(w => w.IsManageable).ToDictionary(w => w.Handle);
-            var visits = _visits.Where(v => now - v.Time <= 600_000 &&
-                valid.TryGetValue(v.Handle, out var w) && w.ProcessId == v.Pid).ToArray();
-            var main = valid.Values.FirstOrDefault(w => w.IsForeground)?.Handle ?? visits.LastOrDefault().Handle;
+            bool IsCurrentVisit((nint Handle, uint Pid, long Time) v) => now - v.Time is >= 0 and <= 600_000 &&
+                valid.TryGetValue(v.Handle, out var w) && w.ProcessId == v.Pid;
+            var main = valid.Values.FirstOrDefault(w => w.IsForeground)?.Handle ??
+                _visits.LastOrDefault(IsCurrentVisit).Handle;
             if (main == 0) return new(0, 0, 0);
-            var partners = new Dictionary<nint, (int Count, double Score)>();
-            for (int i = 1; i < visits.Length; i++)
+
+            var monitor = valid[main].MonitorHandle;
+            var traffic = new Dictionary<nint, double>();
+            var partners = new Dictionary<nint, (int Count, double Weight)>();
+            for (var i = 1; i < _visits.Count; i++)
             {
-                var a = visits[i - 1]; var b = visits[i];
+                var a = _visits[i - 1];
+                var b = _visits[i];
+                if (a.Handle == b.Handle || b.Time - a.Time is < 0 or > 120_000 ||
+                    !IsCurrentVisit(a) || !IsCurrentVisit(b) ||
+                    valid[a.Handle].MonitorHandle != monitor || valid[b.Handle].MonitorHandle != monitor)
+                    continue;
+
+                double weight = Math.Exp(-(now - b.Time) / 180_000.0);
+                traffic[a.Handle] = traffic.GetValueOrDefault(a.Handle) + weight;
+                traffic[b.Handle] = traffic.GetValueOrDefault(b.Handle) + weight;
                 var peer = a.Handle == main ? b.Handle : b.Handle == main ? a.Handle : 0;
-                if (peer != 0 && peer != main && b.Time - a.Time <= 120_000 &&
-                    valid[peer].MonitorHandle == valid[main].MonitorHandle)
-                {
-                    var current = partners.GetValueOrDefault(peer);
-                    double decay = Math.Exp(-Math.Max(0, now - b.Time) / 180_000.0);
-                    partners[peer] = (current.Count + 1, current.Score + decay);
-                }
+                if (peer == 0) continue;
+                var pair = partners.GetValueOrDefault(peer);
+                partners[peer] = (pair.Count + 1, pair.Weight + weight);
             }
-            var best = partners.OrderByDescending(p => p.Value.Count >= 2)
-                .ThenByDescending(p => p.Value.Score)
-                .ThenByDescending(p => p.Value.Count)
-                .FirstOrDefault();
-            return new(main, best.Value.Count >= 2 ? best.Key : 0, best.Value.Count);
+
+            // Normalize direct, recent transitions against both windows' traffic. A window
+            // shared across several tasks can have many switches without a dominant peer.
+            var ranked = partners.Select(p => (Peer: p.Key, p.Value.Count, p.Value.Weight,
+                    Association: 2 * p.Value.Weight / (traffic[main] + traffic[p.Key])))
+                .OrderByDescending(p => p.Association).ThenByDescending(p => p.Weight)
+                .Take(2).ToArray();
+            if (ranked.Length == 0) return new(main, 0, 0);
+            var best = ranked[0];
+            // A second plausible companion or a few stale switches leave the relationship unresolved.
+            bool clear = best.Count >= 2 && best.Weight >= 1 && best.Association >= .55 &&
+                (ranked.Length == 1 || ranked[1].Association < best.Association * .8);
+            return new(main, clear ? best.Peer : 0, best.Count);
         }
     }
 }

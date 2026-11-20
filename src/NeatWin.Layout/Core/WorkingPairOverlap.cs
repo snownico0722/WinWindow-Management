@@ -135,7 +135,7 @@ internal static partial class IntentLayoutPlanner
         if (preference.Overlap is not double desired || originalA.Width + originalB.Width <= area.Width) return cost;
         // Zero overlap is always available. Under horizontal pressure, compare the benefit of
         // preserving reading width against the cost of hiding part of the adjacent edge.
-        double overlap = a.VerticalOverlapRatio(b) >= .5 ? a.HorizontalOverlapRatio(b) : 0;
+        double overlap = InnerEdgeOverlap(a, b).Width / (double)Math.Max(1, Math.Min(a.Width, b.Width));
         cost += 5 * Math.Abs(overlap - desired);
         return cost;
     }

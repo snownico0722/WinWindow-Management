@@ -127,8 +127,7 @@ public sealed class AutomaticLayoutScheduler
                 ignored.Add(w.Handle); ignoredOrder.Add(w.Handle);
             }
         }
-        var changed = Changed(_observed, next, ignored, ignoredOrder);
-        _observed = next;
+        var changed = UpdateObserved(next, ignored, ignoredOrder);
         if (now >= _ownUntil) _own.Clear();
         if (changed)
         {
@@ -159,23 +158,36 @@ public sealed class AutomaticLayoutScheduler
             { ZOrder = rank, IsForeground = w.Handle == _foreground }).ToArray();
     }
 
-    private static bool Changed(WindowSnapshot[] before, WindowSnapshot[] after, HashSet<nint> ignoreGeometry, HashSet<nint> ignoreOrder)
+    private bool UpdateObserved(WindowSnapshot[] next, HashSet<nint> ignoreGeometry, HashSet<nint> ignoreOrder)
     {
-        if (before.Length != after.Length) return true;
+        var before = _observed;
         var old = before.ToDictionary(w => w.Handle);
-        foreach (var w in after)
+        var changed = before.Length != next.Length;
+        for (var i = 0; i < next.Length; i++)
         {
+            var w = next[i];
             if (!old.TryGetValue(w.Handle, out var a) || a.ProcessId != w.ProcessId ||
                 a.WorkArea != w.WorkArea || a.MonitorHandle != w.MonitorHandle || a.Dpi != w.Dpi ||
                 a.IsManageable != w.IsManageable || a.IsResizable != w.IsResizable ||
                 a.IsTopmost != w.IsTopmost || a.FrameInsets != w.FrameInsets || a.IsForeground != w.IsForeground)
-                return true;
-            if (!ignoreGeometry.Contains(w.Handle) && a.VisualRect != w.VisualRect) return true;
+            {
+                changed = true;
+                continue;
+            }
+            if (ignoreGeometry.Contains(w.Handle) || a.VisualRect == w.VisualRect) continue;
+            if (WindowStateRules.Near(a.VisualRect, w.VisualRect))
+            {
+                // Keep the last significant rect so slow external movement still accumulates.
+                // The planner captures fresh geometry when the request runs.
+                next[i] = w with { VisualRect = a.VisualRect };
+            }
+            else changed = true;
         }
+        _observed = next;
         // Moving a member within our layer block renumbers unrelated windows. Compare their
         // relative sequence, not raw Z ranks; a real external restack still causes a new decision.
-        return !before.Where(w => !ignoreOrder.Contains(w.Handle)).Select(w => w.Handle)
-            .SequenceEqual(after.Where(w => !ignoreOrder.Contains(w.Handle)).Select(w => w.Handle));
+        return changed || !before.Where(w => !ignoreOrder.Contains(w.Handle)).Select(w => w.Handle)
+            .SequenceEqual(next.Where(w => !ignoreOrder.Contains(w.Handle)).Select(w => w.Handle));
     }
 }
 

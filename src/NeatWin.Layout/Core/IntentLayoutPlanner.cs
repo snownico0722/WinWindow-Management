@@ -27,15 +27,16 @@ internal static partial class IntentLayoutPlanner
         var strength = options.SmartStrength;
         var localOnly = strength == SmartTidyStrength.Gentle;
         var wholeDisplay = strength == SmartTidyStrength.Assertive;
-        foreach (var monitor in visible.Where(v => !anchors.Contains(v.Window.Handle) && v.Window.IsManageable &&
-            !v.Window.IsTopmost && !v.Window.VisualRect.IsEmpty)
-            .GroupBy(v => v.Window.MonitorHandle))
+        var movable = visible.Where(v => !anchors.Contains(v.Window.Handle) && v.Window.IsManageable &&
+            !v.Window.IsTopmost && !v.Window.VisualRect.IsEmpty).ToArray();
+        var settled = movable.ToDictionary(v => v.Window.Handle, v => v.Window.VisualRect);
+        var settledRanks = movable.ToDictionary(v => v.Window.Handle, v => v.Window.ZOrder);
+        foreach (var monitor in movable.GroupBy(v => v.Window.MonitorHandle))
         {
             var all = monitor.OrderBy(v => v.Window.ZOrder).ThenBy(v => v.Window.Handle).ToArray();
             var area = all[0].Window.WorkArea;
             if (area.IsEmpty) continue;
-            var settled = all.ToDictionary(v => v.Window.Handle, v => v.Window.VisualRect);
-            var settledRanks = all.ToDictionary(v => v.Window.Handle, v => v.Window.ZOrder);
+            var monitorHandles = all.Select(v => v.Window.Handle).ToHashSet();
             foreach (var group in wholeDisplay ? [all] : Groups(all, taskContext))
             {
                 var groupContext = ResolveWorkingPair(group, taskContext);
@@ -44,15 +45,21 @@ internal static partial class IntentLayoutPlanner
                 var task = InferTask(group, original, groupContext);
                 var demands = MeasureDemand(group.Length, task);
                 var order = Enumerable.Range(0, group.Length).ToArray();
-                // Small topmost widgets (<15% of work area, e.g. pinned sticky notes or mini overlays) stay in
-                // obstacles for soft exposure scoring instead of acting as hard fixed-occluder brick walls.
-                var blockers = desktop?.Where(w => !all.Any(v => v.Window.Handle == w.Handle) &&
-                    w.MonitorHandle == group[0].Window.MonitorHandle && w.ZOrder < group.Max(v => v.Window.ZOrder) &&
-                    (!w.IsTopmost || w.VisualRect.Area >= area.Area * .15)).ToArray() ?? [];
-                var obstacles = desktop?.Where(w => !group.Any(v => v.Window.Handle == w.Handle) &&
-                    w.MonitorHandle == group[0].Window.MonitorHandle).Select(w => w with
+                var handles = group.Select(v => v.Window.Handle).ToHashSet();
+                var obstacles = desktop.Where(w => !handles.Contains(w.Handle)).Select(w => w with
                     { VisualRect = settled.GetValueOrDefault(w.Handle, w.VisualRect),
-                      ZOrder = settledRanks.GetValueOrDefault(w.Handle, w.ZOrder) }).ToArray() ?? [];
+                      ZOrder = settledRanks.GetValueOrDefault(w.Handle, w.ZOrder) })
+                    .Where(w => !w.VisualRect.Intersect(area).IsEmpty).ToArray();
+                // Small topmost widgets still affect exposure and suggest obstacle-free candidates.
+                var lastRank = group[^1].Window.ZOrder;
+                var blockers = obstacles.Where(w => !monitorHandles.Contains(w.Handle) && w.ZOrder < lastRank &&
+                    (!w.IsTopmost || w.VisualRect.Intersect(area).Area >= area.Area * .15)).ToArray();
+                var packingAreas = localOnly || group.Length < 2 ? [area] : RectRegion.FreeRectangles(area,
+                        obstacles.Where(w => w.ZOrder < lastRank || monitorHandles.Contains(w.Handle) || anchors.Contains(w.Handle))
+                            .Select(w => w.VisualRect),
+                        group.Min(v => Math.Min(v.Window.VisualRect.Width, options.MinimumWidth)),
+                        group.Min(v => Math.Min(v.Window.VisualRect.Height, options.MinimumHeight)))
+                    .Where(r => r != area).Take(6).Prepend(area).ToArray();
                 var beforeExposure = MeasureBeforeExposure(group, original, area, obstacles);
                 var generationNotes = new List<LayoutCandidateTrace>();
                 var candidates = new List<Candidate> { new("keep", original, order) };
@@ -73,7 +80,8 @@ internal static partial class IntentLayoutPlanner
                     }
                     AddTaskCandidates(candidates, group, original, area, task, groupContext, hint.GapPixels);
                     if (wholeDisplay)
-                        AddDisplayLayouts(candidates, group, original, area, task, options, groupContext, hint.GapPixels, order);
+                        foreach (var packingArea in packingAreas)
+                            AddDisplayLayouts(candidates, group, original, packingArea, task, options, groupContext, hint.GapPixels, order);
                 }
                 AddAccessRepairs(candidates, group, original, beforeExposure, obstacles, area, hint.GapPixels, order);
                 if (groupContext.PairPlanningEnabled && group.Length == 1 &&
@@ -150,17 +158,18 @@ internal static partial class IntentLayoutPlanner
 
                 void AddGroupLayouts(List<Candidate> output, RectI[] seed)
                 {
-                    foreach (var columns in RowShapes(group.Length, area))
+                    foreach (var packingArea in packingAreas)
+                    foreach (var columns in RowShapes(group.Length, packingArea))
                     {
                         var kind = columns == 1 ? "rows" : columns == group.Length ? "columns" : "grid";
                         var packed = new List<RectI[]>();
-                        AddPacked(packed, group, seed, area, hint.GapPixels, columns, false);
+                        AddPacked(packed, group, seed, packingArea, hint.GapPixels, columns, false);
                         if (columns == group.Length && groupContext.Preferences.AllowUsefulResize)
-                            AddPacked(packed, group, seed, area, hint.GapPixels, columns, true);
+                            AddPacked(packed, group, seed, packingArea, hint.GapPixels, columns, true);
                         if (packed.Count == 0 && groupContext.Preferences.AllowUsefulResize && group.All(v => v.Window.IsResizable) &&
                             task.Any(r => r.Joint > r.Parked && CoversHalfOfRear(original[r.First], original[r.Second])))
-                            AddPacked(packed, group, seed, area, hint.GapPixels, columns, false, shrinkToFit: true);
-                        if (packed.Count == 0 && ReferenceEquals(output, candidates))
+                            AddPacked(packed, group, seed, packingArea, hint.GapPixels, columns, false, shrinkToFit: true);
+                        if (packed.Count == 0 && packingArea == area && ReferenceEquals(output, candidates))
                             generationNotes.Add(new(kind, null, "no-size-safe-packing"));
                         foreach (var rects in packed) output.Add(new(kind, rects, order));
                     }

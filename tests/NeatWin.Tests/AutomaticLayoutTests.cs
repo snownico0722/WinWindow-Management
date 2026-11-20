@@ -71,6 +71,46 @@ public sealed class AutomaticLayoutTests
         Assert.NotNull(s.Observe([a, b, c], 1550, false));
     }
 
+    [Fact]
+    public void SmallGeometryOscillationsDoNotStarveAnUnrelatedWindowOpening()
+    {
+        var anchor = W(1) with { IsManageable = false };
+        var jittered = anchor with { VisualRect = anchor.VisualRect with { X = anchor.VisualRect.X + 1 } };
+        var opened = W(2, 1100);
+        var s = Scheduler(AutomaticLayoutMode.AutoFullAssist, anchor);
+        Assert.Null(s.Observe([jittered, opened], 100, false));
+        Assert.Null(s.Observe([anchor, opened], 250, false));
+        Assert.Null(s.Observe([jittered, opened], 400, false));
+        Assert.Equal(LayoutTrigger.WorkspaceChange, s.Observe([anchor, opened], 550, false)!.Trigger);
+        Assert.Null(s.Observe([jittered, opened], 1600, false));
+        Assert.False(s.HasPending);
+    }
+
+    [Fact]
+    public void ConsecutiveSmallProgrammaticMovesAccumulateIntoAWorkspaceChange()
+    {
+        var w = W(1);
+        WindowSnapshot Moved(int dx) => w with { VisualRect = w.VisualRect with { X = w.VisualRect.X + dx } };
+        var s = Scheduler(AutomaticLayoutMode.AutoFullAssist, w);
+        Assert.Null(s.Observe([Moved(2)], 100, false));
+        Assert.False(s.HasPending);
+        Assert.Null(s.Observe([Moved(4)], 200, false));
+        Assert.True(s.HasPending);
+        Assert.Equal(LayoutTrigger.WorkspaceChange, s.Observe([Moved(5)], 650, false)!.Trigger);
+    }
+
+    [Fact]
+    public void ARecordedOnePixelGestureStillRequestsAssistance()
+    {
+        var w = W(1);
+        var gesture = Gesture(w) with { EndRect = w.VisualRect with { X = w.VisualRect.X + 1 } };
+        var s = Scheduler(AutomaticLayoutMode.FullAssist, w);
+        s.GestureStarted(w.Handle);
+        s.GestureCompleted(gesture, 100);
+        Assert.Null(s.Observe([w with { VisualRect = gesture.EndRect }], 150, false));
+        Assert.Equal(LayoutTrigger.AfterGesture, s.Observe([w with { VisualRect = gesture.EndRect }], 550, false)!.Trigger);
+    }
+
     [Theory]
     [InlineData(0)] [InlineData(2)] [InlineData(-4)]
     public void OwnPlacementAndNativeRoundingDoNotTriggerAnotherRun(int offset)
