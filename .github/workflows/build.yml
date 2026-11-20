@@ -28,6 +28,8 @@ jobs:
     if: github.event_name != 'release' || github.event.action == 'released' || github.event.release.prerelease
     runs-on: windows-latest
     timeout-minutes: 20
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -69,50 +71,67 @@ jobs:
             if (Test-Path $log) { Get-Content $log }
             if ($p.ExitCode -ne 0) { throw "Smoke tests failed for $($entry.Name) ($($p.ExitCode))" }
           }
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: WinWindow-executables-and-tests
-          path: |
-            artifacts/WinWindow-win-x64.exe
-            artifacts/WinWindow-win-x64-self-contained.exe
-            artifacts/NoFocusLoss-LICENSE.txt
-            artifacts/MinHook-LICENSE.txt
-            TestResults/**/*.png
-            TestResults/**/smoke-tests.txt
-          if-no-files-found: warn
-          retention-days: 14
-
-  release-assets:
-    needs: windows
-    # The marker supports refreshing an existing release's assets after the release event
-    # has already fired. Normal pushes never rewrite release downloads.
-    if: github.event_name == 'release' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-assets]')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: WinWindow-executables-and-tests
-          path: bundle
-      - name: Replace release archives with standalone executables
+      - name: Attach standalone executables to GitHub Release
+        if: github.event_name == 'release' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-assets]')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        uses: actions/github-script@v7
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || (github.event_name == 'workflow_dispatch' && inputs.release_tag) || 'v0.1.0' }}
           PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || false }}
-        run: |
-          assets=(
-            bundle/artifacts/WinWindow-win-x64.exe
-            bundle/artifacts/NoFocusLoss-LICENSE.txt
-            bundle/artifacts/MinHook-LICENSE.txt
-          )
-          if [[ "$PRERELEASE" == "false" ]]; then
-            assets+=(bundle/artifacts/WinWindow-win-x64-self-contained.exe)
-          fi
-          # Upload the replacement assets before removing old archives so a failed
-          # upload never leaves the published release without working downloads.
-          gh release upload --repo "$GITHUB_REPOSITORY" --clobber -- "$RELEASE_TAG" "${assets[@]}"
-          for legacy in WinWindow-win-x64.zip WinWindow-win-x64-self-contained.zip; do
-            gh release delete-asset --repo "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$legacy" --yes 2>/dev/null || true
-          done
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const tag = process.env.RELEASE_TAG;
+            const prerelease = process.env.PRERELEASE === 'true';
+            const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+
+            const files = [
+              { name: 'WinWindow-win-x64.exe', path: 'artifacts/WinWindow-win-x64.exe', contentType: 'application/octet-stream' },
+              { name: 'NoFocusLoss-LICENSE.txt', path: 'artifacts/NoFocusLoss-LICENSE.txt', contentType: 'text/plain' },
+              { name: 'MinHook-LICENSE.txt', path: 'artifacts/MinHook-LICENSE.txt', contentType: 'text/plain' },
+            ];
+            if (!prerelease) {
+              files.push({
+                name: 'WinWindow-win-x64-self-contained.exe',
+                path: 'artifacts/WinWindow-win-x64-self-contained.exe',
+                contentType: 'application/octet-stream',
+              });
+            }
+
+            // Replace same-named assets, then upload the standalone files.
+            for (const file of files) {
+              const existing = release.assets.find(asset => asset.name === file.name);
+              if (existing) {
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: existing.id });
+              }
+              const data = fs.readFileSync(file.path);
+              await github.rest.repos.uploadReleaseAsset({
+                owner,
+                repo,
+                release_id: release.id,
+                name: file.name,
+                data,
+                headers: {
+                  'content-type': file.contentType,
+                  'content-length': data.length,
+                },
+              });
+              core.info(`Uploaded ${file.name} (${data.length} bytes)`);
+            }
+
+            // Only remove legacy ZIP downloads after every replacement upload succeeds.
+            for (const legacyName of ['WinWindow-win-x64.zip', 'WinWindow-win-x64-self-contained.zip']) {
+              const legacy = release.assets.find(asset => asset.name === legacyName);
+              if (legacy) {
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: legacy.id });
+                core.info(`Removed legacy asset ${legacyName}`);
+              }
+            }
+
+            const body = release.body || '';
+            const updatedBody = body
+              .replaceAll('WinWindow-win-x64.zip', 'WinWindow-win-x64.exe')
+              .replaceAll('WinWindow-win-x64-self-contained.zip', 'WinWindow-win-x64-self-contained.exe');
+            if (updatedBody !== body) {
+              await github.rest.repos.updateRelease({ owner, repo, release_id: release.id, body: updatedBody });
+            }
