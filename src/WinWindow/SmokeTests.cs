@@ -794,6 +794,10 @@ internal static class SmokeTests
         await WaitAsync("hover preview is visible before minimizing", () => shell.IsHoverPreviewVisible, 2000);
         shell.WindowState = WindowState.Minimized;
         await WaitAsync("minimizing the workbench immediately hides hover preview", () => !shell.IsHoverPreviewVisible);
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseLeaveEvent });
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseEnterEvent });
         await Task.Delay(400);
         Assert(!shell.IsHoverPreviewVisible, "a pending hover callback cannot reopen the preview while minimized");
         shell.ShowShell();
