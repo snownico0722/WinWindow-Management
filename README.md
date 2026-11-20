@@ -4,9 +4,9 @@ C# / WPF / .NET 10 窗口管理工具，采用低饱和暖灰石与纯白卡片�
 
 ## 使用
 
-日常测试和预发布版使用标准包 `WinWindow-win-x64.zip`。安装 **.NET 10 Desktop Runtime x64（Windows 桌面运行时）** 后，解压并运行 `WinWindow.exe`。正式版还提供 `WinWindow-win-x64-self-contained.zip`，适合没有安装运行时的电脑。[下载 .NET 10](https://dotnet.microsoft.com/download/dotnet/10.0)
+日常测试和预发布版使用标准可执行文件 `WinWindow-win-x64.exe`。安装 **.NET 10 Desktop Runtime x64（Windows 桌面运行时）** 后直接运行，无需解压。正式版还提供 `WinWindow-win-x64-self-contained.exe`，内置运行时，适合没有安装 .NET 的电脑。[下载 .NET 10](https://dotnet.microsoft.com/download/dotnet/10.0)
 
-在 GitHub Releases 下载发布包，在 Actions 的 `WinWindow-preview-and-tests` 制品中下载开发包。
+在 GitHub Releases 下载独立 EXE 和许可证文件。自动化测试与打包日志可在 GitHub Actions 对应运行记录中查看。
 
 点击 **添加窗口**，选择目标即可加入管理。要同时置顶，可点候选行的 **添加并置顶**，或从 **拖拽置顶** 拖到目标。拖动时目标会出现描边，松开后短暂闪示；按 Esc 可取消。用筛选按钮或 Ctrl+F 搜索已管理的窗口。
 
@@ -47,7 +47,7 @@ dotnet run --no-build -c Release --project src/WinWindow -- --self-test TestResu
 
 打包原生组件需要 CMake 3.24 或更高版本，以及 Visual Studio 的「使用 C++ 的桌面开发」、x86/x64 工具和 Windows SDK。构建直接使用仓库内的 NoFocusLoss 与 MinHook 源码。运行 `./scripts/package.ps1 -TestNative` 可以分别验证 32 位和 64 位测试窗口的失焦消息、焦点查询、后台鼠标及卸载恢复行为。
 
-默认打包命令在 `artifacts/` 生成标准 ZIP。Actions 制品包含应用包、界面截图和测试结果，省去源码压缩包。正式发版时，工作流自动将两份 ZIP 附到 Release。用户明确要求额外打包时，本地使用 `./scripts/package.ps1 -IncludeRuntime`，或手动运行 Actions 并勾选「额外打包一份内置 .NET 的 Windows x64 版本」。
+默认打包命令在 `artifacts/` 生成标准版 EXE 和许可证文件；使用 `./scripts/package.ps1 -IncludeRuntime` 时同时生成自包含版 EXE。打包脚本与 GitHub Actions 工作流均不生成 ZIP 压缩包或压缩制品。正式发版时，测试通过后工作流直接将 EXE 与许可证文件附加到 GitHub Release。手动运行 Actions 时，也可以填写已有 Release Tag 来更新对应版本的下载附件。
 
 自动测试使用真实 WinForms/WPF 目标及完整主程序，验证原生状态、行内操作、收起/恢复、悬浮胶囊、失焦退让、单实例唤醒、阻塞目标下的退出及恢复日志，并输出实际界面截图。
 
