@@ -98,7 +98,7 @@ public partial class MainWindow : Window
         Activated += (_, _) => ApplyOwnPolicy();
         Deactivated += (_, _) => { if (!_picking) _flash?.Hide(); ApplyOwnPolicy(); };
         IsVisibleChanged += (_, _) => { if (!IsVisible) { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); };
-        StateChanged += (_, _) => { if (WindowState != WindowState.Minimized) _lastState = WindowState; else { AddPopup.IsOpen = false; _flash?.Hide(); } ApplyOwnPolicy(); };
+        StateChanged += (_, _) => { if (WindowState != WindowState.Minimized) _lastState = WindowState; else { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); };
         Closing += OnClosing;
         _ready = true; RefreshView();
     }
@@ -116,7 +116,7 @@ public partial class MainWindow : Window
     internal void ShowHoverPreview(WindowItem item)
     {
         // Hover is a pointer affordance, not a focus action; it also works over an inactive workbench.
-        if (_quitting || !_ready || !IsVisible || _compact || WindowPage.Visibility != Visibility.Visible ||
+        if (_quitting || !_ready || !IsVisible || WindowState == WindowState.Minimized || _compact || WindowPage.Visibility != Visibility.Visible ||
             !item.IsAvailable || item.IsBusy || item.IsHidden || item.IsMinimized ||
             item.Identity is not { } identity ||
             !Native.Matches(identity) || !Native.IsWindowVisible(identity.Hwnd) || Native.IsIconic(identity.Hwnd) ||

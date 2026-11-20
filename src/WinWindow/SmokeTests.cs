@@ -788,6 +788,23 @@ internal static class SmokeTests
             { RoutedEvent = Mouse.MouseLeaveEvent });
         await WaitAsync("inactive-workbench hover outline is dismissed on leave", () => !shell.IsHoverPreviewVisible);
         shell.ShowShell();
+
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseEnterEvent });
+        await WaitAsync("hover preview is visible before minimizing", () => shell.IsHoverPreviewVisible, 2000);
+        shell.WindowState = WindowState.Minimized;
+        await WaitAsync("minimizing the workbench immediately hides hover preview", () => !shell.IsHoverPreviewVisible);
+        await Task.Delay(400);
+        Assert(!shell.IsHoverPreviewVisible, "a pending hover callback cannot reopen the preview while minimized");
+        shell.ShowShell();
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseLeaveEvent });
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseEnterEvent });
+        await WaitAsync("hover preview works again after restoring the workbench", () => shell.IsHoverPreviewVisible, 2000);
+        row.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+            { RoutedEvent = Mouse.MouseLeaveEvent });
+        await WaitAsync("restored hover preview closes on leave", () => !shell.IsHoverPreviewVisible);
     }
 
     private static async Task CheckPickerOutlineAsync(MainWindow shell, nint target)
