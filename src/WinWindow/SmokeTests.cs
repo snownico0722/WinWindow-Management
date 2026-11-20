@@ -149,10 +149,17 @@ internal static class SmokeTests
             Assert(rejectedOpacity && stubborn.Opacity == 100 && (Native.Style(stubborn.Hwnd) & Native.Layered) == 0, "WPF opacity veto is reported without claiming success");
             await manager.ReleaseAsync(stubborn);
             Assert(stubborn.Original is null, "an unchanged unsupported window does not block release");
-            await manager.ParkAsync(stubborn);
-            Assert(!Native.IsWindowVisible(stubborn.Hwnd) && stubborn.IsHidden && stubborn.IsParked, "refused minimization falls back to hidden");
+            // User32 may minimize a real WPF HWND even when the fixture tries to restore itself.
+            // Withhold both minimize requests to exercise the real hide and restore paths deterministically.
+            var minimizeAttempts = new List<string>(2);
+            await manager.ParkAsync(stubborn, forceMinimize: _ => minimizeAttempts.Add("force"),
+                minimizeWithoutActivation: (_, _) => minimizeAttempts.Add("placement"));
+            Assert(minimizeAttempts.SequenceEqual(new[] { "force", "placement" }), "both minimize requests are tried before hiding");
+            Assert(!Native.IsWindowVisible(stubborn.Hwnd) && !Native.IsIconic(stubborn.Hwnd) &&
+                stubborn.IsHidden && stubborn.IsParked, "refused minimization falls back to hidden");
             await manager.RestoreParkingAsync(stubborn, false);
-            Assert(Native.IsWindowVisible(stubborn.Hwnd), "hidden fallback can be restored");
+            Assert(Native.IsWindowVisible(stubborn.Hwnd) && !Native.IsIconic(stubborn.Hwnd) &&
+                !stubborn.IsHidden && !stubborn.IsParked, "hidden fallback can be restored");
             await manager.ReleaseAsync(stubborn);
             await manager.SetOpacityAsync(item, 0);
             var recovered = new WindowManager(store);
