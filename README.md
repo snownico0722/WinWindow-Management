@@ -55,7 +55,7 @@ dotnet run --no-build -c Release --project src/WinWindow -- --self-test TestResu
 
 ## 边界与结构
 
-0.1.0 正式版。已通过仓库自动化与打包回归，但不代表所有游戏或硬件的兼容认证。强制最小化只执行一次有限流程，必要时隐藏，不持续压后台，不注入。最小化/隐藏不保证游戏继续渲染或挂机。跨权限与混合 DPI 人工验收见 [MANUAL_TESTS.md](docs/MANUAL_TESTS.md)。
+0.1.1 正式版。已通过仓库自动化与打包回归，但不代表所有游戏或硬件的兼容认证。强制最小化只执行一次有限流程，必要时隐藏，不持续压后台，不注入。最小化/隐藏不保证游戏继续渲染或挂机。跨权限与混合 DPI 人工验收见 [MANUAL_TESTS.md](docs/MANUAL_TESTS.md)。
 
 `Native` 封装 Win32 与图标缓存；`WindowManager` 管理操作与恢复；`WindowRow` 维护单行卡片交互与编辑状态；`DesktopIntegration` 管理托盘、快捷键和唤醒；`StateStore` 负责持久化。外部窗口修改不在 UI 线程同步等待。
 

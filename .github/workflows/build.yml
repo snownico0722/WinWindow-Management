@@ -19,7 +19,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: windows-${{ github.ref }}-${{ github.event_name == 'release' && github.event.action || github.event_name }}
+  group: windows-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[publish-release]') && github.sha || github.ref }}-${{ github.event_name == 'release' && github.event.action || github.event_name }}
   cancel-in-progress: true
 jobs:
   windows:
@@ -30,6 +30,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+    env:
+      CREATE_RELEASE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[publish-release]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -44,7 +46,7 @@ jobs:
       - name: Publish standalone Windows executables
         shell: pwsh
         env:
-          INCLUDE_RUNTIME: ${{ (github.event_name == 'release' && !github.event.release.prerelease) || (github.event_name == 'workflow_dispatch' && (inputs.include_runtime || inputs.release_tag != '')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-assets]')) }}
+          INCLUDE_RUNTIME: ${{ env.CREATE_RELEASE == 'true' || (github.event_name == 'release' && !github.event.release.prerelease) || (github.event_name == 'workflow_dispatch' && (inputs.include_runtime || inputs.release_tag != '')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-assets]')) }}
         run: ./scripts/package.ps1 -TestNative -IncludeRuntime:($env:INCLUDE_RUNTIME -eq 'true')
       - name: Native window and UI smoke tests from the published executables
         shell: pwsh
@@ -72,7 +74,7 @@ jobs:
             if ($p.ExitCode -ne 0) { throw "Smoke tests failed for $($entry.Name) ($($p.ExitCode))" }
           }
       - name: Attach standalone executables to GitHub Release
-        if: github.event_name == 'release' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-assets]')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        if: env.CREATE_RELEASE == 'true' || github.event_name == 'release' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-assets]')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
         uses: actions/github-script@v7
         env:
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || (github.event_name == 'workflow_dispatch' && inputs.release_tag) || 'v0.1.0' }}
@@ -81,9 +83,12 @@ jobs:
           script: |
             const fs = require('fs');
             const { owner, repo } = context.repo;
-            const tag = process.env.RELEASE_TAG;
+            const createRelease = process.env.CREATE_RELEASE === 'true';
+            const version = fs.readFileSync('src/WinWindow/WinWindow.csproj', 'utf8')
+              .match(/<Version>(\d+\.\d+\.\d+)<\/Version>/)?.[1];
+            if (createRelease && !version) throw new Error('A stable project version is required.');
+            const tag = createRelease ? `v${version}` : process.env.RELEASE_TAG;
             const prerelease = process.env.PRERELEASE === 'true';
-            const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
 
             const files = [
               { name: 'WinWindow-win-x64.exe', path: 'artifacts/WinWindow-win-x64.exe', contentType: 'application/octet-stream' },
@@ -96,6 +101,34 @@ jobs:
                 path: 'artifacts/WinWindow-win-x64-self-contained.exe',
                 contentType: 'application/octet-stream',
               });
+            }
+
+            let release;
+            if (createRelease) {
+              const body = fs.readFileSync(`docs/releases/${tag}.md`, 'utf8');
+              const existingTag = await github.rest.repos.getCommit({ owner, repo, ref: `tags/${tag}` })
+                .then(r => r.data, error => { if (error.status !== 404) throw error; return null; });
+              if (existingTag && existingTag.sha !== context.sha)
+                throw new Error(`${tag} already refers to another commit.`);
+              const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo });
+              release = releases.find(item => item.tag_name === tag);
+              if (release && !release.draft) {
+                if (release.prerelease || !existingTag || files.some(file => !release.assets.some(
+                  asset => asset.name === file.name && asset.state === 'uploaded' && asset.size > 0)))
+                  throw new Error(`${tag} already exists with different release contents.`);
+                core.info(`${tag} is already published.`);
+                return;
+              }
+              if (release && release.target_commitish !== context.sha && !existingTag)
+                throw new Error(`The draft for ${tag} targets another commit.`);
+              if (!release) {
+                ({ data: release } = await github.rest.repos.createRelease({
+                  owner, repo, tag_name: tag, target_commitish: context.sha,
+                  name: tag, body, draft: true, prerelease: false,
+                }));
+              }
+            } else {
+              ({ data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag }));
             }
 
             // Replace same-named assets, then upload the standalone files.
@@ -134,4 +167,9 @@ jobs:
               .replaceAll('WinWindow-win-x64-self-contained.zip', 'WinWindow-win-x64-self-contained.exe');
             if (updatedBody !== body) {
               await github.rest.repos.updateRelease({ owner, repo, release_id: release.id, body: updatedBody });
+            }
+            if (createRelease) {
+              await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
+                draft: false, prerelease: false, make_latest: 'true' });
+              core.info(`Published ${tag}.`);
             }
