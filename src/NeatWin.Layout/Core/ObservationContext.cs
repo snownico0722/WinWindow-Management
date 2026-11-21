@@ -113,7 +113,9 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     RecordedNavigation? Navigation = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    string? WorkspaceCause = null)
+    string? WorkspaceCause = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<int, VideoViewportFit>? VideoFits = null)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids, IReadOnlyList<WindowSnapshot>? snapshot = null)
     {
@@ -150,6 +152,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             hops.Reverse();
             if (hops.Count > 0) navigation = new(context.NavigationObservedAt, hops.ToArray());
         }
+        var fits = context.VideoFits?.Where(pair => Id(pair.Key) != 0).ToDictionary(pair => Id(pair.Key), pair => pair.Value);
         return new(Id(focus?.Main ?? 0), Id(focus?.Companion ?? 0), focus?.Switches ?? 0, focus?.Evidence,
             (context.WindowHints ?? []).Where(h => Id(h.Handle) != 0)
                 .Select(h => new RecordedWindowHint(Id(h.Handle), h.PassiveVisual, h.MediaCompanion, h.Anchor, h.ProtectedRegions, h.Role, h.FloatingAffinity, h.TextFocus, h.InitialTextPlacement)).ToArray(),
@@ -158,7 +161,8 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
                     p.RevealedCell, p.Confidence, p.InnerOverlap, p.Height, p.PreferWidth, p.PreferCenter, p.AxisConfidence)).ToArray(),
             floors.Length > 0 ? floors : null, context.Activities?.Where(a => Id(a.Key) != 0)
                 .ToDictionary(a => Id(a.Key), a => a.Value), context.Attention?.Where(a => Id(a.Key) != 0)
-                .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor), video, context.GestureTarget, navigation, context.WorkspaceCause == WorkspaceChangeCause.None ? null : context.WorkspaceCause.ToString());
+                .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor), video, context.GestureTarget, navigation, context.WorkspaceCause == WorkspaceChangeCause.None ? null : context.WorkspaceCause.ToString(),
+            fits?.Count > 0 ? fits : null);
     }
 
     // During offline replay the session-local ids are the simulated handles.
@@ -176,6 +180,8 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),
         Attention = Attention?.ToDictionary(a => (nint)a.Key, a => a.Value),
         GestureAnchor = GestureAnchor, GestureTarget = GestureTarget,
+        VideoFits = VideoFits?.Where(pair => pair.Key > 0 && pair.Value is { IsValid: true })
+            .ToDictionary(pair => (nint)pair.Key, pair => pair.Value),
         VideoHint = Video is { } v ? new(v.Id, v.Orientation, v.ContentAspectRatio, v.Viewport, v.Confidence, v.Tendency) : context.VideoHint,
         SizeFloors = SizeFloors?.Select(f => new WindowSizeFloor(f.Id, f.MinWidth, f.MinHeight)).ToArray()
     };

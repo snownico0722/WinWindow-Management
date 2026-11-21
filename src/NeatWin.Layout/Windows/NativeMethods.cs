@@ -146,6 +146,9 @@ internal static class NativeMethods
     internal static extern uint GetDpiForWindow(nint hwnd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int GetWindowText(nint hwnd, StringBuilder text, int maxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern int GetClassName(nint hwnd, StringBuilder className, int maxCount);
 
     [DllImport("user32.dll")]

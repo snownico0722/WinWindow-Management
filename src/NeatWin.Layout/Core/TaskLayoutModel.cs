@@ -237,6 +237,8 @@ internal static partial class IntentLayoutPlanner
         {
             var window = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             bool gestureEndpoint = window.Handle == context.GestureAnchor && b == context.GestureTarget;
+            if (!gestureEndpoint && (a.Width != b.Width || a.Height != b.Height) &&
+                context.VideoFits?.GetValueOrDefault(window.Handle) is { } fit && !fit.Preserves(a, b)) return false;
             bool textView = context.HoldsTextView(window);
             if (a != b && !context.ExplicitArrange && context.GestureAnchor == 0 && context.Focus is { } focus)
             {

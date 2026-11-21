@@ -92,6 +92,8 @@ internal static class GesturePlacement
                 snap.TargetKind == FollowHandTargetKind.ScreenEdge) return context;
             target = snap.TargetRect;
         }
+        if (gesture.Kind == ManualGestureKind.Move && context.VideoFits?.GetValueOrDefault(window.Handle) is { } fit && !fit.Preserves(a, target))
+            target = fit.Inside(target, a);
         if (target == a || target.Intersect(area) != target) return context;
         return context with { GestureTarget = target };
     }

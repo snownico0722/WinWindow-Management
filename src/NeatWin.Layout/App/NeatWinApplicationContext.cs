@@ -97,6 +97,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _autoTidyManager.GestureObserved += gesture =>
         {
             _journal.MarkGesture(gesture.WindowHandle);
+            if (gesture.StartRect.Width != gesture.EndRect.Width || gesture.StartRect.Height != gesture.EndRect.Height)
+                _videoBlackBarDetector.Forget(gesture.WindowHandle);
             try
             {
                 var releasedDesktop = _windowManager.Capture();
@@ -166,6 +168,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _settingsStore.SaveLayoutOptions(value.Options, value.Behavior);
             _tidyOptions = value.Options;
             _smartBehaviorOptions = value.Behavior;
+            if (!_smartBehaviorOptions.RemoveVideoBlackBars) _videoBlackBarDetector.Reset();
             if (!_smartBehaviorOptions.PreferReversibleVerticalFill) _verticalFillManager.Track([], false);
         }
         if (value.Task != _taskPreferences)
@@ -333,6 +336,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 _workspaceMonitor.RequestCurrent();
                 return;
             }
+            if (smart && _smartBehaviorOptions.RemoveVideoBlackBars && trigger == "automatic-workspace" &&
+                _videoBlackBarDetector.Fits.AwaitingGeometry(snapshot, BrowserVideoBlackBarDetector.ReadPage, capturedAt))
+            {
+                _workspaceMonitor.RequestCurrent();
+                return;
+            }
             var visibleWorkingSet = fullDesktop
                 ? _visibilityAnalyzer.SelectForManualArrange(snapshot, effectiveOptions.RescueOffscreenWindows)
                 : _visibilityAnalyzer.SelectVisibleWorkingSet(snapshot, includeStackAccess: smart);
@@ -432,6 +441,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     Attention = attention,
                     WindowHints = liveHints,
                     VideoHint = videoHint is { Confidence: >= .82 } ? videoHint with { Tendency = _smartBehaviorOptions.VideoBlackBarTendency } : null,
+                    VideoFits = _smartBehaviorOptions.RemoveVideoBlackBars
+                        ? _videoBlackBarDetector.Fits.Read(snapshot, BrowserVideoBlackBarDetector.ReadPage) : null,
                     Rules = _useImportedPlacement ? rules : rules with { Pairs = [], RolePairs = [], AppSlots = [] }, Activities = activities,
                     UseWorkingPairs = pairSmart,
                     RulePairs = pairs,
@@ -471,9 +482,11 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var application = _windowManager.ApplyLayout(detailed, showActivity ? null : foreground, reclaimContext, releaseInput?.WindowHandle ?? 0, initialReading, workspaceReading);
             // 刚输入或开始手动操作时放弃旧方案；新手势、焦点或窗口结构变化有自己的调度入口。
             detailed = application.Plan; plan = detailed.Moves;
-            if (videoHint != null && proposed.Groups.Any(g => g.Selected is "video-aspect-shrink" or "video-aspect-expand") &&
-                plan.FirstOrDefault(m => m.Window.Handle == videoHint.WindowHandle) is { } videoMove)
-                _videoBlackBarDetector.RecordApplied(videoHint.WindowHandle, videoMove.TargetVisualRect);
+            _videoBlackBarDetector.Fits.Follow(plan, Environment.TickCount64);
+            // 分栏也可能恰好消掉黑边。按实际提交的尺寸认领比例，候选名称不能证明视口是否达标。
+            if (videoHint != null && plan.FirstOrDefault(m => m.Window.Handle == videoHint.WindowHandle &&
+                (m.TargetVisualRect.Width != m.Window.VisualRect.Width || m.TargetVisualRect.Height != m.Window.VisualRect.Height)) is { } videoMove)
+                _videoBlackBarDetector.RecordApplied(videoMove);
             _verticalFillManager.Track(plan, smart && _smartBehaviorOptions.PreferReversibleVerticalFill);
             var layerOrders = detailed.Layers;
             IReadOnlyList<WindowSnapshot> requestedDesktop = snapshot;
@@ -551,6 +564,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _workspaceMonitor.ApplicationRequested(current.Values.ToArray(), reverse);
             if (_stopping.IsCancellationRequested) return;
             var application = _windowManager.ApplyLayout(reverse);
+            foreach (var move in application.Plan.Moves) _videoBlackBarDetector.Forget(move.Window.Handle);
             if (_undoWasSmart)
                 _taskSession.RejectExplicitly(application.Plan.Moves.Select(m => m.Window.Handle)
                     .Concat(application.Plan.Layers.SelectMany(l => l.FrontToBack.Select(w => w.Handle))));

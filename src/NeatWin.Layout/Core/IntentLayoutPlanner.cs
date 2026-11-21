@@ -178,6 +178,36 @@ internal static partial class IntentLayoutPlanner
 
                 void Evaluate(Candidate candidate, int generation)
                 {
+                    RectI[]? fitted = null, held = null;
+                    if (groupContext.VideoFits is { Count: > 0 } fits)
+                    for (int i = 0; i < group.Length; i++)
+                    {
+                        var window = group[i].Window;
+                        var slot = candidate.Rects[i];
+                        if (!fits.TryGetValue(window.Handle, out var fit) || slot == original[i] || fit.Preserves(original[i], slot) ||
+                            window.Handle == groupContext.GestureAnchor || slot.Width == original[i].Width && slot.Height == original[i].Height)
+                            continue;
+                        // 开窗与焦点切换也比较两条路径：视频随分栏等比缩放，或保住视频、仅调整搭档。所有候选仍经同一套遮挡和阅读检查。
+                        fitted ??= (RectI[])candidate.Rects.Clone();
+                        held ??= (RectI[])candidate.Rects.Clone();
+                        fitted[i] = fit.Inside(slot, original[i]);
+                        held[i] = original[i];
+                    }
+                    if (fitted != null)
+                    {
+                        audits.Add(new(candidate.Kind, null, "video-viewport-aspect", Generation: generation));
+                        foreach (var rects in new[] { fitted, held! })
+                        {
+                            var adjusted = candidate with { Rects = rects };
+                            if (seen.Add(CandidateKey(adjusted))) EvaluateFeasible(adjusted, generation);
+                        }
+                        return;
+                    }
+                    EvaluateFeasible(candidate, generation);
+                }
+
+                void EvaluateFeasible(Candidate candidate, int generation)
+                {
                     var targetLookup = candidate.Order.SequenceEqual(order) ? null :
                         Enumerable.Range(0, group.Length).ToDictionary(i => group[i].Window.Handle, i => candidate.Rects[i]);
                     var rejection = !candidate.Order.SequenceEqual(order) &&
