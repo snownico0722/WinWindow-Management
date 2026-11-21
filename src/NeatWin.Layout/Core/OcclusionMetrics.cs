@@ -7,6 +7,8 @@ namespace NeatWin.Core;
 /// </summary>
 internal static class OcclusionMetrics
 {
+    internal const double HorizontalInsetFraction = .18;
+
     internal sealed record Exposure(double Visible, double CenterVisible, int AccessWidth, int UsefulWidth);
 
     internal static Exposure Measure(RectI rect, IEnumerable<RectI> occluders, uint dpi)
@@ -14,7 +16,7 @@ internal static class OcclusionMetrics
         if (rect.IsEmpty) return new(0, 0, 0, 0);
         var blockers = occluders.ToArray();
         var pieces = VisiblePieces(rect, blockers);
-        var insetX = (int)Math.Round(rect.Width * 0.18);
+        var insetX = (int)Math.Round(rect.Width * HorizontalInsetFraction);
         var insetY = (int)Math.Round(rect.Height * 0.08);
         var center = RectI.FromEdges(rect.Left + insetX, rect.Top + insetY,
             rect.Right - insetX, rect.Bottom - insetY);

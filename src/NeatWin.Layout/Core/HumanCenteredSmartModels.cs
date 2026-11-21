@@ -44,7 +44,10 @@ public sealed record ManualWindowGesture(
     ManualGestureKind Kind,
     IReadOnlyList<PointerMotionSample> PointerSamples,
     long DurationMilliseconds,
-    double EndSpeedPixelsPerSecond);
+    double EndSpeedPixelsPerSecond, long? ReleasedTick = null)
+{
+    public uint ProcessId { get; init; }
+}
 
 public sealed record WindowAttentionSignal(
     nint WindowHandle,

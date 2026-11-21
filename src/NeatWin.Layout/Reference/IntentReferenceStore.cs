@@ -183,12 +183,15 @@ public sealed class IntentReferenceStore
         writer.Write(JsonSerializer.Serialize(Read(respectEnabled: false)));
     }
 
-    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl", "activity-*.jsonl", "behavior-*.jsonl" }
+    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl", "activity-*.jsonl", "behavior-*.jsonl", "gestures-*.jsonl", "focus-*.jsonl" }
         .SelectMany(pattern => Directory.EnumerateFiles(_directory, pattern));
 
     internal void AppendActivity(ActivitySample sample, WorkspaceFrame? geometry, long geometryTick) =>
         AppendJson("activity", new { sample.Version, sample.Session, sample.Tick, sample.Frame.Time, sample.ObservedMilliseconds,
-            GeometryTick = geometryTick, Frame = geometry, sample.Processes, sample.Windows, sample.Media, sample.InputIdleMilliseconds, sample.AudioTick, sample.DisplayRequired });
+            GeometryTick = geometryTick, Frame = geometry, sample.Processes, sample.Windows, sample.Media, sample.InputIdleMilliseconds, sample.AudioTick, sample.DisplayRequired, sample.Usage, sample.CoUse, sample.FocusCoverage });
+    internal void AppendFocusBoundary(string session, string reason, FocusCoverage coverage) =>
+        AppendJson("focus", new { Version = 1, Session = session, Time = DateTimeOffset.UtcNow, Reason = reason, FocusCoverage = coverage });
+    internal void AppendGestures(GestureBatch batch) => AppendJson("gestures", batch);
     internal void AppendBehavior(WindowBehaviorFrame frame) => AppendJson("behavior", frame);
     public void AppendTransition(WorkspaceTransition observation) => AppendJson("workspace", observation);
     public void AppendPlan(LayoutRunObservation observation) => AppendJson("plans", observation);

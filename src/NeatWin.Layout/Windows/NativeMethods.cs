@@ -8,6 +8,11 @@ internal static class NativeMethods
     internal const int GwlStyle = -16;
     internal const int GwlExStyle = -20;
     internal const long WsChild = 0x40000000L;
+    internal const long WsCaption = 0x00C00000L;
+    internal const long WsMinimizeBox = 0x00020000L;
+    internal const long WsMaximizeBox = 0x00010000L;
+    internal const long WsExAppWindow = 0x00040000L;
+    internal const long WsExDlgModalFrame = 0x00000001L;
     internal const long WsThickFrame = 0x00040000L;
     internal const long WsExTopmost = 0x00000008L;
     internal const long WsExTransparent = 0x00000020L;
@@ -27,6 +32,7 @@ internal static class NativeMethods
     internal const uint SwpAsyncWindowPos = 0x4000;
     internal const int WmHotkey = 0x0312;
     internal const int WmLButtonDown = 0x0201;
+    internal const int WmLButtonUp = 0x0202;
     internal const int WmRButtonDown = 0x0204;
     internal const int WmMButtonDown = 0x0207;
     internal const int WmMouseWheel = 0x020A;
@@ -74,6 +80,10 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindowEnabled(nint hwnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool IsWindow(nint hwnd);
 
     [DllImport("user32.dll")]
@@ -96,6 +106,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern nint GetShellWindow();
+
+    [DllImport("user32.dll")]
+    internal static extern short GetAsyncKeyState(int virtualKey);
 
     [DllImport("user32.dll")]
     internal static extern nint GetAncestor(nint hwnd, uint flags);

@@ -13,13 +13,15 @@ using static NeatWin.Windows.NativeMethods;
 
 namespace NeatWin.Recording;
 
-internal sealed record ProcessActivity(string Instance, long? WorkingSetBytes, double? CpuCores, string? MediaSource, float? AudioPeak = null, float? SharedAudioPeak = null);
+internal sealed record ProcessActivity(string Instance, long? WorkingSetBytes, double? CpuCores, string? MediaSource, float? AudioPeak = null, float? SharedAudioPeak = null,
+    long? OwnWorkingSetBytes = null, long? OwnPrivateBytes = null, int? DescendantsRead = null, int? DescendantsConsidered = null);
 internal sealed record MediaActivity(string Source, string Playback);
 internal sealed record WindowActivity(int Id, string? Process, int? ComparedCells, int? ChangedCells,
-    long? ForegroundMs, long? BackgroundVisibleMs, string ActivityHint, RectI? Fragment = null, double? FragmentChange = null);
+    long? ForegroundMs, long? BackgroundVisibleMs, string ActivityHint, RectI? Fragment = null, double? FragmentChange = null,
+    string? ApplicationRole = null, double? VisibleRatio = null, double? LargestFragmentRatio = null, long? FocusEventMs = null);
 internal sealed record ActivitySample(int Version, string Session, long Tick, long ObservedMilliseconds,
     WorkspaceFrame Frame, ProcessActivity[] Processes, WindowActivity[] Windows, MediaActivity[]? Media,
-    uint? InputIdleMilliseconds, long? AudioTick = null, bool? DisplayRequired = null);
+    uint? InputIdleMilliseconds, long? AudioTick = null, bool? DisplayRequired = null, UsageInterval? Usage = null, CoUseSample[]? CoUse = null, FocusCoverage? FocusCoverage = null);
 
 // The color probes are transient. Persist only the masks of comparable cells and changed cells.
 internal sealed class DesktopActivity(PlacementHistoryStore store)
@@ -28,6 +30,8 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     private readonly byte[] _ephemeralKey = RandomNumberGenerator.GetBytes(32);
     private readonly Dictionary<uint, ProcessInfo> _process = [];
     private readonly Dictionary<(uint Pid, nint Hwnd), string?> _keys = [];
+    private readonly Dictionary<(uint Pid, nint Hwnd), (string? App, string Class, WindowUseRole Role)> _roles = [];
+    private readonly OfficeSurfaceProbe _officeSurface = new();
     private readonly Dictionary<(uint Pid, DateTime Start), (long Tick, TimeSpan Cpu)> _cpu = [];
     private readonly Dictionary<int, (RectI Rect, string Cells, int[] Colors)> _colors = [];
     private readonly Dictionary<int, (RectI Window, RectI Patch, int[] Colors, int Streak)> _fragments = [];
@@ -44,13 +48,15 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     internal void Retire(nint hwnd)
     {
         foreach (var key in _keys.Keys.Where(k => k.Hwnd == hwnd).ToArray()) _keys.Remove(key);
+        foreach (var key in _roles.Keys.Where(k => k.Hwnd == hwnd).ToArray()) _roles.Remove(key);
+        _officeSurface.Retire(hwnd);
     }
 
     internal void ResetVisual() { _colors.Clear(); _fragments.Clear(); _previous.Clear(); }
 
     internal void Reset()
     {
-        _process.Clear(); _keys.Clear(); _cpu.Clear(); _colors.Clear(); _previous.Clear(); _lastTick = 0;
+        _process.Clear(); _keys.Clear(); _roles.Clear(); _cpu.Clear(); _colors.Clear(); _previous.Clear(); _lastTick = 0;
         _fragments.Clear(); _audio = new();
         _mediaManager = null; _mediaAttempt = 0;
     }
@@ -60,6 +66,32 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
 
     private string ResolveKey(string identity, bool persist) =>
         store.Key(identity, persist) ?? EphemeralKey(identity);
+
+    internal WindowUseRole SemanticRole(WindowSnapshot window, ForegroundReading reading = default)
+    {
+        var key = (window.ProcessId, window.Handle);
+        if (!_roles.TryGetValue(key, out var identity))
+        {
+            var name = new StringBuilder(256);
+            NativeMethods.GetClassName(window.Handle, name, name.Capacity);
+            string? executable = null;
+            try
+            {
+                using var process = Process.GetProcessById((int)window.ProcessId);
+                executable = process.ProcessName;
+            }
+            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException) { }
+            if (_roles.Count >= 512) _roles.Clear();
+            string windowClass = name.ToString();
+            _roles[key] = identity = (executable, windowClass, WindowUseRoles.Identify(executable, windowClass));
+        }
+        return reading.Root == window.Handle && reading.Pid == window.ProcessId &&
+            WindowUseRoles.IsSharedOfficeFrame(identity.App, identity.Class)
+            ? WindowUseRoles.Identify(identity.App, identity.Class, _officeSurface.Sample(reading, Environment.TickCount64))
+            : identity.Role;
+    }
+
+    internal bool AwaitingOfficeSurface(nint handle) => _officeSurface.JustStarted(handle, Environment.TickCount64);
 
     internal string? AppKey(WindowSnapshot w, bool create)
     {
@@ -85,10 +117,17 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     {
         var start = process.StartTime.ToUniversalTime();
         if (_process.TryGetValue(id, out var info) && info.Start == start) return info;
-        var path = process.MainModule?.FileName?.ToUpperInvariant();
+        string? path = null;
+        try { path = process.MainModule?.FileName?.ToUpperInvariant(); }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or UnauthorizedAccessException) { }
         var source = new StringBuilder(512); uint length = (uint)source.Capacity;
-        string? app = GetApplicationUserModelId(process.SafeHandle.DangerousGetHandle(), ref length, source) == 0
-            ? source.ToString().ToUpperInvariant() : null;
+        string? app = null;
+        try
+        {
+            if (GetApplicationUserModelId(process.SafeHandle.DangerousGetHandle(), ref length, source) == 0)
+                app = source.ToString().ToUpperInvariant();
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or UnauthorizedAccessException) { }
         if (_process.Count >= 256) _process.Clear();
         return _process[id] = new(path, app, Guid.NewGuid().ToString("N"), start);
     }
@@ -232,7 +271,8 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
             windows.Add(new(w.Id, resource?.Instance, compared, changed,
                 known && prior.Foreground == w.Foreground ? (w.Foreground ? interval : 0) : null,
                 known && prior.Foreground == w.Foreground && prior.Visible == visible ? (!w.Foreground && visible ? interval : 0) : null,
-                hint, fragment, fraction));
+                hint, fragment, fraction, persistKeys ? SemanticRole(native).ToString() : null,
+                w.VisibleRatio, w.Exposure?.LargestFragment.Area / (double)Math.Max(1, w.Rect.Area)));
             _previous[w.Id] = (w.Foreground, visible, motion);
         }
         foreach (var id in _fragments.Keys.Where(id => !sampledFragments.Contains(id)).ToArray()) _fragments.Remove(id);
@@ -242,7 +282,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         foreach (var id in _cpu.Where(p => p.Value.Tick != now).Select(p => p.Key).ToArray()) _cpu.Remove(id);
         var last = new LastInput { Size = 8 };
         uint? idle = GetLastInputInfo(ref last) ? unchecked((uint)now - last.Time) : null;
-        return new(5, session, now, interval, frame, present, windows.ToArray(), media, idle, audio?.Tick, displayRequired);
+        return new(7, session, now, interval, frame, present, windows.ToArray(), media, idle, audio?.Tick, displayRequired);
     }
 
     private ProcessActivity? ReadUsage(uint pid, long now, AudioSessionMeter.Reading? audio,
@@ -252,7 +292,11 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         {
             using var p = Process.GetProcessById((int)pid);
             var info = Identify(pid, p);
-            long workingSet = p.WorkingSet64;
+            long ownWorkingSet = p.WorkingSet64;
+            long workingSet = ownWorkingSet;
+            long? ownPrivate = null;
+            try { ownPrivate = p.PrivateMemorySize64; }
+            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or UnauthorizedAccessException) { }
             double? cores = CpuDelta(p, pid, info.Start, now);
             float? maxAudio = audio != null && audio.Peaks.TryGetValue(pid, out var rootPeak) ? rootPeak : null;
             float? sharedAudio = audio != null && audio.SharedPeaks.TryGetValue(pid, out var sharedPeak) ? sharedPeak : null;
@@ -268,14 +312,16 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
                 try
                 {
                     using var child = Process.GetProcessById((int)childPid);
+                    if (child.StartTime.ToUniversalTime() < info.Start) continue;
                     workingSet += child.WorkingSet64;
+                    sampledChildren++;
                     var childDelta = CpuDelta(child, childPid, child.StartTime.ToUniversalTime(), now);
                     if (childDelta.HasValue && cores.HasValue) cores += childDelta;
-                    sampledChildren++;
                 }
                 catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException or UnauthorizedAccessException) { }
             }
-            return new(info.Instance, workingSet, cores, info.Source == null ? null : ResolveKey(info.Source, persistKeys), maxAudio, sharedAudio);
+            return new(info.Instance, workingSet, cores, info.Source == null ? null : ResolveKey(info.Source, persistKeys), maxAudio, sharedAudio,
+                ownWorkingSet, ownPrivate, sampledChildren, descendants.Count);
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException or IOException or UnauthorizedAccessException)
         { return null; }
@@ -284,7 +330,9 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     private double? CpuDelta(Process process, uint pid, DateTime start, long now)
     {
         var key = (pid, start);
-        var cpu = process.TotalProcessorTime;
+        TimeSpan cpu;
+        try { cpu = process.TotalProcessorTime; }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or UnauthorizedAccessException) { return null; }
         bool comparable = _cpu.TryGetValue(key, out var old) && now > old.Tick;
         _cpu[key] = (now, cpu);
         return comparable ? Math.Max(0, (cpu - old.Cpu).TotalMilliseconds / (now - old.Tick)) : null;

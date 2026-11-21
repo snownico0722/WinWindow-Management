@@ -52,7 +52,8 @@ public sealed record ViewingCalibration(RectI WorkArea, uint Dpi, double WidthMi
 public enum TaskRelation { Automatic, JointView, Alternating, Integrated }
 public sealed record TaskPairHint(nint First, nint Second, TaskRelation Relation);
 public sealed record TaskWindowHint(nint Handle, bool PassiveVisual = false,
-    bool ProtectPeriphery = false, double? UsefulWidthDip = null, double? UsefulHeightDip = null, TaskContentRegion[]? ProtectedRegions = null, bool Anchor = false, bool MediaCompanion = false);
+    bool ProtectPeriphery = false, double? UsefulWidthDip = null, double? UsefulHeightDip = null, TaskContentRegion[]? ProtectedRegions = null, bool Anchor = false, bool MediaCompanion = false,
+    WindowUseRole Role = WindowUseRole.Unknown, double FloatingAffinity = 0, bool TextFocus = false, bool InitialTextPlacement = false);
 public sealed record WindowSizeFloor(nint Handle, int MinWidth, int MinHeight);
 
 public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDisplay[]? Displays = null,
@@ -63,10 +64,18 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     PlacementPreference[]? Placement = null, CompiledLayoutRules? Rules = null, WorkingPairRule[]? RulePairs = null,
     bool UseWorkingPairs = false, WindowSizeFloor[]? SizeFloors = null,
     IReadOnlyDictionary<nint, string>? Activities = null, IReadOnlyDictionary<nint, LayoutAttention>? Attention = null,
-    nint GestureAnchor = default)
+    nint GestureAnchor = default, RectI? GestureTarget = null)
 {
+    // A workspace event can still carry the last gesture as an anchor without granting
+    // another placement adjustment. Live and replay callers set this from the event kind.
+    internal bool AllowGestureAssist { get; init; } = true;
+    internal uint? InitialPlacementInputTick { get; init; }
+    internal DateTimeOffset? NavigationObservedAt { get; init; }
     public TaskLayoutProfile Preferences => (Profile ?? new()).Normalize();
     public bool PairPlanningEnabled => ExplicitArrange || UseWorkingPairs;
+    internal bool HoldsTextView(WindowSnapshot window) => !ExplicitArrange && window.IsForeground &&
+        WindowHints?.Any(h => h.Handle == window.Handle && h.TextFocus) == true;
+
     internal bool HasRecentInput(nint handle) => Attention?.GetValueOrDefault(handle)?.Input >= .65;
     public (int Width, int Height) MinimumSize(nint handle) =>
         SizeFloors?.FirstOrDefault(f => f.Handle == handle) is { } floor ? (floor.MinWidth, floor.MinHeight) : (0, 0);
@@ -161,30 +170,48 @@ public sealed class TaskLayoutSession
     private readonly Queue<string> _rejected = new();
     private ManualWindowGesture? _gesture;
     private DateTimeOffset _gestureTime;
+    private static readonly TimeSpan GestureLifetime = TimeSpan.FromSeconds(4);
+    private RectI? _assistedGestureFrame;
+    private bool _lastRequestUsedGesture;
     private DateTimeOffset _appliedTime;
 
     public void Gesture(ManualWindowGesture gesture, DateTimeOffset now)
     {
-        _gesture = gesture; _gestureTime = now; _verified = null; _pending = null;
+        _gesture = gesture; _gestureTime = now; _assistedGestureFrame = null; _verified = null; _pending = null;
         // A follow-up may be a task change, not rejection.
         _pendingGroups = [];
     }
 
     public TaskLayoutContext Capture(IReadOnlyList<WindowSnapshot> windows, TaskLayoutProfile profile,
-        TaskDisplay[] displays, ViewingCalibration? calibration, DateTimeOffset now, bool explicitArrange = false) =>
-        new(profile, displays, calibration, RecentGesture: now - _gestureTime <= TimeSpan.FromSeconds(20) ? _gesture : null,
-            VerifiedRepeat: (!explicitArrange || _lastRequestWasExplicit) && _verified == Fingerprint(windows) && now - _appliedTime < TimeSpan.FromMinutes(5),
-            RejectedLayouts: _rejected.ToArray(), ExplicitArrange: explicitArrange,
-            GestureAnchor: !explicitArrange && now - _gestureTime <= TimeSpan.FromSeconds(4) &&
-                _gesture is { } gesture && gesture.StartRect != gesture.EndRect && windows.Any(w =>
-                    w.Handle == gesture.WindowHandle && w.IsManageable && w.VisualRect == gesture.EndRect && w.WorkArea == gesture.WorkArea)
-                ? gesture.WindowHandle : 0);
+        TaskDisplay[] displays, ViewingCalibration? calibration, DateTimeOffset now, bool explicitArrange = false)
+    {
+        var foreground = windows.FirstOrDefault(w => w.IsForeground);
+        if (_gesture is { } previous && (now - _gestureTime > GestureLifetime ||
+            foreground != null && foreground.Handle != previous.WindowHandle ||
+            previous.ProcessId != 0 && !windows.Any(w => w.Handle == previous.WindowHandle && w.ProcessId == previous.ProcessId)))
+        {
+            _gesture = null;
+            _assistedGestureFrame = null;
+        }
+        var recent = explicitArrange ? null : _gesture;
+        var anchor = recent is { } gesture && gesture.StartRect != gesture.EndRect &&
+            windows.Any(w => w.Handle == gesture.WindowHandle && w.IsManageable && w.WorkArea == gesture.WorkArea &&
+                (w.VisualRect == gesture.EndRect || w.VisualRect == _assistedGestureFrame)) ? gesture.WindowHandle : 0;
+        return new(profile, displays, calibration, RecentGesture: recent,
+            VerifiedRepeat: (!explicitArrange || _lastRequestWasExplicit) && (!_lastRequestUsedGesture || anchor != 0) &&
+                _verified == Fingerprint(windows) && now - _appliedTime < TimeSpan.FromMinutes(5),
+            RejectedLayouts: _rejected.ToArray(), ExplicitArrange: explicitArrange, GestureAnchor: anchor);
+    }
 
     public void Requested(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan, DateTimeOffset now, bool explicitArrange = false)
     {
         if (plan.Moves.Count == 0 && plan.Layers.Count == 0) return;
         _lastRequestWasExplicit = explicitArrange;
         var placed = Project(before, plan);
+        _lastRequestUsedGesture = !explicitArrange && _gesture is { } g && now - _gestureTime <= GestureLifetime &&
+            before.Any(w => w.Handle == g.WindowHandle && (g.ProcessId == 0 || g.ProcessId == w.ProcessId) && w.IsForeground &&
+                (w.VisualRect == g.EndRect || w.VisualRect == _assistedGestureFrame));
+        if (_lastRequestUsedGesture) _assistedGestureFrame = placed.First(w => w.Handle == _gesture!.WindowHandle).VisualRect;
         _pending = placed; _verified = null; _appliedTime = now;
         var changed = plan.Moves.Where(m => m.TargetVisualRect != m.Window.VisualRect)
             .Select(m => m.Window.Handle).Concat(plan.Layers.SelectMany(l => l.FrontToBack.Select(w => w.Handle))).ToHashSet();

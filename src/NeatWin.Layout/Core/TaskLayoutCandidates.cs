@@ -84,71 +84,6 @@ internal static partial class IntentLayoutPlanner
         }
     }
 
-    private static RectI[]? WorkingPairGrowthTargets(VisibleWindow[] windows, RectI[] original,
-        TaskLayoutContext context, SmartTidyStrength strength)
-    {
-        if (strength == SmartTidyStrength.Gentle || windows.Length != 2 || context.Attention is null ||
-            !context.PairPlanningEnabled || !context.Preferences.AllowUsefulResize || context.GestureAnchor != 0 ||
-            context.Focus is not { Main: not 0, Companion: not 0 } focus ||
-            windows.Any(w => w.Window.Handle != focus.Main && w.Window.Handle != focus.Companion) ||
-            original[0].VerticalOverlapRatio(original[1]) < .5 || original[0].HorizontalOverlapRatio(original[1]) > 0 ||
-            context.PairHints?.Any(h => h.Relation == TaskRelation.Alternating &&
-                (h.First == focus.Main && h.Second == focus.Companion || h.First == focus.Companion && h.Second == focus.Main)) == true)
-            return null;
-
-        var profile = context.Preferences;
-        var fraction = strength == SmartTidyStrength.Assertive ? 1.0 : .82;
-        var sizes = original.ToArray();
-        for (var i = 0; i < windows.Length; i++)
-        {
-            var window = windows[i].Window;
-            var hint = context.WindowHints?.FirstOrDefault(h => h.Handle == window.Handle);
-            if (!window.IsResizable || context.VideoHint?.WindowHandle == window.Handle ||
-                context.RecentGesture is { } gesture && !context.ExplicitArrange && gesture.WindowHandle == window.Handle &&
-                (gesture.StartRect.Width != gesture.EndRect.Width || gesture.StartRect.Height != gesture.EndRect.Height)) continue;
-
-            double dpi = window.Dpi / 96.0;
-            var rect = original[i];
-            double width = hint?.UsefulWidthDip is > 0 and <= 4000 ? hint.UsefulWidthDip.Value : profile.ComfortableWidthDip * fraction;
-            double height = hint?.UsefulHeightDip is > 0 and <= 3000 ? hint.UsefulHeightDip.Value : profile.ComfortableHeightDip * fraction;
-            var preference = context.Placement?.FirstOrDefault(p => p.Window == window.Handle && p.Confidence >= .50);
-            if (preference is not null) width = Math.Min(width, preference.Width * window.WorkArea.Width / dpi);
-            sizes[i] = rect with { Width = GrowthTarget(rect.Width, width * dpi), Height = GrowthTarget(rect.Height, height * dpi) };
-
-            int GrowthTarget(int current, double target)
-            {
-                int expanded = (int)Math.Floor(Math.Min(target, current * 1.50));
-                return expanded - current >= 32 * dpi ? expanded : current;
-            }
-        }
-        return sizes.SequenceEqual(original) ? null : sizes;
-    }
-
-    private static void AddWorkingPairGrowth(List<Candidate> candidates, VisibleWindow[] windows, RectI[] original,
-        RectI[] wanted, RectI space, int gap, nint primary, int[] order)
-    {
-        int left = original[0].Left <= original[1].Left ? 0 : 1, right = 1 - left;
-        int main = windows[0].Window.Handle == primary ? 0 : 1, peer = 1 - main;
-        int spareWidth = space.Width - gap - original[0].Width - original[1].Width;
-        if (spareWidth < 0 || original.Any(rect => rect.Height > space.Height)) return;
-
-        var widths = original.Select(r => r.Width).ToArray();
-        widths[main] += Math.Min(spareWidth, wanted[main].Width - widths[main]);
-        widths[peer] += Math.Min(spareWidth - (widths[main] - original[main].Width), wanted[peer].Width - widths[peer]);
-        int leftX = main == left ? original[left].Left : original[right].Right - (widths.Sum() + gap);
-        leftX = Math.Clamp(leftX, space.Left, space.Right - widths.Sum() - gap);
-        var heights = wanted.Select(r => Math.Min(r.Height, space.Height)).ToArray();
-        if (widths[0] == original[0].Width && widths[1] == original[1].Width &&
-            heights[0] == original[0].Height && heights[1] == original[1].Height) return;
-
-        int top = Math.Clamp(original[main].Top - (heights[main] - original[main].Height) / 2,
-            space.Top, space.Bottom - heights.Max());
-        var targets = original.ToArray();
-        targets[left] = new(leftX, top, widths[left], heights[left]);
-        targets[right] = new(leftX + widths[left] + gap, top, widths[right], heights[right]);
-        candidates.Add(new("working-pair-grow", targets, order));
-    }
-
     private static void AddDisplayLayouts(List<Candidate> candidates, VisibleWindow[] windows, RectI[] original,
         RectI area, TaskEvidence[] relations, TidyOptions options, TaskLayoutContext context, int gap, int[] order)
     {
@@ -289,9 +224,9 @@ internal static partial class IntentLayoutPlanner
         int span = Math.Min(area.Width - gap, a.Width + b.Width);
         if (span <= 1) return;
         var peerPref = context.Placement?.FirstOrDefault(p => p.Window == windows[peer].Window.Handle && p.Partner == windows[main].Window.Handle);
-        double preferredFraction = pref is { Confidence: > .35 }
+        double preferredFraction = pref is { Confidence: > .35, PreferWidth: true }
             ? Math.Clamp(pref.Width * area.Width / span, .25, .75)
-            : peerPref is { Confidence: > .35 }
+            : peerPref is { Confidence: > .35, PreferWidth: true }
                 ? Math.Clamp(1 - peerPref.Width * area.Width / span, .25, .75)
                 : a.Width / (double)(a.Width + b.Width);
         int width = (int)Math.Round(span * preferredFraction);

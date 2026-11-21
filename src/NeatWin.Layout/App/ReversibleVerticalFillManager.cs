@@ -13,6 +13,7 @@ namespace NeatWin.App;
 internal sealed class ReversibleVerticalFillManager : IDisposable
 {
     private readonly object _gate = new();
+    private readonly Func<nint, bool> _preserveTextView;
     private readonly Dictionary<nint, RestoreEntry> _entries = new();
     private readonly NativeMethods.WinEventProc _winEventProc;
     private readonly NativeMethods.LowLevelMouseProc _mouseProc;
@@ -20,8 +21,9 @@ internal sealed class ReversibleVerticalFillManager : IDisposable
     private nint _mouseHook;
     private bool _disposed;
 
-    internal ReversibleVerticalFillManager()
+    internal ReversibleVerticalFillManager(Func<nint, bool> preserveTextView)
     {
+        _preserveTextView = preserveTextView;
         _winEventProc = OnWinEvent;
         _mouseProc = OnLowLevelMouse;
         _winEventHook = NativeMethods.SetWinEventHook(
@@ -194,6 +196,9 @@ internal sealed class ReversibleVerticalFillManager : IDisposable
             }
         }
 
+        // Reading at an exact location takes priority over restoring a previously filled
+        // window on title-bar mouse-down. An actual release still goes through gesture assist.
+        if (hwnd == NativeMethods.GetForegroundWindow() && _preserveTextView(hwnd)) return false;
         NativeMethods.GetWindowThreadProcessId(hwnd, out var owner);
         var style = NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GwlExStyle).ToInt64();
         if (owner != entry.ProcessId || (style & (NativeMethods.WsExTopmost | NativeMethods.WsExTransparent)) != 0 ||

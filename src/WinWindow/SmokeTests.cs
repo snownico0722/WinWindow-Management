@@ -106,8 +106,6 @@ internal static class SmokeTests
             var twins = await FixtureAsync(output, false, twins: true);
             processes.Add(twins.Process);
             await CheckDuplicateRulesAsync(twins.Hwnd, data);
-            Stop(twins.Process);
-            await twins.Process.WaitForExitAsync();
             var normal = await FixtureAsync(output, false); processes.Add(normal.Process);
             manager = new WindowManager(store);
             var item = manager.SelectTarget(normal.Hwnd);
@@ -118,14 +116,32 @@ internal static class SmokeTests
             Assert(source.IsManageable, "layout sees the normal fixture");
             CheckActivityRecording(source, data);
             var target = source.VisualRect with { X = source.VisualRect.X + (source.VisualRect.X > source.WorkArea.X + 40 ? -32 : 32) };
-            var applied = layoutWindows.ApplyLayout(new([new(source, target)], [], []));
-            Assert(applied.Plan.Moves.Count == 1, "ordinary fixture is accepted for layout");
+            var stale = layoutWindows.ApplyLayout(new([new(source, target)], [], []),
+                automaticForeground: (nint)(-1), gestureWindow: source.Handle);
+            Assert(stale.Interrupted && stale.Plan.Moves.Count == 0 &&
+                stale.FirstGeometrySubmittedTick == null && stale.GestureWindowSubmittedTick == null &&
+                layoutWindows.Capture().Single(w => w.Handle == source.Handle).VisualRect == source.VisualRect,
+                "a departed foreground leaves the native window in place and produces no submission timestamp");
+            Assert(NeatWin.Windows.NativeWindowActivity.IsShellForeground(NeatWin.Windows.NativeMethods.GetShellWindow()),
+                "the desktop is an automation boundary, including a session without a shell window");
+            long releaseTick = Environment.TickCount64;
+            var applied = layoutWindows.ApplyLayout(new([new(source, target)], [], []),
+                automaticForeground: null, gestureWindow: normal.Hwnd);
+            long returnedTick = Environment.TickCount64;
+            Assert(applied.Plan.Moves.Count == 1 && applied.Failures.Count == 0 &&
+                applied.GestureWindowSubmittedTick is long submitted && submitted >= releaseTick && submitted <= returnedTick &&
+                applied.FirstGeometrySubmittedTick == submitted, "the native fixture move records the target's successful submission");
             bool Reached(NeatWin.Core.RectI rect) => layoutWindows.Capture().Any(w => w.Handle == item.Hwnd &&
-                NeatWin.Core.WindowStateRules.Near(w.VisualRect, rect));
+                w.ProcessId == (uint)normal.Process.Id && NeatWin.Core.WindowStateRules.Near(w.VisualRect, rect));
             await WaitAsync("fixture reaches layout target", () => Reached(target));
+            Report($"Native fixture timing: synthetic release to target submission {applied.GestureWindowSubmittedTick - releaseTick} ms");
             var undo = NeatWin.Core.LayoutUndoPlanner.Create(applied.Plan, layoutWindows.Capture());
-            Assert(layoutWindows.ApplyLayout(undo).Plan.Moves.Count == 1, "verified layout can be undone");
+            var restored = layoutWindows.ApplyLayout(undo, automaticForeground: null, gestureWindow: twins.Hwnd);
+            Assert(restored.Plan.Moves.Count == 1 && restored.Failures.Count == 0 && restored.FirstGeometrySubmittedTick.HasValue &&
+                restored.GestureWindowSubmittedTick == null, "undoing the native move cannot count as submission for another fixture");
             await WaitAsync("layout undo restores fixture geometry", () => Reached(source.VisualRect));
+            Stop(twins.Process);
+            await twins.Process.WaitForExitAsync();
             await manager.SetPinAsync(item, true);
             Assert(store.Preferences.Rules.Single().Pinned, "pinning automatically persists a rule");
             Native.SetTopmost(item.Hwnd, false);
@@ -245,6 +261,11 @@ internal static class SmokeTests
                 await WaitAsync("default gentle toggle resumes a background fixture without injection", () =>
                     gameItem.BackgroundEnabled && !gameItem.IsBusy &&
                     Native.Title(game.Hwnd).StartsWith("activity:running:unfocused:"), 5000);
+                var kept = gameItem.Identity!;
+                bool Guard(long started) => shell.Manager.KeepsRunning(kept.Hwnd, (uint)kept.ProcessId, started, kept.ClassName);
+                Assert(Guard(kept.ProcessStarted) && !Guard(kept.ProcessStarted + 1) &&
+                    !shell.Manager.KeepsRunning(kept.Hwnd, (uint)kept.ProcessId, kept.ProcessStarted, kept.ClassName + "Other"),
+                    "automatic close protection matches the exact kept window lifetime");
                 Assert(!Native.IsNoFocusLossInjected(game.Hwnd) && !Native.HasLoadedNoFocusLossModule(game.Process.Id),
                     "default background keep does not inject native hooks");
 
@@ -315,6 +336,7 @@ internal static class SmokeTests
                 keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 await WaitAsync("turning off the row toggle restores the background pause", () =>
                     !gameItem.BackgroundEnabled && !gameItem.IsBusy && Native.Title(game.Hwnd).StartsWith("activity:paused:unfocused:"), 5000);
+                Assert(!Guard(kept.ProcessStarted), "turning keep off releases automatic close protection");
                 if (nativeKeep)
                     Assert(!Native.IsNoFocusLossInjected(game.Hwnd) && !Native.HasLoadedNoFocusLossModule(game.Process.Id),
                         "turning off the row toggle unloads the native NoFocusLoss library");
@@ -414,6 +436,9 @@ internal static class SmokeTests
             OpenSection("BehaviorSection");
             await WaitAsync("continuous behavior learning has an independent settings page",
                 () => ((CheckBox)shell.FindName("LearnBehaviorSwitch")).IsVisible && !((CheckBox)shell.FindName("ReferenceEnabled")).IsVisible);
+            var gestureTick = Environment.TickCount64;
+            shell.SnapshotHistory.ObserveGesture("smoke-gesture", new(1, 7, "start", gestureTick, new(10, 20, 300, 240),
+                new(0, 0, 1920, 1040), 96, false));
             var snapshot = shell.SnapshotHistory.BeginCapture();
             var archivePath = await DesktopSnapshot.ExportAsync(new HashSet<nint>(), new WindowInteropHelper(shell).Handle,
                 0, "Off", directory: output, durationMs: 510, capture: snapshot);
@@ -430,7 +455,7 @@ internal static class SmokeTests
                 }).ToArray();
                 Assert(times.First() is >= -DesktopSnapshotHistory.LookbackMilliseconds and < 0 && times.Last() >= 510 &&
                     times.SequenceEqual(times.Order()) && samples.Any(line => line.Contains(DesktopSnapshot.Handle(item.Hwnd), StringComparison.Ordinal)) &&
-                    archive.GetEntry("summary.txt") is not null && (await decisions.ReadToEndAsync()).Contains("\"Trigger\":\"explicit\"", StringComparison.Ordinal),
+                    archive.GetEntry("gestures-smoke-gesture.jsonl") is not null && archive.GetEntry("summary.txt") is not null && (await decisions.ReadToEndAsync()).Contains("\"Trigger\":\"explicit\"", StringComparison.Ordinal),
                     "snapshot ZIP includes the pre-click window timeline and earlier decisions alongside the live capture");
             }
             File.Delete(archivePath);
@@ -439,7 +464,7 @@ internal static class SmokeTests
             lookback.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             var disabledSnapshot = shell.SnapshotHistory.BeginCapture();
             shell.SnapshotHistory.EndCapture(disabledSnapshot);
-            Assert(!disabledSnapshot.LookbackEnabled && disabledSnapshot.PastWindows.Length == 0 && disabledSnapshot.PastDecisions.Length == 0,
+            Assert(!disabledSnapshot.LookbackEnabled && disabledSnapshot.PastWindows.Length == 0 && disabledSnapshot.PastDecisions.Length == 0 && disabledSnapshot.PastGestures.Length == 0,
                 "turning snapshot lookback off clears both history buffers");
             await WaitAsync("snapshot lookback opt-out survives reload", () => !new StateStore(data).Preferences.SnapshotLookbackEnabled);
             ((ToggleButton)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
@@ -641,10 +666,14 @@ internal static class SmokeTests
         var gap = activity.Sample("fixture", tick + 60000, frame, [fixture], tracker, false);
         Assert(gap.ObservedMilliseconds == 0 && gap.Windows.Single().ForegroundMs is null, "recorder excludes interruptions from usage time");
         recorder.AppendActivity(next, frame, next.Tick);
+        var coverage = new NeatWin.Core.FocusCoverage(tick, tick + 1, 1, 2, "observed", [new(tick + 1, 2)], 0, null, null);
+        recorder.AppendFocusBoundary("fixture", "export", coverage);
+        recorder.AppendGestures(new(1, "fixture", DateTimeOffset.UtcNow, [], 0));
         var path = Path.Combine(root, "activity-fixture.zip");
         recorder.ExportRecords(path);
         using (var archive = System.IO.Compression.ZipFile.OpenRead(path))
-            Assert(archive.Entries.Any(e => e.Name.StartsWith("activity-")) && archive.GetEntry("identity.key") == null &&
+            Assert(archive.Entries.Any(e => e.Name.StartsWith("activity-")) && archive.Entries.Any(e => e.Name.StartsWith("gestures-")) &&
+                archive.Entries.Any(e => e.Name.StartsWith("focus-")) && archive.GetEntry("identity.key") == null &&
                 archive.GetEntry("compiled-rules.json") != null && archive.GetEntry("layout-guide.md") != null,
                 "export includes activity but excludes the installation identity secret");
         recorder.Clear();
@@ -757,12 +786,11 @@ internal static class SmokeTests
             var pair = current.Where(IsFixture).ToArray();
             if (pair.Length != 2 || !pair.Any(w => before.Any(old => old.Handle == w.Handle && !WindowStateRules.Near(old.VisualRect, w.VisualRect))))
                 return false;
-            if (!hadOtherWindows && !HasOtherWindows(current))
-                return pair[0].VisualRect.Intersect(pair[1].VisualRect).IsEmpty;
-            // A shared runner desktop may have an unrelated window using part of the screen.
-            // Verify that both fixtures remain usable and their worst exposure actually improves.
+            // A readable reference can share an edge with the foreground window. Check what a
+            // person can actually see and click after the native moves have settled.
+            bool fixturesOnly = !hadOtherWindows && !HasOtherWindows(current);
             var exposure = pair.Select(w => Exposure(w, current)).ToArray();
-            return exposure.Min(e => e.Visible) >= initiallyCovered.Visible + .15 &&
+            return exposure.Min(e => e.Visible) >= Math.Max(fixturesOnly ? .50 : 0, initiallyCovered.Visible + .15) &&
                 exposure.Min(e => e.AccessWidth) >= 80 * pair[1].Dpi / 96.0;
         }
         var arrange = (Button)shell.FindName("ArrangeButton");
@@ -1115,10 +1143,33 @@ internal static class SmokeTests
         store.Preferences.Rules.Add(rule);
         store.SavePreferences();
         var app = await StartMainAsync(store, processes);
-        await WaitAsync("running workbench enabled background keep, pin and mute", () =>
-            store.ReadRecovery().Any(s => s.Identity.Hwnd == hwnd && s.OriginalAudioMutes is not null && s.RestoreActivation) &&
-            Native.IsTopmost(hwnd) && (!nativeKeep || Native.IsNoFocusLossInjected(hwnd)) &&
-            (!audio || Native.GetProp(hwnd, "WinWindow.Test.Mix") == 4), 6000);
+        string journalPath = Path.Combine(store.DirectoryPath, "recovery.json");
+        string observed = "";
+        try
+        {
+            await WaitAsync("running workbench enabled background keep, pin and mute", () =>
+            {
+                // The child publishes each complete journal with an atomic replacement.
+                // Our polling handle must leave that replacement available on Windows.
+                WindowSnapshot[] journal = [];
+                if (File.Exists(journalPath))
+                {
+                    using var file = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    journal = JsonSerializer.Deserialize<WindowSnapshot[]>(file) ?? [];
+                }
+                var target = journal.Where(s => s.Identity.Hwnd == hwnd).ToArray();
+                bool pinned = Native.IsTopmost(hwnd), background = !nativeKeep || Native.IsNoFocusLossInjected(hwnd);
+                nint mix = audio ? Native.GetProp(hwnd, "WinWindow.Test.Mix") : 0;
+                observed = $"records={target.Length}, audioBaseline={target.Any(s => s.OriginalAudioMutes != null)}, " +
+                    $"restoreActivation={target.Any(s => s.RestoreActivation)}, pinned={pinned}, " +
+                    $"backgroundReady={background} (required={nativeKeep}), audioMix={mix} (required={audio})";
+                return target.Any(s => s.OriginalAudioMutes != null && s.RestoreActivation) && pinned && background && (!audio || mix == 4);
+            }, 6000);
+        }
+        catch (TimeoutException error)
+        {
+            throw new TimeoutException($"{error.Message}. {observed}, workbenchExited={app.Process.HasExited}, fixtureExited={game.HasExited}.", error);
+        }
         // A real Quit, without first disabling the options or removing the game.
         Native.PostMessage(app.Hwnd, 0x10, 0, 0);
         await WaitAsync("workbench exited with the game still managed", () => app.Process.HasExited);

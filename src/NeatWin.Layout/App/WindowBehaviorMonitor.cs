@@ -22,25 +22,44 @@ internal sealed class WindowBehaviorMonitor : IDisposable
     private readonly SettingsStore _settings;
     private readonly RecorderSession _recorder;
     private readonly Func<bool> _busy;
+    private readonly Func<nint, uint, long, string, bool>? _keepRunning;
+    private readonly ForegroundHistory _focus;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 550 };
     private readonly Dictionary<uint, ProcessIdentity> _processes = [];
     private Dictionary<int, Observed> _previous = [];
     private readonly WindowBehaviorDiscovery _discovery = new();
     private readonly Dictionary<string, WindowBehaviorFit> _fits;
     private readonly Dictionary<string, WindowBehaviorRule> _candidates;
+    private readonly IdleWindowReclaim _idle = new();
+    private readonly Dictionary<int, long> _idleRequests = [];
+    private readonly NativeMethods.WinEventProc _restoreCallback;
+    private (Observed Source, nint Stamp, long Requested)? _reclaimUndo;
+    private nint _restoreHook;
     private int _traceSegment;
     private long _lastTraceTick;
+    private HashSet<int> _lastNavigationSources = [];
     private BehaviorConfiguration _configuration;
     private Entry[] _entries;
 
     internal WindowBehaviorMonitor(WindowManager windows, IntentReferenceStore store, SettingsStore settings,
-        RecorderSession recorder, Func<bool> busy)
+        RecorderSession recorder, Func<bool> busy, ForegroundHistory focus, Func<nint, uint, long, string, bool>? keepRunning = null)
     {
         _windows = windows;
         _store = store;
         _settings = settings;
         _recorder = recorder;
         _busy = busy;
+        _keepRunning = keepRunning;
+        _focus = focus;
+        _restoreCallback = (hook, _, hwnd, _, _, _, _) =>
+        {
+            // A user restore ends ownership, even if they minimize the window again before undo.
+            if (hook == _restoreHook && _reclaimUndo is { } receipt && receipt.Source.Window.Handle == hwnd)
+            {
+                _idle.Used(receipt.Source.Behavior.Id, Environment.TickCount64);
+                ForgetReclaimUndo();
+            }
+        };
         _configuration = settings.LoadBehaviorConfiguration();
         var profile = store.ReadBehaviorProfile();
         _fits = profile.Fits ?? [];
@@ -111,6 +130,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
     {
         ++_traceSegment;
         _lastTraceTick = 0;
+        _lastNavigationSources.Clear();
         ResetObservation();
         RefreshTimer();
     }
@@ -150,6 +170,66 @@ internal sealed class WindowBehaviorMonitor : IDisposable
         return changed;
     }
 
+    internal void ResetIdleHistory() => _idle.Reset();
+
+    internal nint TryReclaim(IReadOnlyList<WindowSnapshot> snapshot, IntentLayoutPlan applied,
+        TaskLayoutContext context, SmartTidyStrength strength, nint foreground, ForegroundHistory history)
+    {
+        long now = Environment.TickCount64;
+        var candidate = _idle.Choose(snapshot, applied, context, strength, now, _recorder.Identity.Id, history);
+        if (candidate is null || foreground == 0 || NativeWindowActivity.PointerBusy ||
+            NativeMethods.GetForegroundWindow() != foreground || !DesktopActivity.Interactive()) return 0;
+        NativeMethods.GetWindowThreadProcessId(foreground, out var frontPid);
+        if (foreground != context.Focus?.Main && !(context.ExplicitArrange && frontPid == Environment.ProcessId)) return 0;
+        var current = _windows.Capture().FirstOrDefault(w => w.Handle == candidate.Handle &&
+            w.ProcessId == candidate.ProcessId && w.IsManageable && !w.IsForeground && !w.IsTopmost);
+        if (current is null || ReadProcess(current.ProcessId) is not { } process ||
+            NativeMethods.IsHungAppWindow(current.Handle)) return 0;
+        int id = _recorder.Identity.Id(current);
+        var source = new Observed(current, new(id, process.App, process.Started, false), ClassName(current.Handle));
+        var restoreHook = NativeMethods.SetWinEventHook(0x0017, 0x0017, 0, _restoreCallback,
+            current.ProcessId, 0, NativeMethods.WinEventOutOfContext | NativeMethods.WinEventSkipOwnProcess);
+        if (restoreHook == 0) return 0;
+
+        AutomationGuard.Mark(current.Handle);
+        var stamp = AutomationGuard.Stamp(current.Handle);
+        if (stamp == 0 || !TryDismiss(source, foreground, WindowBehaviorAction.Minimize))
+        {
+            NativeMethods.UnhookWinEvent(restoreHook);
+            return 0;
+        }
+        ForgetReclaimUndo();
+        _restoreHook = restoreHook;
+        _reclaimUndo = (source, stamp, now);
+        _idle.Used(id, now);
+        foreach (var old in _idleRequests.Where(p => now - p.Value > 5_000).Select(p => p.Key).ToArray())
+            _idleRequests.Remove(old);
+        _idleRequests[id] = now;
+        return current.Handle;
+    }
+
+    internal void ForgetReclaimUndo()
+    {
+        _reclaimUndo = null;
+        if (_restoreHook != 0) NativeMethods.UnhookWinEvent(_restoreHook);
+        _restoreHook = 0;
+    }
+
+    internal bool UndoReclaim()
+    {
+        var undo = _reclaimUndo;
+        ForgetReclaimUndo();
+        if (undo is not { } token) return false;
+        var source = token.Source;
+        var hwnd = source.Window.Handle;
+        if (!NativeMethods.IsWindowVisible(hwnd) || AutomationGuard.Stamp(hwnd) != token.Stamp ||
+            !NativeIdentityMatches(source)) return false;
+        // ShowWindowAsync requests are queued. An immediate Undo can precede the minimize.
+        if (!NativeMethods.IsIconic(hwnd) && Environment.TickCount64 - token.Requested > 1000) return false;
+        _idle.Used(source.Behavior.Id, Environment.TickCount64);
+        return NativeMethods.ShowWindowAsync(hwnd, 4); // SW_SHOWNOACTIVATE
+    }
+
     private bool IsEnabled(WindowBehaviorRule rule) => _configuration.Enabled?.Contains(rule.FitKey) == true;
 
     private WindowBehaviorFit Fit(WindowBehaviorRule rule) =>
@@ -181,7 +261,8 @@ internal sealed class WindowBehaviorMonitor : IDisposable
                 if (departure is { } kind) departures[id] = kind;
             }
 
-            var automaticDepartures = departures.Keys.Where(id => _entries.Any(e => e.Sequence.IsAutomatic(id))).ToHashSet();
+            var automaticDepartures = departures.Keys.Where(id => _entries.Any(e => e.Sequence.IsAutomatic(id)) ||
+                _idleRequests.TryGetValue(id, out var time) && tick - time <= 5_000).ToHashSet();
 
             var trace = _recorder.CanWriteDiagnostics ? new List<WindowBehaviorEvent>() : null;
             if (trace is not null)
@@ -189,7 +270,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
                 foreach (var (id, previous) in _previous)
                 {
                     if (current.ContainsKey(id)) continue;
-                    var cause = _entries.Any(e => e.Sequence.IsAutomatic(id)) ? "winwindow" : "observed";
+                    var cause = automaticDepartures.Contains(id) ? "winwindow" : "observed";
                     var type = departures.TryGetValue(id, out var result) ? result.ToString().ToLowerInvariant() : "unavailable";
                     trace.Add(Event(previous, type, cause));
                 }
@@ -208,12 +289,16 @@ internal sealed class WindowBehaviorMonitor : IDisposable
             bool changed = _configuration.Learn &&
                 Learn(_discovery.Observe(tick, now.UtcTicks, observations, departures, automaticDepartures));
             bool canAct = !_busy();
+            var navigation = trace != null || canAct && _entries.Any(e => IsEnabled(e.Rule))
+                ? _focus.NavigationFor(current.Values.Select(w => w.Window).ToArray(), tick) : null;
+            HashSet<int> preserved = navigation == null ? [] : current.Values
+                .Where(w => navigation.ProtectsAction(w.Window.Handle, tick)).Select(w => w.Behavior.Id).ToHashSet();
             foreach (var entry in _entries)
             {
                 bool enabled = IsEnabled(entry.Rule);
                 if (!enabled && !_configuration.Learn) continue;
                 var update = entry.Sequence.Observe(tick, now.UtcTicks, observations, departures, Fit(entry.Rule),
-                    _configuration.Learn, enabled && canAct, automaticDepartures);
+                    _configuration.Learn, enabled && canAct, automaticDepartures, preserved);
                 if (entry.Rule.IsLocal && update.Reopened is null) update = update with { Fit = null };
                 if (update.Fit is { } fit)
                 {
@@ -222,16 +307,30 @@ internal sealed class WindowBehaviorMonitor : IDisposable
                 }
                 if (update.Reopened is not null && foreground is not null)
                     trace?.Add(Event(foreground, "reopened", "observed", entry.Rule.Id));
-                if (update.Dismiss is not int id || !handled.Add(id) || foreground is null ||
-                    !current.TryGetValue(id, out var target)) continue;
-                bool applied = TryDismiss(target, foreground, entry.Rule.Action);
+                if (update.Dismiss is not int id) continue;
+                if (handled.Contains(id) || foreground is null || !current.TryGetValue(id, out var target))
+                {
+                    entry.Sequence.SubmissionFailed(id);
+                    continue;
+                }
+                if (KeepProtects(target, entry.Rule.Action))
+                {
+                    entry.Sequence.SubmissionFailed(id);
+                    trace?.Add(Event(target, "dismiss-skipped", "background-keep", entry.Rule.Id));
+                    continue;
+                }
+                handled.Add(id);
+                bool applied = TryDismiss(target, foreground.Window.Handle, entry.Rule.Action);
+                if (!applied) entry.Sequence.SubmissionFailed(id);
                 trace?.Add(Event(target, applied ? "dismiss-requested" : "dismiss-failed", "winwindow", entry.Rule.Id));
             }
             _previous = current;
             if (changed) _store.SaveBehaviorProfile(new(_fits, _candidates.Values.ToArray()));
-            if (trace is not null && (trace.Count > 0 || tick - _lastTraceTick >= 5_000))
+            if (trace is not null && (trace.Count > 0 || tick - _lastTraceTick >= 5_000 || !_lastNavigationSources.SetEquals(preserved)))
             {
-                _store.AppendBehavior(new(_recorder.SessionId, tick, now, trace.ToArray(), _traceSegment));
+                _store.AppendBehavior(new(_recorder.SessionId, tick, now, trace.ToArray(), _traceSegment,
+                    preserved.Count == 0 ? null : preserved.Order().ToArray()));
+                _lastNavigationSources = preserved;
                 _lastTraceTick = tick;
             }
         }
@@ -268,23 +367,35 @@ internal sealed class WindowBehaviorMonitor : IDisposable
         return observed;
     }
 
-    private static bool TryDismiss(Observed source, Observed foreground, WindowBehaviorAction action)
+    private bool KeepProtects(Observed source, WindowBehaviorAction action) =>
+        action == WindowBehaviorAction.Close && _keepRunning?.Invoke(source.Window.Handle, source.Window.ProcessId,
+            source.Behavior.ProcessStartedUtc, source.Class) == true;
+
+    private bool TryDismiss(Observed source, nint foreground, WindowBehaviorAction action)
     {
         nint hwnd = source.Window.Handle;
-        if (source.Window.IsTopmost || hwnd == foreground.Window.Handle ||
-            NativeMethods.GetForegroundWindow() != foreground.Window.Handle ||
-            !NativeMethods.IsWindow(hwnd) || !NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd))
+        if (!NativeWindowActivity.AllowsAutomaticPlacement(foreground)) return false;
+        if (source.Window.IsTopmost || hwnd == foreground ||
+            NativeMethods.GetForegroundWindow() != foreground ||
+            !NativeMethods.IsWindowEnabled(hwnd) || !NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd))
             return false;
-        NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
-        if (pid != source.Window.ProcessId || ReadProcess(pid) is not { } process ||
-            process.Started != source.Behavior.ProcessStartedUtc ||
-            !StringComparer.OrdinalIgnoreCase.Equals(process.App, source.Behavior.App) ||
+        if (!NativeIdentityMatches(source) ||
             (NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GwlExStyle).ToInt64() & NativeMethods.WsExTopmost) != 0 ||
-            ClassName(hwnd) != source.Class || NativeMethods.GetForegroundWindow() != foreground.Window.Handle)
+            NativeMethods.GetForegroundWindow() != foreground)
             return false;
+        if (KeepProtects(source, action)) return false;
         return action == WindowBehaviorAction.Close
             ? NativeMethods.PostMessage(hwnd, 0x0010, 0, 0)
             : NativeMethods.ShowWindowAsync(hwnd, 7); // SW_SHOWMINNOACTIVE
+    }
+
+    private static bool NativeIdentityMatches(Observed source)
+    {
+        var hwnd = source.Window.Handle;
+        NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
+        return pid == source.Window.ProcessId && ReadProcess(pid) is { } process &&
+            process.Started == source.Behavior.ProcessStartedUtc &&
+            StringComparer.OrdinalIgnoreCase.Equals(process.App, source.Behavior.App) && ClassName(hwnd) == source.Class;
     }
 
     private static ProcessIdentity? ReadProcess(uint pid)
@@ -315,5 +426,9 @@ internal sealed class WindowBehaviorMonitor : IDisposable
         foreach (var entry in _entries) entry.Sequence.Reset();
     }
 
-    public void Dispose() => _timer.Dispose();
+    public void Dispose()
+    {
+        ForgetReclaimUndo();
+        _timer.Dispose();
+    }
 }

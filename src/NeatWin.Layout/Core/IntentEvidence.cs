@@ -6,7 +6,7 @@ public sealed record WindowAdjustmentObservation(
     RectI Start, RectI End, RectI StartWorkArea, RectI WorkArea,
     uint Dpi, long DurationMilliseconds, RectI[] Neighbors, string Outcome,
     int Version = 1, WorkspaceFrame? StartContext = null, WorkspaceFrame? EndContext = null,
-    WorkspaceFrame? SettledContext = null, string? AfterRequest = null);
+    WorkspaceFrame? SettledContext = null, string? AfterRequest = null, int? GestureId = null, RecordedPlacementLink? PriorPlacement = null);
 
 public sealed record IntentReferenceSample(
     DateTimeOffset Time, string Context, double GapDip, bool Horizontal);

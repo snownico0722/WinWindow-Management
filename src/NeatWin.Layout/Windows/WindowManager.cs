@@ -94,16 +94,17 @@ public sealed partial class WindowManager
             }
 
             var maximized = IsMaximized(hwnd);
-            var hasVisibleOwner = HasVisibleOwner(hwnd);
+            var owner = VisibleOwner(hwnd);
+            var independent = owner == 0 || IsIndependentOwnedWindow(hwnd, owner, style, exStyle);
             var isToolWindow = (exStyle & NativeMethods.WsExToolWindow) != 0;
             var noActivate = (exStyle & NativeMethods.WsExNoActivate) != 0;
             var isResizable = (style & NativeMethods.WsThickFrame) != 0 && !maximized;
             var isTopmost = (exStyle & NativeMethods.WsExTopmost) != 0;
             var clickThrough = (exStyle & NativeMethods.WsExTransparent) != 0;
             var fullScreen = visualRect == ToRectI(monitorInfo.Monitor);
-            var isManageable = !isTopmost && !clickThrough && !fullScreen &&
+            var isManageable = NativeMethods.IsWindowEnabled(hwnd) && !isTopmost && !clickThrough && !fullScreen &&
                 !maximized &&
-                !hasVisibleOwner &&
+                independent &&
                 !isToolWindow &&
                 !noActivate &&
                 visualRect.Area >= 10_000;
@@ -129,8 +130,8 @@ public sealed partial class WindowManager
                 Math.Max(96u, NativeMethods.GetDpiForWindow(hwnd)),
                 processId,
                 isTopmost,
-                !hasVisibleOwner && !isToolWindow && !noActivate && visualRect.Area >= 10_000
-                    ? (fullScreen ? "fullscreen" : maximized ? "maximized" : "windowed") : null));
+                independent && !isToolWindow && !noActivate && visualRect.Area >= 10_000
+                    ? (fullScreen ? "fullscreen" : maximized ? "maximized" : "windowed") : null) { Owner = owner });
 
             return true;
         }, nint.Zero);
@@ -145,62 +146,61 @@ public sealed partial class WindowManager
         return result;
     }
 
-    public void Apply(IReadOnlyList<TidyMove> plan)
+    public void Apply(IReadOnlyList<TidyMove> plan) => SubmitMoves(plan, [], 0, out _, out _);
+
+    private IReadOnlyList<WindowMoveFailure> SubmitMoves(IReadOnlyList<TidyMove> plan, List<string> notes,
+        nint gestureWindow, out long? firstSubmitTick, out long? gestureSubmitTick)
     {
-        if (plan.Count == 0)
-        {
-            return;
-        }
+        firstSubmitTick = gestureSubmitTick = null;
+        if (plan.Count == 0) return [];
 
         InvalidateCache();
         foreach (var move in plan) AutomationGuard.Mark(move.Window.Handle);
+        const uint flags = NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate |
+            NativeMethods.SwpNoOwnerZOrder | NativeMethods.SwpAsyncWindowPos;
 
-        var flags =
-            NativeMethods.SwpNoZOrder |
-            NativeMethods.SwpNoActivate |
-            NativeMethods.SwpNoOwnerZOrder |
-            NativeMethods.SwpAsyncWindowPos;
-
-        var deferred = NativeMethods.BeginDeferWindowPos(plan.Count);
-        if (deferred != nint.Zero)
+        if (plan.Count > 1)
         {
-            foreach (var move in plan)
+            var stage = "BeginDeferWindowPos";
+            var deferred = NativeMethods.BeginDeferWindowPos(plan.Count);
+            if (deferred != 0)
             {
-                var outer = ToOuterRect(move.Window, move.TargetVisualRect);
-                deferred = NativeMethods.DeferWindowPos(
-                    deferred,
-                    move.Window.Handle,
-                    nint.Zero,
-                    outer.X,
-                    outer.Y,
-                    outer.Width,
-                    outer.Height,
-                    flags);
-
-                if (deferred == nint.Zero)
+                stage = "DeferWindowPos";
+                foreach (var move in plan)
                 {
-                    break;
+                    var outer = ToOuterRect(move.Window, move.TargetVisualRect);
+                    deferred = NativeMethods.DeferWindowPos(deferred, move.Window.Handle, 0,
+                        outer.X, outer.Y, outer.Width, outer.Height, flags);
+                    if (deferred == 0) break;
+                }
+                if (deferred != 0)
+                {
+                    stage = "EndDeferWindowPos";
+                    if (NativeMethods.EndDeferWindowPos(deferred))
+                    {
+                        firstSubmitTick = Environment.TickCount64;
+                        if (gestureWindow != 0 && plan.Any(m => m.Window.Handle == gestureWindow)) gestureSubmitTick = firstSubmitTick;
+                        return [];
+                    }
                 }
             }
-
-            if (deferred != nint.Zero && NativeMethods.EndDeferWindowPos(deferred))
-            {
-                return;
-            }
+            notes.Add($"{stage}: Win32 {Marshal.GetLastPInvokeError()}. Retrying individually.");
         }
 
+        var failures = new List<WindowMoveFailure>();
         foreach (var move in plan)
         {
             var outer = ToOuterRect(move.Window, move.TargetVisualRect);
-            _ = NativeMethods.SetWindowPos(
-                move.Window.Handle,
-                nint.Zero,
-                outer.X,
-                outer.Y,
-                outer.Width,
-                outer.Height,
-                flags);
+            if (!NativeMethods.SetWindowPos(move.Window.Handle, 0, outer.X, outer.Y, outer.Width, outer.Height, flags))
+                failures.Add(new(move, Marshal.GetLastPInvokeError()));
+            else
+            {
+                long tick = Environment.TickCount64;
+                firstSubmitTick ??= tick;
+                if (move.Window.Handle == gestureWindow) gestureSubmitTick = tick;
+            }
         }
+        return failures;
     }
 
     private static RectI ToOuterRect(WindowSnapshot window, RectI visualRect)
@@ -232,7 +232,7 @@ public sealed partial class WindowManager
         return status == 0;
     }
 
-    private static bool TryGetRect(nint hwnd, out RectI rect)
+    internal static bool TryGetRect(nint hwnd, out RectI rect)
     {
         if (NativeMethods.GetWindowRect(hwnd, out var nativeRect))
         {
@@ -244,22 +244,30 @@ public sealed partial class WindowManager
         return false;
     }
 
-    private static bool IsSystemSurface(nint hwnd)
+    internal static bool IsSystemSurface(nint hwnd)
     {
         var className = new StringBuilder(256);
         _ = NativeMethods.GetClassName(hwnd, className, className.Capacity);
         return SystemClasses.Contains(className.ToString());
     }
 
-    private static bool HasVisibleOwner(nint hwnd)
+    private static nint VisibleOwner(nint hwnd)
     {
         var owner = NativeMethods.GetWindow(hwnd, NativeMethods.GwOwner);
-        if (owner == nint.Zero || !NativeMethods.IsWindowVisible(owner))
-        {
-            return false;
-        }
+        return owner != 0 && NativeMethods.IsWindowVisible(owner) &&
+            TryGetRect(owner, out var rect) && !rect.IsEmpty ? owner : 0;
+    }
 
-        return TryGetRect(owner, out var rect) && !rect.IsEmpty;
+    private static bool IsIndependentOwnedWindow(nint hwnd, nint owner, long style, long exStyle)
+    {
+        if (!NativeMethods.IsWindowEnabled(owner) || (exStyle & NativeMethods.WsExDlgModalFrame) != 0)
+            return false;
+        const long frame = NativeMethods.WsCaption | NativeMethods.WsThickFrame;
+        bool documentFrame = (style & frame) == frame &&
+            (style & (NativeMethods.WsMinimizeBox | NativeMethods.WsMaximizeBox)) != 0;
+        if (!documentFrame && (exStyle & NativeMethods.WsExAppWindow) == 0) return false;
+        var className = new StringBuilder(256);
+        return NativeMethods.GetClassName(hwnd, className, className.Capacity) > 0 && className.ToString() != "#32770";
     }
 
     private static bool IsMaximized(nint hwnd)

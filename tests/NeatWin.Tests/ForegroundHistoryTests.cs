@@ -7,6 +7,41 @@ public sealed class ForegroundHistoryTests
     private static readonly RectI WorkArea = new(0, 0, 1920, 1040);
 
     [Fact]
+    public void FirstSettledTransitionKeepsTheSourceAccessibleAndExpires()
+    {
+        var windows = new[] { Window(1) with { IsForeground = false }, Window(2) with { IsForeground = true } };
+        var history = new ForegroundHistory();
+        history.Visit(1, 1, 1_000);
+        history.Visit(2, 2, 700_000); // A document may have been open for longer than the history horizon.
+
+        Assert.Equal((nint)0, history.Resolve(windows, 700_100).Companion);
+        Assert.Equal(new LayoutFocus(2, 1, 1, "handoff"), history.Resolve(windows, 700_600));
+        Assert.Equal((nint)0, history.Resolve(windows, 720_000).Companion);
+    }
+
+    [Fact]
+    public void BriefForegroundBounceDoesNotEstablishWorkingPair()
+    {
+        var windows = new[] { Window(1), Window(2) };
+        var history = Visits(1, 2);
+        history.Visit(1, 1, 2_150);
+
+        Assert.Equal((nint)0, history.Resolve(windows, 3_000).Companion);
+    }
+
+    [Fact]
+    public void IndependentDocumentUsesItsOwnerWhileModalDialogSuspendsLayout()
+    {
+        var document = Window(2) with { Owner = 1, IsForeground = true };
+        var owner = Window(1) with { IsForeground = false };
+        var history = Visits(2);
+
+        Assert.Equal(new LayoutFocus(2, 1, 0, "handoff"), history.Resolve([owner, document], 1_700));
+        Assert.Equal((nint)0, history.Resolve([owner, document with { IsManageable = false }], 1_700).Main);
+        Assert.False(WindowLayerSafety.CanReorder([owner, document], [document with { ZOrder = 0 }, owner]));
+    }
+
+    [Fact]
     public void RepeatedDirectSwitchesOutweighAnOccasionalInterruption()
     {
         var windows = new[] { Window(1), Window(2), Window(3) };

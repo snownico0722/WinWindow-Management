@@ -4,7 +4,7 @@ namespace NeatWin.Core;
 public static class WindowStateRules
 {
     public static bool Matches(WindowSnapshot expected, WindowSnapshot actual, RectI target, int tolerance = 3) =>
-        actual.Handle == expected.Handle && actual.ProcessId == expected.ProcessId &&
+        actual.Handle == expected.Handle && actual.ProcessId == expected.ProcessId && actual.Owner == expected.Owner &&
         actual.MonitorHandle == expected.MonitorHandle && actual.WorkArea == expected.WorkArea &&
         actual.Dpi == expected.Dpi && actual.IsTopmost == expected.IsTopmost &&
         actual.IsManageable == expected.IsManageable && actual.IsResizable == expected.IsResizable &&
@@ -13,6 +13,45 @@ public static class WindowStateRules
     public static bool Near(RectI first, RectI second, int tolerance = 3) =>
         Math.Abs((long)first.X - second.X) <= tolerance && Math.Abs((long)first.Y - second.Y) <= tolerance &&
         Math.Abs((long)first.Width - second.Width) <= tolerance && Math.Abs((long)first.Height - second.Height) <= tolerance;
+}
+
+/// <summary>Short-lived placement constraints for live window instances.</summary>
+internal sealed class WindowPlacementFeedback
+{
+    private readonly Dictionary<nint, (WindowSnapshot Window, long Expires)> _blocked = [];
+    private const int LifetimeMs = 15_000;
+
+    internal void Forget(nint handle) => _blocked.Remove(handle);
+
+    internal bool BlockUnchanged(TidyMove move, WindowSnapshot observed, long now)
+    {
+        if (!WindowStateRules.Matches(move.Window, observed, move.Window.VisualRect) ||
+            WindowStateRules.Near(observed.VisualRect, move.TargetVisualRect)) return false;
+        if (_blocked.TryGetValue(observed.Handle, out var entry) && now < entry.Expires &&
+            WindowStateRules.Matches(entry.Window, observed, entry.Window.VisualRect)) return false;
+        _blocked[observed.Handle] = (observed, now + LifetimeMs);
+        return true;
+    }
+
+    internal TaskWindowHint[] Bind(IReadOnlyList<WindowSnapshot> desktop, TaskWindowHint[] hints, long now)
+    {
+        if (_blocked.Count == 0) return hints;
+        var byHandle = desktop.ToDictionary(w => w.Handle);
+        var result = hints.ToList();
+        foreach (var (handle, entry) in _blocked.ToArray())
+        {
+            if (now >= entry.Expires || !byHandle.TryGetValue(handle, out var current) ||
+                !WindowStateRules.Matches(entry.Window, current, entry.Window.VisualRect))
+            {
+                Forget(handle);
+                continue;
+            }
+            int index = result.FindIndex(h => h.Handle == handle);
+            if (index < 0) result.Add(new(handle, Anchor: true));
+            else result[index] = result[index] with { Anchor = true };
+        }
+        return result.ToArray();
+    }
 }
 
 /// <summary>Build an undo only from still-matching windows; never undo a new DPI/pin state.</summary>

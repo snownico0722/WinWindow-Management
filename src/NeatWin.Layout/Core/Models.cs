@@ -15,7 +15,10 @@ public sealed record WindowSnapshot(
     int ZOrder,
     uint Dpi = 96,
     uint ProcessId = 0,
-    bool IsTopmost = false, string? SurfaceState = null);
+    bool IsTopmost = false, string? SurfaceState = null)
+{
+    public nint Owner { get; init; }
+}
 
 public sealed record VisibleWindow(
     WindowSnapshot Window,

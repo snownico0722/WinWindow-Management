@@ -25,8 +25,21 @@ internal sealed class BrowserVideoBlackBarDetector
 
     private readonly Dictionary<nint, Attempt> _attempts = new();
 
-    internal VideoBlackBarHint? TryDetect(IReadOnlyList<VisibleWindow> visibleWindows)
+    private (VideoBlackBarHint Hint, WindowSnapshot Window, long Tick)? _lastDetection;
+
+    internal VideoBlackBarHint? TryDetect(IReadOnlyList<VisibleWindow> visibleWindows, bool cachedOnly = false)
     {
+        // The release path must never wait for three screen captures. A geometry-stable,
+        // recently measured viewport may still protect a companion while the user releases.
+        if (cachedOnly)
+        {
+            if (_lastDetection is { } last && Environment.TickCount64 - last.Tick <= 1500 &&
+                visibleWindows.Any(v => v.Window.Handle == last.Window.Handle && v.Window.ProcessId == last.Window.ProcessId &&
+                    v.Window.VisualRect == last.Window.VisualRect && v.Window.WorkArea == last.Window.WorkArea &&
+                    v.Window.Dpi == last.Window.Dpi && v.VisibleRatio >= .72)) return last.Hint;
+            return null;
+        }
+        _lastDetection = null;
         var candidate = visibleWindows
             .Where(item => item.Window.IsManageable && item.Window.IsResizable && item.VisibleRatio >= 0.72)
             .Where(item => IsBrowserWindow(item.Window.Handle))
@@ -53,6 +66,7 @@ internal sealed class BrowserVideoBlackBarDetector
         var detections = new List<DetectedBars>(FrameCount);
         for (var frameIndex = 0; frameIndex < FrameCount; frameIndex++)
         {
+            if (NativeWindowActivity.IsMoving) return null;
             var detected = CaptureAndAnalyze(clientRect);
             if (detected is null)
             {
@@ -91,7 +105,7 @@ internal sealed class BrowserVideoBlackBarDetector
         var viewport = MedianRect(detections.Select(item => item.ViewportClientRect).ToArray());
         var aspect = MedianDouble(detections.Select(item => item.ContentAspectRatio).ToArray());
         var confidence = detections.Min(item => item.Confidence);
-        return new VideoBlackBarHint(
+        var hint = new VideoBlackBarHint(
             candidate.Window.Handle,
             detections[0].Orientation,
             aspect,
@@ -101,6 +115,8 @@ internal sealed class BrowserVideoBlackBarDetector
                 viewport.Width,
                 viewport.Height),
             confidence);
+        _lastDetection = (hint, candidate.Window, Environment.TickCount64);
+        return hint;
     }
 
     internal void RecordApplied(nint hwnd, RectI targetVisualRect) =>

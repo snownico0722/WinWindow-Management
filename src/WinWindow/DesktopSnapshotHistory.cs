@@ -17,14 +17,17 @@ internal sealed class DesktopSnapshotHistory : IDisposable
     private readonly object _gate = new();
     private readonly Queue<DesktopSnapshot.Sample> _windows = new();
     private readonly Queue<Decision> _decisions = new();
+    private readonly Queue<Gesture> _gestures = new();
     private PeriodicTimer? _timer;
     private Capture? _capture;
     private long _clearedAt;
 
+    internal sealed record Gesture(string Session, GestureEvent Event);
     internal sealed record Decision(long Tick, LayoutRunObservation Observation);
     internal sealed record Capture(DateTimeOffset Time, long Tick, bool LookbackEnabled,
-        DesktopSnapshot.Sample[] PastWindows, Decision[] PastDecisions)
+        DesktopSnapshot.Sample[] PastWindows, Decision[] PastDecisions, Gesture[] PastGestures, long GestureEarliestTick)
     {
+        internal ConcurrentQueue<Gesture> LiveGestures { get; } = new();
         internal ConcurrentQueue<Decision> LiveDecisions { get; } = new();
     }
 
@@ -34,6 +37,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
         {
             if (enabled && _timer is null)
             {
+                _clearedAt = Environment.TickCount64;
                 var timer = _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(SampleIntervalMilliseconds));
                 _ = Task.Run(() => SampleAsync(timer, workbench, getManaged));
             }
@@ -83,13 +87,31 @@ internal sealed class DesktopSnapshotHistory : IDisposable
         }
     }
 
+    internal bool WantsGestures() { lock (_gate) return _timer != null || _capture != null; }
+
+    internal void ObserveGesture(string session, GestureEvent item)
+    {
+        lock (_gate)
+        {
+            if (_timer == null && _capture == null || item.Tick < _clearedAt) return;
+            var gesture = new Gesture(session, item);
+            if (_timer != null)
+            {
+                Trim(Environment.TickCount64);
+                _gestures.Enqueue(gesture);
+            }
+            _capture?.LiveGestures.Enqueue(gesture);
+        }
+    }
+
     internal Capture BeginCapture()
     {
         lock (_gate)
         {
             var tick = Environment.TickCount64;
             Trim(tick);
-            return _capture = new(DateTimeOffset.Now, tick, _timer is not null, _windows.ToArray(), _decisions.ToArray());
+            return _capture = new(DateTimeOffset.Now, tick, _timer is not null, _windows.ToArray(), _decisions.ToArray(),
+                _gestures.ToArray(), _timer == null ? tick : Math.Max(_clearedAt, tick - LookbackMilliseconds));
         }
     }
 
@@ -103,6 +125,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
     {
         var earliest = now - LookbackMilliseconds;
         while (_windows.TryPeek(out var sample) && sample.Tick < earliest) _windows.Dequeue();
+        while (_gestures.TryPeek(out var gesture) && gesture.Event.Tick < earliest) _gestures.Dequeue();
         while (_decisions.TryPeek(out var decision) && decision.Tick < earliest) _decisions.Dequeue();
     }
 
@@ -113,6 +136,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
             _clearedAt = Environment.TickCount64;
             _windows.Clear();
             _decisions.Clear();
+            _gestures.Clear();
         }
     }
 

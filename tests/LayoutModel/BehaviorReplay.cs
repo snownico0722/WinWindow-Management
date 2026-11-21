@@ -4,7 +4,7 @@ using NeatWin.Core;
 
 internal static class BehaviorReplay
 {
-    private sealed record Prediction(string Rule, int Window, string App, WindowBehaviorAction Action, long Tick);
+    internal sealed record Prediction(string Rule, int Window, string App, WindowBehaviorAction Action, long Tick);
 
     internal static void Run(string zip, string candidate, string? sessionFilter)
     {
@@ -40,8 +40,8 @@ internal static class BehaviorReplay
                     ? followUp.Any(m => m.Tick > match.Tick && m.Tick - match.Tick <= 10_000 &&
                         m.Item.Event == "appeared" && m.Item.App.Equals(p.App, StringComparison.OrdinalIgnoreCase))
                         ? "returned-soon" : "observed-matching-dismissal"
-                    : followUp.Any(m => m.Item.WindowId == p.Window && m.Item.Cause == "winwindow" &&
-                        DismissalMatches(p.Action, m.Item.Event)) || ordered[^1].Tick - p.Tick < 30_000
+                    : followUp.Any(m => m.Item.WindowId == p.Window && (m.Item.Event is "hidden" or "unavailable" ||
+                        m.Item.Cause == "winwindow" && DismissalMatches(p.Action, m.Item.Event))) || ordered[^1].Tick - p.Tick < 30_000
                         ? "follow-up-unknown" : "no-matching-dismissal";
                 return new { p.Rule, p.App, p.Tick, Outcome = outcome, ObservedDelay = match.Item is null ? (long?)null : match.Tick - p.Tick };
             }).ToArray();
@@ -54,12 +54,13 @@ internal static class BehaviorReplay
         }
     }
 
-    private static List<Prediction> Predict(WindowBehaviorFrame[] frames, WindowBehaviorRule[] rules)
+    internal static List<Prediction> Predict(WindowBehaviorFrame[] frames, WindowBehaviorRule[] rules)
     {
         var current = new Dictionary<int, BehaviorWindow>();
         var predictions = new List<Prediction>();
         var sequences = rules.Select(rule => (Rule: rule, Sequence: new WindowBehaviorSequence(rule))).ToArray();
         long previous = frames[0].Tick;
+        HashSet<int>? preserved = null;
         foreach (var frame in frames)
         {
             // The recorder writes only deltas and a heartbeat. Replay stable state between them.
@@ -90,6 +91,7 @@ internal static class BehaviorReplay
                         break;
                 }
             }
+            preserved = frame.NavigationSources?.ToHashSet();
             Observe(frame.Tick, frame.Time.UtcTicks, departures);
             previous = frame.Tick;
         }
@@ -102,7 +104,7 @@ internal static class BehaviorReplay
             foreach (var (rule, sequence) in sequences)
             {
                 var update = sequence.Observe(tick, utc, windows, departures,
-                    new(DelayMilliseconds: rule.DelayMilliseconds), learn: false, canAct: true);
+                    new(DelayMilliseconds: rule.DelayMilliseconds), learn: false, canAct: true, preservedSources: preserved);
                 if (update.Dismiss is int id && alreadyProposed.Add(id) && current.TryGetValue(id, out var source))
                     predictions.Add(new(rule.Id, id, source.App, rule.Action, tick));
             }
@@ -110,5 +112,5 @@ internal static class BehaviorReplay
     }
 
     private static bool DismissalMatches(WindowBehaviorAction action, string observed) =>
-        action == WindowBehaviorAction.Close ? observed is "closed" or "hidden" : observed == "minimized";
+        action == WindowBehaviorAction.Close ? observed == "closed" : observed == "minimized";
 }

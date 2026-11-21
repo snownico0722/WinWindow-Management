@@ -19,18 +19,33 @@ internal static partial class IntentLayoutPlanner
         if (taskContext.VerifiedRepeat && !taskContext.ExplicitArrange) return new([], [], []);
         // Anchored monitors keep their original location and remain in the desktop occlusion checks.
         desktop ??= visible.Select(v => v.Window).ToArray();
+        taskContext = GesturePlacement.Resolve(ResolveExplicitFocus(visible, taskContext), visible, options, reference);
         visible = IncludeWorkingCompanion(visible, desktop, taskContext);
         if (taskContext is { ExplicitArrange: false, Attention: not null })
         {
             var focus = ResolveWorkingPair(visible.ToArray(), taskContext).Focus;
-            if (focus is not { Main: not 0 } || !visible.Any(v => v.Window.Handle == focus.Main))
+            if (focus is not { Main: not 0 } || visible.FirstOrDefault(v => v.Window.Handle == focus.Main) is not { } primary ||
+                primary.Window.WorkArea.IsEmpty || primary.Window.VisualRect.IsEmpty)
                 return new([], [], []);
-            // Background surfaces still occlude from their real positions. They do not take
-            // a slot in an automatic arrangement of the currently attended windows.
-            var main = visible.First(v => v.Window.Handle == focus.Main).Window;
-            visible = visible.Where(v => v.Window.MonitorHandle == main.MonitorHandle &&
-                (v.Window.Handle == focus.Main || v.Window.Handle == focus.Companion ||
-                    v.VisibleRatio > 0 && taskContext.HasRecentInput(v.Window.Handle))).ToArray();
+            var monitor = primary.Window.MonitorHandle;
+            var taskWindows = visible.Where(v => v.Window.MonitorHandle == monitor && !v.Window.VisualRect.IsEmpty && !v.Window.WorkArea.IsEmpty &&
+                (v.Window.Handle == focus.Main || v.Window.Handle == focus.Companion || focus.IsNavigationAncestor(v.Window.Handle) ||
+                 v.VisibleRatio > 0 && taskContext.HasRecentInput(v.Window.Handle))).ToArray();
+            // Only invite bystanders that physically cover a working surface (or its needed
+            // expansion). Other background windows stay in the occlusion model as obstacles.
+            var targets = AttentionLayout.Targets(taskWindows, taskContext with { Focus = focus }, options.SmartStrength)!;
+            var needed = taskWindows.Select((item, i) => (item.Window.ZOrder, Current: item.Window.VisualRect,
+                Rect: AttentionLayout.WorkingArea(item.Window, targets[i]))).ToArray();
+            var bystanders = visible.Except(taskWindows).Where(v => v.Window.MonitorHandle == monitor &&
+                v.Window.IsManageable && !v.Window.IsTopmost && v.VisibleRatio > 0)
+                .Select(v => (Item: v, Cover: needed.Where(n => v.Window.ZOrder < n.ZOrder &&
+                    (!n.Current.Intersect(v.Window.VisualRect).IsEmpty ||
+                     !n.Rect.Intersect(v.Window.VisualRect).IsEmpty && RectRegion.FreeRectangles(v.Window.WorkArea,
+                         [v.Window.VisualRect], n.Rect.Width, n.Rect.Height).Count == 0))
+                    .Select(n => n.Rect.Intersect(v.Window.VisualRect).Area).DefaultIfEmpty().Max()))
+                .Where(x => x.Cover > 0).OrderByDescending(x => x.Cover)
+                .Take(options.SmartStrength switch { SmartTidyStrength.Gentle => 1, SmartTidyStrength.Balanced => 2, _ => 4 });
+            visible = taskWindows.Concat(bystanders.Select(x => x.Item)).ToArray();
             taskContext = taskContext with { Focus = focus };
         }
         var anchors = (taskContext.WindowHints ?? []).Where(h => h.Anchor).Select(h => h.Handle).ToHashSet();
@@ -40,8 +55,8 @@ internal static partial class IntentLayoutPlanner
         var strength = options.SmartStrength;
         var localOnly = strength == SmartTidyStrength.Gentle;
         var wholeDisplay = strength == SmartTidyStrength.Assertive;
-        var movable = visible.Where(v => !anchors.Contains(v.Window.Handle) && v.Window.IsManageable &&
-            !v.Window.IsTopmost && !v.Window.VisualRect.IsEmpty).ToArray();
+        var movable = visible.Where(v => v.Window.IsManageable && !v.Window.IsTopmost && !v.Window.VisualRect.IsEmpty &&
+            (!anchors.Contains(v.Window.Handle) || taskContext.Attention != null && taskContext.Focus?.Main == v.Window.Handle)).ToArray();
         var settled = movable.ToDictionary(v => v.Window.Handle, v => v.Window.VisualRect);
         var settledRanks = movable.ToDictionary(v => v.Window.Handle, v => v.Window.ZOrder);
         foreach (var monitor in movable.GroupBy(v => v.Window.MonitorHandle))
@@ -50,20 +65,22 @@ internal static partial class IntentLayoutPlanner
             var area = all[0].Window.WorkArea;
             if (area.IsEmpty) continue;
             var monitorHandles = all.Select(v => v.Window.Handle).ToHashSet();
-            foreach (var group in wholeDisplay ? [all] : Groups(all, taskContext))
+            bool sharedTask = taskContext is { Attention: not null, ExplicitArrange: false };
+            foreach (var group in wholeDisplay || sharedTask ? [all] : Groups(all, taskContext))
             {
                 var groupContext = ResolveWorkingPair(group, taskContext);
                 var hint = IntentEvidence.Resolve(reference, area, group[0].Window.Dpi, DateTimeOffset.UtcNow);
                 var original = group.Select(v => v.Window.VisualRect).ToArray();
                 var task = InferTask(group, original, groupContext);
                 var demands = MeasureDemand(group.Length, task);
-                var growth = WorkingPairGrowthTargets(group, original, groupContext, strength);
+                var goals = AttentionLayout.Targets(group, groupContext, strength);
                 var order = Enumerable.Range(0, group.Length).ToArray();
                 var handles = group.Select(v => v.Window.Handle).ToHashSet();
                 var obstacles = desktop.Where(w => !handles.Contains(w.Handle)).Select(w => w with
                     { VisualRect = settled.GetValueOrDefault(w.Handle, w.VisualRect),
                       ZOrder = settledRanks.GetValueOrDefault(w.Handle, w.ZOrder) })
                     .Where(w => !w.VisualRect.Intersect(area).IsEmpty).ToArray();
+                AttentionLayout.SetRestingCenter(group, goals, obstacles, groupContext);
                 // Small topmost widgets still affect exposure and suggest obstacle-free candidates.
                 var lastRank = group[^1].Window.ZOrder;
                 var blockers = obstacles.Where(w => !monitorHandles.Contains(w.Handle) && w.ZOrder < lastRank &&
@@ -101,9 +118,9 @@ internal static partial class IntentLayoutPlanner
                 if (localOnly && groupContext.PairPlanningEnabled)
                     AddCoveredWorkingPairRepair(candidates, group, original, obstacles, area, hint.GapPixels, groupContext, order);
                 if (groupContext.PairPlanningEnabled && group.Length == 1 &&
-                    groupContext.Placement?.FirstOrDefault(p => p.Window == group[0].Window.Handle) is { Confidence: > .40 } habit)
+                    groupContext.Placement?.FirstOrDefault(p => p.Window == group[0].Window.Handle) is { Confidence: > .40, PreferCenter: true } habit)
                 {
-                    int width = !localOnly && group[0].Window.IsResizable && groupContext.Preferences.AllowUsefulResize
+                    int width = habit.PreferWidth && !localOnly && group[0].Window.IsResizable && groupContext.Preferences.AllowUsefulResize
                         ? Math.Clamp((int)Math.Round(habit.Width * area.Width), 1, area.Width) : rescue[0].Width;
                     int x = Math.Clamp((int)Math.Round(area.Left + habit.Center * area.Width - width / 2d),
                         area.Left, Math.Max(area.Left, area.Right - width));
@@ -111,15 +128,14 @@ internal static partial class IntentLayoutPlanner
                 }
                 if (!localOnly || groupContext.PreferReversibleVerticalFill)
                     AddVerticalFillCandidates(candidates, group, original, groupContext);
-                if (growth != null)
-                    foreach (var packingArea in packingAreas)
-                        AddWorkingPairGrowth(candidates, group, original, growth, packingArea, hint.GapPixels, groupContext.Focus!.Main, order);
                 var stackSignal = StackSignal(group, original);
                 TaskCostBreakdown Breakdown(Candidate c) => EffectiveBreakdown(
-                    TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, growth), options.SmartStrength, task);
+                    TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, goals), options.SmartStrength, task);
+                if (goals != null)
+                    AddAttentionLayouts(candidates, group, original, goals, area, obstacles, hint.GapPixels, order, strength, groupContext, Breakdown);
                 candidates = candidates.DistinctBy(CandidateKey).ToList();
                 var best = candidates[0]; var baselineBreakdown = Breakdown(best);
-                var baseline = baselineBreakdown.Total; var bestScore = baseline;
+                var baseline = baselineBreakdown.Total; var bestScore = baseline; var bestGoal = baselineBreakdown.Goal;
                 var threshold = SelectionThreshold(strength, task) * (groupContext.ExplicitArrange ? .60 : 1);
                 var needsRescue = options.RescueOffscreenWindows && original.Any(r =>
                     r.Intersect(area).Area < r.Area * .90 || r.Top < area.Top || r.Bottom > area.Bottom);
@@ -151,8 +167,8 @@ internal static partial class IntentLayoutPlanner
                     var rejection = !candidate.Order.SequenceEqual(order) &&
                         !LayerOrderSafe(group, candidate, order)
                         ? "layer-preserve-foreground-or-occluded" : !candidate.Order.SequenceEqual(order) &&
-                        !WindowLayerSafety.CanReorder(group.Select(v => v.Window).ToArray(), desktop ?? all.Select(v => v.Window).ToArray(), targetLookup)
-                        ? "layer-band-or-interleaved-window" : !TaskSafe(group, original, candidate, area, options, groupContext, obstacles, beforeExposure) ? "geometry-budget" :
+                        !WindowLayerSafety.CanReorder(candidate.Order.Select(i => group[i].Window).ToArray(), desktop ?? all.Select(v => v.Window).ToArray(), targetLookup)
+                        ? "layer-band-or-interleaved-window" : !TaskSafe(group, original, candidate, area, options, groupContext, obstacles, beforeExposure, goals) ? "geometry-budget" :
                         HitsOutsideGroup(settled, group, original, candidate.Rects) ? "other-group" :
                         blockers.Any(w => candidate.Rects.Select((r, i) => r.Intersect(w.VisualRect).Area > original[i].Intersect(w.VisualRect).Area).Any(b => b)) ? "fixed-occluder" :
                         null;
@@ -160,8 +176,11 @@ internal static partial class IntentLayoutPlanner
                     var breakdown = Breakdown(candidate);
                     var score = breakdown.Total;
                     audits.Add(new(candidate.Kind, score, null, breakdown, generation));
-                    if ((score < bestScore && score < baseline - threshold) || (best.Kind == "keep" && needsRescue && candidate.Kind == "rescue"))
-                    { best = candidate; bestScore = score; }
+                    var priority = breakdown.Goal.CompareTo(bestGoal);
+                    if (breakdown.Feedback == 0 && (priority < 0 || priority == 0 && score < bestScore &&
+                        (bestGoal.CompareTo(baselineBreakdown.Goal) < 0 || score < baseline - threshold) ||
+                        best.Kind == "keep" && needsRescue && candidate.Kind == "rescue"))
+                    { best = candidate; bestScore = score; bestGoal = breakdown.Goal; }
                 }
 
                 for (var i = 0; i < group.Length; i++)
@@ -196,6 +215,17 @@ internal static partial class IntentLayoutPlanner
             }
         }
         return new(moves, layers, traces);
+    }
+
+    // A manual command can arrive after the utility window has held focus for a while.
+    // Anchor the request on the foremost eligible external surface in the captured desktop.
+    private static TaskLayoutContext ResolveExplicitFocus(IReadOnlyList<VisibleWindow> visible, TaskLayoutContext context)
+    {
+        if (!context.ExplicitArrange || context.Attention == null || context.Focus is { Main: not 0 }) return context;
+        var main = visible.Where(v => v.Window.IsManageable && !v.Window.IsTopmost &&
+                !v.Window.WorkArea.IsEmpty && !v.Window.VisualRect.IsEmpty)
+            .OrderBy(v => v.Window.ZOrder).FirstOrDefault();
+        return main == null ? context : context with { Focus = new(main.Window.Handle, 0, 0, "explicit-front-window") };
     }
 
     internal static TaskCostBreakdown EffectiveBreakdown(TaskCostBreakdown breakdown, SmartTidyStrength strength,

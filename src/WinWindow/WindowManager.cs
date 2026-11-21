@@ -221,7 +221,19 @@ internal sealed class WindowManager
         try { Journal(); }
         catch { (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.OriginalAudioMutes, s.RestoreActivation, s.InjectedBackground, s.Parked, s.BeforeParking) = previous; throw; }
     }
-    private void Journal() => _store.WriteRecovery(Items.Where(x => x.Original is not null).Select(x => x.Original!));
+    // Published on the dispatcher after the durable intent changes. The layout worker
+    // can check one exact window lifetime without touching dispatcher-owned rows.
+    private volatile WindowIdentity[] _keptWindows = [];
+    internal bool KeepsRunning(nint hwnd, uint pid, long started, string windowClass) =>
+        _keptWindows.Any(id => id.Handle == hwnd && id.ProcessId == pid &&
+            id.ProcessStarted == started && id.ClassName == windowClass);
+
+    private void Journal()
+    {
+        var recorded = Items.Where(x => x.Original != null).Select(x => x.Original!).ToArray();
+        _store.WriteRecovery(recorded);
+        _keptWindows = recorded.Where(s => s.RestoreActivation).Select(s => s.Identity).ToArray();
+    }
     private void Finish(WindowItem item, bool updateRule)
     { item.NotifyState(); if (!_stopping && updateRule) UpdateRule(item); }
     public void AddToList(WindowItem item)
