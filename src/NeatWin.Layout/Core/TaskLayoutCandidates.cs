@@ -224,9 +224,9 @@ internal static partial class IntentLayoutPlanner
         int span = Math.Min(area.Width - gap, a.Width + b.Width);
         if (span <= 1) return;
         var peerPref = context.Placement?.FirstOrDefault(p => p.Window == windows[peer].Window.Handle && p.Partner == windows[main].Window.Handle);
-        double preferredFraction = pref is { Confidence: > .35 }
+        double preferredFraction = pref is { Confidence: > .35, PreferWidth: true }
             ? Math.Clamp(pref.Width * area.Width / span, .25, .75)
-            : peerPref is { Confidence: > .35 }
+            : peerPref is { Confidence: > .35, PreferWidth: true }
                 ? Math.Clamp(1 - peerPref.Width * area.Width / span, .25, .75)
                 : a.Width / (double)(a.Width + b.Width);
         int width = (int)Math.Round(span * preferredFraction);

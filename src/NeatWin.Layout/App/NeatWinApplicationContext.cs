@@ -30,6 +30,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private SmartBehaviorOptions _smartBehaviorOptions;
     private readonly IntentReferenceStore _referenceStore;
     private bool _undoWasSmart, _undoReclaim;
+    private string? _undoRequest;
     private IReadOnlyList<TidyMove> _undoPlan = [];
     private IReadOnlyList<WindowLayerOrder> _undoLayers = [];
     private readonly LayoutRunJournal _journal;
@@ -68,12 +69,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) { VisualSampling = _settingsStore.VisualSampling };
         _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder, snapshotObserver);
         _behaviorMonitor = new(_windowManager, _referenceStore, _settingsStore, _recorder,
-            () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.PointerBusy);
+            () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.PointerBusy, _focus);
         _useImportedPlacement = _settingsStore.UseImportedPlacement;
-        _workspaceMonitor = new WorkspaceAutoTidyMonitor(() => _windowManager.CaptureCoalesced(), () => _tidyRunning);
-        _autoTidyManager.TaskInput += (target, pid, now) =>
+        _workspaceMonitor = new WorkspaceAutoTidyMonitor(() => _windowManager.CaptureCoalesced(), () => _tidyRunning, _focus);
+        _autoTidyManager.TaskInput += (target, pid, now, click) =>
         {
-            _focus.Interact(target, pid, now);
+            _focus.Interact(target, pid, now, click);
             _recorder.RecordPointer(target, pid);
             if (_workspaceMonitor.TaskInput(target, pid, now)) _taskSession.Invalidate();
         };
@@ -89,8 +90,11 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _taskSession.Gesture(gesture, DateTimeOffset.UtcNow);
             try
             {
-                if (_windowManager.Capture().Any(w => w.Handle == gesture.WindowHandle && w.IsManageable && !w.IsTopmost))
+                if (_windowManager.Capture().FirstOrDefault(w => w.Handle == gesture.WindowHandle && w.IsManageable && !w.IsTopmost) is { } moved)
+                {
+                    _focus.Placed(moved, gesture, Environment.TickCount64);
                     _workspaceMonitor.GestureCompleted(gesture);
+                }
             }
             catch (Exception ex) { Trace.TraceWarning($"Gesture snapshot failed: {ex.Message}"); }
         };
@@ -296,6 +300,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 return;
             }
             var snapshot = _windowManager.Capture();
+            long capturedAt = Environment.TickCount64;
+            if (trigger == "automatic-workspace" && _focus.NavigationFor(snapshot, capturedAt)?.SettleUntil > capturedAt)
+            {
+                _workspaceMonitor.RequestCurrent();
+                return;
+            }
             var visibleWorkingSet = fullDesktop
                 ? _visibilityAnalyzer.SelectForManualArrange(snapshot, effectiveOptions.RescueOffscreenWindows)
                 : _visibilityAnalyzer.SelectVisibleWorkingSet(snapshot, includeStackAccess: smart);
@@ -317,6 +327,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 _recorder.SetLiveSensing(_automaticMode, manualRequest: explicitSmart);
                 var rules = _referenceStore.Rules.Read();
                 var activities = _recorder.LiveActivities(snapshot);
+                var focusObservedAt = DateTimeOffset.UtcNow;
                 var focus = _focus.Resolve(snapshot, Environment.TickCount64, out var attention);
                 var liveHints = _recorder.LiveHints(snapshot);
                 if (videoHint is { Confidence: >= .82 })
@@ -336,6 +347,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 if (!_lastPairs.SequenceEqual(pairs) || !_lastFloors.SequenceEqual(floors) ||
                     !_lastPlacements.SequenceEqual(placements) || !ReferenceEquals(rules, _lastRules) ||
                     focus.Main != _lastFocus?.Main || focus.Companion != _lastFocus?.Companion || focus.Evidence != _lastFocus?.Evidence ||
+                    !(focus.NavigationAncestors ?? []).SequenceEqual(_lastFocus?.NavigationAncestors ?? []) ||
                     !ActivityHints.Equivalent(_lastLiveHints, liveHints))
                     _taskSession.Invalidate();
                 _lastPairs = pairs; _lastFloors = floors; _lastPlacements = placements;
@@ -347,6 +359,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 {
                     PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill,
                     Focus = focus,
+                    NavigationObservedAt = focus.Navigation is { Length: > 0 } ? focusObservedAt : null,
                     Attention = attention,
                     WindowHints = liveHints,
                     VideoHint = videoHint is { Confidence: >= .82 } ? videoHint : null,
@@ -357,8 +370,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 };
                 if (trigger == "automatic-gesture" && taskContext.GestureAnchor != 0 && taskContext.GestureAnchor != focus.Main)
                     taskContext = taskContext with { Focus = new(taskContext.GestureAnchor, 0, 0, "manual-gesture") };
-                taskContext = GesturePlacement.Resolve(taskContext, visibleWorkingSet, effectiveOptions);
                 var reference = _referenceStore.Read();
+                taskContext = GesturePlacement.Resolve(taskContext, visibleWorkingSet, effectiveOptions, reference);
                 // Save the learned inputs separately so an offline rule edit can replace an old slot.
                 recordedContext = taskContext with { Placement = learned };
                 if (placements.Length > 0)
@@ -413,7 +426,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     .Select((w, rank) => w with { ZOrder = rank }).ToArray();
                 _workspaceMonitor.ApplicationRequested(requestedDesktop, detailed);
             }
-            if (plan.Count > 0 || layerOrders.Count > 0 || reclaimed != 0)
+            bool hasUndo = plan.Count > 0 || layerOrders.Count > 0 || reclaimed != 0;
+            if (hasUndo)
             {
                 _undoReclaim = reclaimed != 0;
                 if (!_undoReclaim) _behaviorMonitor.ForgetReclaimUndo();
@@ -422,8 +436,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             }
             if (smart)
                 _taskSession.Requested(requestedDesktop, detailed, DateTimeOffset.UtcNow, explicitSmart);
-            _journal.Record(snapshot, application, trigger, baseline ?? scored ?? proposed, proposed, scored, recordedContext,
+            var requestId = _journal.Record(snapshot, application, trigger, baseline ?? scored ?? proposed, proposed, scored, recordedContext,
                 smart ? effectiveOptions.SmartStrength : null, smart ? fullDesktop : null, allowPlacementReplan);
+            if (hasUndo) _undoRequest = requestId;
             if (showActivity)
             {
                 var kinds = string.Join(TextCatalog.Culture.TwoLetterISOLanguageName == "zh" ? "、" : ", ", detailed.Groups.Select(g => KindName(g.Selected)).Distinct());
@@ -469,11 +484,11 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             if (_undoWasSmart)
                 _taskSession.RejectExplicitly(application.Plan.Moves.Select(m => m.Window.Handle)
                     .Concat(application.Plan.Layers.SelectMany(l => l.FrontToBack.Select(w => w.Handle))));
-            _journal.Record(current.Values.ToArray(), application, "undo");
+            _journal.Record(current.Values.ToArray(), application, "undo", undoOfRequest: _undoRequest);
             bool restored = _undoReclaim && _behaviorMonitor.UndoReclaim();
             var skipped = _undoPlan.Count - application.Plan.Moves.Count + (_undoReclaim && !restored ? 1 : 0);
             _undoReclaim = false;
-            _undoPlan = []; _undoLayers = []; _undoWasSmart = false;
+            _undoPlan = []; _undoLayers = []; _undoWasSmart = false; _undoRequest = null;
             _undoChanged?.Invoke(false);
             _report(LayoutText.Format("UndoRequested", application.Plan.Moves.Count + (restored ? 1 : 0), skipped));
         }

@@ -8,11 +8,10 @@ internal static class AttentionWorkspaceChecks
         WindowSnapshot Window(int id, int x, int y, int width, int height) =>
             new(id, new(area.Left + x, y, width, height), new(area.Left + x, y, width, height),
                 area, 2, default, true, id == 1, true, id - 1, 96, (uint)id);
-        var browser = Window(1, 0, 80, 860, 900);
+        var document = Window(1, 0, 80, 860, 900);
         var peer = Window(2, 880, 100, 960, 760);
         var attention = new Dictionary<nint, LayoutAttention> { [1] = new(1, 1, .9, 0, true) };
-        var context = new TaskLayoutContext(Focus: new(1, 0, 0), Attention: attention, UseWorkingPairs: true,
-            WindowHints: [new(1, Role: WindowUseRole.Browser)]);
+        var context = new TaskLayoutContext(Focus: new(1, 0, 0), Attention: attention, UseWorkingPairs: true);
         static RectI[] Solve(WindowSnapshot[] windows, TaskLayoutContext context)
         {
             var visible = new VisibilityAnalyzer().SelectForManualArrange(windows, true);
@@ -20,23 +19,23 @@ internal static class AttentionWorkspaceChecks
             return TaskLayoutSession.Project(windows, plan).Select(w => w.VisualRect).ToArray();
         }
         double Distance(RectI r) => Math.Abs((r.Left + r.Width / 2d) - (area.Left + area.Width / 2d));
-        var centered = Solve([browser], context)[0];
-        check(Distance(centered) <= area.Width * .05 && centered.Width >= browser.VisualRect.Width,
+        var centered = Solve([document], context)[0];
+        check(Distance(centered) <= area.Width * .05 && centered.Width >= document.VisualRect.Width,
             "a lone reading window occupies the display's central viewing area");
-        var parked = Solve([browser, peer], context);
+        var parked = Solve([document, peer], context);
         check(parked[0].Intersect(peer.VisualRect).Area < peer.VisualRect.Area * .35,
             "solo centering respects another visible surface on the destination side");
         var pairContext = context with { Focus = new(1, 0, 1),
             Attention = new Dictionary<nint, LayoutAttention>(attention) { [2] = new(.95, .4, .2, .95, false) } };
-        var pair = Solve([browser, peer], pairContext);
+        var pair = Solve([document, peer], pairContext);
         var overlap = pair[0].Intersect(pair[1]).Width;
         var remaining = OcclusionMetrics.Measure(pair[1], [pair[0]], peer.Dpi);
-        check(pair[0].Width > browser.VisualRect.Width && pair[0].Right > peer.VisualRect.Left &&
-            pair[1].Right >= area.Right - 12 && overlap > 0 && overlap < pair[1].Width * .12 &&
+        check(pair.All(r => r.Intersect(area) == r) && pair[0].Width > document.VisualRect.Width &&
+            overlap < Math.Min(pair[0].Width, pair[1].Width) * OcclusionMetrics.HorizontalInsetFraction &&
             remaining.CenterVisible > .98 && remaining.UsefulWidth >= area.Width * .40,
-            "two reading surfaces use the outer work-area edges and only share a narrow inner margin");
+            "a working pair gains reading space while retaining its reference content and title");
         var elsewhere = Window(3, -1500, 100, 1260, 770) with { WorkArea = area with { X = 0 }, MonitorHandle = 1 };
-        var twoDisplays = Solve([browser, peer, elsewhere], pairContext with
+        var twoDisplays = Solve([document, peer, elsewhere], pairContext with
         {
             Attention = new Dictionary<nint, LayoutAttention>(pairContext.Attention!) { [3] = new(.95, .4, .2, .95, false) }
         });
@@ -47,5 +46,91 @@ internal static class AttentionWorkspaceChecks
         var writing = Solve([note, peer], editing);
         check(writing[0] == note.VisualRect && writing[1] == peer.VisualRect,
             "writing over a reference keeps both windows at the user's working positions");
+
+        // The same overlay can still escape a fixed occluder. Keep it in the test selection
+        // through a visible strip as a real automatic capture would.
+        var blocker = Window(3, 500, 270, 660, 460) with { IsTopmost = true, IsManageable = false, ZOrder = -1 };
+        var escaped = Solve([blocker, note, peer], editing);
+        var before = OcclusionMetrics.Measure(note.VisualRect, [blocker.VisualRect], note.Dpi);
+        var after = OcclusionMetrics.Measure(escaped[1], [blocker.VisualRect], note.Dpi);
+        check(after.CenterVisible > before.CenterVisible + .30 && escaped[0] == blocker.VisualRect,
+            "seriously obstructed content takes precedence over floating stability");
+
+        var almost = Solve([note, peer], editing with { WindowHints = [new(1, FloatingAffinity: .701)] });
+        var near = Solve([note, peer], editing with { WindowHints = [new(1, FloatingAffinity: .700)] });
+        check(almost.Zip(near).All(pair => Math.Abs(pair.First.X - pair.Second.X) <= 8 &&
+            Math.Abs(pair.First.Width - pair.Second.Width) <= 8),
+            "a near-identical floating preference preserves the projected desktop geometry");
+
+        // Perturb the observation itself and pass through the role inference as well as
+        // the solver. An otherwise identical app with an unknown name follows the same rule.
+        foreach (var role in new[] { WindowUseRole.Unknown, WindowUseRole.Editor })
+        {
+            var source = Window(2, 80, 60, 1450, 920);
+            RectI[] Write(int width)
+            {
+                var overlay = Window(1, 420, 250, width, (int)Math.Round(area.Height * .64));
+                var desktop = new[] { overlay, source };
+                var focus = new LayoutFocus(1, 2, 1, "handoff");
+                var signals = new Dictionary<nint, LayoutAttention> { [1] = new(.95, .8, .85, .7, true),
+                    [2] = new(.8, .9, .2, .8, false) };
+                var hints = WindowUseRoles.Bind(desktop, [], focus, signals, [], w => w.Handle == 1 ? role : WindowUseRole.Unknown);
+                return Solve(desktop, pairContext with { Focus = focus, Attention = signals, WindowHints = hints });
+            }
+            int width = (int)Math.Round(area.Width * .56);
+            var ordinary = Write(width);
+            var enlarged = Write(width + 1);
+            check(ordinary.Zip(enlarged).All(pair => Math.Abs(pair.First.X - pair.Second.X) +
+                Math.Abs(pair.First.Y - pair.Second.Y) + Math.Abs(pair.First.Width - pair.Second.Width) +
+                Math.Abs(pair.First.Height - pair.Second.Height) < 12),
+                $"a one-pixel geometry change preserves the projected desktop for a transient {role} surface");
+        }
+
+        foreach (bool reflect in new[] { false, true })
+        {
+            WindowSnapshot Surface(int id, double x, double width, double height)
+            {
+                double left = reflect ? 1 - x - width : x;
+                return Window(id, (int)(left * area.Width), 100, (int)(width * area.Width), (int)(height * area.Height));
+            }
+            var input = Surface(1, .27, .48, .71);
+            var material = Surface(2, .43, .55, .81);
+            RectI[] Visit(double dwell, int switches) => Solve([input, material], pairContext with
+            {
+                Displays = [new(2, area, area)], Focus = new(1, 2, switches),
+                Attention = new Dictionary<nint, LayoutAttention> { [1] = new(1, dwell, .96, 0, true),
+                    [2] = new(.98, dwell, .85, .85, false) }
+            });
+            var glance = Visit(.12, 2);
+            var comparison = Visit(1, 6);
+            double Travel(RectI r) => Math.Abs((input.VisualRect.X + input.VisualRect.Width / 2d) - (r.X + r.Width / 2d));
+            var referenceBefore = OcclusionMetrics.Measure(material.VisualRect, [input.VisualRect], 96);
+            var referenceAfter = OcclusionMetrics.Measure(comparison[1], [comparison[0]], 96);
+            check(Travel(glance[0]) <= input.VisualRect.Width * .22 && glance[0].Intersect(area) == glance[0] &&
+                Travel(glance[0]) < Travel(comparison[0]) && referenceAfter.UsefulWidth > referenceBefore.UsefulWidth,
+                $"a quick visit preserves the local input position while sustained comparison can open up the reference ({reflect})");
+        }
+
+        var leaf = Window(1, 250, 100, 550, 580);
+        var parent = Window(2, 250, 100, 550, 580);
+        var ancestor = Window(3, 60, 60, 980, 820);
+        var chain = Solve([leaf, parent, ancestor], pairContext with { Focus = new(1, 2, 1, "handoff", [3, 2]),
+            Attention = new Dictionary<nint, LayoutAttention> { [1] = new(1, 1, .9, .8, true),
+                [2] = new(.9, 1, .8, .8, false), [3] = new(.9, 1, .8, .8, false) } });
+        check(chain[2] == ancestor.VisualRect && OcclusionMetrics.Measure(chain[1], [chain[0]], 96).AccessWidth >= 96 &&
+            chain[0].Width > leaf.VisualRect.Width,
+            "a nested handoff leaves its earlier ancestor fixed and the direct source reachable");
+
+        var narrow = new RectI(-1500, 0, 1500, 820);
+        var crowded = new[] { Window(1, 0, 0, 1080, 730), Window(2, 150, 60, 920, 640), Window(3, 300, 40, 980, 690) }
+            .Select(w => w with { VisualRect = w.VisualRect with { X = narrow.X + (int)w.Handle * 80 }, WorkArea = narrow }).ToArray();
+        var scarce = Solve(crowded, pairContext with { Focus = new(1, 2, 3),
+            Attention = new Dictionary<nint, LayoutAttention> { [1] = new(1, 1, 1, 1, true),
+                [2] = new(.9, 1, .8, 1, false), [3] = new(.9, 1, .8, 1, false) },
+            WindowHints = crowded.Select(w => new TaskWindowHint(w.Handle, UsefulWidthDip: 960)).ToArray() });
+        check(scarce.Select((rect, i) => rect.Width >= Math.Min(960, crowded[i].VisualRect.Width)).All(kept => kept) &&
+            OcclusionMetrics.Measure(scarce[1], [scarce[0]], 96).AccessWidth >= 96,
+            "when three reading surfaces cannot fit, preserve usable app frames and a reachable reference");
+
     }
 }

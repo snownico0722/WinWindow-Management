@@ -151,7 +151,8 @@ internal sealed class WindowBehaviorDiscovery
 }
 
 internal sealed record WindowBehaviorEvent(int WindowId, string App, long ProcessStartedUtc, string Event, string Cause, string? Rule);
-internal sealed record WindowBehaviorFrame(string Session, long Tick, DateTimeOffset Time, WindowBehaviorEvent[] Events, int Segment = 0);
+internal sealed record WindowBehaviorFrame(string Session, long Tick, DateTimeOffset Time, WindowBehaviorEvent[] Events, int Segment = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int[]? NavigationSources = null);
 
 internal sealed record BehaviorWindow(int Id, string App, long ProcessStartedUtc, bool Foreground);
 internal enum BehaviorDeparture { Closed, Hidden, Minimized }
@@ -177,7 +178,8 @@ internal sealed class WindowBehaviorSequence(WindowBehaviorRule rule)
     }
 
     internal BehaviorUpdate Observe(long tick, long utc, IReadOnlyList<BehaviorWindow> windows,
-        IReadOnlyDictionary<int, BehaviorDeparture> departures, WindowBehaviorFit fit, bool learn, bool canAct, IReadOnlySet<int>? automaticDepartures = null)
+        IReadOnlyDictionary<int, BehaviorDeparture> departures, WindowBehaviorFit fit, bool learn, bool canAct, IReadOnlySet<int>? automaticDepartures = null,
+        IReadOnlySet<int>? preservedSources = null)
     {
         var foreground = windows.FirstOrDefault(window => window.Foreground);
         var sourceForeground = foreground is not null && rule.MatchesSource(foreground.App);
@@ -241,7 +243,7 @@ internal sealed class WindowBehaviorSequence(WindowBehaviorRule rule)
         bool targetInFront = _target is not null && foreground?.Id == _target.Id;
         if (targetInFront && !_targetWasForeground) _foregroundSince = tick;
         _targetWasForeground = targetInFront;
-        if (!canAct || fit.Suppressed || !targetInFront ||
+        if (!canAct || preservedSources?.Contains(_source.Id) == true || fit.Suppressed || !targetInFront ||
             (_target?.Id == _blockedTarget && tick < _blockedUntil) || tick - _foregroundSince < fit.DelayFor(rule) ||
             windows.Count(window => rule.MatchesSource(window.App)) != 1)
             return new();

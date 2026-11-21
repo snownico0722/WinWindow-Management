@@ -2,7 +2,7 @@ namespace NeatWin.Core;
 
 /// <summary>
 /// Smart behavior B: interpret a just-finished manual move/resize and, only when the intent is
-/// sufficiently clear, finish the last few pixels or ratio adjustment. This follows the small snap
+/// sufficiently clear, complete a nearby spatial alignment at the released size. This follows the small snap
 /// zones + speed gating used by mature window movers, then adds short kinematic evidence and a
 /// bounded personal target prior learned from the user's own raw mouse-up rectangles.
 /// </summary>
@@ -21,21 +21,21 @@ internal static class FollowHandAssistant
     {
         personalization = personalization.Normalize();
         var moved = visibleWindows.FirstOrDefault(item => item.Window.Handle == gesture.WindowHandle);
-        if (moved is null || gesture.EndRect.IsEmpty)
+        if (moved is null || gesture.StartRect.IsEmpty || gesture.EndRect.IsEmpty)
         {
             return new FollowHandDecision(false, gesture.EndRect, FollowHandTargetKind.None, 0);
         }
 
+        double scale = moved.Window.Dpi == 0 ? 1 : Math.Max(.5, moved.Window.Dpi / 96d);
         // A fast monitor-crossing fling is not an invitation to snap to every relation it crosses.
         // The raw endpoint still reaches the learning path with reduced confidence, but behavior B
         // stays out of the way for this gesture.
         if (double.IsFinite(gesture.EndSpeedPixelsPerSecond) &&
-            gesture.EndSpeedPixelsPerSecond >= FlyThroughSpeedPixelsPerSecond)
+            gesture.EndSpeedPixelsPerSecond >= FlyThroughSpeedPixelsPerSecond * scale)
         {
             return new FollowHandDecision(false, gesture.EndRect, FollowHandTargetKind.None, 0);
         }
 
-        double scale = Math.Max(.5, moved.Window.Dpi / 96d);
         var delta = Math.Max(Math.Max(Math.Abs(gesture.StartRect.Left - gesture.EndRect.Left), Math.Abs(gesture.StartRect.Top - gesture.EndRect.Top)),
             Math.Max(Math.Abs(gesture.StartRect.Right - gesture.EndRect.Right), Math.Abs(gesture.StartRect.Bottom - gesture.EndRect.Bottom)));
         if (delta < 8 * scale) return new(false, gesture.EndRect, FollowHandTargetKind.None, 0);
@@ -45,34 +45,34 @@ internal static class FollowHandAssistant
             SmartTidyStrength.Assertive => 30,
             _ => 22,
         };
+        radius = (int)Math.Round(radius * scale);
         var preferredGap = (int)Math.Round(personalization.PreferredGapPixels);
         var candidates = new List<Candidate>();
-        AddScreenCandidates(candidates, gesture, radius);
         var release = gesture.EndRect;
-        int centerX = gesture.WorkArea.Left + (gesture.WorkArea.Width - release.Width) / 2;
-        if (gesture.Kind == ManualGestureKind.Move && !gesture.WorkArea.IsEmpty &&
-            Math.Abs(release.Left - centerX) <= radius && Math.Abs(gesture.StartRect.Left - centerX) - Math.Abs(release.Left - centerX) >= 24 * scale)
-            Add(candidates, FollowHandTargetKind.EdgeAlignment, release with { X = centerX }, 1.05);
-
-        foreach (var other in visibleWindows)
+        if (gesture.Kind == ManualGestureKind.Move)
         {
-            if (other.Window.Handle == gesture.WindowHandle)
+            AddScreenCandidates(candidates, gesture, radius);
+            int centerX = gesture.WorkArea.Left + (gesture.WorkArea.Width - release.Width) / 2;
+            if (!gesture.WorkArea.IsEmpty && Math.Abs(release.Left - centerX) <= radius &&
+                Math.Abs(gesture.StartRect.Left - centerX) - Math.Abs(release.Left - centerX) >= 24 * scale)
+                Add(candidates, FollowHandTargetKind.EdgeAlignment, release with { X = centerX }, 1.05);
+            foreach (var other in visibleWindows.Where(v => v.Window.Handle != gesture.WindowHandle && v.Window.MonitorHandle == moved.Window.MonitorHandle))
             {
-                continue;
+                AddNeighborCandidates(candidates, release, other.Window.VisualRect, preferredGap, radius);
+                AddAlignmentCandidates(candidates, release, other.Window.VisualRect, radius);
             }
-
-            AddNeighborCandidates(candidates, gesture, other.Window.VisualRect, preferredGap, radius);
-            AddAlignmentCandidates(candidates, gesture, other.Window.VisualRect, radius);
-            AddSizeMatchCandidates(candidates, gesture, other.Window.VisualRect, radius);
         }
-
-        AddRatioCandidates(candidates, gesture, personalization, radius);
+        else if (moved.Window.IsResizable && !gesture.WorkArea.IsEmpty)
+        {
+            AddResizeTranslations(candidates, gesture, visibleWindows, moved.Window.MonitorHandle, preferredGap, radius, scale);
+        }
         if (candidates.Count == 0)
         {
             return new FollowHandDecision(false, gesture.EndRect, FollowHandTargetKind.None, 0);
         }
 
-        var speedGate = SpeedGate(gesture.EndSpeedPixelsPerSecond);
+        var endSpeedDip = gesture.EndSpeedPixelsPerSecond / scale;
+        var speedGate = SpeedGate(endSpeedDip);
         Candidate? best = null;
         foreach (var candidate in candidates)
         {
@@ -108,7 +108,7 @@ internal static class FollowHandAssistant
                 (0.55 * kinematic) +
                 (0.42 * personalBias) -
                 (1.15 * attentionPenalty) -
-                (0.020 * correction);
+                (0.020 * correction / scale);
 
             if (best is null || candidate.Score > best.Score)
             {
@@ -135,7 +135,7 @@ internal static class FollowHandAssistant
             _ => 1.35,
         };
 
-        if (gesture.EndSpeedPixelsPerSecond > 2200)
+        if (endSpeedDip > 2200)
         {
             threshold += 0.55;
         }
@@ -145,10 +145,10 @@ internal static class FollowHandAssistant
             best.PersonalBias >= 0.30 &&
             correctionDistance <= radius &&
             best.AttentionPenalty <= 0.20 &&
-            gesture.EndSpeedPixelsPerSecond <= 1500;
+            endSpeedDip <= 1500;
         var scoreAccepted = best.Score >= threshold ||
                             (learnedTargetSupport && best.Score >= threshold - 0.55);
-        var shouldApply = correctionDistance <= maxCorrection && scoreAccepted;
+        var shouldApply = correctionDistance <= maxCorrection * scale && scoreAccepted;
         var confidence = Math.Clamp(
             ((best.Score - 0.7) / 2.2) + (learnedTargetSupport ? 0.12 : 0),
             0,
@@ -279,32 +279,10 @@ internal static class FollowHandAssistant
             return;
         }
 
-        if (gesture.Kind == ManualGestureKind.Move)
-        {
-            AddTranslatedEdgeCandidate(candidates, rect, area.Left - rect.Left, horizontal: true, radius);
-            AddTranslatedEdgeCandidate(candidates, rect, area.Right - rect.Right, horizontal: true, radius);
-            AddTranslatedEdgeCandidate(candidates, rect, area.Top - rect.Top, horizontal: false, radius);
-            AddTranslatedEdgeCandidate(candidates, rect, area.Bottom - rect.Bottom, horizontal: false, radius);
-            return;
-        }
-
-        var edges = ChangedEdges(gesture.StartRect, rect);
-        if (edges.Left && Math.Abs(rect.Left - area.Left) <= radius)
-        {
-            Add(candidates, FollowHandTargetKind.ScreenEdge, RectI.FromEdges(area.Left, rect.Top, rect.Right, rect.Bottom), 0.95);
-        }
-        if (edges.Right && Math.Abs(area.Right - rect.Right) <= radius)
-        {
-            Add(candidates, FollowHandTargetKind.ScreenEdge, RectI.FromEdges(rect.Left, rect.Top, area.Right, rect.Bottom), 0.95);
-        }
-        if (edges.Top && Math.Abs(rect.Top - area.Top) <= radius)
-        {
-            Add(candidates, FollowHandTargetKind.ScreenEdge, RectI.FromEdges(rect.Left, area.Top, rect.Right, rect.Bottom), 0.95);
-        }
-        if (edges.Bottom && Math.Abs(area.Bottom - rect.Bottom) <= radius)
-        {
-            Add(candidates, FollowHandTargetKind.ScreenEdge, RectI.FromEdges(rect.Left, rect.Top, rect.Right, area.Bottom), 0.95);
-        }
+        AddTranslatedEdgeCandidate(candidates, rect, area.Left - rect.Left, horizontal: true, radius);
+        AddTranslatedEdgeCandidate(candidates, rect, area.Right - rect.Right, horizontal: true, radius);
+        AddTranslatedEdgeCandidate(candidates, rect, area.Top - rect.Top, horizontal: false, radius);
+        AddTranslatedEdgeCandidate(candidates, rect, area.Bottom - rect.Bottom, horizontal: false, radius);
     }
 
     private static void AddTranslatedEdgeCandidate(
@@ -325,84 +303,28 @@ internal static class FollowHandAssistant
         Add(candidates, FollowHandTargetKind.ScreenEdge, target, 0.92);
     }
 
-    private static void AddNeighborCandidates(
-        ICollection<Candidate> candidates,
-        ManualWindowGesture gesture,
-        RectI other,
-        int preferredGap,
-        int radius)
+    private static void AddNeighborCandidates(ICollection<Candidate> candidates, RectI rect, RectI other, int gap, int radius)
     {
-        var rect = gesture.EndRect;
-        var edges = ChangedEdges(gesture.StartRect, rect);
-        if (rect.VerticalOverlapRatio(other) >= 0.25)
+        if (rect.VerticalOverlapRatio(other) >= .25)
         {
-            if (gesture.Kind == ManualGestureKind.Move)
-            {
-                var leftOfOther = other.Left - preferredGap - rect.Width;
-                var rightOfOther = other.Right + preferredGap;
-                if (Math.Abs(rect.Left - leftOfOther) <= radius * 2)
-                {
-                    Add(candidates, FollowHandTargetKind.NeighborGap, new RectI(leftOfOther, rect.Top, rect.Width, rect.Height), 1.08);
-                }
-                if (Math.Abs(rect.Left - rightOfOther) <= radius * 2)
-                {
-                    Add(candidates, FollowHandTargetKind.NeighborGap, new RectI(rightOfOther, rect.Top, rect.Width, rect.Height), 1.08);
-                }
-            }
-            else
-            {
-                if (edges.Right && Math.Abs((other.Left - preferredGap) - rect.Right) <= radius * 2)
-                {
-                    Add(candidates, FollowHandTargetKind.NeighborGap, RectI.FromEdges(rect.Left, rect.Top, other.Left - preferredGap, rect.Bottom), 1.08);
-                }
-                if (edges.Left && Math.Abs((other.Right + preferredGap) - rect.Left) <= radius * 2)
-                {
-                    Add(candidates, FollowHandTargetKind.NeighborGap, RectI.FromEdges(other.Right + preferredGap, rect.Top, rect.Right, rect.Bottom), 1.08);
-                }
-            }
+            AddNear(rect with { X = other.Left - gap - rect.Width });
+            AddNear(rect with { X = other.Right + gap });
+        }
+        if (rect.HorizontalOverlapRatio(other) >= .25)
+        {
+            AddNear(rect with { Y = other.Top - gap - rect.Height });
+            AddNear(rect with { Y = other.Bottom + gap });
         }
 
-        if (rect.HorizontalOverlapRatio(other) >= 0.25)
+        void AddNear(RectI target)
         {
-            if (gesture.Kind == ManualGestureKind.Move)
-            {
-                var aboveOther = other.Top - preferredGap - rect.Height;
-                var belowOther = other.Bottom + preferredGap;
-                if (Math.Abs(rect.Top - aboveOther) <= radius * 2)
-                {
-                    Add(candidates, FollowHandTargetKind.NeighborGap, new RectI(rect.Left, aboveOther, rect.Width, rect.Height), 1.08);
-                }
-                if (Math.Abs(rect.Top - belowOther) <= radius * 2)
-                {
-                    Add(candidates, FollowHandTargetKind.NeighborGap, new RectI(rect.Left, belowOther, rect.Width, rect.Height), 1.08);
-                }
-            }
-            else
-            {
-                if (edges.Bottom && Math.Abs((other.Top - preferredGap) - rect.Bottom) <= radius * 2)
-                {
-                    Add(candidates, FollowHandTargetKind.NeighborGap, RectI.FromEdges(rect.Left, rect.Top, rect.Right, other.Top - preferredGap), 1.08);
-                }
-                if (edges.Top && Math.Abs((other.Bottom + preferredGap) - rect.Top) <= radius * 2)
-                {
-                    Add(candidates, FollowHandTargetKind.NeighborGap, RectI.FromEdges(rect.Left, other.Bottom + preferredGap, rect.Right, rect.Bottom), 1.08);
-                }
-            }
+            if (Math.Abs(rect.X - target.X) + Math.Abs(rect.Y - target.Y) <= radius * 2)
+                Add(candidates, FollowHandTargetKind.NeighborGap, target, 1.08);
         }
     }
 
-    private static void AddAlignmentCandidates(
-        ICollection<Candidate> candidates,
-        ManualWindowGesture gesture,
-        RectI other,
-        int radius)
+    private static void AddAlignmentCandidates(ICollection<Candidate> candidates, RectI rect, RectI other, int radius)
     {
-        if (gesture.Kind != ManualGestureKind.Move)
-        {
-            return;
-        }
-
-        var rect = gesture.EndRect;
         if (rect.VerticalOverlapRatio(other) >= 0.18 || RectI.IntervalGap(rect.Top, rect.Bottom, other.Top, other.Bottom) <= 48)
         {
             if (Math.Abs(rect.Left - other.Left) <= radius)
@@ -428,67 +350,56 @@ internal static class FollowHandAssistant
         }
     }
 
-    private static void AddSizeMatchCandidates(
-        ICollection<Candidate> candidates,
-        ManualWindowGesture gesture,
-        RectI other,
-        int radius)
+    // Keep the dimensions at mouse-up. A changed edge may approach a meaningful boundary or
+    // move the center off its previous alignment. Only translate along the edited dimension.
+    private static void AddResizeTranslations(ICollection<Candidate> candidates, ManualWindowGesture gesture,
+        IReadOnlyList<VisibleWindow> visible, nint monitor, int gap, int radius, double scale)
     {
-        if (gesture.Kind == ManualGestureKind.Move)
-        {
-            return;
-        }
-
-        var rect = gesture.EndRect;
-        var edges = ChangedEdges(gesture.StartRect, rect);
-        if (edges.HorizontalMagnitude >= 2 && Math.Abs(rect.Width - other.Width) <= radius * 2)
-        {
-            var target = edges.Left && !edges.Right
-                ? new RectI(rect.Right - other.Width, rect.Top, other.Width, rect.Height)
-                : new RectI(rect.Left, rect.Top, other.Width, rect.Height);
-            Add(candidates, FollowHandTargetKind.SizeMatch, target, 0.72);
-        }
-        if (edges.VerticalMagnitude >= 2 && Math.Abs(rect.Height - other.Height) <= radius * 2)
-        {
-            var target = edges.Top && !edges.Bottom
-                ? new RectI(rect.Left, rect.Bottom - other.Height, rect.Width, other.Height)
-                : new RectI(rect.Left, rect.Top, rect.Width, other.Height);
-            Add(candidates, FollowHandTargetKind.SizeMatch, target, 0.72);
-        }
-    }
-
-    private static void AddRatioCandidates(
-        ICollection<Candidate> candidates,
-        ManualWindowGesture gesture,
-        SmartPersonalizationState personalization,
-        int radius)
-    {
-        if (gesture.Kind == ManualGestureKind.Move || gesture.WorkArea.IsEmpty)
-        {
-            return;
-        }
-
-        var rect = gesture.EndRect;
+        var start = gesture.StartRect;
+        var end = gesture.EndRect;
         var area = gesture.WorkArea;
-        var ratios = new[] { 0.50, 0.60, 0.618, 2.0 / 3.0, 0.75, personalization.PreferredMainRatio }
-            .Distinct()
-            .ToArray();
-        var edges = ChangedEdges(gesture.StartRect, rect);
-
-        foreach (var ratio in ratios)
+        void Consider(bool horizontal, double previous, double current, double anchor, FollowHandTargetKind kind, bool keepCenter = false)
         {
-            var desiredWidth = (int)Math.Round(area.Width * ratio);
-            if (edges.HorizontalMagnitude >= 2 && Math.Abs(desiredWidth - rect.Width) <= radius * 2)
-            {
-                var left = edges.Left && !edges.Right ? rect.Right - desiredWidth : rect.Left;
-                Add(candidates, FollowHandTargetKind.WorkAreaRatio, new RectI(left, rect.Top, desiredWidth, rect.Height), 0.78);
-            }
+            int changed = Math.Abs(horizontal ? end.Width - start.Width : end.Height - start.Height);
+            int shift = (int)Math.Round(anchor - current);
+            if (changed < 16 * scale || Math.Abs(previous - current) < 4 * scale || shift == 0 ||
+                Math.Abs(shift) > Math.Min(radius, changed * .55 + 1)) return;
+            bool approached = Math.Abs(previous - anchor) >= Math.Abs(shift) + 4 * scale;
+            if (!approached && !(keepCenter && Math.Abs(previous - anchor) <= 4 * scale)) return;
+            var target = horizontal ? end with { X = end.X + shift } : end with { Y = end.Y + shift };
+            if (target.Intersect(area) == target)
+                Add(candidates, kind, target, kind == FollowHandTargetKind.NeighborGap ? 1.08 : 1.0);
+        }
 
-            var desiredHeight = (int)Math.Round(area.Height * ratio);
-            if (edges.VerticalMagnitude >= 2 && Math.Abs(desiredHeight - rect.Height) <= radius * 2)
+        Consider(true, start.Left, end.Left, area.Left, FollowHandTargetKind.ScreenEdge);
+        Consider(true, start.Right, end.Right, area.Right, FollowHandTargetKind.ScreenEdge);
+        Consider(false, start.Top, end.Top, area.Top, FollowHandTargetKind.ScreenEdge);
+        Consider(false, start.Bottom, end.Bottom, area.Bottom, FollowHandTargetKind.ScreenEdge);
+        // Approaching both edges of one display corner supplies independent evidence on
+        // each axis. Complete both together within the same travel budget as a single edge.
+        var horizontalEdge = candidates.Where(c => c.Target.X != end.X).MinBy(c => Math.Abs(c.Target.X - end.X));
+        var verticalEdge = candidates.Where(c => c.Target.Y != end.Y).MinBy(c => Math.Abs(c.Target.Y - end.Y));
+        if (horizontalEdge != null && verticalEdge != null)
+        {
+            var corner = end with { X = horizontalEdge.Target.X, Y = verticalEdge.Target.Y };
+            if (RectDistance(end, corner) <= radius)
+                Add(candidates, FollowHandTargetKind.ScreenEdge, corner, 1.65);
+        }
+
+        Consider(true, CenterX(start), CenterX(end), CenterX(area), FollowHandTargetKind.EdgeAlignment, keepCenter: true);
+        Consider(false, CenterY(start), CenterY(end), CenterY(area), FollowHandTargetKind.EdgeAlignment, keepCenter: true);
+        foreach (var item in visible.Where(v => v.Window.Handle != gesture.WindowHandle && v.Window.MonitorHandle == monitor))
+        {
+            var other = item.Window.VisualRect;
+            if (end.VerticalOverlapRatio(other) >= .25)
             {
-                var top = edges.Top && !edges.Bottom ? rect.Bottom - desiredHeight : rect.Top;
-                Add(candidates, FollowHandTargetKind.WorkAreaRatio, new RectI(rect.Left, top, rect.Width, desiredHeight), 0.78);
+                Consider(true, start.Right, end.Right, other.Left - gap, FollowHandTargetKind.NeighborGap);
+                Consider(true, start.Left, end.Left, other.Right + gap, FollowHandTargetKind.NeighborGap);
+            }
+            if (end.HorizontalOverlapRatio(other) >= .25)
+            {
+                Consider(false, start.Bottom, end.Bottom, other.Top - gap, FollowHandTargetKind.NeighborGap);
+                Consider(false, start.Top, end.Top, other.Bottom + gap, FollowHandTargetKind.NeighborGap);
             }
         }
     }
@@ -557,23 +468,6 @@ internal static class FollowHandAssistant
         }
 
         return Math.Clamp(penalty, 0, 2.0);
-    }
-
-    private static ChangedEdgeSet ChangedEdges(RectI start, RectI end)
-    {
-        var left = Math.Abs(start.Left - end.Left);
-        var right = Math.Abs(start.Right - end.Right);
-        var top = Math.Abs(start.Top - end.Top);
-        var bottom = Math.Abs(start.Bottom - end.Bottom);
-        var horizontalMax = Math.Max(left, right);
-        var verticalMax = Math.Max(top, bottom);
-        return new ChangedEdgeSet(
-            Left: left >= 2 && left >= right - 1,
-            Right: right >= 2 && right >= left - 1,
-            Top: top >= 2 && top >= bottom - 1,
-            Bottom: bottom >= 2 && bottom >= top - 1,
-            HorizontalMagnitude: horizontalMax,
-            VerticalMagnitude: verticalMax);
     }
 
     private static void Add(
@@ -673,12 +567,4 @@ internal static class FollowHandAssistant
         internal double AttentionPenalty { get; set; }
         internal double Score { get; set; }
     }
-
-    private readonly record struct ChangedEdgeSet(
-        bool Left,
-        bool Right,
-        bool Top,
-        bool Bottom,
-        int HorizontalMagnitude,
-        int VerticalMagnitude);
 }

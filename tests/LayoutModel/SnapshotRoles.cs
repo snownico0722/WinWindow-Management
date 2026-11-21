@@ -41,7 +41,7 @@ internal sealed class SnapshotRoles
         if (!_requests.Contains(new(session, requestId))) return captured;
         var sample = _samples.LastOrDefault(s => s.Time <= time);
         if (sample == null || (time - sample.Time).TotalMilliseconds > 1250 ||
-            captured.Any(h => h.Role != WindowUseRole.Unknown)) return captured;
+            captured.Any(h => h.Role != WindowUseRole.Unknown || h.FloatingAffinity > 0)) return captured;
         var roles = desktop.GroupBy(w => (w.VisualRect, w.Dpi, w.IsForeground)).Where(g => g.Count() == 1)
             .ToDictionary(g => g.Single().Handle, g => sample.Roles.GetValueOrDefault(g.Key));
         return WindowUseRoles.Bind(desktop, captured, context.Focus, context.Attention, context.Placement,

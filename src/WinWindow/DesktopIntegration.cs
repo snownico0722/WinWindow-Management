@@ -91,14 +91,21 @@ internal sealed class DesktopIntegration : IDisposable
         Native.GetWindowThreadProcessId(initialForeground, out uint lastForegroundProcess);
         _window.LayoutFocus.Visit(initialForeground, lastForegroundProcess, Environment.TickCount64);
         if (initialForeground != 0 && Native.IsTarget(initialForeground)) LastExternalForeground = initialForeground;
-        _eventCallback = (_, ev, hwnd, objectId, childId, _, _) =>
+        _eventCallback = (_, ev, hwnd, objectId, childId, _, eventTime) =>
         {
             if (_disposed || hwnd == 0 || (ev >= 0x8000 && (objectId != 0 || childId != 0)) || _window.Dispatcher.HasShutdownStarted) return;
+            var now = Environment.TickCount64;
+            long tick = now - unchecked((uint)now - eventTime);
+            if (ev == 0x8000 && Native.GetAncestor(hwnd, 2) == hwnd)
+            {
+                Native.GetWindowThreadProcessId(hwnd, out var createdPid);
+                _window.LayoutFocus.Created(hwnd, createdPid, tick);
+            }
             if (ev == 0x8001) _window.LayoutFocus.Retire(hwnd);
             if (ev == 3)
             {
                 Native.GetWindowThreadProcessId(hwnd, out var current);
-                _window.LayoutFocus.Visit(hwnd, current, Environment.TickCount64);
+                _window.LayoutFocus.Visit(hwnd, current, tick);
                 if (Native.IsTarget(hwnd)) LastExternalForeground = hwnd;
                 var previous = lastForegroundProcess;
                 lastForegroundProcess = current;

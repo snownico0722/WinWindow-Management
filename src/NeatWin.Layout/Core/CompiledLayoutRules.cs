@@ -91,8 +91,19 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
         if (slots.Length == 0) return learned;
         var result = learned.ToDictionary(p => p.Window);
         foreach (var slot in slots)
-            if (!result.TryGetValue(slot.Window, out var prior) || prior.Confidence < slot.Confidence)
-                result[slot.Window] = slot;
+        {
+            if (!result.TryGetValue(slot.Window, out var prior)) { result[slot.Window] = slot; continue; }
+            // A rule choosing only one dimension leaves evidence on the other dimensions available.
+            var stronger = prior.Confidence >= slot.Confidence ? prior : slot;
+            var other = stronger == prior ? slot : prior;
+            var position = stronger.PreferCenter ? stronger : other;
+            var size = stronger.PreferWidth ? stronger : other;
+            result[slot.Window] = position with
+            {
+                Width = size.Width, PreferWidth = size.PreferWidth,
+                Height = prior.Height, Confidence = stronger.Confidence,
+            };
+        }
         return result.Values.ToArray();
     }
 
@@ -116,7 +127,9 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
                     _ => Math.Clamp((w.VisualRect.X + w.VisualRect.Width / 2d - w.WorkArea.X) / Math.Max(1, w.WorkArea.Width), 0, 1),
                 };
                 int order = slot.Side switch { "left" => -1, "right" => 1, _ => 0 };
-                list.Add(new(w.Handle, 0, center, width, order, -1, .46, null));
+                if (slot.Side != "either" || slot.Width.HasValue)
+                    list.Add(new(w.Handle, 0, center, width, order, -1, .46,
+                        PreferWidth: slot.Width.HasValue, PreferCenter: slot.Side != "either"));
             }
         }
         return list.ToArray();

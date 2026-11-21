@@ -10,6 +10,7 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     private const int ChangedMessage = 0x8000 + 79;
     private readonly Func<IReadOnlyList<WindowSnapshot>> _capture;
     private readonly Func<bool> _busy;
+    private readonly ForegroundHistory _focus;
     private readonly AutomaticLayoutScheduler _scheduler = new();
     private readonly NativeMethods.WinEventProc _callback;
     private readonly List<nint> _hooks = [];
@@ -22,9 +23,9 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     internal bool WatchingWorkspace => _hooks.Count != 0;
     internal AutomaticLayoutMode Mode => _scheduler.Mode;
 
-    internal WorkspaceAutoTidyMonitor(Func<IReadOnlyList<WindowSnapshot>> capture, Func<bool> busy)
+    internal WorkspaceAutoTidyMonitor(Func<IReadOnlyList<WindowSnapshot>> capture, Func<bool> busy, ForegroundHistory focus)
     {
-        _capture = capture; _busy = busy; _callback = OnWinEvent;
+        _capture = capture; _busy = busy; _focus = focus; _callback = OnWinEvent;
         CreateHandle(new CreateParams { Caption = "NeatWin.AutomaticLayout", Parent = NativeMethods.HwndMessage });
         _timer.Tick += OnTick;
         SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
@@ -131,8 +132,14 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
             }
             var present = snapshot.Select(w => w.Handle).ToHashSet();
             foreach (var handle in _observedStamps.Keys.Where(h => !present.Contains(h)).ToArray()) _observedStamps.Remove(handle);
-            var request = _scheduler.Observe(snapshot, Environment.TickCount64,
-                _busy() || NativeWindowActivity.PointerBusy, marked);
+            long tick = Environment.TickCount64;
+            var navigation = _focus.NavigationFor(snapshot, tick);
+            long quiet = navigation?.SettleUntil ?? 0;
+            if (navigation != null && quiet > 0 && tick <= quiet + 200 && NativeMethods.GetCursorPos(out var pointer) &&
+                snapshot.FirstOrDefault(w => w.Handle == navigation.Main) is { } endpoint)
+                quiet = _focus.PointerQuietUntil(navigation, new(pointer.X, pointer.Y), endpoint, tick);
+            var request = _scheduler.Observe(snapshot, tick, _busy() || NativeWindowActivity.PointerBusy, marked,
+                navigationSettleUntil: quiet);
             if (!_scheduler.HasPending) _timer.Stop();
             if (request is not null) Requested?.Invoke(request);
         }

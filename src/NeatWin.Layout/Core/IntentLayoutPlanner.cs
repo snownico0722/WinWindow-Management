@@ -19,15 +19,8 @@ internal static partial class IntentLayoutPlanner
         if (taskContext.VerifiedRepeat && !taskContext.ExplicitArrange) return new([], [], []);
         // Anchored monitors keep their original location and remain in the desktop occlusion checks.
         desktop ??= visible.Select(v => v.Window).ToArray();
-        taskContext = GesturePlacement.Resolve(ResolveExplicitFocus(visible, taskContext), visible, options);
+        taskContext = GesturePlacement.Resolve(ResolveExplicitFocus(visible, taskContext), visible, options, reference);
         visible = IncludeWorkingCompanion(visible, desktop, taskContext);
-        if (taskContext is { ExplicitArrange: false, GestureAnchor: 0, Focus: { Main: not 0 } editing } &&
-            taskContext.WindowHints?.Any(h => h.Handle == editing.Main && h.Role == WindowUseRole.FloatingEditor) == true)
-        {
-            // A writing overlay uses the desktop behind it as a reference. Keep both in place.
-            visible = visible.Where(v => v.Window.Handle == editing.Main).ToArray();
-            taskContext = taskContext with { Focus = editing with { Companion = 0 } };
-        }
         if (taskContext is { ExplicitArrange: false, Attention: not null })
         {
             var focus = ResolveWorkingPair(visible.ToArray(), taskContext).Focus;
@@ -36,7 +29,7 @@ internal static partial class IntentLayoutPlanner
                 return new([], [], []);
             var monitor = primary.Window.MonitorHandle;
             var taskWindows = visible.Where(v => v.Window.MonitorHandle == monitor && !v.Window.VisualRect.IsEmpty && !v.Window.WorkArea.IsEmpty &&
-                (v.Window.Handle == focus.Main || v.Window.Handle == focus.Companion ||
+                (v.Window.Handle == focus.Main || v.Window.Handle == focus.Companion || focus.IsNavigationAncestor(v.Window.Handle) ||
                  v.VisibleRatio > 0 && taskContext.HasRecentInput(v.Window.Handle))).ToArray();
             // Only invite bystanders that physically cover a working surface (or its needed
             // expansion). Other background windows stay in the occlusion model as obstacles.
@@ -55,7 +48,7 @@ internal static partial class IntentLayoutPlanner
             visible = taskWindows.Concat(bystanders.Select(x => x.Item)).ToArray();
             taskContext = taskContext with { Focus = focus };
         }
-        var anchors = (taskContext.WindowHints ?? []).Where(h => h.Anchor || h.Role == WindowUseRole.FloatingEditor && h.Handle != taskContext.GestureAnchor).Select(h => h.Handle).ToHashSet();
+        var anchors = (taskContext.WindowHints ?? []).Where(h => h.Anchor).Select(h => h.Handle).ToHashSet();
         var moves = new List<TidyMove>();
         var layers = new List<WindowLayerOrder>();
         var traces = new List<LayoutGroupTrace>();
@@ -125,9 +118,9 @@ internal static partial class IntentLayoutPlanner
                 if (localOnly && groupContext.PairPlanningEnabled)
                     AddCoveredWorkingPairRepair(candidates, group, original, obstacles, area, hint.GapPixels, groupContext, order);
                 if (groupContext.PairPlanningEnabled && group.Length == 1 &&
-                    groupContext.Placement?.FirstOrDefault(p => p.Window == group[0].Window.Handle) is { Confidence: > .40 } habit)
+                    groupContext.Placement?.FirstOrDefault(p => p.Window == group[0].Window.Handle) is { Confidence: > .40, PreferCenter: true } habit)
                 {
-                    int width = !localOnly && group[0].Window.IsResizable && groupContext.Preferences.AllowUsefulResize
+                    int width = habit.PreferWidth && !localOnly && group[0].Window.IsResizable && groupContext.Preferences.AllowUsefulResize
                         ? Math.Clamp((int)Math.Round(habit.Width * area.Width), 1, area.Width) : rescue[0].Width;
                     int x = Math.Clamp((int)Math.Round(area.Left + habit.Center * area.Width - width / 2d),
                         area.Left, Math.Max(area.Left, area.Right - width));

@@ -62,7 +62,7 @@ internal sealed class RecorderSession : IDisposable
     private readonly IntentReferenceStore _store;
     private readonly ObservationIdentityTracker _identity = new();
     private readonly List<Pending> _pending = [];
-    private readonly List<LayoutHabit> _instanceHabits = [];
+    private LayoutHabit[] _instanceHabits = [];
     private readonly string _session = Guid.NewGuid().ToString("N");
     private readonly Mutex _singleton;
     private readonly bool _ownsSingleton;
@@ -151,7 +151,7 @@ internal sealed class RecorderSession : IDisposable
         RecordingEpoch++;
         _active = null;
         _pending.Clear();
-        _instanceHabits.Clear();
+        _instanceHabits = [];
         ResetActivity();
         _lastContext = null;
         _contextDirty = !_paused;
@@ -190,7 +190,7 @@ internal sealed class RecorderSession : IDisposable
         if (!_ownsSingleton) throw new InvalidOperationException(LayoutText.Get("RecorderInUse"));
         _store.Clear();
         SizeMemory.Clear();
-        _instanceHabits.Clear();
+        _instanceHabits = [];
         ResetActivity();
         _pending.Clear();
         _active = null;
@@ -261,11 +261,7 @@ internal sealed class RecorderSession : IDisposable
                 if (!automated && _store.Enabled &&
                     LayoutHabits.Observe(observation with { Outcome = "manual-release" }, byInstance: true) is { } vote)
                 {
-                    _instanceHabits.RemoveAll(h => h.Time < vote.Time.AddHours(-4) ||
-                        h.App == vote.App && h.Partner == vote.Partner && h.Display == vote.Display &&
-                        h.Time.ToUnixTimeSeconds() / 120 == vote.Time.ToUnixTimeSeconds() / 120);
-                    if (_instanceHabits.Count >= 256) _instanceHabits.RemoveAt(0);
-                    _instanceHabits.Add(vote);
+                    _instanceHabits = LayoutHabits.Add(_instanceHabits, vote, sessionOnly: true);
                 }
                 if (_paused) return;
                 if (_pending.Count >= 32) { _pending.RemoveAt(0); _excluded++; }
@@ -414,15 +410,18 @@ internal sealed class RecorderSession : IDisposable
     internal void Applied(string request, string trigger, LayoutApplication application)
     {
         if (!CanWriteDiagnostics) return;
-        _lastPlan.Clear();
         if (trigger == "undo")
         {
+            _lastPlan.Clear();
             foreach (var pending in _pending) pending.AssistedTarget = null;
             return;
         }
+        long tick = Environment.TickCount64;
+        foreach (var old in _lastPlan.Where(p => tick - p.Value.Tick > 30_000).Select(p => p.Key).ToArray()) _lastPlan.Remove(old);
         foreach (var move in application.Plan.Moves)
         {
-            _lastPlan[move.Window.Handle] = (request, Environment.TickCount64);
+            if (application.Failures.Any(f => f.Move.Window.Handle == move.Window.Handle)) continue;
+            _lastPlan[move.Window.Handle] = (request, tick);
             var pending = _pending.LastOrDefault(p => p.Handle == move.Window.Handle && !p.Superseded);
             if (pending == null) continue;
             pending.AssistedTarget = (trigger is "automatic-gesture" or "follow-hand") && !application.Interrupted &&
@@ -489,47 +488,12 @@ internal sealed class RecorderSession : IDisposable
     {
         if (!_store.Enabled) return [];
         var stored = _store.Placement.Read();
-        if (stored.Length == 0 && _instanceHabits.Count == 0) return [];
+        if (stored.Length == 0 && _instanceHabits.Length == 0) return [];
         var now = DateTimeOffset.UtcNow;
         var entries = windows.Where(w => w.IsManageable).Select(w =>
-            (Window: w, App: _activity.AppKey(w, false), Instance: _identity.Id(w).ToString(System.Globalization.CultureInfo.InvariantCulture))).ToArray();
-        static Dictionary<(string, string), int> PairCounts(IEnumerable<LayoutHabit> samples) =>
-            samples.Where(h => h.Partner != null).GroupBy(h => (h.App, h.Partner!))
-                .ToDictionary(g => g.Key, g => g.Count());
-        var storedPairs = PairCounts(stored);
-        var instancePairs = PairCounts(_instanceHabits);
-        var result = new List<PlacementPreference>();
-        foreach (var monitor in entries.GroupBy(e => e.Window.MonitorHandle))
-        {
-            var unique = monitor.Where(e => e.App != null).GroupBy(e => e.App!)
-                .Where(g => g.Count() == 1).Select(g => g.Key).ToHashSet();
-            foreach (var entry in monitor)
-            {
-                PlacementPreference? Bind(IReadOnlyList<LayoutHabit> samples, bool instance)
-                {
-                    var key = instance ? entry.Instance : entry.App;
-                    if (samples.Count == 0 || key == null || !instance && !unique.Contains(key)) return null;
-                    var pairs = instance ? instancePairs : storedPairs;
-                    var peers = monitor.Where(p => p.Window.Handle != entry.Window.Handle &&
-                        (instance || p.App != null && unique.Contains(p.App)));
-                    var focusPartner = entry.Window.Handle == focus.Main ? focus.Companion :
-                        entry.Window.Handle == focus.Companion ? focus.Main : 0;
-                    var peer = peers.Select(p =>
-                    {
-                        var peerKey = instance ? p.Instance : p.App!;
-                        var votes = pairs.GetValueOrDefault((key, peerKey)) + pairs.GetValueOrDefault((peerKey, key));
-                        return (p.Window.Handle, Key: peerKey, Votes: votes);
-                    }).Where(p => p.Handle == focusPartner || p.Votes > 0)
-                      .OrderByDescending(p => p.Handle == focusPartner).ThenByDescending(p => p.Votes).FirstOrDefault();
-                    return LayoutHabits.Resolve(samples, entry.Window, key, peer.Key, peer.Handle, now, instance);
-                }
-                // Recent repeat decisions for this particular live document precede app-wide defaults.
-                var preference = Bind(_instanceHabits, true);
-                if (preference is not { Confidence: >= .40 }) preference = Bind(stored, false);
-                if (preference is { Confidence: >= .40 }) result.Add(preference);
-            }
-        }
-        return result.ToArray();
+            (Window: w, App: stored.Length == 0 ? null : _activity.AppKey(w, false),
+             Instance: _instanceHabits.Length == 0 ? string.Empty : _identity.Id(w).ToString(System.Globalization.CultureInfo.InvariantCulture))).ToArray();
+        return PlacementPreferences.Bind(entries, focus, stored, _instanceHabits, now);
     }
 
     private void PublishStatus() => StatusChanged?.Invoke(Status);

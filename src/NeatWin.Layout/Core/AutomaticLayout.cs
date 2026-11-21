@@ -132,7 +132,7 @@ public sealed class AutomaticLayoutScheduler
     }
 
     public AutomaticLayoutRequest? Observe(IReadOnlyList<WindowSnapshot> snapshot, long now, bool busy,
-        IReadOnlySet<nint>? markedByNeatWin = null, bool desktopFocused = false)
+        IReadOnlySet<nint>? markedByNeatWin = null, bool desktopFocused = false, long navigationSettleUntil = 0)
     {
         // The desktop and taskbar are excluded from window capture. Clear the last app and
         // queued plan here, so activating the shell cannot arrange the previous task.
@@ -170,7 +170,8 @@ public sealed class AutomaticLayoutScheduler
         if (!_pending) return null;
         // Do not tidy while the mouse owns a drag/resize or an application is applying a plan.
         if (busy) { _lastChange = now; return null; }
-        if (now - _lastChange < SettleMilliseconds || now < _notBefore) return null;
+        if (now - _lastChange < SettleMilliseconds || now < _notBefore ||
+            (_trigger == LayoutTrigger.WorkspaceChange && now < navigationSettleUntil)) return null;
         _pending = false; _manual.Clear(); _notBefore = now + MinimumIntervalMilliseconds;
         return new(Mode, _trigger);
     }

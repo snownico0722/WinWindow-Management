@@ -5,6 +5,9 @@ using NeatWin.Reference;
 
 var area = new RectI(0, 0, 1920, 1040);
 AttentionWorkspaceChecks.Run(Check);
+NavigationChecks.Run(Check);
+PlacementPreferenceChecks.Run(Check);
+GeneralLayoutChecks.Run(Check);
 var home = new RectI(560, 100, 810, 700);
 WindowSnapshot Window(int id, RectI rect) => new(id, rect, rect, area, 1, default, true, id == 1, true, id - 1, 96, (uint)id);
 WindowSnapshot[] windows = [Window(1, home), Window(2, home with { X = 600 })];
@@ -29,6 +32,26 @@ void Check(bool condition, string description)
     Check(held is null && justReleased is null && settled?.Trigger == LayoutTrigger.WorkspaceChange &&
         scheduler.Observe(returned, 5000, false) is null,
         "returning from desktop during a file drag waits for drop and settling, then runs one fresh pass");
+}
+
+{
+    var focusPath = new LayoutFocus(30303, 20202, 1, "handoff", [10101, 20202],
+        [new(10101, 20202, "click-open", 2400), new(20202, 30303, "owner-open", 350)]);
+    var task = new TaskLayoutContext(Focus: focusPath) { NavigationObservedAt = now };
+    var navigationIds = new Dictionary<nint, int> { [10101] = 1, [20202] = 2, [30303] = 3 };
+    string json = JsonSerializer.Serialize(RecordedTaskSignals.From(task, navigationIds));
+    var recorded = JsonSerializer.Deserialize<RecordedTaskSignals>(json)!;
+    var replayedNavigation = recorded.ApplyToReplay(new());
+    Check(recorded.Navigation?.ObservedAt == now && recorded.Navigation.Hops is
+            [{ Source: 1, Target: 2, Evidence: "click-open", AgeMilliseconds: 2400, SourceRole: "waiting" },
+             { Source: 2, Target: 3, Evidence: "owner-open", AgeMilliseconds: 350, SourceRole: "return" }] &&
+        replayedNavigation.Focus?.NavigationAncestors?.SequenceEqual([(nint)1, (nint)2]) == true &&
+        replayedNavigation.Focus.Navigation?[1].Target == 3 && !json.Contains("10101") && !json.Contains("30303"),
+        "export and replay preserve each navigation hop, anonymous endpoints, roles and event age");
+    navigationIds.Remove(20202);
+    Check(RecordedTaskSignals.From(task, navigationIds).Navigation == null &&
+        (recorded with { Navigation = null }).ApplyToReplay(new()).Focus?.Navigation == null,
+        "missing or legacy navigation evidence cannot form a synthetic source-to-leaf link");
 }
 
 var rect = new RectI(0, 0, 400, 400);
@@ -60,20 +83,76 @@ Check(history.Resolve(windows, 3200).Companion == 0, "destroyed handles lose the
     var sourceWindow = Window(2, new(0, 95, 1462, 1114)) with { WorkArea = work, Dpi = 120 };
     var noted = WindowUseRoles.Bind([note, sourceWindow], [], new(1, 2, 1, "handoff"), null, null,
         w => w.Handle == 1 ? WindowUseRoles.Identify("Notepad.exe", "Notepad") : WindowUseRole.Browser);
-    var notedContext = new TaskLayoutContext(WindowHints: noted);
-    var savedNote = RecordedTaskSignals.From(notedContext, new Dictionary<nint, int> { [1] = 1, [2] = 2 });
-    Check(savedNote.ApplyToReplay(new()).WindowHints?.Single(h => h.Handle == 1).Role == WindowUseRole.FloatingEditor &&
-        WindowUseRoles.Contextualize(WindowUseRole.Editor, note with { VisualRect = work }, [note, sourceWindow], null, null, null) == WindowUseRole.Editor &&
-        WindowUseRoles.Contextualize(WindowUseRole.Editor, note, [note, sourceWindow], null, null,
-            [new(1, 0, .5, .8, 0, -1, .8)]) == WindowUseRole.Editor,
-        "a compact foreground note stays a floating editor in replay while large or habitually wide documents remain regular editors");
-    var rearNote = note with { IsForeground = false, ZOrder = 5 };
-    var foregroundReader = sourceWindow with { IsForeground = true, ZOrder = 0 };
-    Check(WindowUseRoles.Contextualize(WindowUseRole.Editor, rearNote, [foregroundReader, rearNote], new(2, 0, 0),
-        new Dictionary<nint, LayoutAttention> { [1] = new(.49, 1, 0, 0, false) }, null) == WindowUseRole.FloatingEditor &&
-        WindowUseRoles.Contextualize(WindowUseRole.Editor, rearNote, [foregroundReader, rearNote], new(2, 0, 0),
-            new Dictionary<nint, LayoutAttention> { [1] = new(.10, 1, 0, 0, false) }, null) == WindowUseRole.Editor,
-        "a note keeps its editing footprint during a recent return to reference material");
+    var roleSignals = RecordedTaskSignals.From(new(WindowHints: noted), new Dictionary<nint, int> { [1] = 1, [2] = 2 });
+    var replayNote = roleSignals.ApplyToReplay(new()).WindowHints!.Single(h => h.Handle == 1);
+    Check(replayNote.Role == WindowUseRole.Editor && replayNote.FloatingAffinity is > 0 and < .5 &&
+        replayNote.FloatingAffinity == noted.Single(h => h.Handle == 1).FloatingAffinity,
+        "a known editor supplies a weak, replayable prior for a recent compact overlay");
+
+    var overlay = Window(1, new(235, 130, 1076, 668));
+    var reader = Window(2, area);
+    var handoff = new LayoutFocus(1, 2, 1, "handoff");
+    var typing = new LayoutAttention(1, .7, .7, 0, true);
+    double Floating(WindowSnapshot target, WindowUseRole role, LayoutAttention use, LayoutFocus? focus = null,
+        PlacementPreference? habit = null, WindowSnapshot? material = null) =>
+        WindowUseRoles.FloatingAffinity(role, target, [target, material ?? reader], focus ?? handoff,
+            new Dictionary<nint, LayoutAttention> { [1] = use }, habit == null ? null : [habit]);
+    double known = Floating(overlay, WindowUseRole.Editor, typing);
+    double generic = Floating(overlay, WindowUseRole.Unknown, typing);
+    var noSourceHistory = new LayoutFocus(1, 0, 0);
+    Check(Floating(overlay, WindowUseRole.Unknown, typing, noSourceHistory) > 0 &&
+        Floating(overlay, WindowUseRole.Unknown, typing, noSourceHistory) == Floating(overlay, WindowUseRole.Editor, typing, noSourceHistory),
+        "an application name alone cannot change overlay evidence when the underlying source lacks task history");
+    Check(generic > 0 && known - generic is > 0 and < .06 &&
+        Math.Abs(known - Floating(overlay with { VisualRect = overlay.VisualRect with { Width = 1077 } }, WindowUseRole.Editor, typing)) < .01 &&
+        Math.Abs(generic - Floating(overlay with { VisualRect = overlay.VisualRect with { Width = 1077 } }, WindowUseRole.Unknown, typing)) < .01,
+        "a one-pixel footprint change has a continuous effect for recognized and unknown apps");
+    var compact = Window(1, new(235, 130, 620, 420));
+    double placed = Floating(compact, WindowUseRole.Unknown, typing with { ManualFloatPreference = 1 });
+    var floatingBrowser = WindowUseRoles.Bind([compact with { Owner = 2 }, reader], [], handoff, null, null,
+        _ => WindowUseRole.Browser).Single(h => h.Handle == 1);
+    Check(placed == 1 && Floating(compact, WindowUseRole.Unknown, typing with { SustainedForeground = 1, ManualFloatPreference = 1 }) == 1 &&
+        Floating(compact with { Owner = 2 }, WindowUseRole.Unknown, typing) == 1 &&
+        floatingBrowser is { Role: WindowUseRole.Browser, FloatingAffinity: 1 } &&
+        Floating(compact, WindowUseRole.Unknown, typing, material: reader with { VisualRect = new(920, 0, 800, 700) }) == 0 &&
+        Floating(compact, WindowUseRole.Unknown, typing, material: reader with { IsManageable = false }) == 0,
+        "deliberate placement or a small true owned tool over accessible material gives unknown apps floating intent");
+    Check(Floating(compact, WindowUseRole.Editor, typing with { ManualFloatPreference = -1 }) == 0 &&
+        Floating(compact, WindowUseRole.Editor, typing with { SustainedForeground = 1 }) == 0 &&
+        Floating(compact, WindowUseRole.Editor, typing, new(1, 2, 4)) == 0 &&
+        Floating(compact, WindowUseRole.Editor, typing, habit: new(1, 2, .5, .8, 0, -1, .8)) == 0 &&
+        Floating(compact, WindowUseRole.Editor, typing, habit: new(1, 2, .5, .8, 0, -1, .8, PreferWidth: false)) > 0 &&
+        Floating(overlay with { VisualRect = area }, WindowUseRole.Editor, typing) == 0,
+        "manual expansion, sustained reading, recurring co-use, or a learned large size supersedes floating intent");
+    var rear = compact with { IsForeground = false, ZOrder = 2 };
+    var front = reader with { IsForeground = true, ZOrder = 0 };
+    Check(Floating(rear, WindowUseRole.Editor, typing with { Foreground = false }, new(2, 0, 0), material: front) > 0 &&
+        Floating(rear, WindowUseRole.Editor, new(.1, 1, 0, 0, false), new(2, 0, 0), material: front) == 0,
+        "only recent editing supports a background overlay during a return to the source");
+
+    var manualHistory = new ForegroundHistory();
+    manualHistory.Visit(1, 1, 1000);
+    var drag = new ManualWindowGesture(1, compact.VisualRect with { X = 800 }, compact.VisualRect, area,
+        ManualGestureKind.Move, [], 450, 0);
+    manualHistory.Placed(compact, drag, 2000);
+    double Manual(WindowSnapshot w, long tick)
+    {
+        manualHistory.Resolve([w, reader], tick, out var signals);
+        return signals.GetValueOrDefault(w.Handle)?.ManualFloatPreference ?? 0;
+    }
+    var secondTool = Window(2, compact.VisualRect with { X = 950 });
+    manualHistory.Placed(secondTool, drag with { WindowHandle = 2, EndRect = secondTool.VisualRect }, 2050);
+    manualHistory.Resolve([compact, secondTool], 2100, out var twoReleases);
+    Check(twoReleases.Count(pair => pair.Value.ManualFloatPreference == 1) == 2,
+        "placing a second tool preserves each window's own recent manual gesture");
+    var docked = compact with { VisualRect = compact.VisualRect with { X = 0 } };
+    Check(Manual(compact, 2100) == 1 && Manual(compact, 26000) is > 0 and < 1 &&
+        Manual(compact, 39000) == 0 && Manual(compact with { ProcessId = 9 }, 2100) == 0,
+        "a true interior manual release fades, expires and cannot transfer to a reused handle");
+    manualHistory.Placed(compact, drag with { StartRect = compact.VisualRect with { X = compact.VisualRect.X + 1 } }, 40000);
+    Check(Manual(compact, 40100) is > 0 and < .05, "a one-pixel drag supplies proportionally weak placement evidence");
+    manualHistory.Placed(docked, drag with { StartRect = compact.VisualRect, EndRect = docked.VisualRect }, 40500);
+    Check(Manual(docked, 41000) == -1, "a subsequent manual docking replaces the earlier overlay intent");
 }
 {
     using var memory = new MemoryStream();
@@ -131,6 +210,29 @@ Check(edit is { Partner: "app-2", Order: -1, Corrected: true }, "a stable manual
 Check(LayoutHabits.Observe(gesture with { Outcome = "automation" }) == null &&
     LayoutHabits.Observe(gesture with { SettledContext = null }) == null, "automated and legacy incomplete gestures are excluded");
 {
+    var observed = LayoutHabits.Observe(gesture)!;
+    var positionVotes = Enumerable.Range(0, 12).Select(i => observed with { Time = now.AddHours(i) }).ToArray();
+    PlacementPreference? Learned(IEnumerable<LayoutHabit> source) =>
+        LayoutHabits.Resolve(source, windows[0], "app-1", "app-2", 2, now.AddHours(13));
+    Check(Learned(positionVotes) is { PreferCenter: true, PreferWidth: false } &&
+        LayoutHabits.Resolve(positionVotes, windows[1], "app-2", "app-1", 1, now.AddHours(13)) is { PreferWidth: false },
+        "moving a window never learns an incidental width for it or its stationary companion");
+    var resizes = positionVotes.Select(s => s with { Edited = HorizontalEdit.Width, Width = .3 }).ToArray();
+    var widthOnly = Learned(resizes)!;
+    var recorded = RecordedTaskSignals.From(new(Placement: [widthOnly]), new Dictionary<nint, int> { [1] = 1 });
+    Check(widthOnly is { PreferWidth: true, PreferCenter: false, Width: > .299 and < .301 } &&
+        recorded.ApplyToReplay(new()).Placement!.Single() is { PreferWidth: true, PreferCenter: false } &&
+        Learned(resizes.Select((s, i) => s with { Width = i % 2 == 0 ? .30 : .80 })) == null &&
+        Learned(positionVotes.Select((s, i) => s with { Center = i % 2 == 0 ? .35 : .65 })) == null,
+        "only a repeated selected axis becomes a preference; incompatible uses do not create a fictitious intermediate position or width");
+    Check(Learned(positionVotes.Select(s => s with { Edited = null })) is { PreferCenter: true, PreferWidth: false } &&
+        Learned(positionVotes.Select(s => s with { Corrected = false })) == Learned(positionVotes),
+        "legacy observations inform placement; a gesture near an earlier plan has no extra voting power by timing alone");
+    var sideRule = new CompiledLayoutRules(AppSlots: [new("browser", "right")]).BindSlots([(windows[0], "browser")]).Single();
+    var sizeRule = new CompiledLayoutRules(AppSlots: [new("browser", Width: .35)]).BindSlots([(windows[0], "browser")]).Single();
+    Check(sideRule is { PreferCenter: true, PreferWidth: false } && sizeRule is { PreferCenter: false, PreferWidth: true } &&
+        CompiledLayoutRules.ApplySlots([widthOnly], [sideRule]) is [{ PreferCenter: true, PreferWidth: true, Width: > .299 and < .301, Center: > .55 }],
+        "an imported side or width changes only its requested dimension and keeps independent personal choices");
     var assisted = gesture with { Outcome = "assisted-release", SettledContext = start };
     var assistedVote = LayoutHabits.Observe(assisted);
     Check(assistedVote == edit && LayoutHabits.Observe(assisted with { Outcome = "changed-after-release" }) == null,
@@ -806,7 +908,7 @@ Check(RoutineTick(22_000, [reopenedHelper with { Foreground = false }, nextTask]
     var visits = new ForegroundHistory();
     var mainWindow = Window(101, new(0, 0, 780, 900)) with { IsForeground = true, ZOrder = 0 };
     var reference = Window(102, new(800, 30, 780, 800)) with { IsForeground = false, ZOrder = 2 };
-    var dormant = Window(103, new(920, 100, 540, 500)) with { IsForeground = false, ZOrder = 1 };
+    var dormant = Window(103, new(920, 100, 540, 500)) with { ProcessId = uint.MaxValue, IsForeground = false, ZOrder = 1 };
     WindowSnapshot[] desktop = [mainWindow, dormant, reference];
     var task = new TaskLayoutContext(Focus: new(101, 102, 3));
     IntentLayoutPlan empty = new([], [], []);
@@ -850,27 +952,16 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
     }
     using var archive = ZipFile.OpenRead(path);
     var snapshotRoles = new SnapshotRoles(archive);
-    var corrections = new Dictionary<(string Session, string Request), List<WindowAdjustmentObservation>>();
-    foreach (var adjEntry in archive.Entries.Where(e => e.Name.StartsWith("adjustments-") && e.Name.EndsWith(".jsonl")))
-    {
-        using var adjReader = new StreamReader(adjEntry.Open());
-        while (adjReader.ReadLine() is { } line)
-        {
-            var obs = JsonSerializer.Deserialize<WindowAdjustmentObservation>(line);
-            if (obs is { Outcome: "stable", AfterRequest: string req } && !string.IsNullOrEmpty(req))
-            {
-                if (!corrections.TryGetValue((obs.Session, req), out var list)) corrections[(obs.Session, req)] = list = [];
-                list.Add(obs);
-            }
-        }
-    }
+    var edits = ReplayEffort.Read(archive, sessionFilter);
+    var planEntries = archive.Entries.Where(e => e.Name == "layout-decisions.jsonl" ||
+        e.Name.StartsWith("plans-") && e.Name.EndsWith(".jsonl")).ToArray();
+    edits.ReadUndo(planEntries, sessionFilter);
     var seen = new HashSet<(string, string)>();
     var analyzer = new VisibilityAnalyzer();
     int correctedRuns = 0;
     double totalNormalizedRegret = 0;
     int regretSamples = 0;
-    foreach (var entry in archive.Entries.Where(e => e.Name == "layout-decisions.jsonl" ||
-        e.Name.StartsWith("plans-") && e.Name.EndsWith(".jsonl")))
+    foreach (var entry in planEntries)
     {
         using var reader = new StreamReader(entry.Open());
         while (reader.ReadLine() is { } line)
@@ -909,11 +1000,11 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                 bool? regionsPreserved = !frame.Truncated && ctx.WindowHints?.Any(h => h.ProtectedRegions is { Length: > 0 }) == true
                     ? IntentLayoutPlanner.DesktopRegionsPreserved(desktop, projected, ctx) : null;
                 double? runRegret = null, verticalError = null;
-                if (corrections.TryGetValue((run.Session, run.RequestId), out var edits))
+                if (edits.Linked.TryGetValue((run.Session, run.RequestId), out var followups))
                 {
                     double horizontal = 0, vertical = 0;
                     int matched = 0;
-                    foreach (var edit in edits)
+                    foreach (var edit in followups)
                     {
                         if (edit.WorkArea.IsEmpty || projected.FirstOrDefault(w => w.Handle == edit.WindowId) is not { } predicted)
                             continue;
@@ -932,13 +1023,17 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                     }
                 }
                 Console.WriteLine(JsonSerializer.Serialize(new { run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
+                    RecordedManualFollowups = followups?.Count, RecordedUndoOfThisRequest =
+                        edits.Undone.Contains((run.Session, run.RequestId)) ? true : (bool?)null,
                     PostArrangeRegret = runRegret, PostArrangeVerticalError = verticalError, ProtectedRegionsPreserved = regionsPreserved,
-                    Roles = (ctx.WindowHints ?? []).Where(h => h.Role != WindowUseRole.Unknown)
-                        .Select(h => new { Id = (int)h.Handle, Role = h.Role.ToString() }),
+                    Roles = (ctx.WindowHints ?? []).Where(h => h.Role != WindowUseRole.Unknown || h.FloatingAffinity > 0)
+                        .Select(h => new { Id = (int)h.Handle, Role = h.Role.ToString(), h.FloatingAffinity }),
                     Moves = plan.Moves.Select(m => new { Id = (int)m.Window.Handle, Before = m.Window.VisualRect, After = m.TargetVisualRect }),
                     Selected = plan.Groups.Select(g => g.Selected) }));
             }
         }
     }
+    Console.WriteLine(JsonSerializer.Serialize(new { RecordedManualGestures = edits.Total,
+        WithoutLinkedRequest = edits.Total.HasValue ? edits.Unlinked : (int?)null, ExplicitUndoRequests = edits.UndoCount, UndoWithKnownSource = edits.Undone.Count }));
     Console.WriteLine($"Replayed {seen.Count} distinct requests ({correctedRuns} with post-arrange corrections, mean normalized regret={(regretSamples > 0 ? (totalNormalizedRegret / regretSamples).ToString("F4") : "n/a")}).");
 }

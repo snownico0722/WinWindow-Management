@@ -1,7 +1,7 @@
 namespace NeatWin.Core;
 
-// Roles describe content use. The window's dimensions and task decide whether a particular
-// editor is a floating note. Shared toolkit classes (e.g. Chromium) do not identify content.
+// Application and class identify a content category. Floating intent is inferred from this
+// particular window's geometry, relationships and recent user behavior.
 [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<WindowUseRole>))]
 public enum WindowUseRole { Unknown, Browser, FileManager, Editor, FloatingEditor }
 
@@ -22,33 +22,71 @@ internal static class WindowUseRoles
         };
     }
 
-    internal static WindowUseRole Contextualize(WindowUseRole identified, WindowSnapshot window,
+    internal static bool IsFloating(WindowUseRole? role) =>
+        role == WindowUseRole.FloatingEditor;
+
+    // A footprint supplies continuous supporting evidence. Owners and user placement
+    // explain intent. A recognized editor supplies a weaker prior for an active overlay.
+    internal static double FloatingAffinity(WindowUseRole identified, WindowSnapshot window,
         IReadOnlyList<WindowSnapshot> desktop, LayoutFocus? focus, IReadOnlyDictionary<nint, LayoutAttention>? attention,
         IReadOnlyList<PlacementPreference>? placements)
     {
-        if (identified != WindowUseRole.Editor || !window.IsManageable || window.WorkArea.IsEmpty) return identified;
+        if (!window.IsManageable || window.WorkArea.IsEmpty || window.VisualRect.IsEmpty) return 0;
+        static double Ramp(double value, double low, double high) => Math.Clamp((value - low) / (high - low), 0, 1);
         var area = window.WorkArea;
         var rect = window.VisualRect;
-        if (rect.Width > area.Width * .70 || rect.Height > area.Height * .78 || rect.Area > area.Area * .36)
-            return identified;
-
-        // Repeated deliberate edits that call for more space take precedence over the compact frame.
-        var habit = placements?.FirstOrDefault(p => p.Window == window.Handle && p.Confidence >= .5);
-        if (habit != null && (habit.Width * area.Width > rect.Width * 1.15 ||
-            habit.Height * area.Height > rect.Height * 1.15)) return identified;
+        double compact = 1 - Math.Max(Ramp(rect.Width / (double)area.Width, .55, .85),
+            Math.Max(Ramp(rect.Height / (double)area.Height, .65, .90), Ramp(rect.Area / (double)area.Area, .32, .55)));
+        if (compact == 0) return 0;
 
         var visit = attention?.GetValueOrDefault(window.Handle);
-        // Switching back to source material often puts it above the note. A recent
-        // sustained editing visit keeps its footprint through that handoff.
-        bool editingVisit = visit is { Dwell: >= .5, Recency: >= .25 };
-        bool inUse = window.IsForeground || focus?.Main == window.Handle ||
-            visit?.Weight >= ForegroundHistory.WorkingAttention || editingVisit;
-        if (!inUse) return identified;
-        bool overlaysTask = desktop.Any(other => other.Handle != window.Handle &&
-            other.MonitorHandle == window.MonitorHandle && (other.ZOrder > window.ZOrder || editingVisit) &&
-            (other.IsManageable || other.SurfaceState is "maximized" or "fullscreen") &&
-            other.VisualRect.Intersect(rect).Area >= rect.Area * .20);
-        return overlaysTask ? WindowUseRole.FloatingEditor : identified;
+        double manual = visit?.ManualFloatPreference ?? 0;
+        double editingVisit = visit == null ? 0 : Ramp(visit.Recency, .10, .45) * Ramp(visit.Dwell, 0, .50);
+        double current = window.IsForeground || focus?.Main == window.Handle ? 1 : editingVisit;
+        double interaction = Math.Max(editingVisit, visit?.Input ?? 0);
+        if (focus is { Evidence: "handoff" } && focus.Main == window.Handle)
+            interaction = Math.Max(interaction, .70);
+        if (manual <= 0 && (current == 0 || window.Owner == 0 && interaction == 0)) return 0;
+        double taskUse = focus is { Companion: not 0, Switches: >= 2 } && focus.Evidence != "handoff" &&
+            (focus.Main == window.Handle || focus.Companion == window.Handle)
+            ? Ramp(focus.Switches, 1, 4) : 0;
+        // A new deliberate placement can change a task that was already established.
+        // As that gesture ages, sustained reading and repeated switches regain influence.
+        double inferred = 1 - Math.Max(0, manual);
+        double reading = Math.Max(taskUse, visit?.SustainedForeground ?? 0) * inferred;
+        double commitment = (1 + Math.Min(0, manual)) * (1 - reading);
+        var habit = placements?.FirstOrDefault(p => p.Window == window.Handle);
+        if (habit != null)
+        {
+            double relativeWidth = habit.PreferWidth ? habit.Width * area.Width / rect.Width : 1;
+            double relativeHeight = (habit.Height ?? 0) * area.Height / rect.Height;
+            double demand = Ramp(Math.Max(relativeWidth, relativeHeight), 1.03, 1.3);
+            commitment *= 1 - inferred * Ramp(habit.Confidence, .40, .80) * demand;
+        }
+        if (commitment == 0) return 0;
+
+        double best = 0;
+        foreach (var source in desktop)
+        {
+            if (source.Handle == window.Handle || source.MonitorHandle != window.MonitorHandle ||
+                !source.IsManageable && source.SurfaceState is not ("maximized" or "fullscreen") ||
+                source.ZOrder <= window.ZOrder && editingVisit == 0 && manual <= 0 || source.VisualRect.IsEmpty) continue;
+            double overlap = Ramp(source.VisualRect.Intersect(rect).Area / (double)rect.Area, .10, .45);
+            if (overlap == 0) continue;
+            double ownership = window.Owner == source.Handle ? (window.IsResizable ?
+                1 - Ramp(rect.Area / (double)source.VisualRect.Area, .20, .65) : 1) : 0;
+            double sourceEvidence = source.Handle == focus?.Companion || focus?.Main == source.Handle ? 1 :
+                attention?.GetValueOrDefault(source.Handle)?.Weight ?? 0;
+            // The same small foreground overlay on visible material has the same baseline
+            // in any application. Identity can only reinforce an observed source relationship.
+            double prior = .15 + sourceEvidence * (identified == WindowUseRole.Editor ? .30 : .25);
+            double intent = Math.Max(manual, Math.Max(ownership, prior * current * interaction));
+            if (intent * overlap <= best) continue;
+            var covering = desktop.Where(w => w.ZOrder < source.ZOrder).Select(w => w.VisualRect);
+            double readable = IntentLayoutPlanner.ScreenExposure(source.VisualRect, covering, area, source.Dpi).Visible;
+            best = Math.Max(best, intent * overlap * Ramp(readable, .10, .45));
+        }
+        return best * compact * commitment;
     }
 
     internal static TaskWindowHint[] Bind(IReadOnlyList<WindowSnapshot> desktop, TaskWindowHint[] hints,
@@ -58,10 +96,11 @@ internal static class WindowUseRoles
         var byWindow = hints.ToDictionary(h => h.Handle);
         foreach (var window in desktop.Where(w => w.IsManageable))
         {
-            var role = Contextualize(identify(window), window, desktop, focus, attention, placements);
-            if (role == WindowUseRole.Unknown) continue;
+            var role = identify(window);
+            double affinity = FloatingAffinity(role, window, desktop, focus, attention, placements);
+            if (role == WindowUseRole.Unknown && affinity == 0) continue;
             var hint = byWindow.GetValueOrDefault(window.Handle) ?? new TaskWindowHint(window.Handle);
-            byWindow[window.Handle] = hint with { Role = role };
+            byWindow[window.Handle] = hint with { Role = role, FloatingAffinity = affinity };
         }
         return byWindow.Values.ToArray();
     }

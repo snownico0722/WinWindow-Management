@@ -4,7 +4,7 @@ using NeatWin.Core;
 
 internal static class BehaviorReplay
 {
-    private sealed record Prediction(string Rule, int Window, string App, WindowBehaviorAction Action, long Tick);
+    internal sealed record Prediction(string Rule, int Window, string App, WindowBehaviorAction Action, long Tick);
 
     internal static void Run(string zip, string candidate, string? sessionFilter)
     {
@@ -54,12 +54,13 @@ internal static class BehaviorReplay
         }
     }
 
-    private static List<Prediction> Predict(WindowBehaviorFrame[] frames, WindowBehaviorRule[] rules)
+    internal static List<Prediction> Predict(WindowBehaviorFrame[] frames, WindowBehaviorRule[] rules)
     {
         var current = new Dictionary<int, BehaviorWindow>();
         var predictions = new List<Prediction>();
         var sequences = rules.Select(rule => (Rule: rule, Sequence: new WindowBehaviorSequence(rule))).ToArray();
         long previous = frames[0].Tick;
+        HashSet<int>? preserved = null;
         foreach (var frame in frames)
         {
             // The recorder writes only deltas and a heartbeat. Replay stable state between them.
@@ -90,6 +91,7 @@ internal static class BehaviorReplay
                         break;
                 }
             }
+            preserved = frame.NavigationSources?.ToHashSet();
             Observe(frame.Tick, frame.Time.UtcTicks, departures);
             previous = frame.Tick;
         }
@@ -102,7 +104,7 @@ internal static class BehaviorReplay
             foreach (var (rule, sequence) in sequences)
             {
                 var update = sequence.Observe(tick, utc, windows, departures,
-                    new(DelayMilliseconds: rule.DelayMilliseconds), learn: false, canAct: true);
+                    new(DelayMilliseconds: rule.DelayMilliseconds), learn: false, canAct: true, preservedSources: preserved);
                 if (update.Dismiss is int id && alreadyProposed.Add(id) && current.TryGetValue(id, out var source))
                     predictions.Add(new(rule.Id, id, source.App, rule.Action, tick));
             }

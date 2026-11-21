@@ -22,6 +22,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
     private readonly SettingsStore _settings;
     private readonly RecorderSession _recorder;
     private readonly Func<bool> _busy;
+    private readonly ForegroundHistory _focus;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 550 };
     private readonly Dictionary<uint, ProcessIdentity> _processes = [];
     private Dictionary<int, Observed> _previous = [];
@@ -35,17 +36,19 @@ internal sealed class WindowBehaviorMonitor : IDisposable
     private nint _restoreHook;
     private int _traceSegment;
     private long _lastTraceTick;
+    private HashSet<int> _lastNavigationSources = [];
     private BehaviorConfiguration _configuration;
     private Entry[] _entries;
 
     internal WindowBehaviorMonitor(WindowManager windows, IntentReferenceStore store, SettingsStore settings,
-        RecorderSession recorder, Func<bool> busy)
+        RecorderSession recorder, Func<bool> busy, ForegroundHistory focus)
     {
         _windows = windows;
         _store = store;
         _settings = settings;
         _recorder = recorder;
         _busy = busy;
+        _focus = focus;
         _restoreCallback = (hook, _, hwnd, _, _, _, _) =>
         {
             // A user restore ends ownership, even if they minimize the window again before undo.
@@ -125,6 +128,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
     {
         ++_traceSegment;
         _lastTraceTick = 0;
+        _lastNavigationSources.Clear();
         ResetObservation();
         RefreshTimer();
     }
@@ -283,12 +287,16 @@ internal sealed class WindowBehaviorMonitor : IDisposable
             bool changed = _configuration.Learn &&
                 Learn(_discovery.Observe(tick, now.UtcTicks, observations, departures, automaticDepartures));
             bool canAct = !_busy();
+            var navigation = trace != null || canAct && _entries.Any(e => IsEnabled(e.Rule))
+                ? _focus.NavigationFor(current.Values.Select(w => w.Window).ToArray(), tick) : null;
+            HashSet<int> preserved = navigation == null ? [] : current.Values
+                .Where(w => navigation.ProtectsAction(w.Window.Handle, tick)).Select(w => w.Behavior.Id).ToHashSet();
             foreach (var entry in _entries)
             {
                 bool enabled = IsEnabled(entry.Rule);
                 if (!enabled && !_configuration.Learn) continue;
                 var update = entry.Sequence.Observe(tick, now.UtcTicks, observations, departures, Fit(entry.Rule),
-                    _configuration.Learn, enabled && canAct, automaticDepartures);
+                    _configuration.Learn, enabled && canAct, automaticDepartures, preserved);
                 if (entry.Rule.IsLocal && update.Reopened is null) update = update with { Fit = null };
                 if (update.Fit is { } fit)
                 {
@@ -309,9 +317,11 @@ internal sealed class WindowBehaviorMonitor : IDisposable
             }
             _previous = current;
             if (changed) _store.SaveBehaviorProfile(new(_fits, _candidates.Values.ToArray()));
-            if (trace is not null && (trace.Count > 0 || tick - _lastTraceTick >= 5_000))
+            if (trace is not null && (trace.Count > 0 || tick - _lastTraceTick >= 5_000 || !_lastNavigationSources.SetEquals(preserved)))
             {
-                _store.AppendBehavior(new(_recorder.SessionId, tick, now, trace.ToArray(), _traceSegment));
+                _store.AppendBehavior(new(_recorder.SessionId, tick, now, trace.ToArray(), _traceSegment,
+                    preserved.Count == 0 ? null : preserved.Order().ToArray()));
+                _lastNavigationSources = preserved;
                 _lastTraceTick = tick;
             }
         }

@@ -21,7 +21,9 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     WorkspaceFrame Before, PlannedWindow[] Targets, int[][] Layers, PlannedGroup[] Groups,
     WorkspaceFrame? Actual, string Outcome, string[] ApplyNotes, ProjectedPlan? BasePlan = null, ProjectedPlan? Proposal = null, ProjectedPlan? ScoredPlan = null,
     CompiledLayoutRules? Rules = null, RecordedTaskSignals? Signals = null, SmartTidyStrength? Strength = null, bool? FullDesktop = null, RejectedWindowMove[]? SubmissionFailures = null,
-    int? MinimizeTarget = null, bool? MinimizeVerified = null);
+    int? MinimizeTarget = null, bool? MinimizeVerified = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? UndoOfRequest = null);
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
 public sealed class ObservationIdentityTracker
@@ -76,14 +78,18 @@ public sealed class ObservationIdentityTracker
 
 public sealed record RecordedWindowHint(int Id, bool Passive, bool Media, bool Anchor, TaskContentRegion[]? Regions,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    WindowUseRole Role = WindowUseRole.Unknown);
+    WindowUseRole Role = WindowUseRole.Unknown,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    double FloatingAffinity = 0);
 public sealed record RecordedPlacement(int Id, int Partner, double Center, double Width, double Order,
     int Cell, double Confidence, double? Overlap,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    double? Height = null);
+    double? Height = null, bool PreferWidth = true, bool PreferCenter = true);
 public sealed record RecordedVideo(int Id, VideoBlackBarOrientation Orientation, double ContentAspectRatio,
     RectI Viewport, double Confidence, WindowExposure? Exposure);
 public sealed record RecordedSizeFloor(int Id, int MinWidth, int MinHeight);
+public sealed record RecordedNavigationHop(int Source, int Target, string Evidence, long AgeMilliseconds, string SourceRole);
+public sealed record RecordedNavigation(DateTimeOffset? ObservedAt, RecordedNavigationHop[] Hops);
 public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, string? FocusEvidence,
     RecordedWindowHint[] Hints, RecordedPlacement[] Placements,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
@@ -91,7 +97,9 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     Dictionary<int, LayoutAttention>? Attention = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    int GestureAnchor = 0, RecordedVideo? Video = null, RectI? GestureTarget = null)
+    int GestureAnchor = 0, RecordedVideo? Video = null, RectI? GestureTarget = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RecordedNavigation? Navigation = null)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids, IReadOnlyList<WindowSnapshot>? snapshot = null)
     {
@@ -109,25 +117,47 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             video = new(Id(hint.WindowHandle), hint.Orientation, hint.ContentAspectRatio, hint.ViewportVisualRect,
                 hint.Confidence, exposure);
         }
+        // Keep the connected suffix ending at the live main window. A disappeared ancestor
+        // has no current session mapping and cannot be joined to an unrelated earlier hop.
+        RecordedNavigation? navigation = null;
+        if (focus?.Navigation is { Length: > 0 } path && Id(focus.Main) != 0)
+        {
+            var hops = new List<RecordedNavigationHop>(path.Length);
+            nint target = focus.Main;
+            for (int i = path.Length - 1; i >= 0; i--)
+            {
+                var hop = path[i];
+                if (hop.Target != target || Id(hop.Source) == 0) break;
+                string role = hop.Source == focus.Companion ? "return" :
+                    focus.IsNavigationAncestor(hop.Source) ? "waiting" : "source";
+                hops.Add(new(Id(hop.Source), Id(target), hop.Evidence, hop.AgeMilliseconds, role));
+                target = hop.Source;
+            }
+            hops.Reverse();
+            if (hops.Count > 0) navigation = new(context.NavigationObservedAt, hops.ToArray());
+        }
         return new(Id(focus?.Main ?? 0), Id(focus?.Companion ?? 0), focus?.Switches ?? 0, focus?.Evidence,
             (context.WindowHints ?? []).Where(h => Id(h.Handle) != 0)
-                .Select(h => new RecordedWindowHint(Id(h.Handle), h.PassiveVisual, h.MediaCompanion, h.Anchor, h.ProtectedRegions, h.Role)).ToArray(),
+                .Select(h => new RecordedWindowHint(Id(h.Handle), h.PassiveVisual, h.MediaCompanion, h.Anchor, h.ProtectedRegions, h.Role, h.FloatingAffinity)).ToArray(),
             (context.Placement ?? []).Where(p => Id(p.Window) != 0)
                 .Select(p => new RecordedPlacement(Id(p.Window), Id(p.Partner), p.Center, p.Width, p.Order,
-                    p.RevealedCell, p.Confidence, p.InnerOverlap, p.Height)).ToArray(),
+                    p.RevealedCell, p.Confidence, p.InnerOverlap, p.Height, p.PreferWidth, p.PreferCenter)).ToArray(),
             floors.Length > 0 ? floors : null, context.Activities?.Where(a => Id(a.Key) != 0)
                 .ToDictionary(a => Id(a.Key), a => a.Value), context.Attention?.Where(a => Id(a.Key) != 0)
-                .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor), video, context.GestureTarget);
+                .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor), video, context.GestureTarget, navigation);
     }
 
     // During offline replay the session-local ids are the simulated handles.
     internal TaskLayoutContext ApplyToReplay(TaskLayoutContext context) => context with
     {
-        Focus = new(Main, Companion, Switches, FocusEvidence ?? "recent-switch-pair"),
+        Focus = new(Main, Companion, Switches, FocusEvidence ?? "recent-switch-pair",
+            Navigation?.Hops.Where(h => h.SourceRole is "waiting" or "return").Select(h => (nint)h.Source).ToArray(),
+            Navigation?.Hops.Select(h => new NavigationHop(h.Source, h.Target, h.Evidence, h.AgeMilliseconds)).ToArray()),
+        NavigationObservedAt = Navigation?.ObservedAt,
         WindowHints = Hints.Select(h => new TaskWindowHint(h.Id, h.Passive, ProtectedRegions: h.Regions,
-            Anchor: h.Anchor, MediaCompanion: h.Media, Role: h.Role)).ToArray(),
+            Anchor: h.Anchor, MediaCompanion: h.Media, Role: h.Role, FloatingAffinity: h.FloatingAffinity)).ToArray(),
         Placement = Placements.Select(p => new PlacementPreference(p.Id, p.Partner, p.Center, p.Width,
-            p.Order, p.Cell, p.Confidence, p.Overlap, p.Height)).ToArray(),
+            p.Order, p.Cell, p.Confidence, p.Overlap, p.Height, p.PreferWidth, p.PreferCenter)).ToArray(),
         Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),
         Attention = Attention?.ToDictionary(a => (nint)a.Key, a => a.Value),
         GestureAnchor = GestureAnchor, GestureTarget = GestureTarget,

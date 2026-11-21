@@ -70,7 +70,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     internal event Action<nint>? GestureStarted;
     internal event Action<ManualWindowGesture>? GestureObserved;
     internal event Action<ManualWindowGesture>? TidyRequested;
-    internal event Action<nint, uint, long>? TaskInput;
+    internal event Action<nint, uint, long, bool>? TaskInput;
 
     internal bool TaskInputAvailable => _trackTaskInput && _mouseHook != 0;
     internal bool IsAvailable => _eventHook != nint.Zero;
@@ -253,7 +253,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
                 var root = hit == nint.Zero ? nint.Zero : NativeMethods.GetAncestor(hit, NativeMethods.GaRoot);
                 if (root != nint.Zero)
                 {
-                    _ = NativeMethods.PostMessage(Handle, PointerInputMessage, root, message);
+                    _ = NativeMethods.PostMessage(Handle, (uint)(PointerInputMessage + kind), root, unchecked((int)data.Time));
                 }
             }
         }
@@ -275,17 +275,21 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
             case MoveSizeEndMessage:
                 EndGesture(message.WParam);
                 return;
-            case PointerInputMessage:
-                if (_enabled && message.LParam == NativeMethods.WmLButtonDown) TouchClick(message.WParam);
+            case >= PointerInputMessage + NativeMethods.WmLButtonDown and <= PointerInputMessage + NativeMethods.WmMouseHWheel:
+                int kind = message.Msg - PointerInputMessage;
+                if (_enabled && kind == NativeMethods.WmLButtonDown) TouchClick(message.WParam);
                 if (_trackTaskInput)
                 {
                     var target = message.WParam;
-                    if ((int)message.LParam is NativeMethods.WmMouseWheel or NativeMethods.WmMouseHWheel &&
+                    if (kind is NativeMethods.WmMouseWheel or NativeMethods.WmMouseHWheel &&
                         !NativeMethods.ScrollsInactiveWindows()) target = NativeMethods.GetForegroundWindow();
                     if (target != 0 && !AutomationGuard.IsUtility(target))
                     {
                         NativeMethods.GetWindowThreadProcessId(target, out var pid);
-                        TaskInput?.Invoke(target, pid, Environment.TickCount64);
+                        long now = Environment.TickCount64;
+                        long tick = now - unchecked((uint)now - (uint)(int)message.LParam);
+                        bool click = kind is NativeMethods.WmLButtonDown or NativeMethods.WmMButtonDown;
+                        TaskInput?.Invoke(target, pid, tick, click);
                     }
                 }
                 return;
@@ -350,7 +354,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
         if (_trackTaskInput && active.StartRect != endRect)
         {
             NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
-            TaskInput?.Invoke(hwnd, pid, Environment.TickCount64);
+            TaskInput?.Invoke(hwnd, pid, Environment.TickCount64, false);
         }
         TouchManipulation(hwnd, Environment.TickCount64, impulse: 1.0);
         GestureObserved?.Invoke(gesture);

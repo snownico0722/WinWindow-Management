@@ -4,7 +4,8 @@ namespace NeatWin.Core;
 // a later observation of the assisted frame cannot trigger another increment of growth.
 internal static class GesturePlacement
 {
-    internal static TaskLayoutContext Resolve(TaskLayoutContext context, IReadOnlyList<VisibleWindow> visible, TidyOptions options)
+    internal static TaskLayoutContext Resolve(TaskLayoutContext context, IReadOnlyList<VisibleWindow> visible,
+        TidyOptions options, IntentReferenceDocument? reference)
     {
         if (context.ExplicitArrange || context.GestureAnchor == 0 || context.GestureTarget.HasValue ||
             context.RecentGesture is not { } gesture || gesture.WindowHandle != context.GestureAnchor ||
@@ -14,8 +15,8 @@ internal static class GesturePlacement
         var window = moved.Window;
         var a = gesture.EndRect;
         var area = gesture.WorkArea;
-        if (a.IsEmpty || area.IsEmpty || a.Width > area.Width || a.Height > area.Height) return context;
-        var scale = Math.Max(.5, window.Dpi / 96d);
+        if (gesture.StartRect.IsEmpty || a.IsEmpty || area.IsEmpty || a.Width > area.Width || a.Height > area.Height) return context;
+        var scale = window.Dpi == 0 ? 1 : Math.Max(.5, window.Dpi / 96d);
         if (gesture.EndSpeedPixelsPerSecond > 2400 * scale) return context;
 
         double dx = a.Left - gesture.StartRect.Left;
@@ -39,7 +40,7 @@ internal static class GesturePlacement
                 .Any(v => a.VerticalOverlapRatio(v.Window.VisualRect) >= .5);
             if ((center || adjacent) && window.IsResizable && context.Preferences.AllowUsefulResize &&
                 context.VideoHint?.WindowHandle != window.Handle &&
-                context.WindowHints?.Any(h => h.Handle == window.Handle && h.Role == WindowUseRole.FloatingEditor) != true)
+                context.WindowHints?.Any(h => h.Handle == window.Handle && WindowUseRoles.IsFloating(h.Role)) != true)
             {
                 int Grow(int size, double comfort, int limit) => Math.Min(limit, size + Math.Clamp(
                     (int)Math.Round(comfort * scale) - size, 0, (int)Math.Round(size * .12)));
@@ -51,12 +52,12 @@ internal static class GesturePlacement
         }
         else
         {
-            // Reuse follow-hand alignment for a neighboring edge or a manual resize. Its target
-            // keeps the opposite edge fixed and respects the direction of the manipulated edge.
+            // Follow-hand can slide the released frame into alignment while keeping its new size.
             var neighborhood = visible.Where(v => v.Window.MonitorHandle == window.MonitorHandle &&
                 (v.Window.Handle == window.Handle || v.Window.Handle == context.Focus?.Companion || context.HasRecentInput(v.Window.Handle))).ToArray();
-            var snap = FollowHandAssistant.Decide(gesture, neighborhood, options,
-                SmartInteractionContext.Empty, SmartPersonalizationState.Default);
+            var hint = IntentEvidence.Resolve(reference, area, window.Dpi == 0 ? 96u : window.Dpi, DateTimeOffset.UtcNow);
+            var snap = FollowHandAssistant.Decide(gesture, neighborhood, options, SmartInteractionContext.Empty,
+                SmartPersonalizationState.Default with { PreferredGapPixels = hint.GapPixels });
             if (!snap.ShouldApply || gesture.Kind == ManualGestureKind.Move &&
                 snap.TargetKind == FollowHandTargetKind.ScreenEdge) return context;
             target = snap.TargetRect;

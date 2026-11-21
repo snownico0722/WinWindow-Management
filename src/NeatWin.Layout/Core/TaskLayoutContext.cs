@@ -53,7 +53,7 @@ public enum TaskRelation { Automatic, JointView, Alternating, Integrated }
 public sealed record TaskPairHint(nint First, nint Second, TaskRelation Relation);
 public sealed record TaskWindowHint(nint Handle, bool PassiveVisual = false,
     bool ProtectPeriphery = false, double? UsefulWidthDip = null, double? UsefulHeightDip = null, TaskContentRegion[]? ProtectedRegions = null, bool Anchor = false, bool MediaCompanion = false,
-    WindowUseRole Role = WindowUseRole.Unknown);
+    WindowUseRole Role = WindowUseRole.Unknown, double FloatingAffinity = 0);
 public sealed record WindowSizeFloor(nint Handle, int MinWidth, int MinHeight);
 
 public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDisplay[]? Displays = null,
@@ -66,6 +66,7 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     IReadOnlyDictionary<nint, string>? Activities = null, IReadOnlyDictionary<nint, LayoutAttention>? Attention = null,
     nint GestureAnchor = default, RectI? GestureTarget = null)
 {
+    internal DateTimeOffset? NavigationObservedAt { get; init; }
     public TaskLayoutProfile Preferences => (Profile ?? new()).Normalize();
     public bool PairPlanningEnabled => ExplicitArrange || UseWorkingPairs;
     internal bool HasRecentInput(nint handle) => Attention?.GetValueOrDefault(handle)?.Input >= .65;

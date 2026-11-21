@@ -36,9 +36,9 @@ internal sealed class LayoutRunJournal : IDisposable
             if (pending.Handles.Contains(handle)) pending.Intervened = true;
     }
 
-    internal void Record(IReadOnlyList<WindowSnapshot> before, LayoutApplication application, string trigger,
+    internal string? Record(IReadOnlyList<WindowSnapshot> before, LayoutApplication application, string trigger,
         IntentLayoutPlan? baseline = null, IntentLayoutPlan? proposal = null, IntentLayoutPlan? scored = null,
-        TaskLayoutContext? context = null, SmartTidyStrength? strength = null, bool? fullDesktop = null, bool allowReplan = false)
+        TaskLayoutContext? context = null, SmartTidyStrength? strength = null, bool? fullDesktop = null, bool allowReplan = false, string? undoOfRequest = null)
     {
         try
         {
@@ -59,7 +59,7 @@ internal sealed class LayoutRunJournal : IDisposable
                 frame, targets, layers, groups, null, refused.Length > 0 ? "submission-failed" : "requested-not-yet-verified",
                 application.Notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
                 context == null ? null : RecordedTaskSignals.From(context, ids, before), strength, fullDesktop, refused.Length == 0 ? null : refused,
-                application.MinimizeRequested is { } minimized ? ids[minimized.Handle] : null);
+                application.MinimizeRequested is { } minimized ? ids[minimized.Handle] : null, UndoOfRequest: undoOfRequest);
             _snapshotObserver?.Invoke(observation);
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);
@@ -70,8 +70,9 @@ internal sealed class LayoutRunJournal : IDisposable
             _pending.Add(new(observation, before.Select(w => w.Handle).ToHashSet(), Environment.TickCount64, epoch,
                 recorded, plan.Moves, application.Failures, allowReplan, application.MinimizeRequested) { Intervened = application.Interrupted });
             _timer.Start();
+            return observation.RequestId;
         }
-        catch { } // Diagnostics must not prevent a layout or an undo.
+        catch { return null; } // Diagnostics must not prevent a layout or an undo.
     }
 
     private bool TryAppend(LayoutRunObservation observation, long epoch)

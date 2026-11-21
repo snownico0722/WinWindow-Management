@@ -15,6 +15,7 @@ internal sealed class IdleWindowReclaim
         var main = context.Focus?.Main ?? 0;
         var peer = context.Focus?.Companion ?? 0;
         var protectedHandles = new HashSet<nint> { main, peer, context.GestureAnchor, context.VideoHint?.WindowHandle ?? 0 };
+        if (context.Focus?.NavigationAncestors is { } ancestors) protectedHandles.UnionWith(ancestors);
         foreach (var hint in context.WindowHints ?? [])
             if (hint.Anchor || hint.PassiveVisual || hint.MediaCompanion || hint.ProtectPeriphery || hint.ProtectedRegions is { Length: > 0 })
                 protectedHandles.Add(hint.Handle);
