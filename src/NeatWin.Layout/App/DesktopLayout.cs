@@ -15,13 +15,14 @@ internal sealed class DesktopLayout : IDisposable
     private readonly TaskCompletionSource<NeatWinApplicationContext> _ready =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    internal DesktopLayout(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged = null, Action<bool>? undoChanged = null, ForegroundHistory? focus = null)
+    internal DesktopLayout(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged = null,
+        Action<bool>? undoChanged = null, ForegroundHistory? focus = null, Action<LayoutRunObservation>? snapshotObserver = null)
     {
         var thread = new Thread(() =>
         {
             try
             {
-                using var context = new NeatWinApplicationContext(directory, report, recorderChanged, undoChanged, _stop.Token, focus);
+                using var context = new NeatWinApplicationContext(directory, report, recorderChanged, undoChanged, _stop.Token, focus, snapshotObserver);
                 _ready.SetResult(context);
                 Application.Run(context);
             }
@@ -50,7 +51,6 @@ internal sealed class DesktopLayout : IDisposable
     }
 
     internal Task ArrangeAsync() => RunAsync(context => context.RunTidy());
-    internal Task ObserveSnapshotAsync(Action<LayoutRunObservation>? observer) => RunAsync(context => context.ObserveSnapshot(observer));
     internal Task UndoAsync() => RunAsync(context => context.UndoTidy());
     internal async Task<(LayoutPreferences Preferences, RecorderStatus Recorder, BehaviorSettings Behavior)> ReadSettingsAsync()
     {

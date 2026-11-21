@@ -154,6 +154,7 @@ internal sealed class Preferences
     public bool ShowPinNotifications { get; set; }
     public bool EnhancedBackgroundKeep { get; set; }
     public bool LockBackgroundCursorPos { get; set; }
+    public bool SnapshotLookbackEnabled { get; set; } = true;
     public bool ManualTopmost { get; set; }
     public double Width { get; set; } = 580;
     public double Height { get; set; } = 500;

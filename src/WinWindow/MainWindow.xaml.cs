@@ -1,9 +1,9 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -14,7 +14,6 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using NeatWin.App;
-using NeatWin.Core;
 
 namespace WinWindow;
 
@@ -36,6 +35,8 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, TextBox> _keyEditors;
     private DesktopIntegration? _desktop;
     private DesktopLayout? _layout;
+    internal DesktopSnapshotHistory SnapshotHistory { get; } = new();
+    private IReadOnlySet<nint> _snapshotManaged = new HashSet<nint>();
     private FlashOverlay? _flash;
     private FlashOverlay? _hoverOutline;
     private WindowItem? _hoverPreviewItem;
@@ -83,6 +84,7 @@ public partial class MainWindow : Window
         SoundBox.IsChecked = p.EnablePinSound; NotificationBox.IsChecked = p.ShowPinNotifications;
         EnhancedBackgroundBox.IsChecked = p.EnhancedBackgroundKeep;
         LockCursorPosBox.IsChecked = p.LockBackgroundCursorPos;
+        SnapshotLookbackSwitch.IsChecked = p.SnapshotLookbackEnabled;
         AggressiveBox.IsEnabled = p.AbsoluteTopmost;
         LockCursorPosBox.IsEnabled = p.EnhancedBackgroundKeep;
         foreach (var pair in _keyEditors) pair.Value.Text = p.Hotkeys.GetValueOrDefault(pair.Key, "");
@@ -153,6 +155,7 @@ public partial class MainWindow : Window
         _source = HwndSource.FromHwnd(_hwnd); _source?.AddHook(WindowMessage);
         int corners = 2; Native.DwmSetWindowAttribute(_hwnd, 33, ref corners, 4);
         Native.FitToWorkArea(_hwnd);
+        UpdateSnapshotLookback();
         if (_testMode) return;
         _desktop = new(this, Manager);
         _desktop.ActionRequested += async action => await OnDesktopActionAsync(action);
@@ -211,6 +214,7 @@ public partial class MainWindow : Window
         if (AddPopup.IsOpen && !_pickView.Cast<WindowItem>().SequenceEqual(Manager.Items.Where(x => FilterAvailable(x)))) _pickView.Refresh();
 
         var managedAll = Manager.Items.Where(x => x.IsManaged || x.Remembered).ToArray();
+        Volatile.Write(ref _snapshotManaged, managedAll.Where(item => item.IsManaged && item.Hwnd != 0).Select(item => item.Hwnd).ToHashSet());
         _pinReinforceTimer.IsEnabled = managedAll.Any(x => x.WantsPin);
         int totalManaged = managedAll.Length;
         int pinnedCount = managedAll.Count(x => x.Pinned);
@@ -473,7 +477,7 @@ public partial class MainWindow : Window
             UndoArrangeButton.IsEnabled = available;
             _desktop?.SetUndoAvailable(available);
         }));
-    }, LayoutFocus);
+    }, LayoutFocus, SnapshotHistory.Observe);
 
     private async void Arrange_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().ArrangeAsync());
     private async void UndoLayout_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().UndoAsync());
@@ -487,25 +491,19 @@ public partial class MainWindow : Window
     private async void Snapshot_Click(object sender, RoutedEventArgs e)
     {
         SnapshotButton.IsEnabled = false;
-        var layout = EnsureLayout();
-        var decisions = new ConcurrentQueue<LayoutRunObservation>();
+        var capture = SnapshotHistory.BeginCapture();
         try
         {
             ShowStatus(UiText.Get("SnapshotCapturing"));
-            var observeLayout = layout.ObserveSnapshotAsync(decisions.Enqueue);
-            var managed = Manager.Items.Where(item => item.IsManaged && item.Hwnd != 0).Select(item => item.Hwnd).ToHashSet();
             var mode = FooterModes.Children.OfType<RadioButton>().FirstOrDefault(choice => choice.IsChecked == true)?.Tag as string ?? "Off";
-            var output = await DesktopSnapshot.ExportAsync(managed, _hwnd, _desktop?.LastExternalForeground ?? 0,
-                mode, decisions: decisions);
-            try { await observeLayout; }
-            catch (Exception ex) { System.Diagnostics.Trace.TraceWarning(ex.Message); }
+            var output = await DesktopSnapshot.ExportAsync(Volatile.Read(ref _snapshotManaged), _hwnd,
+                _desktop?.LastExternalForeground ?? 0, mode, capture: capture);
             ShowStatus(UiText.Format("SnapshotSaved", Path.GetFileName(output)));
         }
         catch (Exception ex) { ShowStatus(ex.Message); }
         finally
         {
-            try { await layout.ObserveSnapshotAsync(null); }
-            catch (Exception ex) { System.Diagnostics.Trace.TraceWarning(ex.Message); }
+            SnapshotHistory.EndCapture(capture);
             SnapshotButton.IsEnabled = true;
         }
     }
@@ -784,7 +782,7 @@ public partial class MainWindow : Window
     internal async Task QuitAsync()
     {
         if (_quitting) return;
-        _quitting = true; HideHoverPreview(); _layout?.Dispose(); AddPopup.IsOpen = false; _flash?.Dispose(); _flash = null;
+        _quitting = true; HideHoverPreview(); SnapshotHistory.Dispose(); _layout?.Dispose(); AddPopup.IsOpen = false; _flash?.Dispose(); _flash = null;
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
         CancelPicker(); SaveGeometry(); ApplyOwnPolicy();
         int failures = await Manager.ShutdownAsync();
@@ -797,6 +795,7 @@ public partial class MainWindow : Window
         _pickerTimer.Stop(); _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
         _flash?.Dispose(); _flash = null;
         HideHoverPreview(); _hoverOutline?.Dispose(); _hoverOutline = null;
+        SnapshotHistory.Dispose();
         _layout?.Dispose(); _layout = null;
         _desktop?.Dispose(); _desktop = null;
         _source?.RemoveHook(WindowMessage); _source = null;

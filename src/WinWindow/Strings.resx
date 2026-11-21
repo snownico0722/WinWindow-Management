@@ -260,7 +260,9 @@
   <data name="RuleImportFailed" xml:space="preserve"><value>导入规则失败。{0}</value></data>
   <data name="JsonFilter" xml:space="preserve"><value>JSON 规则|*.json</value></data>
   <data name="CurrentSnapshot" xml:space="preserve"><value>当前快照</value></data>
-  <data name="CurrentSnapshotHint" xml:space="preserve"><value>记录接下来 10 秒的窗口变化，在桌面生成 ZIP。包含窗口标题。</value></data>
+  <data name="CurrentSnapshotHint" xml:space="preserve"><value>在桌面生成 ZIP。包含接下来 10 秒的窗口变化和标题，开启追溯时还会附上过去 1 分钟。</value></data>
+  <data name="SnapshotLookback" xml:space="preserve"><value>快照追溯记录</value></data>
+  <data name="SnapshotLookbackHint" xml:space="preserve"><value>在内存中保留最近 1 分钟的窗口位置、标题和整理决策，点击「当前快照」时一并导出。关闭后清空本次追溯记录。</value></data>
   <data name="SnapshotCapturing" xml:space="preserve"><value>正在采集 10 秒窗口快照…</value></data>
   <data name="SnapshotSaved" xml:space="preserve"><value>已保存到桌面 · {0}</value></data>
   <data name="SnapshotDesktopMissing" xml:space="preserve"><value>找不到 Windows 桌面文件夹。</value></data>

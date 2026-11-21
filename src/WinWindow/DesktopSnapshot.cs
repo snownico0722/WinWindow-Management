@@ -1,7 +1,5 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -9,7 +7,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using NeatWin.Core;
 
 namespace WinWindow;
 
@@ -28,36 +25,51 @@ internal static class DesktopSnapshot
         Bounds? Frame, Bounds? NormalPosition, uint? Dpi, bool Visible, bool Minimized, bool Maximized,
         bool Cloaked, bool Topmost, bool ClickThrough, int Opacity, bool Foreground, bool Managed);
 
+    internal sealed record Sample(long Tick, string Foreground, Window[] Windows);
     private sealed record Frame(long ElapsedMs, string Foreground, Window[] Windows);
     private sealed record Display(string Name, Bounds Screen, Bounds WorkArea, bool Primary);
 
+    internal static Sample CaptureWindows(IReadOnlySet<nint> managed, nint workbench, Dictionary<uint, string> apps)
+    {
+        var tick = Environment.TickCount64;
+        var foreground = Native.GetForegroundWindow();
+        return new(tick, Handle(foreground), Native.CaptureDesktopWindows(managed, workbench, foreground, apps));
+    }
+
     internal static Task<string> ExportAsync(IReadOnlySet<nint> managed, nint workbench, nint previousForeground,
         string mode, string? directory = null, int durationMs = 10_000, CancellationToken cancellation = default,
-        ConcurrentQueue<LayoutRunObservation>? decisions = null) =>
+        DesktopSnapshotHistory.Capture? capture = null) =>
         Task.Run(async () =>
         {
             directory ??= Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
             if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
                 throw new DirectoryNotFoundException(UiText.Get("SnapshotDesktopMissing"));
 
-            var start = DateTimeOffset.Now;
-            var timer = Stopwatch.StartNew();
+            var start = capture?.Time ?? DateTimeOffset.Now;
+            var startTick = capture?.Tick ?? Environment.TickCount64;
             var displays = System.Windows.Forms.Screen.AllScreens.Select(s =>
                 new Display(s.DeviceName, Bounds.From(s.Bounds), Bounds.From(s.WorkingArea), s.Primary)).ToArray();
-            var frames = new List<Frame>();
+            var past = capture?.PastWindows ?? [];
+            var frames = past.Select(sample => new Frame(sample.Tick - startTick, sample.Foreground, sample.Windows)).ToList();
             var apps = new Dictionary<uint, string>();
             while (true)
             {
                 cancellation.ThrowIfCancellationRequested();
-                long elapsed = timer.ElapsedMilliseconds;
-                var foreground = Native.GetForegroundWindow();
-                frames.Add(new(elapsed, Handle(foreground), Native.CaptureDesktopWindows(managed, workbench, foreground, apps)));
+                var sample = CaptureWindows(managed, workbench, apps);
+                long elapsed = sample.Tick - startTick;
+                frames.Add(new(elapsed, sample.Foreground, sample.Windows));
                 if (elapsed >= durationMs) break;
+                elapsed = Environment.TickCount64 - startTick;
                 int delay = (int)Math.Min(250 - elapsed % 250, durationMs - elapsed);
                 await Task.Delay(Math.Max(1, delay), cancellation).ConfigureAwait(false);
             }
 
-            var plans = decisions?.ToArray() ?? [];
+            var pastPlans = capture?.PastDecisions ?? [];
+            var livePlans = capture?.LiveDecisions.Where(d => d.Tick - startTick <= frames[^1].ElapsedMs).ToArray() ?? [];
+            var plans = pastPlans.Concat(livePlans).Select(d => d.Observation).ToArray();
+            bool lookbackEnabled = capture?.LookbackEnabled == true;
+            int pastRequests = pastPlans.Select(d => d.Observation.RequestId).Distinct().Count();
+            int liveRequests = livePlans.Select(d => d.Observation.RequestId).Distinct().Count();
             var fileName = $"WinWindow-snapshot-{start:yyyyMMdd-HHmmss-fff}.zip";
             var output = Path.Combine(directory, fileName);
             var temporary = Path.Combine(directory, "." + Guid.NewGuid().ToString("N") + ".tmp");
@@ -68,9 +80,10 @@ internal static class DesktopSnapshot
                     using (var writer = Writer(zip, "summary.txt"))
                     {
                         writer.WriteLine($"WinWindow desktop snapshot | {start:O}");
-                        writer.WriteLine($"Arrange mode: {mode} | Samples: {frames.Count} | Duration: {frames[^1].ElapsedMs} ms");
+                        writer.WriteLine($"Arrange mode: {mode} | Samples after click: {frames.Count - past.Length} | Duration after click: {frames[^1].ElapsedMs} ms");
+                        writer.WriteLine($"Lookback: {(lookbackEnabled ? "enabled" : "disabled")} | Samples before click: {past.Length} | History span: {(past.Length == 0 ? 0 : startTick - past[0].Tick)} ms");
                         writer.WriteLine($"Previous external foreground: {Handle(previousForeground)}");
-                        writer.WriteLine($"Layout requests during capture: {plans.Select(p => p.RequestId).Distinct().Count()}");
+                        writer.WriteLine($"Layout requests before click: {pastRequests} | After click: {liveRequests}");
                         writer.WriteLine($"Monitors: {displays.Length}");
                         foreach (var display in displays)
                             writer.WriteLine($"  {display.Name} | display: {display.Screen} | work area: {display.WorkArea} | primary: {display.Primary}");
@@ -82,14 +95,17 @@ internal static class DesktopSnapshot
                             if (frame.Foreground == last) continue;
                             last = frame.Foreground;
                             var window = frame.Windows.FirstOrDefault(w => w.Handle == last);
-                            writer.WriteLine($"  +{frame.ElapsedMs} ms  {last}  {window?.App}  {window?.Title}");
+                            writer.WriteLine($"  {frame.ElapsedMs:+0;-0;0} ms  {last}  {window?.App}  {window?.Title}");
                         }
                         WriteWindows(writer, frames[0]);
-                        if (frames.Count > 1) WriteWindows(writer, frames[^1]);
+                        if (past.Length > 0) WriteWindows(writer, frames[past.Length]);
+                        if (frames.Count - past.Length > 1) WriteWindows(writer, frames[^1]);
                     }
                     using (var writer = Writer(zip, "timeline.jsonl"))
                     {
-                        writer.WriteLine(JsonSerializer.Serialize(new { Version = 1, Start = start, PreviousForeground = Handle(previousForeground), Mode = mode, Displays = displays }));
+                        writer.WriteLine(JsonSerializer.Serialize(new { Version = 2, Start = start, PreviousForeground = Handle(previousForeground), Mode = mode, Displays = displays,
+                            LookbackEnabled = lookbackEnabled, LookbackMilliseconds = DesktopSnapshotHistory.LookbackMilliseconds,
+                            SamplesBeforeClick = past.Length, LayoutRequestsBeforeClick = pastRequests, LayoutRequestsAfterClick = liveRequests }));
                         foreach (var frame in frames) writer.WriteLine(JsonSerializer.Serialize(frame));
                     }
                     using (var writer = Writer(zip, "layout-decisions.jsonl"))

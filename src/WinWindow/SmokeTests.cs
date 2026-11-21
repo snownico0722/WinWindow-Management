@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection.PortableExecutable;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -384,6 +385,16 @@ internal static class SmokeTests
             shell.UpdateLayout(); Capture(shell, Path.Combine(output, "settings-layout.png"));
             OpenSection("DataSection");
             await WaitAsync("recorder shares the same settings window", () => ((CheckBox)shell.FindName("RecordSwitch")).IsVisible && !layoutPage.IsVisible);
+            var lookback = (CheckBox)shell.FindName("SnapshotLookbackSwitch");
+            Assert(lookback.IsVisible && lookback.IsChecked == true, "snapshot lookback defaults to on in Data and records");
+            arrange.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await WaitAsync("snapshot history observes previous layout and actual native window positions", () =>
+            {
+                var recent = shell.SnapshotHistory.BeginCapture();
+                shell.SnapshotHistory.EndCapture(recent);
+                return recent.PastWindows.Any(frame => frame.Tick < recent.Tick && frame.Windows.Any(w => w.Handle == DesktopSnapshot.Handle(item.Hwnd))) &&
+                    recent.PastDecisions.Any(entry => entry.Observation.Trigger == "explicit" && entry.Observation.Actual is not null);
+            }, 5000);
             OpenSection("KeysSection");
             await WaitAsync("hotkeys are reachable from the same sidebar", () => ((TextBox)shell.FindName("ShowKeyBox")).IsVisible);
             await CheckHotkeyDraftAsync(shell, store);
@@ -393,17 +404,34 @@ internal static class SmokeTests
             OpenSection("BehaviorSection");
             await WaitAsync("continuous behavior learning has an independent settings page",
                 () => ((CheckBox)shell.FindName("LearnBehaviorSwitch")).IsVisible && !((CheckBox)shell.FindName("ReferenceEnabled")).IsVisible);
+            var snapshot = shell.SnapshotHistory.BeginCapture();
             var archivePath = await DesktopSnapshot.ExportAsync(new HashSet<nint>(), new WindowInteropHelper(shell).Handle,
-                0, "Off", directory: output, durationMs: 510);
+                0, "Off", directory: output, durationMs: 510, capture: snapshot);
+            shell.SnapshotHistory.EndCapture(snapshot);
             using (var archive = System.IO.Compression.ZipFile.OpenRead(archivePath))
             using (var timeline = new StreamReader(archive.GetEntry("timeline.jsonl")!.Open()))
+            using (var decisions = new StreamReader(archive.GetEntry("layout-decisions.jsonl")!.Open()))
             {
                 var samples = (await timeline.ReadToEndAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                Assert(samples.Length >= 3 && samples.Any(line => line.Contains(DesktopSnapshot.Handle(item.Hwnd), StringComparison.Ordinal)) &&
-                    archive.GetEntry("summary.txt") is not null && archive.GetEntry("layout-decisions.jsonl") is not null,
-                    "the snapshot ZIP includes sampled top-level windows and a human-readable summary");
+                var times = samples.Skip(1).Select(line =>
+                {
+                    using var frame = JsonDocument.Parse(line);
+                    return frame.RootElement.GetProperty("ElapsedMs").GetInt64();
+                }).ToArray();
+                Assert(times.First() is >= -DesktopSnapshotHistory.LookbackMilliseconds and < 0 && times.Last() >= 510 &&
+                    times.SequenceEqual(times.Order()) && samples.Any(line => line.Contains(DesktopSnapshot.Handle(item.Hwnd), StringComparison.Ordinal)) &&
+                    archive.GetEntry("summary.txt") is not null && (await decisions.ReadToEndAsync()).Contains("\"Trigger\":\"explicit\"", StringComparison.Ordinal),
+                    "snapshot ZIP includes the pre-click window timeline and earlier decisions alongside the live capture");
             }
             File.Delete(archivePath);
+            OpenSection("DataSection");
+            lookback.IsChecked = false;
+            lookback.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            var disabledSnapshot = shell.SnapshotHistory.BeginCapture();
+            shell.SnapshotHistory.EndCapture(disabledSnapshot);
+            Assert(!disabledSnapshot.LookbackEnabled && disabledSnapshot.PastWindows.Length == 0 && disabledSnapshot.PastDecisions.Length == 0,
+                "turning snapshot lookback off clears both history buffers");
+            await WaitAsync("snapshot lookback opt-out survives reload", () => !new StateStore(data).Preferences.SnapshotLookbackEnabled);
             ((ToggleButton)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             var row = await FindRowAsync(shell, chosen);
             var slider = (Slider)row.FindName("OpacitySlider");
