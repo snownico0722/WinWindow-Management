@@ -900,7 +900,7 @@ Check(RoutineTick(22_000, [reopenedHelper with { Foreground = false }, nextTask]
         usage.Sample(26_000, 2, false)?.PointerActions == null,
         "missing foreground events, sampling gaps, and unavailable input keep unknown evidence distinct from zero");
     var targets = new[] { Window(1, new(0, 0, 400, 400)), Window(2, new(0, 0, 800, 400)) };
-    var video = new VideoBlackBarHint(2, VideoBlackBarOrientation.Horizontal, 2, new(0, 0, 800, 400), .95);
+    var video = new VideoBlackBarHint(2, VideoBlackBarOrientation.Horizontal, 2, new(0, 0, 800, 400), .95, VideoBlackBarTendency.Expand);
     var data = RecordedTaskSignals.From(new(VideoHint: video), targets.ToDictionary(w => w.Handle, w => (int)w.Handle), targets);
     Check(data.Video?.Exposure?.Visible == .5 && data.ApplyToReplay(new()).VideoHint == video,
         "record and replay the detected video viewport independently of full-window exposure");

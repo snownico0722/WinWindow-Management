@@ -74,6 +74,37 @@ internal static class AttentionWorkspaceChecks
         foreach (var frame in new[] { ready, new[] { popup, ready[0], ready[1] }, ready })
             check(Balanced(frame, observed).Moves.Count == 0,
                 "a readable pair stays settled as a peripheral surface appears and disappears");
+        var viewport = ready[1].VisualRect with { X = ready[1].VisualRect.X + 30, Y = 180, Width = 880, Height = 620 };
+        var video = new VideoBlackBarHint(2, VideoBlackBarOrientation.Horizontal, 1.78, viewport, .95);
+        var ordinarySwitch = observed with { Focus = new(1, 2, 1, "handoff"),
+            Placement = [new(2, 0, .77, .3, 0, -1, .48, PreferWidth: false)] };
+        foreach (var hints in new[] { ordinarySwitch, ordinarySwitch with { VideoHint = video },
+            ordinarySwitch with { VideoHint = video with { Tendency = VideoBlackBarTendency.Expand } },
+            context with { IsWorkspaceObservation = true, VideoHint = video } })
+        {
+            var result = Balanced(ready, hints);
+            check(result.Layers.Count == 0 && (hints.VideoHint == null ? result.Moves.Count == 0 :
+                result.Moves is [{ Window.Handle: 2 } resize] && resize.TargetVisualRect.X == ready[1].VisualRect.X &&
+                resize.TargetVisualRect.Width == ready[1].VisualRect.Width && resize.TargetVisualRect.Height < ready[1].VisualRect.Height),
+                "a focus handoff keeps readable columns and horizontal bars shorten only the browser on its existing column");
+        }
+        var atFloor = ordinarySwitch with { VideoHint = video, SizeFloors = [new(2, 1, ready[1].VisualRect.Height)] };
+        check(Balanced(ready, atFloor).Moves.Count == 0,
+            "when cropping reaches a size floor and growing covers the neighbor, the entire pair stays put");
+        var withSpace = ready.Select(w => w with { WorkArea = area with { Width = 2500 },
+            VisualRect = w.Handle == 2 ? w.VisualRect with { X = w.VisualRect.X + 240 } : w.VisualRect }).ToArray();
+        var positive = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(withSpace, true),
+            new(), null, withSpace, atFloor with { VerifiedRepeat = true,
+                VideoHint = video with { ViewportVisualRect = viewport with { X = viewport.X + 240 } } });
+        check(positive.Moves is [{ Window.Handle: 2 } growth] && growth.TargetVisualRect.Width > ready[1].VisualRect.Width &&
+            positive.Layers.Count == 0, "with free space the same shrink preference permits expansion when shrinking hits a floor");
+        var contrary = ordinarySwitch with { Placement = [new(2, 0, .2, .5, 0, -1, .85)] };
+        check(Balanced(ready, contrary).Groups.Single().Candidates.Length > 1,
+            "a learned position on the opposite side still reopens the search");
+        var underMain = ready[1] with { VisualRect = ready[1].VisualRect with { X = ready[1].VisualRect.X - 260 } };
+        check(!IntentLayoutPlanner.DesktopRegionsPreserved(ready, [ready[0], underMain], observed with { VideoHint = video }) &&
+            IntentLayoutPlanner.DesktopRegionsPreserved([ready[0], underMain], ready, observed with { VideoHint = video }, ready),
+            "moving a detected viewport under the foreground loses content while moving it back reveals it");
         var covered = ready[1] with { VisualRect = ready[1].VisualRect with { X = area.Left + 15 } };
         check(Balanced([ready[0], covered], observed).Moves.Count > 0 && Balanced(uneven, observed).Moves.Count > 0,
             "a real collision or a narrow reference immediately reopens workspace arrangement");

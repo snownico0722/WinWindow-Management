@@ -361,12 +361,6 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 var focusObservedAt = DateTimeOffset.UtcNow;
                 var focus = _focus.Resolve(snapshot, Environment.TickCount64, out var attention);
                 var liveHints = _recorder.LiveHints(snapshot);
-                if (videoHint is { Confidence: >= .82 })
-                {
-                    var existing = liveHints.FirstOrDefault(w => w.Handle == videoHint.WindowHandle);
-                    var mediaHint = (existing ?? new TaskWindowHint(videoHint.WindowHandle)) with { PassiveVisual = true, MediaCompanion = true };
-                    liveHints = [.. liveHints.Where(w => w.Handle != videoHint.WindowHandle), mediaHint];
-                }
                 liveHints = _journal.Feedback.Bind(snapshot, liveHints, Environment.TickCount64);
                 bool pairSmart = explicitSmart || trigger is "automatic-gesture" or "automatic-workspace";
                 var pairs = pairSmart && _useImportedPlacement ? _recorder.BindRules(rules, snapshot, liveHints, activities) : [];
@@ -435,7 +429,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     NavigationObservedAt = focus.Navigation is { Length: > 0 } ? focusObservedAt : null,
                     Attention = attention,
                     WindowHints = liveHints,
-                    VideoHint = videoHint is { Confidence: >= .82 } ? videoHint : null,
+                    VideoHint = videoHint is { Confidence: >= .82 } ? videoHint with { Tendency = _smartBehaviorOptions.VideoBlackBarTendency } : null,
                     Rules = _useImportedPlacement ? rules : rules with { Pairs = [], RolePairs = [], AppSlots = [] }, Activities = activities,
                     UseWorkingPairs = pairSmart,
                     RulePairs = pairs,
@@ -463,22 +457,6 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 detailed = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, reference, snapshot, taskContext);
                 plan = detailed.Moves;
                 scored = detailed;
-                // The task objective replaces the old geometry-only fill pass. A video refinement
-                // is retained only when task utility and screen-aware access survive.
-                var beforeVideoPlan = plan;
-                plan = VideoAspectPostProcessor.Refine(visibleWorkingSet, plan, effectiveOptions, _smartBehaviorOptions, videoHint);
-                if (!IntentLayoutPlanner.TaskRefinementAcceptable(visibleWorkingSet, detailed, plan, effectiveOptions, taskContext, snapshot))
-                    plan = detailed.Moves;
-                if (videoHint is not null)
-                {
-                    var browser = visibleWorkingSet.FirstOrDefault(item => item.Window.Handle == videoHint.WindowHandle);
-                    if (browser is not null)
-                    {
-                        var before = beforeVideoPlan.FirstOrDefault(move => move.Window.Handle == videoHint.WindowHandle)?.TargetVisualRect ?? browser.Window.VisualRect;
-                        var after = plan.FirstOrDefault(move => move.Window.Handle == videoHint.WindowHandle)?.TargetVisualRect ?? browser.Window.VisualRect;
-                        if (before != after) _videoBlackBarDetector.RecordApplied(videoHint.WindowHandle, after);
-                    }
-                }
             }
             else plan = _tidyEngine.CreatePlan(visibleWorkingSet, effectiveOptions);
 
@@ -491,6 +469,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var application = _windowManager.ApplyLayout(detailed, showActivity ? null : foreground, reclaimContext, releaseInput?.WindowHandle ?? 0, initialReading);
             if (application.Interrupted && !showActivity) _workspaceMonitor.RequestCurrent();
             detailed = application.Plan; plan = detailed.Moves;
+            if (videoHint != null && proposed.Groups.Any(g => g.Selected is "video-aspect-shrink" or "video-aspect-expand") &&
+                plan.FirstOrDefault(m => m.Window.Handle == videoHint.WindowHandle) is { } videoMove)
+                _videoBlackBarDetector.RecordApplied(videoHint.WindowHandle, videoMove.TargetVisualRect);
             _verticalFillManager.Track(plan, smart && _smartBehaviorOptions.PreferReversibleVerticalFill);
             var layerOrders = detailed.Layers;
             IReadOnlyList<WindowSnapshot> requestedDesktop = snapshot;
@@ -594,6 +575,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     {
         "full-tiling" => LayoutText.Get("Tiled"), "tiling-insufficient-space" => LayoutText.Get("InsufficientSpace"),
         "window-access" or "working-pair-access" => LayoutText.Get("WindowAccess"), "display-reflow" => LayoutText.Get("DisplayReflow"),
+        "video-aspect-shrink" or "video-aspect-expand" => LayoutText.Get("VideoAspectLayout"),
+        "video-current" => LayoutText.Get("PreservePlacement"),
         "learned-position" => LayoutText.Get("LearnedPosition"),
         "attention-layout" or "attention-side-stack" => LayoutText.Get("AttentionLayout"),
         "working-overlap" => LayoutText.Get("WorkingOverlap"),

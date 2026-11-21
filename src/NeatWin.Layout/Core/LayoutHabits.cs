@@ -530,6 +530,7 @@ public sealed class ForegroundHistory
 
 public static class LayoutHabits
 {
+    internal const double AxisTolerance = 1d / 12;
     public static LayoutHabit? Observe(WindowAdjustmentObservation o, bool byInstance = false)
     {
         bool assisted = o.Outcome == "assisted-release";
@@ -661,7 +662,7 @@ public static class LayoutHabits
             }
             // Do not invent an intermediate placement between two competing arrangements.
             // A coherent majority within one-twelfth of the work area may inform this axis.
-            var consistent = votes.Where(s => Math.Abs(value(s) - median) <= 1d / 12).ToArray();
+            var consistent = votes.Where(s => Math.Abs(value(s) - median) <= AxisTolerance).ToArray();
             double coherentWeight = consistent.Sum(Weight);
             if (!HasSupport(consistent) || coherentWeight <= .60 * weight) return default;
             double average = consistent.Sum(s => Weight(s) * value(s)) / coherentWeight;

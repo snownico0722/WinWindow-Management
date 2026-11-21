@@ -672,7 +672,7 @@ internal static partial class IntentLayoutPlanner
         }
         var plannedDesktop = Project(planned.Moves);
         var refinedDesktop = Project(refined);
-        if (!DesktopRegionsPreserved(plannedDesktop, refinedDesktop, context)) return false;
+        if (!DesktopRegionsPreserved(plannedDesktop, refinedDesktop, context, desktop)) return false;
         foreach (var trace in planned.Groups)
         {
             var group = visible.Where(v => trace.Handles.Contains(v.Window.Handle)).OrderBy(v => v.Window.ZOrder).ToArray();

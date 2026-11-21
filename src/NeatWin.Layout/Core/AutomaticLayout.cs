@@ -281,12 +281,16 @@ public sealed class AutomaticLayoutScheduler
 internal static class LayoutDispatch
 {
     internal static string ModelVersion(TidyAlgorithmMode mode) =>
-        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v1.3";
+        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v1.4";
 
     internal static IntentLayoutPlan Create(LayoutRoute route, IReadOnlyList<VisibleWindow> visible,
-        TidyOptions options, IntentReferenceDocument? reference, IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext? context) =>
-        route == LayoutRoute.FullTiling ? FullTilingPlanner.Create(desktop, options) :
-        IntentLayoutPlanner.CreateDetailedPlan(visible,
-            route == LayoutRoute.Smart ? options with { AlgorithmMode = TidyAlgorithmMode.Smart } : options,
-            reference, desktop, context);
+        TidyOptions options, IntentReferenceDocument? reference, IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext? context)
+    {
+        if (route == LayoutRoute.FullTiling) return FullTilingPlanner.Create(desktop, options);
+        if (route == LayoutRoute.Smart) options = options with { AlgorithmMode = TidyAlgorithmMode.Smart };
+        // 普通布局使用独立的焦点、手势和空间证据。改变黑边观测时，其他窗口可选的位置不随视频权重改变。
+        var ordinary = context?.VideoHint == null ? context : context with { VideoHint = null };
+        var plan = IntentLayoutPlanner.CreateDetailedPlan(visible, options, reference, desktop, ordinary);
+        return context?.VideoHint != null ? VideoAspectPostProcessor.Select(visible, desktop, plan, options, context) : plan;
+    }
 }

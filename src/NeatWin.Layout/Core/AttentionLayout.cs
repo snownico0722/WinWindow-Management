@@ -175,12 +175,13 @@ internal static class AttentionLayout
         OcclusionMetrics.Exposure[] exposed, WindowSnapshot[] obstacles, TaskLayoutContext context)
     {
         if (targets == null || context.ExplicitArrange || !context.IsWorkspaceObservation ||
-            context.GestureAnchor != 0 || context.Focus?.OpeningResidentLeft != null || context.VideoHint != null ||
+            context.GestureAnchor != 0 || context.Focus?.OpeningResidentLeft != null ||
             context.Focus?.Navigation is { Length: > 0 } || context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true ||
             context.RulePairs?.Length > 0) return null;
         var area = group[0].Window.WorkArea;
         if (HasReadableColumns(group, targets, exposed, obstacles, context)) return "existing-readable-columns";
-        if (group.Length < 2) return null;
+        // 黑边属于特定视频窗口。已有可读分栏时由后续视频步骤校正比例，其他窗口无需仅因这次测量重新摆位。
+        if (group.Length < 2 || context.VideoHint != null) return null;
         // 在两个居中窗之间切回一次，可能只是翻回刚才看的内容。两边都有输入，或多次切换且各自有停留，才有更强的并排使用证据。
         if (group.Length == 2 && context.Focus is { Evidence: "recent-switch-pair" } focus &&
             !(focus.Companion != 0 && (group.All(v => context.Attention?.GetValueOrDefault(v.Window.Handle)?.Input >= .35) ||
@@ -229,7 +230,8 @@ internal static class AttentionLayout
         {
             int other = 1 - main;
             var peer = group[other].Window;
-            return targets[other].Role == AttentionRole.Reference && ColumnsFit(peer) && BothReadable(peer, exposed[other]);
+            return targets[other].Role is AttentionRole.Reference or AttentionRole.Return &&
+                ColumnsFit(peer) && BothReadable(peer, exposed[other]);
         }
         // 副窗的输入分数会随时间衰减。即使这一轮只给主窗排位，移向中央仍可能盖住用户正在看的另一栏。
         if (focus.Companion != 0) return false;
@@ -256,10 +258,20 @@ internal static class AttentionLayout
         {
             if (exposed[main].Visible * active.VisualRect.Area + seen.Visible * peer.VisualRect.Area < area.Area * .65 ||
                 !Readable(peer, seen)) return false;
-            // 和第三扇窗一起学到的位置只适用于那一对。眼前这两栏仍应服从用户各自的习惯或这对窗口之间的习惯。
-            return context.Placement?.Any(p => p.Confidence >= .40 &&
-                (p.Window == active.Handle && (p.Partner == 0 || p.Partner == peer.Handle) ||
-                 p.Window == peer.Handle && (p.Partner == 0 || p.Partner == active.Handle))) != true;
+            foreach (var p in context.Placement ?? [])
+            {
+                if (p.Confidence < .40 || p.Window != active.Handle && p.Window != peer.Handle) continue;
+                var other = p.Window == active.Handle ? peer : active;
+                if (p.Partner != 0 && p.Partner != other.Handle) continue;
+                // 习惯来自一段坐标范围。桌面已经落在用户教过的范围内时，追逐平均坐标只会增加一次移动。
+                var rect = p.Window == active.Handle ? active.VisualRect : peer.VisualRect;
+                if (p.Partner != 0 && (p.RevealedCell >= 0 || p.InnerOverlap.HasValue ||
+                    Math.Abs(p.Order) >= .5 && Math.Sign(rect.Left + rect.Width / 2d - other.VisualRect.Left - other.VisualRect.Width / 2d) != Math.Sign(p.Order))) return false;
+                if (p.PreferCenter && Math.Abs((rect.Left + rect.Width / 2d - area.Left) / area.Width - p.Center) > LayoutHabits.AxisTolerance ||
+                    p.PreferWidth && Math.Abs((double)rect.Width / area.Width - p.Width) > LayoutHabits.AxisTolerance ||
+                    p.Height is double height && Math.Abs((double)rect.Height / area.Height - height) > LayoutHabits.AxisTolerance) return false;
+            }
+            return true;
         }
 
         bool Readable(WindowSnapshot window, OcclusionMetrics.Exposure seen)

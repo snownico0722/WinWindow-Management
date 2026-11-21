@@ -28,7 +28,10 @@ internal static partial class IntentLayoutPlanner
         return edges ? EdgeRegions.Concat(custom).ToArray() : custom;
     }
 
-    private static bool HasRegionProtection(TaskLayoutContext context) => context.Preferences.ProtectWindowEdges ||
+    private static bool ProtectsVideo(TaskLayoutContext context) => context.IsWorkspaceObservation && !context.ExplicitArrange &&
+        context.GestureAnchor == 0 && context.VideoHint is { Confidence: >= .82, ContentAspectRatio: >= .55 and <= 4.5 };
+
+    private static bool HasRegionProtection(TaskLayoutContext context) => ProtectsVideo(context) || context.Preferences.ProtectWindowEdges ||
         context.WindowHints?.Any(h => h.ProtectPeriphery || h.ProtectedRegions?.Length > 0) == true;
 
     // Preserve the actual on-screen text, including its wrap width and all previously
@@ -72,13 +75,25 @@ internal static partial class IntentLayoutPlanner
     }
 
     internal static bool DesktopRegionsPreserved(IReadOnlyList<WindowSnapshot> before,
-        IReadOnlyList<WindowSnapshot> after, TaskLayoutContext context)
+        IReadOnlyList<WindowSnapshot> after, TaskLayoutContext context, IReadOnlyList<WindowSnapshot>? measuredDesktop = null)
     {
         if (!HasRegionProtection(context)) return true;
         var next = after.ToDictionary(w => w.Handle);
         foreach (var w in before)
         {
             var regions = ProtectedRegions(w, context);
+            if (ProtectsVideo(context) && context.VideoHint is { } video && w.Handle == video.WindowHandle)
+            {
+                // 黑边测量给出的是采样当时的屏幕坐标。用当时的窗口把视口换为相对坐标，才能比较移动前后同一块内容的遮挡。
+                var frame = measuredDesktop?.FirstOrDefault(item => item.Handle == w.Handle)?.VisualRect ?? w.VisualRect;
+                var view = video.ViewportVisualRect;
+                if (!view.IsEmpty && frame.Intersect(view) == view)
+                {
+                    double x = (view.Left - frame.Left) / (double)frame.Width, y = (view.Top - frame.Top) / (double)frame.Height;
+                    regions = [.. regions, new(x, y, Math.Min(1 - x, view.Width / (double)frame.Width),
+                        Math.Min(1 - y, view.Height / (double)frame.Height))];
+                }
+            }
             if (regions.Length == 0) continue;
             if (!next.TryGetValue(w.Handle, out var target)) return false;
             var blockersBefore = before.Where(b => b.ZOrder < w.ZOrder).Select(b => b.VisualRect);

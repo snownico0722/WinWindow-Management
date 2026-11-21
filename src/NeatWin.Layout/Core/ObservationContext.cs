@@ -96,7 +96,7 @@ public sealed record RecordedPlacement(int Id, int Partner, double Center, doubl
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     double? Height = null, bool PreferWidth = true, bool PreferCenter = true);
 public sealed record RecordedVideo(int Id, VideoBlackBarOrientation Orientation, double ContentAspectRatio,
-    RectI Viewport, double Confidence, WindowExposure? Exposure);
+    RectI Viewport, double Confidence, WindowExposure? Exposure, VideoBlackBarTendency Tendency = VideoBlackBarTendency.Shrink);
 public sealed record RecordedSizeFloor(int Id, int MinWidth, int MinHeight);
 public sealed record RecordedNavigationHop(int Source, int Target, string Evidence, long AgeMilliseconds, string SourceRole);
 public sealed record RecordedNavigation(DateTimeOffset? ObservedAt, RecordedNavigationHop[] Hops);
@@ -125,7 +125,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
                 context.Displays?.Select(d => d.Bounds) ?? [window.WorkArea],
                 snapshot!.Where(w => w.ZOrder < window.ZOrder).Select(w => w.VisualRect));
             video = new(Id(hint.WindowHandle), hint.Orientation, hint.ContentAspectRatio, hint.ViewportVisualRect,
-                hint.Confidence, exposure);
+                hint.Confidence, exposure, hint.Tendency);
         }
         // Keep the connected suffix ending at the live main window. A disappeared ancestor
         // has no current session mapping and cannot be joined to an unrelated earlier hop.
@@ -171,7 +171,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),
         Attention = Attention?.ToDictionary(a => (nint)a.Key, a => a.Value),
         GestureAnchor = GestureAnchor, GestureTarget = GestureTarget,
-        VideoHint = Video is { } v ? new(v.Id, v.Orientation, v.ContentAspectRatio, v.Viewport, v.Confidence) : context.VideoHint,
+        VideoHint = Video is { } v ? new(v.Id, v.Orientation, v.ContentAspectRatio, v.Viewport, v.Confidence, v.Tendency) : context.VideoHint,
         SizeFloors = SizeFloors?.Select(f => new WindowSizeFloor(f.Id, f.MinWidth, f.MinHeight)).ToArray()
     };
 }
