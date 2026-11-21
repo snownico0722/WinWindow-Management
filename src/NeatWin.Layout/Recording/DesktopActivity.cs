@@ -21,7 +21,7 @@ internal sealed record WindowActivity(int Id, string? Process, int? ComparedCell
     string? ApplicationRole = null, double? VisibleRatio = null, double? LargestFragmentRatio = null, long? FocusEventMs = null);
 internal sealed record ActivitySample(int Version, string Session, long Tick, long ObservedMilliseconds,
     WorkspaceFrame Frame, ProcessActivity[] Processes, WindowActivity[] Windows, MediaActivity[]? Media,
-    uint? InputIdleMilliseconds, long? AudioTick = null, bool? DisplayRequired = null, UsageInterval? Usage = null, CoUseSample[]? CoUse = null);
+    uint? InputIdleMilliseconds, long? AudioTick = null, bool? DisplayRequired = null, UsageInterval? Usage = null, CoUseSample[]? CoUse = null, FocusCoverage? FocusCoverage = null);
 
 // The color probes are transient. Persist only the masks of comparable cells and changed cells.
 internal sealed class DesktopActivity(PlacementHistoryStore store)
@@ -282,7 +282,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         foreach (var id in _cpu.Where(p => p.Value.Tick != now).Select(p => p.Key).ToArray()) _cpu.Remove(id);
         var last = new LastInput { Size = 8 };
         uint? idle = GetLastInputInfo(ref last) ? unchecked((uint)now - last.Time) : null;
-        return new(6, session, now, interval, frame, present, windows.ToArray(), media, idle, audio?.Tick, displayRequired);
+        return new(7, session, now, interval, frame, present, windows.ToArray(), media, idle, audio?.Tick, displayRequired);
     }
 
     private ProcessActivity? ReadUsage(uint pid, long now, AudioSessionMeter.Reading? audio,

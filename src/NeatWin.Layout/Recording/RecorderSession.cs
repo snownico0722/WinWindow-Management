@@ -33,7 +33,12 @@ internal sealed class RecorderSession : IDisposable
     private long _sampleTick;
     private WorkspaceFrame? _savedGeometry;
     private long _geometryTick;
-    private readonly Dictionary<nint, (string Request, long Tick)> _lastPlan = [];
+    private readonly Dictionary<nint, SubmittedPlacement> _lastPlan = [];
+    private readonly List<GestureEvent> _gestureEvents = [];
+    internal Action<string, GestureEvent>? GestureObserver { get; init; }
+    internal Func<bool>? SnapshotWantsGestures { get; init; }
+    private bool ObserveGestures => CanWriteDiagnostics || _ownsSingleton && SnapshotWantsGestures?.Invoke() == true;
+    private int _gestureSequence, _droppedGestureEvents;
     private long _senseUntil;
     private bool LiveSensing => _senseUntil > Environment.TickCount64;
     internal WindowSizeMemory SizeMemory { get; } = new();
@@ -146,6 +151,12 @@ internal sealed class RecorderSession : IDisposable
             PublishStatus();
             return;
         }
+        if (!_paused)
+        {
+            EndUnobservedGesture("paused", Environment.TickCount64);
+            RecordFocusBoundary("pause");
+            FlushGestureEvents();
+        }
         _paused = !_paused;
         _timer.Enabled = !_paused || LiveSensing;
         RecordingEpoch++;
@@ -173,6 +184,9 @@ internal sealed class RecorderSession : IDisposable
         var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
+            RecordFocusBoundary("export");
+            FlushGestureEvents();
+            if (_gestureEvents.Count > 0) throw new IOException(_error);
             _store.ExportRecords(temporary);
             File.Move(temporary, destination, overwrite: true);
             _error = null;
@@ -188,6 +202,8 @@ internal sealed class RecorderSession : IDisposable
     {
         RecordingEpoch++;
         if (!_ownsSingleton) throw new InvalidOperationException(LayoutText.Get("RecorderInUse"));
+        _gestureEvents.Clear();
+        _droppedGestureEvents = 0;
         _store.Clear();
         SizeMemory.Clear();
         _instanceHabits = [];
@@ -213,6 +229,7 @@ internal sealed class RecorderSession : IDisposable
             try { _store.Prune(); }
             catch (Exception ex) { _error = LayoutText.Format("RecordCleanupFailed", ex.Message); }
         }
+        if (CanWriteDiagnostics) FlushGestureEvents();
         SampleActivity();
         FlushPending();
         CaptureContextChange();
@@ -220,7 +237,7 @@ internal sealed class RecorderSession : IDisposable
 
     private void OnMoveEvent(nint hook, uint eventType, nint hwnd, int objectId, int childId, uint thread, uint time)
     {
-        if (_disposed || (_paused && !(LiveSensing && _store.Enabled)) || _handlingEvent || hwnd == nint.Zero || objectId != 0 || childId != 0 ||
+        if (_disposed || (!ObserveGestures && !(_paused && LiveSensing && _store.Enabled)) || _handlingEvent || hwnd == nint.Zero || objectId != 0 || childId != 0 ||
             AutomationGuard.IsUtility(hwnd)) return;
         _handlingEvent = true;
         try
@@ -228,24 +245,38 @@ internal sealed class RecorderSession : IDisposable
             if (eventType == NativeMethods.EventSystemMoveSizeStart)
             {
                 foreach (var pending in _pending) pending.Superseded = true;
+                EndUnobservedGesture("superseded-start", EventTick(time));
                 _active = null;
                 var snapshot = _manager.Capture();
                 var start = snapshot.FirstOrDefault(w => w.Handle == hwnd && w.IsManageable);
                 if (start is null) return;
                 NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
-                _active = new(start, pid, Environment.TickCount64, Capture(snapshot),
-                    AutomationGuard.Stamp(hwnd));
+                var tick = EventTick(time);
+                int instance = _identity.Id(start);
+                var prior = _lastPlan.GetValueOrDefault(hwnd)?.At(instance, tick);
+                _active = new(start, pid, tick, CanWriteDiagnostics || LiveSensing && _store.Enabled ? Capture(snapshot) : null, AutomationGuard.Stamp(hwnd), ++_gestureSequence, instance, prior);
+                if (ObserveGestures)
+                    QueueGesture(new(_active.Number, instance, "start", tick, start.VisualRect, start.WorkArea, start.Dpi,
+                        AutomationGuard.IsMarked(hwnd), prior));
             }
             else if (eventType == NativeMethods.EventSystemMoveSizeEnd)
             {
                 var active = _active;
-                _active = null;
                 if (active is null || active.Window.Handle != hwnd) { _excluded++; PublishStatus(); return; }
                 var captured = _manager.Capture();
                 var end = captured.FirstOrDefault(w => w.Handle == hwnd && w.IsManageable);
-                if (end is null || Near(active.Window.VisualRect, end.VisualRect, 3)) return;
+                long released = EventTick(time);
+                if (end is null) { EndUnobservedGesture("unavailable", released); return; }
                 NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
-                if (pid != active.ProcessId) return;
+                if (pid != active.ProcessId || _identity.Id(end) != active.Instance)
+                { EndUnobservedGesture("identity-changed", released); return; }
+                _active = null;
+                bool automated = active.AutomationStamp != AutomationGuard.Stamp(hwnd);
+                if (ObserveGestures)
+                    QueueGesture(new(active.Number, active.Instance, "release", released, end.VisualRect, end.WorkArea, end.Dpi,
+                        automated || AutomationGuard.IsMarked(hwnd), active.Prior, OuterPath: active.Path.ToArray(), OmittedPathPoints: active.Omitted,
+                        Change: RecordedGeometryChange.From(active.Window.VisualRect, end.VisualRect, active.Prior), StartTick: active.Tick));
+                if (active.Context == null || Near(active.Window.VisualRect, end.VisualRect, 3)) return;
                 var neighbors = new VisibilityAnalyzer().SelectVisibleWorkingSet(captured)
                     .Where(w => w.Window.Handle != hwnd && w.Window.MonitorHandle == end.MonitorHandle)
                     .Take(24).Select(w => w.Window.VisualRect).ToArray();
@@ -253,10 +284,10 @@ internal sealed class RecorderSession : IDisposable
                 var context = Capture(captured);
                 var observation = new WindowAdjustmentObservation(DateTimeOffset.UtcNow, _session, id,
                     active.Window.VisualRect, end.VisualRect, active.Window.WorkArea, end.WorkArea,
-                    end.Dpi, Math.Max(0, Environment.TickCount64 - active.Tick), neighbors, "unconfirmed",
-                    Version: 3, StartContext: active.Context, EndContext: context,
-                    AfterRequest: _lastPlan.TryGetValue(hwnd, out var plan) && active.Tick - plan.Tick is >= 0 and <= 30_000 ? plan.Request : null);
-                bool automated = active.AutomationStamp != AutomationGuard.Stamp(hwnd);
+                    end.Dpi, Math.Max(0, released - active.Tick), neighbors, "unconfirmed",
+                    Version: 4, StartContext: active.Context, EndContext: context,
+                    AfterRequest: active.Prior is { ElapsedMs: <= 30_000 } recent ? recent.RequestId : null,
+                    GestureId: active.Number, PriorPlacement: active.Prior);
                 // The release is the user's choice. Follow-hand may refine it before the two-second check.
                 if (!automated && _store.Enabled &&
                     LayoutHabits.Observe(observation with { Outcome = "manual-release" }, byInstance: true) is { } vote)
@@ -323,13 +354,29 @@ internal sealed class RecorderSession : IDisposable
         if (_disposed || objectId != 0 || childId != 0) return;
         try
         {
-            if (type == 0x8001) { _identity.Retire(hwnd); _activity.Retire(hwnd); SizeMemory.Retire(hwnd); _lastPlan.Remove(hwnd); _contextDirty = true; return; }
-            if (_paused) return;
+            if (type == 0x8001)
+            {
+                if (_active?.Window.Handle == hwnd) EndUnobservedGesture("destroy-observed", EventTick(time));
+                _identity.Retire(hwnd); _activity.Retire(hwnd); SizeMemory.Retire(hwnd); _lastPlan.Remove(hwnd); _contextDirty = true; return;
+            }
+            if (_paused && !(type == 0x800B && _active?.Window.Handle == hwnd && ObserveGestures)) return;
             if (type == 0x0003)
             {
-                long now = Environment.TickCount64;
-                long eventTick = now - unchecked((uint)now - time);
-                _usage.Foreground(eventTick, RecordingId(hwnd));
+                _usage.Foreground(EventTick(time), RecordingId(hwnd));
+            }
+            if (type == 0x800B && _active is { } active && hwnd == active.Window.Handle)
+            {
+                long tick = EventTick(time);
+                if (tick >= active.Tick && (active.LastSample == null || tick - active.LastSample >= 100))
+                {
+                    active.LastSample = tick;
+                    if (WindowManager.TryGetRect(hwnd, out var rect) && !rect.IsEmpty)
+                    {
+                        var point = new GesturePoint(tick - active.Tick, rect.X, rect.Y, rect.Width, rect.Height);
+                        if (active.Path.Count < 96) active.Path.Add(point);
+                        else { active.Path[^1] = point; active.Omitted++; }
+                    }
+                }
             }
             if (hwnd == nint.Zero || AutomationGuard.IsUtility(hwnd)) return;
             if (type is not 0x0003 and not 0x8002 and not 0x8003 and not 0x8004 and not 0x800B) return;
@@ -337,6 +384,53 @@ internal sealed class RecorderSession : IDisposable
             _contextCause = type == 0x0003 ? "foreground-observed" : "state-change-unknown";
         }
         catch { }
+    }
+
+    private static long EventTick(uint time)
+    {
+        long now = Environment.TickCount64;
+        return now - unchecked((uint)now - time);
+    }
+
+    private void RecordFocusBoundary(string reason, bool readForeground = true)
+    {
+        if (!CanWriteDiagnostics || !_usage.Started) return;
+        try
+        {
+            int? id = readForeground ? RecordingId(NativeMethods.GetForegroundWindow()) : null;
+            var coverage = _usage.Snapshot(Environment.TickCount64, id, PointerCaptureAvailable, _foregroundHook != 0);
+            _store.AppendFocusBoundary(_session, reason, coverage);
+        }
+        catch (Exception ex) { _error = LayoutText.Format("RecordWriteFailed", ex.Message); }
+    }
+
+    private void EndUnobservedGesture(string stage, long tick)
+    {
+        if (_active is not { } active) return;
+        if (ObserveGestures)
+            QueueGesture(new(active.Number, active.Instance, stage, tick, null, null, null,
+                active.AutomationStamp != AutomationGuard.Stamp(active.Window.Handle), active.Prior, active.Path.ToArray(), active.Omitted, StartTick: active.Tick));
+        _active = null;
+    }
+
+    private void QueueGesture(GestureEvent item)
+    {
+        GestureObserver?.Invoke(_session, item);
+        if (!CanWriteDiagnostics) return;
+        if (_gestureEvents.Count < 256) _gestureEvents.Add(item);
+        else _droppedGestureEvents++;
+    }
+
+    private void FlushGestureEvents()
+    {
+        if (_gestureEvents.Count == 0) return;
+        try
+        {
+            _store.AppendGestures(new(1, _session, DateTimeOffset.UtcNow, _gestureEvents.ToArray(), _droppedGestureEvents));
+            _gestureEvents.Clear();
+            _droppedGestureEvents = 0;
+        }
+        catch (Exception ex) { _error = LayoutText.Format("RecordWriteFailed", ex.Message); }
     }
 
     private void CaptureContextChange()
@@ -380,18 +474,26 @@ internal sealed class RecorderSession : IDisposable
         bool writeDisk = CanWriteDiagnostics;
         if ((!writeDisk && !LiveSensing) || _disposed || !_ownsSingleton || now - _sampleTick < 5000) return;
         _sampleTick = now;
+        FocusCoverage? coverage = null;
         try
         {
-            if (!DesktopActivity.Interactive()) { ResetActivity(); return; }
+            if (!DesktopActivity.Interactive())
+            {
+                EndUnobservedGesture("desktop-unavailable", now);
+                RecordFocusBoundary("desktop-unavailable", false);
+                ResetActivity();
+                return;
+            }
             var snapshot = _manager.CaptureCoalesced();
             var frame = Capture(snapshot);
             var previous = _latest?.Frame;
-            var usage = writeDisk && _foregroundHook != 0
-                ? _usage.Sample(now, RecordingId(NativeMethods.GetForegroundWindow()), PointerCaptureAvailable) : null;
+            var usage = writeDisk ? _usage.Sample(now, RecordingId(NativeMethods.GetForegroundWindow()), PointerCaptureAvailable,
+                _foregroundHook != 0, out coverage) : null;
             if (snapshot.FirstOrDefault(w => w.IsForeground && w.IsManageable) is { } active)
                 _activity.SemanticRole(active, ForegroundReading.Read(active));
             _latest = _activity.Sample(_session, now, frame, snapshot, _identity, VisualSampling, _store.Rules.Read(), persistKeys: writeDisk);
             if (!writeDisk) return;
+            _latest = _latest with { FocusCoverage = coverage };
             if (usage != null && _latest.ObservedMilliseconds > 0)
             {
                 var foreground = usage.Foreground.GroupBy(span => span.Id).ToDictionary(g => g.Key, g => g.Sum(span => span.DurationMs));
@@ -406,24 +508,39 @@ internal sealed class RecorderSession : IDisposable
             _store.AppendActivity(_latest, keyframe ? frame : null, keyframe ? now : _geometryTick);
             if (keyframe) { _geometryTick = now; _savedGeometry = frame; }
         }
-        catch (Exception ex) { _latest = null; _usage.Reset(); if (writeDisk) _error = LayoutText.Format("RecordStateFailed", ex.Message); }
+        catch (Exception ex)
+        {
+            if (writeDisk)
+            {
+                // The usage interval may already have advanced before process sampling or the activity write failed.
+                if (coverage != null)
+                {
+                    try { _store.AppendFocusBoundary(_session, "activity-write-incomplete", coverage); }
+                    catch (Exception writeError) { System.Diagnostics.Trace.TraceWarning(writeError.Message); }
+                }
+                else RecordFocusBoundary("sample-failed", false);
+                _error = LayoutText.Format("RecordStateFailed", ex.Message);
+            }
+            _latest = null;
+            _usage.Reset();
+        }
     }
 
-    internal void Applied(string request, string trigger, LayoutApplication application)
+    internal void Applied(string request, string trigger, LayoutApplication application, long tick)
     {
-        if (!CanWriteDiagnostics) return;
+        if (!ObserveGestures) return;
         if (trigger == "undo")
         {
             _lastPlan.Clear();
             foreach (var pending in _pending) pending.AssistedTarget = null;
             return;
         }
-        long tick = Environment.TickCount64;
-        foreach (var old in _lastPlan.Where(p => tick - p.Value.Tick > 30_000).Select(p => p.Key).ToArray()) _lastPlan.Remove(old);
         foreach (var move in application.Plan.Moves)
         {
             if (application.Failures.Any(f => f.Move.Window.Handle == move.Window.Handle)) continue;
-            _lastPlan[move.Window.Handle] = (request, tick);
+            if (_lastPlan.Count >= 1024 && !_lastPlan.ContainsKey(move.Window.Handle))
+                _lastPlan.Remove(_lastPlan.MinBy(p => p.Value.Tick).Key);
+            _lastPlan[move.Window.Handle] = new(_identity.Id(move.Window), request, tick, move.Window.VisualRect, move.TargetVisualRect);
             var pending = _pending.LastOrDefault(p => p.Handle == move.Window.Handle && !p.Superseded);
             if (pending == null) continue;
             pending.AssistedTarget = (trigger is "automatic-gesture" or "follow-hand") && !application.Interrupted &&
@@ -509,6 +626,9 @@ internal sealed class RecorderSession : IDisposable
     public void Dispose()
     {
         if (_disposed) return;
+        EndUnobservedGesture("exit", Environment.TickCount64);
+        RecordFocusBoundary("exit");
+        FlushGestureEvents();
         _disposed = true;
         _timer.Stop();
         _timer.Tick -= OnTimerTick;
@@ -526,7 +646,12 @@ internal sealed class RecorderSession : IDisposable
     }
 
     private sealed record Active(WindowSnapshot Window, uint ProcessId, long Tick,
-        WorkspaceFrame Context, nint AutomationStamp);
+        WorkspaceFrame? Context, nint AutomationStamp, int Number, int Instance, RecordedPlacementLink? Prior)
+    {
+        internal List<GesturePoint> Path { get; } = [];
+        internal long? LastSample { get; set; }
+        internal int Omitted { get; set; }
+    }
 
     private sealed class Pending(nint handle, uint processId, nint monitor, WindowAdjustmentObservation observation, long tick)
     {

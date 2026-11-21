@@ -43,6 +43,7 @@ internal sealed class LayoutRunJournal : IDisposable
     {
         try
         {
+            long submissionRecordedAt = Environment.TickCount64;
             var plan = application.Plan;
             var frame = _recorder?.Capture(before) ?? _identity.Capture(before);
             var ids = before.ToDictionary(w => w.Handle, w => _identity.Id(w));
@@ -71,8 +72,8 @@ internal sealed class LayoutRunJournal : IDisposable
             _snapshotObserver?.Invoke(observation);
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);
-            if (recorded && (plan.Moves.Count > 0 || trigger == "undo"))
-                _recorder?.Applied(observation.RequestId, trigger, application);
+            if ((recorded || _recorder?.SnapshotWantsGestures?.Invoke() == true) && (plan.Moves.Count > 0 || trigger == "undo"))
+                _recorder?.Applied(observation.RequestId, trigger, application, submissionRecordedAt);
             if (_pending.Count >= 8) _pending.RemoveAt(0);
             foreach (var old in _pending) old.Intervened = true;
             _pending.Add(new(observation, before.Select(w => w.Handle).ToHashSet(), Environment.TickCount64, epoch,

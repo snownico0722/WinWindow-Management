@@ -7,6 +7,11 @@ internal sealed class ReplayEffort
 {
     internal Dictionary<(string Session, string Request), List<WindowAdjustmentObservation>> Linked { get; } = [];
     internal HashSet<(string Session, string Request)> Undone { get; } = [];
+    internal Dictionary<(string Session, string Request), List<GestureEvent>> Releases { get; } = [];
+    internal int? Starts { get; private set; }
+    internal int CompletedReleases { get; private set; }
+    internal int MarkedReleases { get; private set; }
+    internal int DroppedEvents { get; private set; }
     internal int Unlinked { get; private set; }
     internal int? Total { get; private set; }
     internal int UndoCount { get; private set; }
@@ -30,6 +35,30 @@ internal sealed class ReplayEffort
                 var key = (edit.Session, edit.AfterRequest);
                 if (!counts.Linked.TryGetValue(key, out var group)) counts.Linked[key] = group = [];
                 group.Add(edit);
+            }
+        }
+        var observed = new HashSet<(string Session, int Gesture, string Stage)>();
+        foreach (var file in archive.Entries.Where(e => e.Name.StartsWith("gestures-") && e.Name.EndsWith(".jsonl")))
+        {
+            using var reader = new StreamReader(file.Open());
+            while (reader.ReadLine() is { } line)
+            {
+                var batch = JsonSerializer.Deserialize<GestureBatch>(line);
+                if (batch == null || session != null && session != batch.Session) continue;
+                counts.Starts ??= 0;
+                counts.DroppedEvents += batch.DroppedEvents;
+                foreach (var gesture in batch.Events)
+                {
+                    if (!observed.Add((batch.Session, gesture.GestureId, gesture.Stage))) continue;
+                    if (gesture.Stage == "start") counts.Starts++;
+                    if (gesture.Stage != "release") continue;
+                    counts.CompletedReleases++;
+                    if (gesture.AutomationMarked) counts.MarkedReleases++;
+                    if (gesture.Prior == null) continue;
+                    var key = (batch.Session, gesture.Prior.RequestId);
+                    if (!counts.Releases.TryGetValue(key, out var group)) counts.Releases[key] = group = [];
+                    group.Add(gesture);
+                }
             }
         }
         return counts;

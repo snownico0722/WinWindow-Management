@@ -389,8 +389,12 @@ public partial class MainWindow
         catch (Exception ex) { await LoadLayoutSettingsAsync(); ShowStatus(ex.Message); }
     }
 
-    private void UpdateSnapshotLookback() => SnapshotHistory.SetEnabled(_store.Preferences.SnapshotLookbackEnabled,
-        _hwnd, () => System.Threading.Volatile.Read(ref _snapshotManaged));
+    private void UpdateSnapshotLookback()
+    {
+        bool enabled = _store.Preferences.SnapshotLookbackEnabled;
+        SnapshotHistory.SetEnabled(enabled, _hwnd, () => System.Threading.Volatile.Read(ref _snapshotManaged));
+        if (enabled && _hwnd != 0) _ = EnsureLayout();
+    }
 
     private void SnapshotLookback_Click(object sender, RoutedEventArgs e)
     {

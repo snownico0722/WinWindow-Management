@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using NeatWin.Core;
 
 namespace WinWindow;
 
@@ -107,6 +108,18 @@ internal static class DesktopSnapshot
                             LookbackEnabled = lookbackEnabled, LookbackMilliseconds = DesktopSnapshotHistory.LookbackMilliseconds,
                             SamplesBeforeClick = past.Length, LayoutRequestsBeforeClick = pastRequests, LayoutRequestsAfterClick = liveRequests }));
                         foreach (var frame in frames) writer.WriteLine(JsonSerializer.Serialize(frame));
+                    }
+                    if (capture != null)
+                    {
+                        long earliest = capture.GestureEarliestTick;
+                        var observed = capture.PastGestures.Concat(capture.LiveGestures).Where(g =>
+                            g.Event.Tick >= earliest && g.Event.Tick <= startTick + frames[^1].ElapsedMs);
+                        foreach (var group in observed.GroupBy(g => g.Session))
+                        {
+                            using var writer = Writer(zip, $"gestures-{group.Key}.jsonl");
+                            var events = group.OrderBy(g => g.Event.Tick).Select(g => g.Event.WithinLookback(earliest)).ToArray();
+                            writer.WriteLine(JsonSerializer.Serialize(new GestureBatch(1, group.Key, start, events, 0)));
+                        }
                     }
                     using (var writer = Writer(zip, "layout-decisions.jsonl"))
                         foreach (var plan in plans) writer.WriteLine(JsonSerializer.Serialize(plan));

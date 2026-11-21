@@ -232,7 +232,7 @@ public sealed partial class WindowManager
         return status == 0;
     }
 
-    private static bool TryGetRect(nint hwnd, out RectI rect)
+    internal static bool TryGetRect(nint hwnd, out RectI rect)
     {
         if (NativeMethods.GetWindowRect(hwnd, out var nativeRect))
         {

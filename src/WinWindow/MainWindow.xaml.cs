@@ -478,7 +478,7 @@ public partial class MainWindow : Window
             UndoArrangeButton.IsEnabled = available;
             _desktop?.SetUndoAvailable(available);
         }));
-    }, LayoutFocus, SnapshotHistory.Observe);
+    }, LayoutFocus, SnapshotHistory.Observe, SnapshotHistory.ObserveGesture, SnapshotHistory.WantsGestures);
 
     private async void Arrange_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().ArrangeAsync());
     private async void UndoLayout_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().UndoAsync());
@@ -495,6 +495,7 @@ public partial class MainWindow : Window
         var capture = SnapshotHistory.BeginCapture();
         try
         {
+            _ = EnsureLayout();
             ShowStatus(UiText.Get("SnapshotCapturing"));
             var mode = FooterModes.Children.OfType<RadioButton>().FirstOrDefault(choice => choice.IsChecked == true)?.Tag as string ?? "Off";
             var output = await DesktopSnapshot.ExportAsync(Volatile.Read(ref _snapshotManaged), _hwnd,

@@ -430,6 +430,9 @@ internal static class SmokeTests
             OpenSection("BehaviorSection");
             await WaitAsync("continuous behavior learning has an independent settings page",
                 () => ((CheckBox)shell.FindName("LearnBehaviorSwitch")).IsVisible && !((CheckBox)shell.FindName("ReferenceEnabled")).IsVisible);
+            var gestureTick = Environment.TickCount64;
+            shell.SnapshotHistory.ObserveGesture("smoke-gesture", new(1, 7, "start", gestureTick, new(10, 20, 300, 240),
+                new(0, 0, 1920, 1040), 96, false));
             var snapshot = shell.SnapshotHistory.BeginCapture();
             var archivePath = await DesktopSnapshot.ExportAsync(new HashSet<nint>(), new WindowInteropHelper(shell).Handle,
                 0, "Off", directory: output, durationMs: 510, capture: snapshot);
@@ -446,7 +449,7 @@ internal static class SmokeTests
                 }).ToArray();
                 Assert(times.First() is >= -DesktopSnapshotHistory.LookbackMilliseconds and < 0 && times.Last() >= 510 &&
                     times.SequenceEqual(times.Order()) && samples.Any(line => line.Contains(DesktopSnapshot.Handle(item.Hwnd), StringComparison.Ordinal)) &&
-                    archive.GetEntry("summary.txt") is not null && (await decisions.ReadToEndAsync()).Contains("\"Trigger\":\"explicit\"", StringComparison.Ordinal),
+                    archive.GetEntry("gestures-smoke-gesture.jsonl") is not null && archive.GetEntry("summary.txt") is not null && (await decisions.ReadToEndAsync()).Contains("\"Trigger\":\"explicit\"", StringComparison.Ordinal),
                     "snapshot ZIP includes the pre-click window timeline and earlier decisions alongside the live capture");
             }
             File.Delete(archivePath);
@@ -455,7 +458,7 @@ internal static class SmokeTests
             lookback.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             var disabledSnapshot = shell.SnapshotHistory.BeginCapture();
             shell.SnapshotHistory.EndCapture(disabledSnapshot);
-            Assert(!disabledSnapshot.LookbackEnabled && disabledSnapshot.PastWindows.Length == 0 && disabledSnapshot.PastDecisions.Length == 0,
+            Assert(!disabledSnapshot.LookbackEnabled && disabledSnapshot.PastWindows.Length == 0 && disabledSnapshot.PastDecisions.Length == 0 && disabledSnapshot.PastGestures.Length == 0,
                 "turning snapshot lookback off clears both history buffers");
             await WaitAsync("snapshot lookback opt-out survives reload", () => !new StateStore(data).Preferences.SnapshotLookbackEnabled);
             ((ToggleButton)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
@@ -657,10 +660,14 @@ internal static class SmokeTests
         var gap = activity.Sample("fixture", tick + 60000, frame, [fixture], tracker, false);
         Assert(gap.ObservedMilliseconds == 0 && gap.Windows.Single().ForegroundMs is null, "recorder excludes interruptions from usage time");
         recorder.AppendActivity(next, frame, next.Tick);
+        var coverage = new NeatWin.Core.FocusCoverage(tick, tick + 1, 1, 2, "observed", [new(tick + 1, 2)], 0, null, null);
+        recorder.AppendFocusBoundary("fixture", "export", coverage);
+        recorder.AppendGestures(new(1, "fixture", DateTimeOffset.UtcNow, [], 0));
         var path = Path.Combine(root, "activity-fixture.zip");
         recorder.ExportRecords(path);
         using (var archive = System.IO.Compression.ZipFile.OpenRead(path))
-            Assert(archive.Entries.Any(e => e.Name.StartsWith("activity-")) && archive.GetEntry("identity.key") == null &&
+            Assert(archive.Entries.Any(e => e.Name.StartsWith("activity-")) && archive.Entries.Any(e => e.Name.StartsWith("gestures-")) &&
+                archive.Entries.Any(e => e.Name.StartsWith("focus-")) && archive.GetEntry("identity.key") == null &&
                 archive.GetEntry("compiled-rules.json") != null && archive.GetEntry("layout-guide.md") != null,
                 "export includes activity but excludes the installation identity secret");
         recorder.Clear();

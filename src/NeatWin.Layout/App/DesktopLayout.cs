@@ -16,13 +16,14 @@ internal sealed class DesktopLayout : IDisposable
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal DesktopLayout(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged = null,
-        Action<bool>? undoChanged = null, ForegroundHistory? focus = null, Action<LayoutRunObservation>? snapshotObserver = null)
+        Action<bool>? undoChanged = null, ForegroundHistory? focus = null, Action<LayoutRunObservation>? snapshotObserver = null, Action<string, GestureEvent>? gestureObserver = null,
+        Func<bool>? snapshotWantsGestures = null)
     {
         var thread = new Thread(() =>
         {
             try
             {
-                using var context = new NeatWinApplicationContext(directory, report, recorderChanged, undoChanged, _stop.Token, focus, snapshotObserver);
+                using var context = new NeatWinApplicationContext(directory, report, recorderChanged, undoChanged, _stop.Token, focus, snapshotObserver, gestureObserver, snapshotWantsGestures);
                 _ready.SetResult(context);
                 Application.Run(context);
             }

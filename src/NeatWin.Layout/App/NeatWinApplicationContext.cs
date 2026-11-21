@@ -51,7 +51,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
 
     internal NeatWinApplicationContext(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged,
         Action<bool>? undoChanged, CancellationToken stopping, ForegroundHistory? focus = null,
-        Action<LayoutRunObservation>? snapshotObserver = null)
+        Action<LayoutRunObservation>? snapshotObserver = null, Action<string, GestureEvent>? gestureObserver = null,
+        Func<bool>? snapshotWantsGestures = null)
     {
         _stopping = stopping;
         _focus = focus ?? new();
@@ -67,7 +68,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _smartBehaviorOptions = _settingsStore.LoadSmartBehaviorOptions();
         _verticalFillManager = new ReversibleVerticalFillManager(handle => _lastLiveHints.Any(h => h.Handle == handle && h.TextFocus));
         _autoTidyManager = new AutoTidyManager();
-        _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) { VisualSampling = _settingsStore.VisualSampling };
+        _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) {
+            VisualSampling = _settingsStore.VisualSampling, GestureObserver = gestureObserver, SnapshotWantsGestures = snapshotWantsGestures
+        };
         _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder, snapshotObserver);
         _behaviorMonitor = new(_windowManager, _referenceStore, _settingsStore, _recorder,
             () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.PointerBusy, _focus);

@@ -940,6 +940,45 @@ Check(RoutineTick(22_000, [reopenedHelper with { Foreground = false }, nextTask]
         "duplicate occlusion and passive monitoring do not justify minimization");
 }
 
+{
+    var prior = new SubmittedPlacement(27, "recording-fixture", 1000, new(32, 50, 600, 480), new(480, 50, 900, 480));
+    var late = prior.At(27, 91_000);
+    var change = RecordedGeometryChange.From(prior.Submitted, new(34, 50, 750, 480), late);
+    Check(late?.ElapsedMs == 90_000 && change is { Dx: -446, DWidth: -150, StartedAtSubmitted: true } &&
+        change.ReturnedAxes!.SequenceEqual(["x"]) && prior.At(28, 91_000) == null && prior.At(27, 999) == null,
+        "late hand adjustment preserves signed axes and a partial return only on the original window instance");
+    var usage = new RecordedUsage();
+    usage.Sample(100, 1, true);
+    usage.Foreground(120, 2); usage.Input(2); usage.Foreground(145, 1);
+    var preview = usage.Snapshot(160, 1, true, true);
+    var gap = usage.Sample(10_000, 1, true, true, out var coverageGap);
+    Check(preview.Status == "observed" && preview.Events.Select(e => e.Id).SequenceEqual([2, 1]) &&
+        gap == null && coverageGap.Status == "sampling-gap" && coverageGap.Events.SequenceEqual(preview.Events) &&
+        coverageGap.PointerActions?.Single().Count == 1, "export is non-consuming and a sampling gap retains a witnessed leave and return");
+    for (int i = 0; i < 260; i++) usage.Foreground(10_001 + i, 2 + i % 2);
+    var over = usage.Sample(10_500, 3, false, true, out var clipped);
+    Check(over == null && clipped.OmittedEvents == 4 && clipped.Events.Length == 256 && clipped.PointerActions == null,
+        "a clipped focus timeline reports the number omitted and never claims continuous dwell");
+    using var bytes = new MemoryStream();
+    using (var output = new ZipArchive(bytes, ZipArchiveMode.Create, true))
+    using (var writer = new StreamWriter(output.CreateEntry("gestures-fixture.jsonl").Open()))
+    {
+        var release = new GestureEvent(1, 27, "release", 91_100, new(34, 50, 750, 480), area, 96, false, late, Change: change);
+        var trimmed = (release with { StartTick = 91_000, OuterPath = [new(10, 0, 0, 600, 480), new(80, 4, 4, 600, 480)] })
+            .WithinLookback(91_040);
+        Check(trimmed.Prior == null && trimmed.Change == null && trimmed.OuterPath is [{ OffsetMs: 80 }],
+            "a snapshot beginning mid-gesture excludes earlier geometry and its historical layout");
+        var batch = new GestureBatch(1, "fixture", now, [release with { Stage = "start" }, release], 0);
+        writer.WriteLine(JsonSerializer.Serialize(batch));
+    }
+    bytes.Position = 0;
+    using var input = new ZipArchive(bytes, ZipArchiveMode.Read);
+    var releaseReplay = ReplayEffort.Read(input, "fixture");
+    Check(releaseReplay.Starts == 1 && releaseReplay.CompletedReleases == 1 && releaseReplay.Total == null &&
+        releaseReplay.Releases[("fixture", "recording-fixture")].Single().Prior == late,
+        "replay links a raw late release while leaving confirmed manual-effort counts unknown");
+}
+
 if (args is ["--behavior", var zip, var behaviorRules, ..])
     BehaviorReplay.Run(zip, behaviorRules, args.ElementAtOrDefault(3));
 else if (args.Length > 0)
@@ -1026,7 +1065,9 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                     }
                 }
                 Console.WriteLine(JsonSerializer.Serialize(new { run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
-                    run.GestureTiming, RecordedManualFollowups = followups?.Count, RecordedUndoOfThisRequest =
+                    run.GestureTiming, ObservedReleaseDetails = edits.Releases.GetValueOrDefault((run.Session, run.RequestId))?
+                        .OrderBy(g => g.Tick).Select(g => new { g.GestureId, g.WindowId, g.AutomationMarked, ElapsedMs = g.Prior!.ElapsedMs, g.Change }),
+                    RecordedManualFollowups = followups?.Count, RecordedUndoOfThisRequest =
                         edits.Undone.Contains((run.Session, run.RequestId)) ? true : (bool?)null,
                     PostArrangeRegret = runRegret, PostArrangeVerticalError = verticalError, ProtectedRegionsPreserved = regionsPreserved,
                     Roles = (ctx.WindowHints ?? []).Where(h => h.Role != WindowUseRole.Unknown || h.FloatingAffinity > 0 || h.TextFocus)
@@ -1037,6 +1078,9 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
         }
     }
     Console.WriteLine(JsonSerializer.Serialize(new { RecordedManualGestures = edits.Total,
+        ObservedGestureStarts = edits.Starts, ObservedReleases = edits.Starts.HasValue ? edits.CompletedReleases : (int?)null,
+        AutomationMarkedReleases = edits.Starts.HasValue ? edits.MarkedReleases : (int?)null,
+        DroppedGestureEvents = edits.Starts.HasValue ? edits.DroppedEvents : (int?)null,
         WithoutLinkedRequest = edits.Total.HasValue ? edits.Unlinked : (int?)null, ExplicitUndoRequests = edits.UndoCount, UndoWithKnownSource = edits.Undone.Count }));
     Console.WriteLine($"Replayed {seen.Count} distinct requests ({correctedRuns} with post-arrange corrections, mean normalized regret={(regretSamples > 0 ? (totalNormalizedRegret / regretSamples).ToString("F4") : "n/a")}).");
 }
