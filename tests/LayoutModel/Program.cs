@@ -1028,7 +1028,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                 var focus = desktop.FirstOrDefault(w => w.IsForeground);
                 var ctx = new TaskLayoutContext(Displays: displays, ExplicitArrange: explicitRun, UseWorkingPairs: true,
                     PreferReversibleVerticalFill: true, Focus: new(focus?.Handle ?? 0, 0, 0));
-                ctx = (run.Signals?.ApplyToReplay(ctx) ?? ctx) with { AllowGestureAssist = run.Trigger == "automatic-gesture" };
+                ctx = (run.Signals?.ApplyToReplay(ctx) ?? ctx) with { AllowGestureAssist = run.Trigger == "automatic-gesture", IsWorkspaceObservation = run.Trigger == "automatic-workspace" };
                 var activeRules = overrideRules ?? run.Rules ?? CompiledLayoutRules.Default;
                 var keyed = desktop.Zip(frame.Windows.OrderBy(w => w.ZOrder), (window, observed) => (window, observed.AppKey)).ToArray();
                 var slotPrefs = activeRules.BindSlots(keyed);

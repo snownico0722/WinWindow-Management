@@ -51,6 +51,19 @@ internal static class AttentionWorkspaceChecks
         var shared = TaskLayoutSession.Project(uneven, Balanced(uneven, comparisonContext));
         check(shared[0].VisualRect.Width >= 900 && shared[1].VisualRect.Width >= 900 &&
             shared[0].VisualRect.Intersect(shared[1].VisualRect).IsEmpty, "a crowded balanced pair redistributes excess width without overlap");
+        var observed = comparisonContext with { IsWorkspaceObservation = true, AllowGestureAssist = false };
+        var ready = new[] { Window(1, 0, 80, 960, 900), Window(2, 960, 60, 960, 950) };
+        var popup = Window(3, 940, 875, 120, 30) with { IsTopmost = true, IsManageable = false, ZOrder = -1 };
+        foreach (var frame in new[] { ready, new[] { popup, ready[0], ready[1] }, ready })
+            check(Balanced(frame, observed).Moves.Count == 0,
+                "a readable pair stays settled as a peripheral surface appears and disappears");
+        var covered = ready[1] with { VisualRect = ready[1].VisualRect with { X = area.Left + 15 } };
+        check(Balanced([ready[0], covered], observed).Moves.Count > 0 && Balanced(uneven, observed).Moves.Count > 0,
+            "a real collision or a narrow reference immediately reopens workspace arrangement");
+        var utilityFocus = ready.Select(w => w with { IsForeground = false }).ToArray();
+        check(Balanced(utilityFocus, observed).Groups.Count == 0 &&
+            Balanced(utilityFocus, observed with { ExplicitArrange = true }).Groups.Count > 0,
+            "an uncaptured foreground suspends automatic work while an explicit arrangement remains available");
         var spacious = uneven.Select(w => w with { WorkArea = area with { Width = 2560, Height = 1440 } }).ToArray();
         var generous = TaskLayoutSession.Project(spacious, Balanced(spacious, comparisonContext));
         check(generous[0].VisualRect.Width >= uneven[0].VisualRect.Width && generous[1].VisualRect.Width >= 900,

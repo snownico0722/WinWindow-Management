@@ -318,6 +318,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 return;
             }
             var snapshot = _windowManager.Capture();
+            if (trigger == "automatic-workspace" && !snapshot.Any(w => w.IsForeground && w.Handle == foreground)) return;
             if (trigger == "automatic-gesture" &&
                 (_autoTidyManager.IsGestureInProgress || _autoTidyManager.LastGesture is not { } ended ||
                  foreground != ended.WindowHandle || !snapshot.Any(w => w.IsForeground && w.Handle == ended.WindowHandle &&
@@ -429,6 +430,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill,
                     Focus = focus,
                     AllowGestureAssist = trigger == "automatic-gesture",
+                    IsWorkspaceObservation = trigger == "automatic-workspace",
                     NavigationObservedAt = focus.Navigation is { Length: > 0 } ? focusObservedAt : null,
                     Attention = attention,
                     WindowHints = liveHints,

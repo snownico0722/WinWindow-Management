@@ -19,6 +19,8 @@ internal static partial class IntentLayoutPlanner
         if (taskContext.VerifiedRepeat && !taskContext.ExplicitArrange) return new([], [], []);
         // Anchored monitors keep their original location and remain in the desktop occlusion checks.
         desktop ??= visible.Select(v => v.Window).ToArray();
+        if (taskContext is { ExplicitArrange: false, IsWorkspaceObservation: true, Attention: not null } &&
+            !desktop.Any(w => w.IsForeground)) return new([], [], []);
         taskContext = GesturePlacement.Resolve(ResolveExplicitFocus(visible, taskContext), visible, options, reference);
         visible = IncludeWorkingCompanion(visible, desktop, taskContext);
         if (taskContext is { ExplicitArrange: false, Attention: not null })
@@ -92,6 +94,18 @@ internal static partial class IntentLayoutPlanner
                         group.Min(v => Math.Min(v.Window.VisualRect.Height, options.MinimumHeight)))
                     .Where(r => r != area).Take(6).Prepend(area).ToArray();
                 var beforeExposure = MeasureBeforeExposure(group, original, area, obstacles);
+                var stackSignal = StackSignal(group, original);
+                TaskCostBreakdown Breakdown(Candidate c) => EffectiveBreakdown(
+                    TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, goals), options.SmartStrength, task);
+                var viewingModel = groupContext.Calibration?.Matches(area, group[0].Window.Dpi) == true
+                    ? "calibrated-flat-screen-angle" : "normalized-distance-not-gaze";
+                if (AttentionLayout.WorkspaceIsReadable(group, goals, beforeExposure, groupContext))
+                {
+                    var kept = Breakdown(new("keep", original, order));
+                    traces.Add(new(group.Select(v => v.Window.Handle).ToArray(), "keep", stackSignal,
+                        [new("keep", kept.Total, null, kept)], new(task, viewingModel, ["workspace-already-readable"])));
+                    continue;
+                }
                 var generationNotes = new List<LayoutCandidateTrace>();
                 var candidates = new List<Candidate> { new("keep", original, order) };
                 var rescue = group.Select(v => Fit(v.Window.VisualRect, v.Window, options, groupContext.Preferences.AllowUsefulResize)).ToArray();
@@ -128,9 +142,6 @@ internal static partial class IntentLayoutPlanner
                 }
                 if (!localOnly || groupContext.PreferReversibleVerticalFill)
                     AddVerticalFillCandidates(candidates, group, original, groupContext);
-                var stackSignal = StackSignal(group, original);
-                TaskCostBreakdown Breakdown(Candidate c) => EffectiveBreakdown(
-                    TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, goals), options.SmartStrength, task);
                 if (goals != null)
                     AddAttentionLayouts(candidates, group, original, goals, area, obstacles, hint.GapPixels, order, strength, groupContext, Breakdown);
                 candidates = candidates.DistinctBy(CandidateKey).ToList();
@@ -191,7 +202,7 @@ internal static partial class IntentLayoutPlanner
                 }
                 if (!best.Order.SequenceEqual(order)) layers.Add(new(best.Order.Select(i => group[i].Window).ToArray()));
                 traces.Add(new(group.Select(v => v.Window.Handle).ToArray(), best.Kind, stackSignal, audits.ToArray(),
-                    new(task, groupContext.Calibration?.Matches(area, group[0].Window.Dpi) == true ? "calibrated-flat-screen-angle" : "normalized-distance-not-gaze",
+                    new(task, viewingModel,
                         ["hypothesis-weights-not-calibrated-probabilities", "content-prior-not-semantic-recognition", "stable-is-not-satisfaction"])));
 
                 void AddGroupLayouts(List<Candidate> output, RectI[] seed)

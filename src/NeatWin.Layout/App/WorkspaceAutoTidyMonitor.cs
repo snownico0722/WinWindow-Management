@@ -138,7 +138,7 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     {
         try
         {
-            if (NativeWindowActivity.IsShellForeground(NativeMethods.GetForegroundWindow()))
+            if (NativeWindowActivity.SuspendsWorkspace(NativeMethods.GetForegroundWindow()))
             {
                 _scheduler.Observe([], Environment.TickCount64, false, desktopFocused: true);
                 _timer.Stop();

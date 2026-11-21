@@ -11,6 +11,13 @@ internal static class NativeWindowActivity
         return WindowManager.IsSystemSurface(root != 0 ? root : foreground);
     }
 
+    internal static bool SuspendsWorkspace(nint foreground)
+    {
+        if (IsShellForeground(foreground) || AutomationGuard.IsUtility(foreground)) return true;
+        NativeMethods.GetWindowThreadProcessId(foreground, out uint pid);
+        return pid == 0 || pid == Environment.ProcessId;
+    }
+
     // The system move/size loop only covers dragging the window frame. Explorer's OLE
     // file drag owns the pointer from button-down until drop/cancel, even outside Explorer.
     internal static bool PointerBusy => NativeMethods.GetAsyncKeyState(0x01) < 0 ||
@@ -19,7 +26,7 @@ internal static class NativeWindowActivity
     internal static bool AllowsAutomaticPlacement(nint expectedForeground)
     {
         var current = NativeMethods.GetForegroundWindow();
-        return current == expectedForeground && !IsShellForeground(current) && !PointerBusy;
+        return current == expectedForeground && !SuspendsWorkspace(current) && !PointerBusy;
     }
 
     // Query the real foreground thread's move/size loop, including the short interval in which

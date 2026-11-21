@@ -90,6 +90,19 @@ public sealed class OcclusionIntentTests
     }
 
     [Fact]
+    public void ReadableWidthCrossesPartitionSeamsAndIsIndependentOfBlockerOrder()
+    {
+        var frame = new RectI(0, 0, 1000, 800);
+        var left = new RectI(0, 300, 40, 40);
+        var right = new RectI(960, 500, 40, 40);
+        var exposure = OcclusionMetrics.Measure(frame, [left, right], 96);
+        Assert.Equal(960, exposure.UsefulWidth);
+        Assert.Equal(1000, exposure.AccessWidth);
+        Assert.Equal(exposure, OcclusionMetrics.Measure(frame, [right, left], 96));
+        Assert.Equal(450, OcclusionMetrics.Measure(frame, [new(450, 0, 100, 800)], 96).UsefulWidth);
+    }
+
+    [Fact]
     public void EmptyAndFullyCoveredWindowsHaveNoInventedAccessRegion()
     {
         Assert.Equal(0, OcclusionMetrics.Measure(default, [], 96).Visible);

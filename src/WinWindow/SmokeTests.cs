@@ -847,8 +847,18 @@ internal static class SmokeTests
             shell.LayoutFocus.Visit(companion.Handle, companion.ProcessId, now - 900);
             shell.LayoutFocus.Visit(main.Handle, main.ProcessId, now);
         }
+        shell.ShowShell();
+        await WaitAsync("workbench owns input before enabling automation", () =>
+            Native.GetForegroundWindow() == new WindowInteropHelper(shell).Handle);
+        var whileEditingSettings = Pair();
         UseBothFixtures();
         Mode(AutomaticLayoutMode.AutoFullAssist).IsChecked = true;
+        await Task.Delay(1350);
+        Assert(Pair().All(w => whileEditingSettings.Any(p => p.Handle == w.Handle && WindowStateRules.Near(p.VisualRect, w.VisualRect))),
+            "automatic mode leaves external geometry alone while the workbench owns focus");
+        Native.SetForegroundWindow(first);
+        await WaitAsync("external task owns foreground", () => Native.GetForegroundWindow() == first);
+        UseBothFixtures();
         await WaitAsync("automatic mode opens up the two covered task windows", Improved, 8000);
         var stable = Pair();
         await Task.Delay(1250);

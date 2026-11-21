@@ -157,6 +157,36 @@ internal static class AttentionLayout
     internal static double Floating(TaskWindowHint? hint) => WindowUseRoles.IsFloating(hint?.Role) ? 1 :
         Math.Clamp(hint?.FloatingAffinity ?? 0, 0, 1);
 
+    // Once a working set fills the screen with readable surfaces, small changes in
+    // attention alone need not move the boundary between them. Re-evaluate actual
+    // visibility on every observation so a covered title, a new task or lost space
+    // immediately opens the normal search again.
+    internal static bool WorkspaceIsReadable(VisibleWindow[] group, AttentionTarget[]? targets,
+        OcclusionMetrics.Exposure[] exposed, TaskLayoutContext context)
+    {
+        if (targets == null || group.Length < 2 || context.ExplicitArrange || !context.IsWorkspaceObservation ||
+            context.GestureAnchor != 0 || context.Focus?.OpeningResidentLeft != null || context.VideoHint != null ||
+            context.Focus?.Navigation is { Length: > 0 } || context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true ||
+            context.RulePairs?.Length > 0) return false;
+        var area = group[0].Window.WorkArea;
+        double occupied = 0;
+        for (int i = 0; i < group.Length; i++)
+        {
+            var window = group[i].Window;
+            var frame = window.VisualRect;
+            var seen = exposed[i];
+            var target = targets[i];
+            if (target.Role is not (AttentionRole.Main or AttentionRole.Reference) ||
+                frame.Intersect(area) != frame || seen.Visible < .90 || seen.CenterVisible < .94 ||
+                seen.AccessWidth < target.AccessWidth || seen.UsefulWidth < target.Width * .84 ||
+                seen.Visible * frame.Area / Math.Max(1, seen.UsefulWidth) < target.Height * .84 ||
+                target.MinimumFrameWidth > frame.Width ||
+                context.Placement?.Any(p => p.Window == window.Handle && p.Confidence >= .40) == true) return false;
+            occupied += seen.Visible * frame.Area;
+        }
+        return occupied >= area.Area * .65;
+    }
+
     internal static bool CanStackReferences(AttentionTarget[] targets, TaskLayoutContext context,
         SmartTidyStrength strength, int height, int gap) =>
         targets.Length == 3 && strength != SmartTidyStrength.Gentle && context.GestureAnchor == 0 &&
