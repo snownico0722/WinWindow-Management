@@ -20,6 +20,19 @@ internal static partial class IntentLayoutPlanner
         // Anchored monitors keep their original location and remain in the desktop occlusion checks.
         desktop ??= visible.Select(v => v.Window).ToArray();
         visible = IncludeWorkingCompanion(visible, desktop, taskContext);
+        if (taskContext is { ExplicitArrange: false, Attention: not null })
+        {
+            var focus = ResolveWorkingPair(visible.ToArray(), taskContext).Focus;
+            if (focus is not { Main: not 0 } || !visible.Any(v => v.Window.Handle == focus.Main))
+                return new([], [], []);
+            // Background surfaces still occlude from their real positions. They do not take
+            // a slot in an automatic arrangement of the currently attended windows.
+            var main = visible.First(v => v.Window.Handle == focus.Main).Window;
+            visible = visible.Where(v => v.Window.MonitorHandle == main.MonitorHandle &&
+                (v.Window.Handle == focus.Main || v.Window.Handle == focus.Companion ||
+                    v.VisibleRatio > 0 && taskContext.HasRecentInput(v.Window.Handle))).ToArray();
+            taskContext = taskContext with { Focus = focus };
+        }
         var anchors = (taskContext.WindowHints ?? []).Where(h => h.Anchor).Select(h => h.Handle).ToHashSet();
         var moves = new List<TidyMove>();
         var layers = new List<WindowLayerOrder>();

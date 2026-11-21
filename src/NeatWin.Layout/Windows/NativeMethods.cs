@@ -27,6 +27,13 @@ internal static class NativeMethods
     internal const uint SwpAsyncWindowPos = 0x4000;
     internal const int WmHotkey = 0x0312;
     internal const int WmLButtonDown = 0x0201;
+    internal const int WmRButtonDown = 0x0204;
+    internal const int WmMButtonDown = 0x0207;
+    internal const int WmMouseWheel = 0x020A;
+    internal const int WmMouseHWheel = 0x020E;
+    internal const uint MouseInputInjected = 0x00000001;
+    private const uint SpiGetMouseWheelRouting = 0x201C;
+    private const uint MouseWheelRoutingUnderPointer = 2;
     internal const uint WmNcHitTest = 0x0084;
     internal const int HtNowhere = 0;
     internal const int HtClient = 1;
@@ -79,6 +86,13 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SystemParametersInfo(uint action, uint parameter, out uint value, uint flags);
+
+    internal static bool ScrollsInactiveWindows() =>
+        SystemParametersInfo(SpiGetMouseWheelRouting, 0, out var routing, 0) && routing == MouseWheelRoutingUnderPointer;
 
     [DllImport("user32.dll")]
     internal static extern nint GetShellWindow();

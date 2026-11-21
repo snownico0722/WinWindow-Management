@@ -62,6 +62,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _smartBehaviorOptions = _settingsStore.LoadSmartBehaviorOptions();
         _verticalFillManager = new ReversibleVerticalFillManager();
         _autoTidyManager = new AutoTidyManager();
+        _autoTidyManager.TaskInput += _focus.Interact;
         _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) { VisualSampling = _settingsStore.VisualSampling };
         _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder);
         _behaviorMonitor = new(_windowManager, _referenceStore, _settingsStore, _recorder,
@@ -197,10 +198,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         if (!_workspaceMonitor.SetMode(mode, arrangeNow))
         {
             _autoTidyManager.Enabled = false;
+            _autoTidyManager.SetAttentionInput(false);
             return false;
         }
-        // Only the legacy light mode needs pointer sampling; full Smart does not.
+        // Full Smart uses discrete interaction events. Continuous samples are for follow-hand.
         _autoTidyManager.Enabled = mode == AutomaticLayoutMode.LightAssist;
+        _autoTidyManager.SetAttentionInput(AutomaticLayoutPolicy.UsesFullPlanner(mode));
         return true;
     }
 
@@ -284,7 +287,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 _recorder.SetLiveSensing(_automaticMode, manualRequest: explicitSmart);
                 var rules = _referenceStore.Rules.Read();
                 var activities = _recorder.LiveActivities(snapshot);
-                var focus = _focus.Resolve(snapshot, Environment.TickCount64);
+                var focus = _focus.Resolve(snapshot, Environment.TickCount64, out var attention);
                 var liveHints = _recorder.LiveHints(snapshot);
                 if (videoHint is { Confidence: >= .82 })
                 {
@@ -311,6 +314,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 {
                     PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill,
                     Focus = focus,
+                    Attention = attention,
                     WindowHints = liveHints,
                     VideoHint = videoHint is { Confidence: >= .82 } ? videoHint : null,
                     Rules = _useImportedPlacement ? rules : rules with { Pairs = [], RolePairs = [], AppSlots = [] }, Activities = activities,
@@ -318,6 +322,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     RulePairs = pairs,
                     SizeFloors = floors,
                 };
+                if (trigger == "automatic-gesture" && taskContext.GestureAnchor != 0 && taskContext.GestureAnchor != focus.Main)
+                    taskContext = taskContext with { Focus = new(taskContext.GestureAnchor, 0, 0, "manual-gesture") };
                 var reference = _referenceStore.Read();
                 // Save the learned inputs separately so an offline rule edit can replace an old slot.
                 recordedContext = taskContext with { Placement = learned };

@@ -13,7 +13,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
 {
     private const int MoveSizeStartMessage = 0x8000 + 71;
     private const int MoveSizeEndMessage = 0x8000 + 72;
-    private const int ClickMessage = 0x8000 + 73;
+    private const int PointerInputMessage = 0x8000 + 73;
     private const int DebounceMilliseconds = 140;
     private const int AttentionSampleMilliseconds = 120;
     private const int DragSampleMilliseconds = 25;
@@ -29,6 +29,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     private readonly Dictionary<nint, AttentionState> _attention = new();
     private long _suppressUntilTick;
     private bool _enabled;
+    private bool _trackTaskInput;
     private bool _disposed;
     private ActiveGesture? _activeGesture;
     private ManualWindowGesture? _pendingGesture;
@@ -69,6 +70,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     internal event Action<nint>? GestureStarted;
     internal event Action<ManualWindowGesture>? GestureObserved;
     internal event Action<ManualWindowGesture>? TidyRequested;
+    internal event Action<nint, uint, long>? TaskInput;
 
     internal bool IsAvailable => _eventHook != nint.Zero;
     internal bool PointerTrackingActive => _attentionTimer.Enabled || _dragTimer.Enabled || _mouseHook != nint.Zero;
@@ -80,7 +82,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
         {
             if (_disposed) return;
             _enabled = value && IsAvailable;
-            SetPointerTracking(_enabled);
+            UpdatePointerTracking();
             if (!_enabled)
             {
                 _debounceTimer.Stop();
@@ -89,20 +91,33 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
         }
     }
 
-    private void SetPointerTracking(bool enabled)
+    internal void SetAttentionInput(bool enabled)
     {
-        if (enabled)
+        if (_disposed) return;
+        _trackTaskInput = enabled;
+        UpdatePointerTracking();
+    }
+
+    private void UpdatePointerTracking()
+    {
+        if (_enabled || _trackTaskInput)
         {
             if (_mouseHook == nint.Zero)
                 _mouseHook = NativeMethods.SetWindowsHookEx(NativeMethods.WhMouseLl, _mouseProc, nint.Zero, 0);
+        }
+        else if (_mouseHook != nint.Zero)
+        {
+            _ = NativeMethods.UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = nint.Zero;
+        }
+        if (_enabled)
+        {
             _attentionTimer.Start();
             if (_activeGesture is not null) _dragTimer.Start();
         }
         else
         {
             _attentionTimer.Stop(); _dragTimer.Stop();
-            if (_mouseHook != nint.Zero) _ = NativeMethods.UnhookWindowsHookEx(_mouseHook);
-            _mouseHook = nint.Zero;
             _attention.Clear(); _hasAttentionPoint = false;
         }
     }
@@ -225,14 +240,19 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     {
         try
         {
-            if (!_disposed && _enabled && code >= NativeMethods.HcAction && message == NativeMethods.WmLButtonDown)
+            int kind = (int)message;
+            if (!_disposed && code >= NativeMethods.HcAction &&
+                (kind == NativeMethods.WmLButtonDown || _trackTaskInput && kind is
+                 NativeMethods.WmRButtonDown or NativeMethods.WmMButtonDown or NativeMethods.WmMouseWheel or NativeMethods.WmMouseHWheel))
             {
                 var data = Marshal.PtrToStructure<NativeMethods.MsllHookStruct>(dataPointer);
+                if (_trackTaskInput && (data.Flags & NativeMethods.MouseInputInjected) != 0)
+                    return NativeMethods.CallNextHookEx(_mouseHook, code, message, dataPointer);
                 var hit = NativeMethods.WindowFromPoint(data.Point);
                 var root = hit == nint.Zero ? nint.Zero : NativeMethods.GetAncestor(hit, NativeMethods.GaRoot);
                 if (root != nint.Zero)
                 {
-                    _ = NativeMethods.PostMessage(Handle, ClickMessage, root, nint.Zero);
+                    _ = NativeMethods.PostMessage(Handle, PointerInputMessage, root, message);
                 }
             }
         }
@@ -254,8 +274,19 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
             case MoveSizeEndMessage:
                 EndGesture(message.WParam);
                 return;
-            case ClickMessage:
-                if (_enabled) TouchClick(message.WParam);
+            case PointerInputMessage:
+                if (_enabled && message.LParam == NativeMethods.WmLButtonDown) TouchClick(message.WParam);
+                if (_trackTaskInput)
+                {
+                    var target = message.WParam;
+                    if ((int)message.LParam is NativeMethods.WmMouseWheel or NativeMethods.WmMouseHWheel &&
+                        !NativeMethods.ScrollsInactiveWindows()) target = NativeMethods.GetForegroundWindow();
+                    if (target != 0 && !AutomationGuard.IsUtility(target))
+                    {
+                        NativeMethods.GetWindowThreadProcessId(target, out var pid);
+                        TaskInput?.Invoke(target, pid, Environment.TickCount64);
+                    }
+                }
                 return;
         }
 

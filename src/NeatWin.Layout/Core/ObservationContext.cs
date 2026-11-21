@@ -73,7 +73,11 @@ public sealed record RecordedSizeFloor(int Id, int MinWidth, int MinHeight);
 public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, string? FocusEvidence,
     RecordedWindowHint[] Hints, RecordedPlacement[] Placements,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    RecordedSizeFloor[]? SizeFloors = null, Dictionary<int, string>? Activities = null)
+    RecordedSizeFloor[]? SizeFloors = null, Dictionary<int, string>? Activities = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<int, LayoutAttention>? Attention = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    int GestureAnchor = 0)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids)
     {
@@ -88,7 +92,8 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
                 .Select(p => new RecordedPlacement(Id(p.Window), Id(p.Partner), p.Center, p.Width, p.Order,
                     p.RevealedCell, p.Confidence, p.InnerOverlap)).ToArray(),
             floors.Length > 0 ? floors : null, context.Activities?.Where(a => Id(a.Key) != 0)
-                .ToDictionary(a => Id(a.Key), a => a.Value));
+                .ToDictionary(a => Id(a.Key), a => a.Value), context.Attention?.Where(a => Id(a.Key) != 0)
+                .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor));
     }
 
     // During offline replay the session-local ids are the simulated handles.
@@ -100,6 +105,8 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         Placement = Placements.Select(p => new PlacementPreference(p.Id, p.Partner, p.Center, p.Width,
             p.Order, p.Cell, p.Confidence, p.Overlap)).ToArray(),
         Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),
+        Attention = Attention?.ToDictionary(a => (nint)a.Key, a => a.Value),
+        GestureAnchor = GestureAnchor,
         SizeFloors = SizeFloors?.Select(f => new WindowSizeFloor(f.Id, f.MinWidth, f.MinHeight)).ToArray()
     };
 }
