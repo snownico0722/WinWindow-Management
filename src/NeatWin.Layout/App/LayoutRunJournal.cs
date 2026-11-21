@@ -13,14 +13,15 @@ internal sealed class LayoutRunJournal : IDisposable
     private readonly ObservationIdentityTracker _identity;
     private readonly string _session;
     private readonly RecorderSession? _recorder;
+    private readonly Action<LayoutRunObservation>? _snapshotObserver;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 600 };
     private readonly List<Pending> _pending = [];
     internal event Action<LayoutRunObservation>? Completed;
-    internal Action<LayoutRunObservation>? SnapshotObserver { get; set; }
-
-    internal LayoutRunJournal(WindowManager manager, IntentReferenceStore store, RecorderSession? recorder = null)
+    internal LayoutRunJournal(WindowManager manager, IntentReferenceStore store, RecorderSession? recorder = null,
+        Action<LayoutRunObservation>? snapshotObserver = null)
     {
         _manager = manager; _store = store; _recorder = recorder;
+        _snapshotObserver = snapshotObserver;
         _identity = recorder?.Identity ?? new ObservationIdentityTracker();
         _session = recorder?.SessionId ?? Guid.NewGuid().ToString("N");
         _timer.Tick += (_, _) => CompleteDue();
@@ -51,7 +52,7 @@ internal sealed class LayoutRunJournal : IDisposable
             var observation = new LayoutRunObservation(5, _session, Guid.NewGuid().ToString("N"), trigger,
                 frame, targets, layers, groups, null, "requested-not-yet-verified", notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
                 context == null ? null : RecordedTaskSignals.From(context, ids), strength, fullDesktop);
-            SnapshotObserver?.Invoke(observation);
+            _snapshotObserver?.Invoke(observation);
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);
             if (recorded && (plan.Moves.Count > 0 || trigger == "undo"))
@@ -102,7 +103,7 @@ internal sealed class LayoutRunJournal : IDisposable
                 // Pause/clear stops writes, not the runtime's placement verification. An old
                 // completion must not resurrect cleared data or become a new recording session.
                 if (pending.Recorded) TryAppend(actual, pending.Epoch);
-                SnapshotObserver?.Invoke(actual);
+                _snapshotObserver?.Invoke(actual);
                 Completed?.Invoke(actual);
             }
             catch { }
