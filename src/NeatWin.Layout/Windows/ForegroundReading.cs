@@ -7,8 +7,12 @@ namespace NeatWin.Windows;
 
 // All native handles stay local. Read the actual foreground input queue once per sample.
 // A GUI caret owned by an unrelated window or stale queue must not protect a new task.
-internal readonly record struct ForegroundReading(nint Root, nint Focus, uint Pid, bool Caret, uint LastInput = 0)
+internal readonly record struct ForegroundReading(nint Root, nint Focus, uint Pid, bool Caret, uint? LastInput = null)
 {
+    internal bool AllowsInitialPlacement(ForegroundReading live) =>
+        Root != 0 && Focus != 0 && LastInput.HasValue && live.Root == Root && live.Focus == Focus &&
+        live.Pid == Pid && live.LastInput == LastInput && (Caret || !live.Caret);
+
     internal static ForegroundReading Read(WindowSnapshot? expected)
     {
         if (expected is not { IsForeground: true, IsManageable: true } ||
@@ -19,56 +23,60 @@ internal readonly record struct ForegroundReading(nint Root, nint Focus, uint Pi
             NativeMethods.GetAncestor(info.Focus, NativeMethods.GaRoot) != expected.Handle) return default;
         bool caret = info.Caret != 0 && info.CaretRect.Bottom > info.CaretRect.Top &&
             NativeMethods.GetAncestor(info.Caret, NativeMethods.GaRoot) == expected.Handle &&
-            (info.Focus == info.Caret || IsChild(info.Focus, info.Caret) || IsChild(info.Caret, info.Focus));
+            (info.Focus == info.Caret || NativeMethods.IsChild(info.Focus, info.Caret) || NativeMethods.IsChild(info.Caret, info.Focus));
         var input = new NativeMethods.LastInput { Size = (uint)Marshal.SizeOf<NativeMethods.LastInput>() };
-        NativeMethods.GetLastInputInfo(ref input);
+        uint? lastInput = NativeMethods.GetLastInputInfo(ref input) ? input.Time : null;
         return NativeMethods.GetForegroundWindow() == expected.Handle
-            ? new(expected.Handle, info.Focus, expected.ProcessId, caret, input.Time) : default;
+            ? new(expected.Handle, info.Focus, expected.ProcessId, caret, lastInput) : default;
     }
-
-    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsChild(nint parent, nint child);
 }
 
-// WPS can use the same Qt top-level class for a start page, grid, document and slide
-// canvas. Ask only its foreground accessibility provider for control roles. A blocked
-// provider can occupy one worker, never the arranging thread or a queue of retries.
+// Shared WPS frames need a foreground accessibility query. Reserve at most one extra
+// worker for another window when a provider stalls. A retired request keeps its slot
+// until the COM call actually returns, and can never publish into a new window lifetime.
 internal sealed class OfficeSurfaceProbe(Func<ForegroundReading, Task<FocusedOfficeSurface>>? query = null)
 {
-    private Task<FocusedOfficeSurface>? _pending;
-    private ForegroundReading _queryTarget, _cachedTarget;
+    private sealed record Request(ForegroundReading Target, Task<FocusedOfficeSurface> Work, long Started)
+    {
+        public bool Retired { get; set; }
+    }
+
+    private readonly List<Request> _requests = [];
+    private ForegroundReading _cachedTarget;
     private FocusedOfficeSurface _cached;
-    private long _started;
+    private long _lastRefresh;
 
     internal FocusedOfficeSurface Sample(ForegroundReading target, long now)
     {
         if (target.Root == 0) return default;
-        if (_pending is { IsCompleted: true })
+        for (int i = _requests.Count - 1; i >= 0; i--)
         {
-            _cachedTarget = _queryTarget;
-            _cached = _pending.IsCompletedSuccessfully ? _pending.Result : default;
-            _pending = null;
+            var request = _requests[i];
+            if (!request.Work.IsCompleted) continue;
+            _requests.RemoveAt(i);
+            if (!request.Retired && request.Target == target)
+            {
+                _cachedTarget = target;
+                _cached = request.Work.IsCompletedSuccessfully ? request.Work.Result : default;
+                _lastRefresh = request.Started;
+            }
+            _ = request.Work.Exception;
         }
         bool same = _cachedTarget == target;
-        if (_pending == null && (!same || now - _started >= 2_000))
-        {
-            _queryTarget = target;
-            _started = now;
-            _pending = query?.Invoke(target) ?? Task.Run(() => Read(target));
-        }
-        // A completed sample remains evidence at long intervals when both the native
-        // input target and last user input are identical. Refresh it in the background.
+        bool busy = _requests.Count >= 2 || _requests.Any(r =>
+            (!r.Retired && r.Target.Root == target.Root && r.Target.Pid == target.Pid) || now - r.Started < 1_500);
+        if (!busy && (!same || now - _lastRefresh >= 2_000))
+            _requests.Add(new(target, query?.Invoke(target) ?? Task.Run(() => Read(target)), now));
         return same ? _cached : default;
     }
 
     internal bool JustStarted(nint root, long now) =>
-        _pending != null && _queryTarget.Root == root &&
-        _queryTarget != _cachedTarget && now - _started < 200;
+        _requests.Any(r => !r.Retired && r.Target.Root == root && r.Target != _cachedTarget && now - r.Started < 200);
 
     internal void Retire(nint root)
     {
         if (_cachedTarget.Root == root) _cachedTarget = default;
-        if (_queryTarget.Root == root) _queryTarget = default;
+        foreach (var request in _requests.Where(r => r.Target.Root == root)) request.Retired = true;
     }
 
     private static FocusedOfficeSurface Read(ForegroundReading target)
@@ -83,7 +91,7 @@ internal sealed class OfficeSurfaceProbe(Func<ForegroundReading, Task<FocusedOff
                 return default;
             var id = typeof(IAccessible).GUID;
             if (NativeMethods.GetForegroundWindow() != target.Root ||
-                AccessibleObjectFromWindow(target.Focus, 0xfffffffc, ref id, out var control) < 0 || control == null)
+                NativeMethods.AccessibleObjectFromWindow(target.Focus, 0xfffffffc, ref id, out var control) < 0 || control == null)
                 return default;
             var surface = FocusedOfficeSurface.Unknown;
             for (int depth = 0; depth < 6; depth++)
@@ -111,8 +119,4 @@ internal sealed class OfficeSurfaceProbe(Func<ForegroundReading, Task<FocusedOff
         catch (Exception ex) when (ex is COMException or InvalidCastException or ArgumentException or NotImplementedException)
         { return default; }
     }
-
-    [DllImport("oleacc.dll")]
-    private static extern int AccessibleObjectFromWindow(nint window, uint objectId, ref Guid id,
-        [MarshalAs(UnmanagedType.Interface)] out IAccessible? accessible);
 }

@@ -69,7 +69,6 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     // A workspace event can still carry the last gesture as an anchor without granting
     // another placement adjustment. Live and replay callers set this from the event kind.
     internal bool AllowGestureAssist { get; init; } = true;
-    internal uint? InitialPlacementInputTick { get; init; }
     internal DateTimeOffset? NavigationObservedAt { get; init; }
     public TaskLayoutProfile Preferences => (Profile ?? new()).Normalize();
     public bool PairPlanningEnabled => ExplicitArrange || UseWorkingPairs;

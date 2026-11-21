@@ -19,7 +19,7 @@ public sealed partial class WindowManager
 
     public LayoutApplication ApplyLayout(IntentLayoutPlan plan) => ApplyLayout(plan, null);
 
-    internal LayoutApplication ApplyLayout(IntentLayoutPlan plan, nint? automaticForeground, TaskLayoutContext? context = null, nint gestureWindow = default)
+    internal LayoutApplication ApplyLayout(IntentLayoutPlan plan, nint? automaticForeground, TaskLayoutContext? context = null, nint gestureWindow = default, ForegroundReading? initialReading = null)
     {
         var current = Capture();
         var needed = plan.Moves.Select(m => m.Window).Concat(plan.Layers.SelectMany(l => l.FrontToBack))
@@ -36,8 +36,8 @@ public sealed partial class WindowManager
         {
             if (context is not { ExplicitArrange: false } || needed.Length == 0 || !automaticForeground.HasValue) return 0;
             var live = ForegroundReading.Read(desktop.FirstOrDefault(w => w.IsForeground));
-            if (context.InitialPlacementInputTick is uint input &&
-                (live.Root != automaticForeground.Value || live.LastInput != input)) return automaticForeground.Value;
+            if (initialReading is { } initial)
+                return initial.AllowsInitialPlacement(live) ? 0 : automaticForeground.Value;
             return live.Caret ? live.Root : 0;
         }
         var caret = ProtectedInputRoot(current);
@@ -57,7 +57,7 @@ public sealed partial class WindowManager
             Layers = plan.Layers.Except(failed).ToArray(),
         };
         if (failed.Length != 0) notes.Add("指定层级未实现，未套用依赖该层级的窗口位置。");
-        var afterCaret = plan.Layers.Count > 0 ? ProtectedInputRoot(afterLayers) : caret;
+        var afterCaret = plan.Layers.Count > 0 || initialReading.HasValue ? ProtectedInputRoot(afterLayers) : caret;
         bool readingChanged = false;
         if (context != null && (failed.Length > 0 || afterCaret != caret) &&
             !IntentLayoutPlanner.TextViewAcceptsPlan(afterLayers, accepted with { Layers = [] }, context, afterCaret))

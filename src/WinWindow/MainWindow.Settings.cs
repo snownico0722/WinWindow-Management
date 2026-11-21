@@ -39,10 +39,10 @@ public partial class MainWindow
     private void SelectSettingsSection()
     {
         var page = (SettingsNav.SelectedItem as ListBoxItem)?.Tag as string;
-        var pages = new[] { GeneralSection, KeysSection, LayoutSection, DataSection, PlacementSection, BehaviorSection };
+        var pages = new[] { GeneralSection, KeysSection, LayoutSection, ViewingSection, DataSection, PlacementSection, BehaviorSection };
         foreach (var section in pages)
             section.Visibility = section.Name == page ? Visibility.Visible : Visibility.Collapsed;
-        if (page is nameof(LayoutSection) or nameof(DataSection) or nameof(PlacementSection) or nameof(BehaviorSection) &&
+        if (page is nameof(LayoutSection) or nameof(ViewingSection) or nameof(DataSection) or nameof(PlacementSection) or nameof(BehaviorSection) &&
             _layoutPreferences is null && _layoutLoad is null)
             _ = LoadLayoutSettingsAsync();
         else if (page == nameof(BehaviorSection) && _layoutLoad is null)
@@ -59,7 +59,7 @@ public partial class MainWindow
 
     private async Task ReadLayoutSettingsAsync()
     {
-        LayoutSection.IsEnabled = ActivityRecordSettings.IsEnabled = PlacementSection.IsEnabled = BehaviorSection.IsEnabled = FooterModes.IsEnabled = false;
+        LayoutSection.IsEnabled = ViewingSection.IsEnabled = ActivityRecordSettings.IsEnabled = PlacementSection.IsEnabled = BehaviorSection.IsEnabled = FooterModes.IsEnabled = false;
         try
         {
             var snapshot = await EnsureLayout().ReadSettingsAsync();
@@ -72,7 +72,7 @@ public partial class MainWindow
         finally
         {
             FooterModes.IsEnabled = true;
-            LayoutSection.IsEnabled = ActivityRecordSettings.IsEnabled = PlacementSection.IsEnabled = BehaviorSection.IsEnabled = _layoutPreferences is not null;
+            LayoutSection.IsEnabled = ViewingSection.IsEnabled = ActivityRecordSettings.IsEnabled = PlacementSection.IsEnabled = BehaviorSection.IsEnabled = _layoutPreferences is not null;
         }
     }
 
@@ -118,6 +118,8 @@ public partial class MainWindow
 
     private void UpdateLayoutFields(LayoutPreferences value)
     {
+        LayoutModelNumber.Text = LayoutDispatch.ModelVersion(value.Options.AlgorithmMode);
+        LearningModelNumber.Text = PlacementPreferences.ModelVersion;
         bool smart = value.Options.AlgorithmMode == TidyAlgorithmMode.Smart;
         SmartOptions.Visibility = smart ? Visibility.Visible : Visibility.Collapsed;
         ClassicOptions.Visibility = smart ? Visibility.Collapsed : Visibility.Visible;

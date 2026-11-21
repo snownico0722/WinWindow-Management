@@ -3,7 +3,7 @@ namespace NeatWin.Core;
 // Application and class identify a content category. Floating intent is inferred from this
 // particular window's geometry, relationships and recent user behavior.
 [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<WindowUseRole>))]
-public enum WindowUseRole { Unknown, Browser, FileManager, Editor, FloatingEditor, Chat, Document, Spreadsheet, Presentation }
+public enum WindowUseRole { Unknown, Browser, FileManager, Editor, FloatingEditor, Chat, Document, Spreadsheet, Presentation, Note }
 
 internal enum FocusedOfficeSurface { Unknown, Document, Grid, Canvas }
 
@@ -40,6 +40,14 @@ internal static class WindowUseRoles
             "powerpnt" or "wpp" when windowClass == "PPTFrameClass" => WindowUseRole.Presentation,
             "wechat" or "weixin" when windowClass is "WeChatMainWndForPC" or "ChatWnd" || QtFrame(windowClass) => WindowUseRole.Chat,
             "qq" or "tim" when windowClass is "TXGuiFoundation" or "Chrome_WidgetWin_1" => WindowUseRole.Chat,
+            "code" or "code - insiders" or "cursor" or "obsidian" when windowClass == "Chrome_WidgetWin_1" => WindowUseRole.Editor,
+            "devenv" or "rider64" or "idea64" when windowClass?.StartsWith("HwndWrapper", StringComparison.Ordinal) == true ||
+                windowClass == "SunAwtFrame" => WindowUseRole.Editor,
+            "windowsterminal" when windowClass == "CASCADIA_HOSTING_WINDOW_CLASS" => WindowUseRole.Editor,
+            "papertodo" when windowClass?.StartsWith("HwndWrapper", StringComparison.Ordinal) == true => WindowUseRole.Note,
+            "microsoft.notes" when windowClass == "Windows.UI.Core.CoreWindow" => WindowUseRole.Note,
+            "lark" or "feishu" or "dingtalk" or "discord" when windowClass == "Chrome_WidgetWin_1" => WindowUseRole.Chat,
+            "telegram" when QtFrame(windowClass) => WindowUseRole.Chat,
             "totalcmd64" or "totalcmd" or "doublecmd" => WindowUseRole.FileManager,
             _ => WindowUseRole.Unknown
         };
@@ -102,7 +110,7 @@ internal static class WindowUseRoles
                 attention?.GetValueOrDefault(source.Handle)?.Weight ?? 0;
             // The same small foreground overlay on visible material has the same baseline
             // in any application. Identity can only reinforce an observed source relationship.
-            double prior = .15 + sourceEvidence * (identified == WindowUseRole.Editor ? .30 : .25);
+            double prior = .15 + sourceEvidence * (identified is WindowUseRole.Editor or WindowUseRole.Note ? .30 : .25);
             double intent = Math.Max(manual, Math.Max(ownership, prior * current * interaction));
             if (intent * overlap <= best) continue;
             var covering = desktop.Where(w => w.ZOrder < source.ZOrder).Select(w => w.VisualRect);
@@ -122,7 +130,7 @@ internal static class WindowUseRoles
             window.WorkArea.Intersect(window.VisualRect).IsEmpty) return false;
         if (caret) return true;
         if (window.Owner != 0 || !window.IsResizable || focus?.Main != window.Handle || visit is not { Foreground: true } ||
-            role is not (WindowUseRole.Editor or WindowUseRole.Chat or WindowUseRole.Document or
+            role is not (WindowUseRole.Editor or WindowUseRole.Note or WindowUseRole.Chat or WindowUseRole.Document or
                 WindowUseRole.Spreadsheet or WindowUseRole.Presentation) ||
             activity is "game-like-interaction" or "media-with-motion" or "audible-with-motion" or "audible-media-session" ||
             hint is { MediaCompanion: true } or { PassiveVisual: true }) return false;
@@ -140,13 +148,15 @@ internal static class WindowUseRoles
         foreach (var window in desktop.Where(w => w.IsManageable))
         {
             var role = identify(window);
+            if (role == WindowUseRole.Note && Math.Min(window.VisualRect.Width, window.VisualRect.Height) <
+                100 * (window.Dpi == 0 ? 1 : window.Dpi / 96d)) role = WindowUseRole.FloatingEditor;
             double affinity = FloatingAffinity(role, window, desktop, focus, attention, placements);
             var hint = byWindow.GetValueOrDefault(window.Handle);
             bool text = (!keyboardRoot.HasValue || keyboardRoot == window.Handle) &&
                 KeepsTextFocus(window, role, focus, attention?.GetValueOrDefault(window.Handle), desktop,
                 window.Handle == foregroundCaret, activities?.GetValueOrDefault(window.Handle), hint);
             bool firstPlacement = false;
-            if (text && window.Handle == initialPlacement && window.Handle != foregroundCaret &&
+            if (text && window.IsResizable && !IsFloating(role) && hint?.Anchor != true && window.Handle == initialPlacement &&
                 profile != null && attention?.GetValueOrDefault(window.Handle)?.Input == 0)
             {
                 double scale = (window.Dpi == 0 ? 96 : window.Dpi) / 96d;

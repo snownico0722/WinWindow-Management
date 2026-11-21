@@ -272,4 +272,6 @@
   <data name="SnapshotDesktopMissing" xml:space="preserve"><value>The Windows desktop folder is unavailable.</value></data>
   <data name="BehaviorNoRules" xml:space="preserve"><value>No rules yet. Repeated sequences appear here as suggestions, or you can import rules.</value></data>
   <data name="BehaviorNewProcessHint" xml:space="preserve"><value>After {0} gives way to a newly started {1}, {2}.</value></data>
+  <data name="LayoutModelVersion" xml:space="preserve"><value>Layout model</value></data>
+  <data name="LearningModelVersion" xml:space="preserve"><value>Learning model</value></data>
 </root>

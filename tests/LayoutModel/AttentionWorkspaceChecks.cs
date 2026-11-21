@@ -22,6 +22,31 @@ internal static class AttentionWorkspaceChecks
             { [2] = new(1, 1, 1, 1, false), [3] = new(1, 1, 1, 1, false) } };
         IntentLayoutPlan Balanced(WindowSnapshot[] windows, TaskLayoutContext task) => LayoutDispatch.Create(LayoutRoute.Smart,
             new VisibilityAnalyzer().SelectForManualArrange(windows, true), new(SmartStrength: SmartTidyStrength.Balanced), null, windows, task);
+        var dockedWindow = Window(1, 1240, 150, 600, 500);
+        var opposite = Window(2, 180, 100, 740, 710);
+        var drag = new ManualWindowGesture(1, dockedWindow.VisualRect with { X = area.Left + 610 },
+            dockedWindow.VisualRect, area, ManualGestureKind.Move, [], 450, 50);
+        var split = context with { GestureAnchor = 1, RecentGesture = drag };
+        var splitPlan = Balanced([dockedWindow, opposite], split);
+        check(splitPlan.Moves.Any(m => m.Window.Handle == 2) && splitPlan.Moves.Any(m => m.Window.Handle == 1 &&
+            m.TargetVisualRect.Right == area.Right && m.TargetVisualRect.Width > dockedWindow.VisualRect.Width),
+            "a deliberate side release completes both halves with one unvisited visible reading window");
+        var palette = Window(2, 100, 170, 140, 100);
+        check(!Balanced([dockedWindow, palette], split).Moves.Any(m => m.Window.Handle == 2),
+            "an entirely visible utility palette is too small to become the opposite reading window");
+
+        var hidden = Window(1, 100, 70, 1000, 800);
+        var strip = Window(4, 125, 70, 1000, 800);
+        var layered = new[] { hidden, Window(2, 1310, 0, 200, 230), Window(3, 1270, 260, 240, 220), strip };
+        var tracker = new IdleWindowReclaim();
+        var history = new ForegroundHistory();
+        WindowSnapshot? Reclaim(WindowSnapshot[] scene, long tick) =>
+            tracker.Choose(scene, new([], [], []), context, SmartTidyStrength.Balanced, tick, w => (int)w.Handle, history);
+        check(Reclaim(layered, 1000) == null && Reclaim(layered, 301000) == null &&
+            Reclaim(layered, 961000)?.Handle == strip.Handle &&
+            Reclaim([.. layered.Take(3), strip with { VisualRect = hidden.VisualRect }], 962000) == null,
+            "a long-idle rear strip can clear visible desktop space while a fully buried window stays put");
+
         var uneven = new[] { Window(1, 20, 80, 1400, 800), Window(2, 1040, 80, 420, 800) };
         var shared = TaskLayoutSession.Project(uneven, Balanced(uneven, comparisonContext));
         check(shared[0].VisualRect.Width >= 900 && shared[1].VisualRect.Width >= 900 &&
