@@ -12,7 +12,7 @@
 - 外部窗口同步调用不在 WPF 线程执行。同一目标不并发修改，阻塞目标不占住其他目标与主窗口交互。
 - 自身置顶由 Native.SetOwnTopmost 单一管理，不能混写 WPF Topmost。失焦取消临时置顶时让到新前台之后；主动唤醒的临时抬层必须立即收尾。
 - 关闭可留托盘；真正退出尽力恢复，但不能因某个目标失败或卡住而拒绝退出。未完成记录留下供下次启动恢复，不假报成功，不清空用户规则。
-- 跨权限只放行无参数的专用 Show 消息，检查发送结果；不自动提权。
+- 程序默认在启动时通过 Windows UAC 请求管理员权限，可在常规设置关闭。跨权限只放行无参数的专用 Show 消息，检查发送结果。
 - 少量有价值的真实 Windows 状态转换测试优先，不堆源码字符串断言。编译通过不等于游戏或跨权限兼容认证。
 - 打包统一使用 `scripts/package.ps1`。日常构建、PR、测试版和预发布版只出依赖系统 .NET 的标准包。仅在用户明确要求或发布正式版时，额外提供一份内置 .NET 的自包含包，标准包始终保留。构建制品只上传应用包和测试结果，跳过源码快照。
 - 验证：`dotnet build src/WinWindow/WinWindow.csproj -c Release`；`dotnet run --no-build -c Release --project src/WinWindow -- --self-test TestResults`。

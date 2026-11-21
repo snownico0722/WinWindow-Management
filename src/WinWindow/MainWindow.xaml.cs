@@ -80,6 +80,7 @@ public partial class MainWindow : Window
         OwnPinBox.IsChecked = p.ManualTopmost;
         SyncOwnPinGlyph();
         DarkBox.IsChecked = p.Dark; TrayBox.IsChecked = !p.CloseToTray; StartupBox.IsChecked = p.StartWithWindows;
+        AdministratorStartupBox.IsChecked = p.RunAsAdministrator;
         FocusPinBox.IsChecked = p.PinWhenFocused; AbsoluteBox.IsChecked = p.AbsoluteTopmost; AggressiveBox.IsChecked = p.AggressiveTopmost;
         SoundBox.IsChecked = p.EnablePinSound; NotificationBox.IsChecked = p.ShowPinNotifications;
         EnhancedBackgroundBox.IsChecked = p.EnhancedBackgroundKeep;
@@ -657,6 +658,12 @@ public partial class MainWindow : Window
     {
         Run(() => { bool enabled = StartupBox.IsChecked == true; DesktopIntegration.SetAutostart(enabled); _store.Preferences.StartWithWindows = enabled; _store.SaveSoon(); });
         StartupBox.IsChecked = _store.Preferences.StartWithWindows;
+    }
+
+    private void AdministratorStartup_Click(object sender, RoutedEventArgs e)
+    {
+        _store.Preferences.RunAsAdministrator = AdministratorStartupBox.IsChecked == true;
+        _store.SavePreferences();
     }
 
     private void Hotkey_KeyDown(object sender, KeyEventArgs e)
