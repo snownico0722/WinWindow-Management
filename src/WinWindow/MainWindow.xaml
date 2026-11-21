@@ -224,6 +224,7 @@
             <CheckBox x:Name="DarkBox" Content="{DynamicResource Text.DarkTheme}" Click="Settings_Click"/>
             <CheckBox x:Name="TrayBox" Content="{DynamicResource Text.ExitOnClose}" Click="Settings_Click"/>
             <CheckBox x:Name="StartupBox" Content="{DynamicResource Text.StartWithWindows}" Click="Startup_Click"/>
+            <CheckBox x:Name="AdministratorStartupBox" Content="{DynamicResource Text.RunAsAdministrator}" Click="AdministratorStartup_Click" ToolTip="{DynamicResource Text.RunAsAdministratorHint}"/>
             <TextBlock Text="{DynamicResource Text.Feedback}" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
             <CheckBox x:Name="SoundBox" Content="{DynamicResource Text.PinSound}" Click="Settings_Click"/>
             <CheckBox x:Name="NotificationBox" Content="{DynamicResource Text.PinNotifications}" Click="Settings_Click"/>

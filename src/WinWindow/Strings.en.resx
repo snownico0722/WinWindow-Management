@@ -204,6 +204,10 @@
   <data name="ShowMainWindow" xml:space="preserve"><value>Show / hide main window</value></data>
   <data name="Smart" xml:space="preserve"><value>Smart</value></data>
   <data name="StartWithWindows" xml:space="preserve"><value>Start with Windows</value></data>
+  <data name="RunAsAdministrator" xml:space="preserve"><value>Start as administrator</value></data>
+  <data name="RunAsAdministratorHint" xml:space="preserve"><value>Applies on the next launch. Cancel the Windows prompt to continue with standard permissions this time.</value></data>
+  <data name="AdministratorLaunchFailed" xml:space="preserve"><value>Administrator startup failed. WinWindow started with standard permissions. {0}</value></data>
+  <data name="AdministratorProcessMissing" xml:space="preserve"><value>Windows did not return a new application process.</value></data>
   <data name="StyleRejected" xml:space="preserve"><value>The window rejected the style change.</value></data>
   <data name="TargetReplaced" xml:space="preserve"><value>The target window closed or was replaced.</value></data>
   <data name="ThroughRejected" xml:space="preserve"><value>The window rejected the click-through setting.</value></data>
