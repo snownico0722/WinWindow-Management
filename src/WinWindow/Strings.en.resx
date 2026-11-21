@@ -204,6 +204,10 @@
   <data name="ShowMainWindow" xml:space="preserve"><value>Show / hide main window</value></data>
   <data name="Smart" xml:space="preserve"><value>Smart</value></data>
   <data name="StartWithWindows" xml:space="preserve"><value>Start with Windows</value></data>
+  <data name="RunAsAdministrator" xml:space="preserve"><value>Start as administrator</value></data>
+  <data name="RunAsAdministratorHint" xml:space="preserve"><value>Applies on the next launch. Cancel the Windows prompt to continue with standard permissions this time.</value></data>
+  <data name="AdministratorLaunchFailed" xml:space="preserve"><value>Administrator startup failed. WinWindow started with standard permissions. {0}</value></data>
+  <data name="AdministratorProcessMissing" xml:space="preserve"><value>Windows did not return a new application process.</value></data>
   <data name="StyleRejected" xml:space="preserve"><value>The window rejected the style change.</value></data>
   <data name="TargetReplaced" xml:space="preserve"><value>The target window closed or was replaced.</value></data>
   <data name="ThroughRejected" xml:space="preserve"><value>The window rejected the click-through setting.</value></data>
@@ -260,7 +264,9 @@
   <data name="RuleImportFailed" xml:space="preserve"><value>Could not import rules. {0}</value></data>
   <data name="JsonFilter" xml:space="preserve"><value>JSON rules|*.json</value></data>
   <data name="CurrentSnapshot" xml:space="preserve"><value>Snapshot</value></data>
-  <data name="CurrentSnapshotHint" xml:space="preserve"><value>Capture the next 10 seconds of window changes to a desktop ZIP. Includes window titles.</value></data>
+  <data name="CurrentSnapshotHint" xml:space="preserve"><value>Save the next 10 seconds of window changes, including titles, in a desktop ZIP. With lookback enabled, also include the previous minute.</value></data>
+  <data name="SnapshotLookback" xml:space="preserve"><value>Snapshot lookback</value></data>
+  <data name="SnapshotLookbackHint" xml:space="preserve"><value>Keep the last minute of window positions, titles, and layout decisions in memory for Snapshot. Turning this off clears the lookback history.</value></data>
   <data name="SnapshotCapturing" xml:space="preserve"><value>Capturing 10 seconds of window activity…</value></data>
   <data name="SnapshotSaved" xml:space="preserve"><value>Saved to desktop · {0}</value></data>
   <data name="SnapshotDesktopMissing" xml:space="preserve"><value>The Windows desktop folder is unavailable.</value></data>

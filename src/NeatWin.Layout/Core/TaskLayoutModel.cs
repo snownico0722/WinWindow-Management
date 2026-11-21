@@ -265,7 +265,7 @@ internal static partial class IntentLayoutPlanner
 
     private static TaskCostBreakdown TaskCost(VisibleWindow[] windows, RectI[] original, Candidate candidate,
         TaskEvidence[] relations, WindowDemand[] demands, RectI area, TaskLayoutContext context, IntentHint hint,
-        WindowSnapshot[]? obstacles = null)
+        WindowSnapshot[]? obstacles = null, RectI[]? growth = null)
     {
         var profile = context.Preferences;
         var information = 0.0; var switching = 0.0; var continuity = 0.0; var reflow = 0.0;
@@ -281,9 +281,8 @@ internal static partial class IntentLayoutPlanner
             var exposure = ScreenExposure(b, front.Concat(blockers), area, w.Dpi);
             var windowHint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
             var geometricSmall = a.Area < area.Area * .15;
-            // Without content evidence, a generic minimum must not invent a need to enlarge
-            // already unobscured windows. This is saturation, not a prohibition on resizing:
-            // shrinkage can buy joint visibility; passive/content hints can justify growth.
+            // Otherwise use the initial readable size. An established working pair can earn
+            // readability from additional space, up to the same targets used to propose growth.
             var needWidth = geometricSmall ? a.Width : Math.Min(a.Width, profile.ComfortableWidthDip * scale);
             var needHeight = geometricSmall ? a.Height : Math.Min(a.Height, profile.ComfortableHeightDip * scale);
             if (windowHint?.PassiveVisual == true)
@@ -293,6 +292,8 @@ internal static partial class IntentLayoutPlanner
             }
             if (windowHint?.UsefulWidthDip is double width && double.IsFinite(width) && width > 0) needWidth = Math.Clamp(width, 160, 4000) * scale;
             if (windowHint?.UsefulHeightDip is double height && double.IsFinite(height) && height > 0) needHeight = Math.Clamp(height, 120, 3000) * scale;
+            if (growth is not null && growth[i].Width > a.Width) needWidth = Math.Max(needWidth, growth[i].Width);
+            if (growth is not null && growth[i].Height > a.Height) needHeight = Math.Max(needHeight, growth[i].Height);
             var capacity = Math.Pow(Math.Min(1, b.Width / Math.Max(1, needWidth)), .65) *
                 Math.Pow(Math.Min(1, b.Height / Math.Max(1, needHeight)), .35);
             var contentVisibility = (context.Preferences.ProtectWindowEdges || windowHint?.ProtectPeriphery == true) ? exposure.Visible :
@@ -514,9 +515,10 @@ internal static partial class IntentLayoutPlanner
                         before[i].Intersect(previousObstacleRects.GetValueOrDefault(obstacle.Handle)).Area) return false;
             var task = trace.Task?.Relations ?? InferTask(group, original, groupContext);
             var demands = MeasureDemand(group.Length, task);
+            var growth = WorkingPairGrowthTargets(group, original, groupContext, options.SmartStrength);
             var hint = new IntentHint((int)Math.Round(8 * group[0].Window.Dpi / 96.0), 0, 0);
-            if (TaskScore(TaskCost(group, original, c, task, demands, area, groupContext, hint, afterObstacles), options.SmartStrength, task) >
-                TaskScore(TaskCost(group, original, new("planned", before, order), task, demands, area, groupContext, hint, beforeObstacles), options.SmartStrength, task) + .01) return false;
+            if (TaskScore(TaskCost(group, original, c, task, demands, area, groupContext, hint, afterObstacles, growth), options.SmartStrength, task) >
+                TaskScore(TaskCost(group, original, new("planned", before, order), task, demands, area, groupContext, hint, beforeObstacles, growth), options.SmartStrength, task) + .01) return false;
         }
         return true;
     }

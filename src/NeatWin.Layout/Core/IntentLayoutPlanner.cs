@@ -57,6 +57,7 @@ internal static partial class IntentLayoutPlanner
                 var original = group.Select(v => v.Window.VisualRect).ToArray();
                 var task = InferTask(group, original, groupContext);
                 var demands = MeasureDemand(group.Length, task);
+                var growth = WorkingPairGrowthTargets(group, original, groupContext, strength);
                 var order = Enumerable.Range(0, group.Length).ToArray();
                 var handles = group.Select(v => v.Window.Handle).ToHashSet();
                 var obstacles = desktop.Where(w => !handles.Contains(w.Handle)).Select(w => w with
@@ -110,9 +111,12 @@ internal static partial class IntentLayoutPlanner
                 }
                 if (!localOnly || groupContext.PreferReversibleVerticalFill)
                     AddVerticalFillCandidates(candidates, group, original, groupContext);
+                if (growth != null)
+                    foreach (var packingArea in packingAreas)
+                        AddWorkingPairGrowth(candidates, group, original, growth, packingArea, hint.GapPixels, groupContext.Focus!.Main, order);
                 var stackSignal = StackSignal(group, original);
                 TaskCostBreakdown Breakdown(Candidate c) => EffectiveBreakdown(
-                    TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles), options.SmartStrength, task);
+                    TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, growth), options.SmartStrength, task);
                 candidates = candidates.DistinctBy(CandidateKey).ToList();
                 var best = candidates[0]; var baselineBreakdown = Breakdown(best);
                 var baseline = baselineBreakdown.Total; var bestScore = baseline;

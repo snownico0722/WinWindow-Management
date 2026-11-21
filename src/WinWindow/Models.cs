@@ -147,6 +147,7 @@ internal sealed class Preferences
     public bool Dark { get; set; }
     public bool CloseToTray { get; set; } = true;
     public bool StartWithWindows { get; set; }
+    public bool RunAsAdministrator { get; set; } = true;
     public bool PinWhenFocused { get; set; } = true;
     public bool AbsoluteTopmost { get; set; } = true;
     public bool AggressiveTopmost { get; set; }
@@ -154,6 +155,7 @@ internal sealed class Preferences
     public bool ShowPinNotifications { get; set; }
     public bool EnhancedBackgroundKeep { get; set; }
     public bool LockBackgroundCursorPos { get; set; }
+    public bool SnapshotLookbackEnabled { get; set; } = true;
     public bool ManualTopmost { get; set; }
     public double Width { get; set; } = 580;
     public double Height { get; set; } = 500;

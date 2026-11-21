@@ -46,7 +46,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private bool _tidyRunning;
     private readonly ForegroundHistory _focus;
 
-    internal NeatWinApplicationContext(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged, Action<bool>? undoChanged, CancellationToken stopping, ForegroundHistory? focus = null)
+    internal NeatWinApplicationContext(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged,
+        Action<bool>? undoChanged, CancellationToken stopping, ForegroundHistory? focus = null,
+        Action<LayoutRunObservation>? snapshotObserver = null)
     {
         _stopping = stopping;
         _focus = focus ?? new();
@@ -64,7 +66,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _autoTidyManager = new AutoTidyManager();
         _autoTidyManager.TaskInput += _focus.Interact;
         _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) { VisualSampling = _settingsStore.VisualSampling };
-        _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder);
+        _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder, snapshotObserver);
         _behaviorMonitor = new(_windowManager, _referenceStore, _settingsStore, _recorder,
             () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.IsMoving);
         _useImportedPlacement = _settingsStore.UseImportedPlacement;
@@ -119,7 +121,6 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _taskPreferences, _referenceStore.Enabled, _recorder.VisualSampling, _useImportedPlacement);
     internal RecorderStatus Recorder => _recorder.Status;
     internal BehaviorSettings Behavior => _behaviorMonitor.Status;
-    internal void ObserveSnapshot(Action<LayoutRunObservation>? observer) => _journal.SnapshotObserver = observer;
     internal void SetBehaviorLearning(bool enabled) => _behaviorMonitor.SetLearning(enabled);
     internal void SetBehaviorEnabled(string id, bool enabled) => _behaviorMonitor.SetEnabled(id, enabled);
     internal void ImportBehaviorRules(string path) => _behaviorMonitor.ImportRules(path);
@@ -444,7 +445,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         "working-overlap" => LayoutText.Get("WorkingOverlap"),
         "working-pair" => LayoutText.Get("WorkingPair"), "working-region" => LayoutText.Get("WatchedRegion"),
         "task-vertical-fill" => LayoutText.Get("ReversibleFill"),
-        "task-edge" => LayoutText.Get("SharedEdge"), "task-fit" => LayoutText.Get("ContentFit"), "task-bleed" => LayoutText.Get("EdgeBleed"),
+        "task-edge" => LayoutText.Get("SharedEdge"), "task-fit" or "working-pair-grow" => LayoutText.Get("ContentFit"), "task-bleed" => LayoutText.Get("EdgeBleed"),
         "task-columns" => LayoutText.Get("KeepColumns"), "rescue" => LayoutText.Get("RescueArea"),
         "edge-row" => LayoutText.Get("EdgeRow"), "stack" => LayoutText.Get("Stack"), "restack" => LayoutText.Get("Restack"),
         "columns" => LayoutText.Get("Columns"), "rows" => LayoutText.Get("Rows"), "grid" => LayoutText.Get("Grid"), "local" => LayoutText.Get("LocalAdjust"), _ => LayoutText.Get("PreservePlacement"),
