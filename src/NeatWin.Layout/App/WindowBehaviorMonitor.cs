@@ -22,6 +22,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
     private readonly SettingsStore _settings;
     private readonly RecorderSession _recorder;
     private readonly Func<bool> _busy;
+    private readonly Func<nint, uint, long, string, bool>? _keepRunning;
     private readonly ForegroundHistory _focus;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 550 };
     private readonly Dictionary<uint, ProcessIdentity> _processes = [];
@@ -41,13 +42,14 @@ internal sealed class WindowBehaviorMonitor : IDisposable
     private Entry[] _entries;
 
     internal WindowBehaviorMonitor(WindowManager windows, IntentReferenceStore store, SettingsStore settings,
-        RecorderSession recorder, Func<bool> busy, ForegroundHistory focus)
+        RecorderSession recorder, Func<bool> busy, ForegroundHistory focus, Func<nint, uint, long, string, bool>? keepRunning = null)
     {
         _windows = windows;
         _store = store;
         _settings = settings;
         _recorder = recorder;
         _busy = busy;
+        _keepRunning = keepRunning;
         _focus = focus;
         _restoreCallback = (hook, _, hwnd, _, _, _, _) =>
         {
@@ -306,11 +308,18 @@ internal sealed class WindowBehaviorMonitor : IDisposable
                 if (update.Reopened is not null && foreground is not null)
                     trace?.Add(Event(foreground, "reopened", "observed", entry.Rule.Id));
                 if (update.Dismiss is not int id) continue;
-                if (!handled.Add(id) || foreground is null || !current.TryGetValue(id, out var target))
+                if (handled.Contains(id) || foreground is null || !current.TryGetValue(id, out var target))
                 {
                     entry.Sequence.SubmissionFailed(id);
                     continue;
                 }
+                if (KeepProtects(target, entry.Rule.Action))
+                {
+                    entry.Sequence.SubmissionFailed(id);
+                    trace?.Add(Event(target, "dismiss-skipped", "background-keep", entry.Rule.Id));
+                    continue;
+                }
+                handled.Add(id);
                 bool applied = TryDismiss(target, foreground.Window.Handle, entry.Rule.Action);
                 if (!applied) entry.Sequence.SubmissionFailed(id);
                 trace?.Add(Event(target, applied ? "dismiss-requested" : "dismiss-failed", "winwindow", entry.Rule.Id));
@@ -358,7 +367,11 @@ internal sealed class WindowBehaviorMonitor : IDisposable
         return observed;
     }
 
-    private static bool TryDismiss(Observed source, nint foreground, WindowBehaviorAction action)
+    private bool KeepProtects(Observed source, WindowBehaviorAction action) =>
+        action == WindowBehaviorAction.Close && _keepRunning?.Invoke(source.Window.Handle, source.Window.ProcessId,
+            source.Behavior.ProcessStartedUtc, source.Class) == true;
+
+    private bool TryDismiss(Observed source, nint foreground, WindowBehaviorAction action)
     {
         nint hwnd = source.Window.Handle;
         if (!NativeWindowActivity.AllowsAutomaticPlacement(foreground)) return false;
@@ -370,6 +383,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
             (NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GwlExStyle).ToInt64() & NativeMethods.WsExTopmost) != 0 ||
             NativeMethods.GetForegroundWindow() != foreground)
             return false;
+        if (KeepProtects(source, action)) return false;
         return action == WindowBehaviorAction.Close
             ? NativeMethods.PostMessage(hwnd, 0x0010, 0, 0)
             : NativeMethods.ShowWindowAsync(hwnd, 7); // SW_SHOWMINNOACTIVE

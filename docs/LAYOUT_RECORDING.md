@@ -151,3 +151,5 @@
 
 
 实际松手辅助若进入原生提交阶段，`plans` 与快照里的 `GestureTiming` 可用于比较预计算和临时求解。`WindowId` 是手动操作窗的会话内编号，`ReusedPreview` 表示松手校验通过、候选集参与了决策。`ReleaseToFirstGeometrySubmitMs` 从 Windows 报告移动或缩放结束的单调时刻计到第一个成功提交的几何操作，`ReleaseToGestureWindowSubmitMs` 只计算被手动操作的那一扇。未发几何请求或该窗未成功提交时，对应字段为空。屏幕实际绘制还取决于目标应用和桌面合成器。验证定时器后续采样的时间不能用来计算首帧到屏延时。
+
+小型文字窗口在首次独立打开时取得一次摆放机会，记录会在对应窗口提示中写入 `InitialTextPlacement`。已进入阅读保护的窗口使用 `TextFocus`。候选方案中的 `attention-side-stack` 表示主窗口旁边上下排列两个参考窗口，可以查看它的评分和拒绝原因。个人收起规则遇到用户开启后台保持的窗口时，行为记录用 `dismiss-skipped` 和 `background-keep` 标记跳过软关闭。

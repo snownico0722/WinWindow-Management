@@ -44,7 +44,7 @@ public sealed class ForegroundHistory
     private sealed record RememberedNavigation((nint Handle, uint Pid, long Time) Visit, NavigationState Path, long Sampled);
     private RememberedNavigation? _rememberedNavigation;
     private ((nint Handle, uint Pid, long Time) Visit, PointI Position)? _openingPointer;
-    private sealed record WindowBirth(long Time, nint Source = 0, uint SourcePid = 0, string? Evidence = null);
+    private sealed record WindowBirth(long Time, nint Source = 0, uint SourcePid = 0, string? Evidence = null, bool PlacementSeen = false);
     private readonly Dictionary<(nint Handle, uint Pid), WindowBirth> _created = [];
     private readonly List<(nint Handle, uint Pid, long Time)> _clicks = [];
 
@@ -69,6 +69,12 @@ public sealed class ForegroundHistory
         {
             if (_visits.Count > 0 && _visits[^1].Handle == handle && _visits[^1].Pid == pid)
                 return;
+            if (_visits.Count > 0)
+            {
+                var previous = _visits[^1];
+                if (_created.TryGetValue((previous.Handle, previous.Pid), out var left) && !left.PlacementSeen)
+                    _created[(previous.Handle, previous.Pid)] = left with { PlacementSeen = true };
+            }
             // A brief pass-through or bounce should not establish a reading pair. Keep a
             // short, intentional visit when a real input landed on that window.
             if (handle != 0 && _visits.Count >= 2 && _visits[^1].Handle != 0)
@@ -84,6 +90,24 @@ public sealed class ForegroundHistory
             }
             _visits.Add((handle, pid, now));
             if (_visits.Count > 64) _visits.RemoveAt(0);
+        }
+    }
+
+    internal bool TakeInitialPlacement(WindowSnapshot window, LayoutFocus focus, long now, uint? lastInput = null)
+    {
+        lock (_visits)
+        {
+            var key = (window.Handle, window.ProcessId);
+            if (!_created.TryGetValue(key, out var birth) || birth.PlacementSeen) return false;
+            _created[key] = birth with { PlacementSeen = true };
+            if (!window.IsForeground || !window.IsManageable || window.Owner != 0 || focus.Main != window.Handle ||
+                focus.Evidence is "handoff" or "navigation-return" || now - birth.Time is < 0 or > 1_500 ||
+                _visits.Count == 0) return false;
+            var visit = _visits[^1];
+            // LastInputInfo also catches keyboard activity in controls without a native caret.
+            // Compare elapsed durations so the 32-bit Windows input clock may wrap.
+            return visit.Handle == key.Handle && visit.Pid == key.ProcessId && visit.Time >= birth.Time &&
+                !ReceivedInput(visit, now) && (lastInput == null || unchecked((uint)now - lastInput.Value) >= now - visit.Time);
         }
     }
 

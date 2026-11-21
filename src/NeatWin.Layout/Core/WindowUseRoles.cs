@@ -134,7 +134,7 @@ internal static class WindowUseRoles
     internal static TaskWindowHint[] Bind(IReadOnlyList<WindowSnapshot> desktop, TaskWindowHint[] hints,
         LayoutFocus? focus, IReadOnlyDictionary<nint, LayoutAttention>? attention, IReadOnlyList<PlacementPreference>? placements,
         Func<WindowSnapshot, WindowUseRole> identify, nint foregroundCaret = 0,
-        IReadOnlyDictionary<nint, string>? activities = null, nint? keyboardRoot = null)
+        IReadOnlyDictionary<nint, string>? activities = null, nint? keyboardRoot = null, nint initialPlacement = 0, TaskLayoutProfile? profile = null)
     {
         var byWindow = hints.ToDictionary(h => h.Handle);
         foreach (var window in desktop.Where(w => w.IsManageable))
@@ -145,8 +145,18 @@ internal static class WindowUseRoles
             bool text = (!keyboardRoot.HasValue || keyboardRoot == window.Handle) &&
                 KeepsTextFocus(window, role, focus, attention?.GetValueOrDefault(window.Handle), desktop,
                 window.Handle == foregroundCaret, activities?.GetValueOrDefault(window.Handle), hint);
+            bool firstPlacement = false;
+            if (text && window.Handle == initialPlacement && window.Handle != foregroundCaret &&
+                profile != null && attention?.GetValueOrDefault(window.Handle)?.Input == 0)
+            {
+                double scale = (window.Dpi == 0 ? 96 : window.Dpi) / 96d;
+                // Only spend this first-visit opportunity on a real reading deficit.
+                double width = Math.Min(window.WorkArea.Width, (hint?.UsefulWidthDip ?? profile.ComfortableWidthDip) * scale);
+                double height = Math.Min(window.WorkArea.Height, (hint?.UsefulHeightDip ?? profile.ComfortableHeightDip) * scale);
+                firstPlacement = window.VisualRect.Width < width * .72 || window.VisualRect.Height < height * .72;
+            }
             if (hint == null && role == WindowUseRole.Unknown && affinity == 0 && !text) continue;
-            byWindow[window.Handle] = (hint ?? new(window.Handle)) with { Role = role, FloatingAffinity = affinity, TextFocus = text };
+            byWindow[window.Handle] = (hint ?? new(window.Handle)) with { Role = role, FloatingAffinity = affinity, TextFocus = text && !firstPlacement, InitialTextPlacement = firstPlacement };
         }
         return byWindow.Values.ToArray();
     }

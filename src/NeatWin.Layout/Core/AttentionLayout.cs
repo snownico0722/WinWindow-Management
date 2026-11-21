@@ -157,6 +157,13 @@ internal static class AttentionLayout
     internal static double Floating(TaskWindowHint? hint) => WindowUseRoles.IsFloating(hint?.Role) ? 1 :
         Math.Clamp(hint?.FloatingAffinity ?? 0, 0, 1);
 
+    internal static bool CanStackReferences(AttentionTarget[] targets, TaskLayoutContext context,
+        SmartTidyStrength strength, int height, int gap) =>
+        targets.Length == 3 && strength != SmartTidyStrength.Gentle && context.GestureAnchor == 0 &&
+        targets.Count(t => t.Role == AttentionRole.Reference) == 2 &&
+        targets.All(t => t.Movable && t.PlacementStability < .5) &&
+        targets.Where(t => t.Role == AttentionRole.Reference).Sum(t => t.Resizable ? t.Height * .70 : t.Height) + gap <= height;
+
     // Weighted water filling: first reserve legible content for each reading surface, then
     // spend screen space where there is remaining useful demand. The calculation uses no
     // executable names and never requires two windows to start at a particular position.
@@ -170,8 +177,32 @@ internal static class AttentionLayout
         int gap = (int)Math.Round(8 * group[readers[0]].Window.Dpi / 96d);
         double available = Math.Max(1, area.Width - (readers.Length - 1) * gap);
         double horizontalDemand = readers.Sum(i => (double)targets[i].Width);
-        double verticalDemand = readers.Sum(i => (double)targets[i].Height) + (readers.Length - 1) * gap;
-        if (horizontalDemand <= available || verticalDemand <= area.Height) return;
+        if (readers.Length == 2)
+        {
+            var a = group[readers[0]].Window.VisualRect;
+            var b = group[readers[1]].Window.VisualRect;
+            if (a.VerticalOverlapRatio(b) == 0 && a.HorizontalOverlapRatio(b) >= .6 &&
+                readers.Sum(i => (double)Math.Max(group[i].Window.VisualRect.Height, targets[i].Height)) + gap <= area.Height)
+                return; // Already reading in separate rows with room to preserve both widths.
+        }
+        if (horizontalDemand <= available)
+        {
+            // The targets may already fit even while an oversized current frame starves
+            // its peer. Authorize the target width only when the actual pair needs to share.
+            if (readers.Length == 2 && readers.Sum(i => (double)Math.Max(group[i].Window.VisualRect.Width, targets[i].Width)) > available)
+                foreach (int i in readers) targets[i] = targets[i] with { FrameWidth = targets[i].Width };
+            return;
+        }
+        // Three readers can share two columns. Score alternative compositions against
+        // their full reading demand instead of pre-shrinking all three to narrow strips.
+        if (CanStackReferences(targets, context, strength, area.Height, gap))
+        {
+            int main = readers.First(i => targets[i].Role == AttentionRole.Main);
+            int side = readers.Where(i => i != main).Max(i => targets[i].Width);
+            if (group[main].Window.VisualRect.Width + side + gap > area.Width)
+                targets[main] = targets[main] with { FrameWidth = targets[main].Width };
+            return;
+        }
 
         var allocated = new double[group.Length];
         var weights = new double[group.Length];
@@ -302,6 +333,37 @@ internal static partial class IntentLayoutPlanner
                     }
                     candidates.Add(new("attention-layout", nearby, order));
                 }
+            }
+        }
+        if (AttentionLayout.CanStackReferences(targets, context, strength, area.Height, gap))
+        {
+            var peers = order.Where(i => i != main).OrderBy(i => CenterY(original[i])).ToArray();
+            int top = peers[0], bottom = peers[1];
+            int space = area.Height - gap;
+            int topHeight = !targets[top].Resizable ? original[top].Height :
+                !targets[bottom].Resizable ? space - original[bottom].Height :
+                (int)Math.Round(space * targets[top].Height / (double)(targets[top].Height + targets[bottom].Height));
+            int bottomHeight = targets[bottom].Resizable ? space - topHeight : original[bottom].Height;
+            int peerWidth = peers.Max(i => targets[i].Width);
+            int mainWidth = targets[main].Resizable ? Math.Min(targets[main].Width,
+                (int)Math.Round((area.Width - gap) * targets[main].Width / (double)(targets[main].Width + peerWidth))) : original[main].Width;
+            int sideWidth = area.Width - gap - mainWidth;
+            int mainHeight = Math.Max(original[main].Height, targets[main].Height);
+            if (topHeight > 0 && bottomHeight > 0 && topHeight + bottomHeight <= space &&
+                mainWidth > 0 && mainHeight <= area.Height && sideWidth > 0 &&
+                peers.All(i => targets[i].Resizable || original[i].Width <= sideWidth))
+            foreach (bool mainLeft in new[] { true, false })
+            {
+                var rects = original.ToArray();
+                rects[main] = new(mainLeft ? area.Left : area.Right - mainWidth,
+                    Math.Clamp(original[main].Top, area.Top, area.Bottom - mainHeight), mainWidth, mainHeight);
+                foreach (int i in peers)
+                {
+                    int width = targets[i].Resizable ? Math.Min(sideWidth, targets[i].Width) : original[i].Width;
+                    rects[i] = new(mainLeft ? rects[main].Right + gap : rects[main].Left - gap - width,
+                        i == top ? area.Top : area.Top + topHeight + gap, width, i == top ? topHeight : bottomHeight);
+                }
+                candidates.Add(new("attention-side-stack", rects, order));
             }
         }
         var frontier = new List<Candidate> { new("attention-layout", original, order) };

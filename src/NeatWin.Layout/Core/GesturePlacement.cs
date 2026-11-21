@@ -38,10 +38,24 @@ internal static class GesturePlacement
                 context.VideoHint?.WindowHandle != window.Handle &&
                 context.WindowHints?.Any(h => h.Handle == window.Handle && WindowUseRoles.IsFloating(h.Role)) != true)
             {
-                int Grow(int size, double comfort, int limit) => Math.Min(limit, size + Math.Clamp(
-                    (int)Math.Round(comfort * scale) - size, 0, (int)Math.Round(size * .12)));
-                width = Grow(width, context.Preferences.ComfortableWidthDip, area.Width);
-                height = Grow(height, context.Preferences.ComfortableHeightDip, area.Height);
+                // Longer deliberate approaches carry more evidence of a working position.
+                // A side companion still needs a column of its own. A central reading surface
+                // can use more of the display without becoming effectively maximized.
+                double approach = Math.Clamp((Math.Abs(dx) / area.Width - .06) / .18, 0, 1);
+                int Grow(int size, double comfort, double share, int span)
+                {
+                    double readingSize = Math.Min(comfort * scale, span * share);
+                    double increment = Math.Min(size * .12, Math.Max(0, readingSize - size));
+                    return size + (int)Math.Round(increment + approach * Math.Max(0, readingSize - size - increment));
+                }
+                var hint = context.WindowHints?.FirstOrDefault(h => h.Handle == window.Handle);
+                var habit = context.Placement?.FirstOrDefault(p => p.Window == window.Handle && p.Confidence >= .40);
+                double desiredWidth = hint?.UsefulWidthDip is > 0 and <= 4000 ? hint.UsefulWidthDip.Value :
+                    habit is { PreferWidth: true, Width: > 0 and <= 1 } ? habit.Width * area.Width / scale : context.Preferences.ComfortableWidthDip;
+                double desiredHeight = hint?.UsefulHeightDip is > 0 and <= 3000 ? hint.UsefulHeightDip.Value :
+                    habit?.Height is > 0 and <= 1 ? habit.Height.Value * area.Height / scale : context.Preferences.ComfortableHeightDip;
+                width = Grow(width, desiredWidth, center ? .72 : .50, area.Width);
+                height = Grow(height, desiredHeight, .74, area.Height);
             }
             int x = left ? area.Left : right ? area.Right - width : centerX - width / 2;
             target = new(x, Math.Clamp(a.Top + (a.Height - height) / 2, area.Top, area.Bottom - height), width, height);
@@ -67,12 +81,14 @@ internal static class GesturePlacement
         var a = gesture.EndRect;
         var area = gesture.WorkArea;
         double dx = a.Left - gesture.StartRect.Left, dy = a.Top - gesture.StartRect.Top;
-        int sideZone = (int)Math.Round(Math.Min(area.Width * .045, 64 * scale));
+        double close = Math.Min(area.Width * .045, 64 * scale);
+        double approach = Math.Clamp((Math.Abs(dx) - Math.Abs(dy) - close) / (area.Width * .18), 0, 1);
+        double sideZone = close + approach * Math.Max(0, Math.Min(area.Width * .095, 180 * scale) - close);
         int centerX = area.Left + area.Width / 2, endCenter = a.Left + a.Width / 2;
         bool horizontal = gesture.Kind == ManualGestureKind.Move && Math.Abs(dx) >= Math.Max(24 * scale, Math.Abs(dy) * .45);
         bool left = horizontal && dx < 0 && Math.Abs(a.Left - area.Left) <= sideZone;
         bool right = horizontal && dx > 0 && Math.Abs(area.Right - a.Right) <= sideZone;
-        bool center = horizontal && Math.Abs(endCenter - centerX) <= sideZone &&
+        bool center = horizontal && Math.Abs(endCenter - centerX) <= close &&
             Math.Abs(gesture.StartRect.Left + a.Width / 2 - centerX) - Math.Abs(endCenter - centerX) >= 20 * scale;
         return (left, right, center);
     }

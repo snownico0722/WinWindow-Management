@@ -261,8 +261,8 @@ internal static partial class IntentLayoutPlanner
             if (goals?[i] is { LearnedHeight: true } learnedHeight) heightFloor = Math.Min(heightFloor, learnedHeight.Height);
             if (goals?[i] is { MinimumFrameWidth: > 0 } budget && !gestureEndpoint)
                 widthFloor = Math.Max(widthFloor, Math.Min(a.Width, budget.MinimumFrameWidth));
-            if (a.Width <= area.Width && (b.Width < widthFloor || b.Width > Math.Max(a.Width * 1.50, Math.Max(goals?[i].FrameWidth ?? 0, goals?[i].Width ?? 0)))) return false;
-            if (a.Height <= area.Height && (b.Height < heightFloor || b.Height > Math.Max(a.Height * 1.50, goals?[i].Height ?? 0))) return false;
+            if (a.Width <= area.Width && (b.Width < widthFloor || !gestureEndpoint && b.Width > Math.Max(a.Width * 1.50, Math.Max(goals?[i].FrameWidth ?? 0, goals?[i].Width ?? 0)))) return false;
+            if (a.Height <= area.Height && (b.Height < heightFloor || !gestureEndpoint && b.Height > Math.Max(a.Height * 1.50, goals?[i].Height ?? 0))) return false;
             var after = ScreenExposure(b, front.Concat((obstacles ?? []).Where(w => w.ZOrder < windows[Array.IndexOf(candidate.Order, i)].Window.ZOrder).Select(w => w.VisualRect)), area, window.Dpi);
             if (goals?[i].Role is not (AttentionRole.Return or AttentionRole.Waiting) && context.Attention != null && (context.Focus?.Main == window.Handle ||
                 context.Focus?.Companion == window.Handle || context.HasRecentInput(window.Handle)))

@@ -261,6 +261,11 @@ internal static class SmokeTests
                 await WaitAsync("default gentle toggle resumes a background fixture without injection", () =>
                     gameItem.BackgroundEnabled && !gameItem.IsBusy &&
                     Native.Title(game.Hwnd).StartsWith("activity:running:unfocused:"), 5000);
+                var kept = gameItem.Identity!;
+                bool Guard(long started) => shell.Manager.KeepsRunning(kept.Hwnd, (uint)kept.ProcessId, started, kept.ClassName);
+                Assert(Guard(kept.ProcessStarted) && !Guard(kept.ProcessStarted + 1) &&
+                    !shell.Manager.KeepsRunning(kept.Hwnd, (uint)kept.ProcessId, kept.ProcessStarted, kept.ClassName + "Other"),
+                    "automatic close protection matches the exact kept window lifetime");
                 Assert(!Native.IsNoFocusLossInjected(game.Hwnd) && !Native.HasLoadedNoFocusLossModule(game.Process.Id),
                     "default background keep does not inject native hooks");
 
@@ -331,6 +336,7 @@ internal static class SmokeTests
                 keepRunning.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 await WaitAsync("turning off the row toggle restores the background pause", () =>
                     !gameItem.BackgroundEnabled && !gameItem.IsBusy && Native.Title(game.Hwnd).StartsWith("activity:paused:unfocused:"), 5000);
+                Assert(!Guard(kept.ProcessStarted), "turning keep off releases automatic close protection");
                 if (nativeKeep)
                     Assert(!Native.IsNoFocusLossInjected(game.Hwnd) && !Native.HasLoadedNoFocusLossModule(game.Process.Id),
                         "turning off the row toggle unloads the native NoFocusLoss library");

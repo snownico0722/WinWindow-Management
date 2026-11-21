@@ -32,10 +32,15 @@ public sealed partial class WindowManager
 
         // A click can enter an edit field in the same foreground HWND during a solve.
         // Read the input queue again immediately before sending the automatic layout.
-        nint ActiveCaret(IReadOnlyList<WindowSnapshot> desktop) =>
-            context is { ExplicitArrange: false } && needed.Length > 0 && automaticForeground.HasValue &&
-            ForegroundReading.Read(desktop.FirstOrDefault(w => w.IsForeground)) is { Caret: true } live ? live.Root : 0;
-        var caret = ActiveCaret(current);
+        nint ProtectedInputRoot(IReadOnlyList<WindowSnapshot> desktop)
+        {
+            if (context is not { ExplicitArrange: false } || needed.Length == 0 || !automaticForeground.HasValue) return 0;
+            var live = ForegroundReading.Read(desktop.FirstOrDefault(w => w.IsForeground));
+            if (context.InitialPlacementInputTick is uint input &&
+                (live.Root != automaticForeground.Value || live.LastInput != input)) return automaticForeground.Value;
+            return live.Caret ? live.Root : 0;
+        }
+        var caret = ProtectedInputRoot(current);
         if (context != null && (!IntentLayoutPlanner.TextViewAcceptsPlan(current, plan, context, caret) ||
             plan.Layers.Count > 0 && !IntentLayoutPlanner.TextViewAcceptsPlan(current, plan with { Moves = [] }, context, caret)))
             return new(plan with { Moves = [], Layers = [] }, ["已保留当前文字窗口的阅读位置。"])
@@ -52,7 +57,7 @@ public sealed partial class WindowManager
             Layers = plan.Layers.Except(failed).ToArray(),
         };
         if (failed.Length != 0) notes.Add("指定层级未实现，未套用依赖该层级的窗口位置。");
-        var afterCaret = plan.Layers.Count > 0 ? ActiveCaret(afterLayers) : caret;
+        var afterCaret = plan.Layers.Count > 0 ? ProtectedInputRoot(afterLayers) : caret;
         bool readingChanged = false;
         if (context != null && (failed.Length > 0 || afterCaret != caret) &&
             !IntentLayoutPlanner.TextViewAcceptsPlan(afterLayers, accepted with { Layers = [] }, context, afterCaret))

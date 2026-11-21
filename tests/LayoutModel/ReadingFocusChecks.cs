@@ -58,6 +58,37 @@ internal static class ReadingFocusChecks
             Hint(WindowUseRole.Chat, target: main with { Owner = source.Handle }, caret: 1)?.TextFocus == true,
             "a derived article cannot inherit the chat position; its own focused text field can establish a new one");
 
+        var small = main with { VisualRect = new(20, 80, 560, 460) };
+        var identity = new LayoutFocus(1, 0, 0);
+        ForegroundHistory NewVisit()
+        {
+            var history = new ForegroundHistory();
+            history.Created(1, main.ProcessId, 1000);
+            history.Visit(1, main.ProcessId, 1020);
+            return history;
+        }
+        var first = NewVisit();
+        var visit = first.Resolve([small], 1500, out var active);
+        TaskWindowHint FirstHint(WindowSnapshot w, nint caret = 0) => WindowUseRoles.Bind([w], [], visit, active, [],
+            _ => WindowUseRole.Document, caret, keyboardRoot: 1, initialPlacement: 1, profile: new()).Single();
+        var firstHint = FirstHint(small);
+        var firstPlan = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange([small], true),
+            new(), null, [small], new(Focus: visit, Attention: active, WindowHints: [firstHint]));
+        check(first.TakeInitialPlacement(small, visit, 1500) && !first.TakeInitialPlacement(small, visit, 1550) &&
+            firstHint is { InitialTextPlacement: true, TextFocus: false } &&
+            firstPlan.Moves.Any(m => m.TargetVisualRect.Width > small.VisualRect.Width) &&
+            FirstHint(small, 1).TextFocus && FirstHint(main).TextFocus,
+            "a genuinely new undersized document gets one placement at scheduler time while a caret or readable size protects the view");
+        var input = NewVisit();
+        input.Interact(1, small.ProcessId, 1200);
+        var returning = NewVisit();
+        returning.Visit(2, source.ProcessId, 1120);
+        returning.Visit(1, small.ProcessId, 1200);
+        check(!input.TakeInitialPlacement(small, identity, 1500) &&
+            !returning.TakeInitialPlacement(small, identity, 1500) && !NewVisit().TakeInitialPlacement(small, navigation, 1500) &&
+            !NewVisit().TakeInitialPlacement(small, identity, 3500) && !NewVisit().TakeInitialPlacement(small, identity, 1500, 1150),
+            "input, a return visit, a linked opening or an expired birth preserves reading position");
+
         var data = RecordedTaskSignals.From(new(WindowHints: [Hint(WindowUseRole.Unknown, caret: 1)!]),
             new Dictionary<nint, int> { [1] = 54 });
         string json = JsonSerializer.Serialize(data);

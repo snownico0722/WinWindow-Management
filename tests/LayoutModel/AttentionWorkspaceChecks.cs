@@ -18,6 +18,39 @@ internal static class AttentionWorkspaceChecks
             var plan = LayoutDispatch.Create(LayoutRoute.Smart, visible, new(SmartStrength: SmartTidyStrength.Assertive), null, windows, context);
             return TaskLayoutSession.Project(windows, plan).Select(w => w.VisualRect).ToArray();
         }
+        var comparisonContext = context with { Focus = new(1, 2, 4), Attention = new Dictionary<nint, LayoutAttention>(attention)
+            { [2] = new(1, 1, 1, 1, false), [3] = new(1, 1, 1, 1, false) } };
+        IntentLayoutPlan Balanced(WindowSnapshot[] windows, TaskLayoutContext task) => LayoutDispatch.Create(LayoutRoute.Smart,
+            new VisibilityAnalyzer().SelectForManualArrange(windows, true), new(SmartStrength: SmartTidyStrength.Balanced), null, windows, task);
+        var uneven = new[] { Window(1, 20, 80, 1400, 800), Window(2, 1040, 80, 420, 800) };
+        var shared = TaskLayoutSession.Project(uneven, Balanced(uneven, comparisonContext));
+        check(shared[0].VisualRect.Width >= 900 && shared[1].VisualRect.Width >= 900 &&
+            shared[0].VisualRect.Intersect(shared[1].VisualRect).IsEmpty, "a crowded balanced pair redistributes excess width without overlap");
+        var spacious = uneven.Select(w => w with { WorkArea = area with { Width = 2560, Height = 1440 } }).ToArray();
+        var generous = TaskLayoutSession.Project(spacious, Balanced(spacious, comparisonContext));
+        check(generous[0].VisualRect.Width >= uneven[0].VisualRect.Width && generous[1].VisualRect.Width >= 900,
+            "on a wider display an expanded reference does not require the primary to shrink");
+        var largePrint = comparisonContext with { Profile = new(ComfortableWidthDip: 1680) };
+        var readingBudgets = AttentionLayout.Targets(new VisibilityAnalyzer().SelectForManualArrange(spacious, true).ToArray(),
+            largePrint, SmartTidyStrength.Balanced)!;
+        check(readingBudgets.All(t => t.FrameWidth > 0) && readingBudgets.Sum(t => t.Width) < spacious[0].WorkArea.Width,
+            "horizontal reading contention is budgeted even when both reading heights fit vertically");
+        var rows = spacious.Select((w, i) => w with { VisualRect = new(area.Left, i * 720, 1500, 670) }).ToArray();
+        var rowTargets = AttentionLayout.Targets(new VisibilityAnalyzer().SelectForManualArrange(rows, true).ToArray(),
+            largePrint, SmartTidyStrength.Balanced)!;
+        check(rowTargets.All(t => t.FrameWidth == 0), "a pair already reading in separate rows keeps its full reading width");
+        var trio = new[] { Window(1, 120, 80, 940, 780), Window(2, 680, 140, 800, 585), Window(3, 860, 250, 800, 590) };
+        var stacked = Balanced(trio, comparisonContext);
+        var frames = TaskLayoutSession.Project(trio, stacked).Select(w => w.VisualRect).ToArray();
+        check(stacked.Groups.Any(g => g.Candidates.Any(c => c.Kind == "attention-side-stack" && c.Rejection == null)) &&
+            frames[1].Left == frames[2].Left && frames[1].Bottom <= frames[2].Top &&
+            frames[0].Intersect(frames[1]).IsEmpty && frames[0].Intersect(frames[2]).IsEmpty &&
+            frames[0].Width >= 900 && Math.Min(frames[1].Width, frames[2].Width) >= 800,
+            "two active references can share a readable side column alongside the main window");
+        var navigationTask = comparisonContext with { Focus = new(1, 2, 0, "handoff", [3, 2]) };
+        check(!Balanced(trio, navigationTask).Groups.SelectMany(g => g.Candidates).Any(c => c.Kind == "attention-side-stack"),
+            "a three-hop navigation task never becomes a main window with two tiled references");
+
         double Distance(RectI r) => Math.Abs((r.Left + r.Width / 2d) - (area.Left + area.Width / 2d));
         var centered = Solve([document], context)[0];
         check(Distance(centered) <= area.Width * .05 && centered.Width >= document.VisualRect.Width,

@@ -10,6 +10,8 @@ public sealed class GesturePlacementTests
     [Theory]
     [InlineData(137, 100)]
     [InlineData(1380, 1420)]
+    [InlineData(240, 100)]
+    [InlineData(1280, 1420)]
     public void FullSmartCompletesAHorizontalDropTowardEitherEdge(int x, int expectedX)
     {
         var window = Window(1, new(x, 150, 600, 450));
@@ -26,8 +28,8 @@ public sealed class GesturePlacementTests
         var (session, plan) = Arrange([w], gesture);
         var target = Assert.Single(plan.Moves).TargetVisualRect;
         Assert.Equal(Area.Left + Area.Width / 2, target.Left + target.Width / 2);
-        Assert.InRange(target.Width, w.VisualRect.Width + 1, (int)Math.Ceiling(w.VisualRect.Width * 1.12));
-        Assert.InRange(target.Height, w.VisualRect.Height + 1, (int)Math.Ceiling(w.VisualRect.Height * 1.12));
+        Assert.InRange(target.Width, (int)(Area.Width * .50), (int)(Area.Width * .72));
+        Assert.InRange(target.Height, (int)(Area.Height * .60), (int)Math.Ceiling(Area.Height * .74));
         session.Requested([w], plan, Now.AddSeconds(.5));
         var settled = TaskLayoutSession.Project([w], plan);
         session.Verify(settled);
@@ -51,7 +53,7 @@ public sealed class GesturePlacementTests
         var (_, plan) = Arrange([main, peer], Drag(main, main.VisualRect with { X = 420 }));
         var final = TaskLayoutSession.Project([main, peer], plan);
         Assert.Equal(Area.Left, final[0].VisualRect.Left);
-        Assert.InRange(final[0].VisualRect.Width, 571, 639);
+        Assert.InRange(final[0].VisualRect.Width, main.VisualRect.Width + 1, Area.Width / 2);
         Assert.True(final[1].VisualRect.Width > peer.VisualRect.Width);
     }
 

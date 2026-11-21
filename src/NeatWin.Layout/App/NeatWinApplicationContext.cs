@@ -52,7 +52,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     internal NeatWinApplicationContext(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged,
         Action<bool>? undoChanged, CancellationToken stopping, ForegroundHistory? focus = null,
         Action<LayoutRunObservation>? snapshotObserver = null, Action<string, GestureEvent>? gestureObserver = null,
-        Func<bool>? snapshotWantsGestures = null)
+        Func<bool>? snapshotWantsGestures = null, Func<nint, uint, long, string, bool>? keepRunning = null)
     {
         _stopping = stopping;
         _focus = focus ?? new();
@@ -73,7 +73,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         };
         _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder, snapshotObserver);
         _behaviorMonitor = new(_windowManager, _referenceStore, _settingsStore, _recorder,
-            () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.PointerBusy, _focus);
+            () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.PointerBusy, _focus, keepRunning);
         _useImportedPlacement = _settingsStore.UseImportedPlacement;
         _workspaceMonitor = new WorkspaceAutoTidyMonitor(() => _windowManager.CaptureCoalesced(),
             () => _tidyRunning || _autoTidyManager.IsGestureInProgress, _focus);
@@ -371,14 +371,19 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 var learned = pairSmart ? _recorder.Preferences(snapshot, focus).Where(p => p.Confidence >= .40).ToArray() : [];
                 var slots = pairSmart && _useImportedPlacement ? _recorder.BindSlots(rules, snapshot) : [];
                 var placements = CompiledLayoutRules.ApplySlots(learned, slots);
-                var reading = ForegroundReading.Read(snapshot.FirstOrDefault(w => w.IsForeground));
-                liveHints = WindowUseRoles.Bind(snapshot, liveHints, focus, attention, placements,
-                    window => _recorder.SemanticRole(window, reading), reading.Caret ? reading.Root : 0, activities, reading.Root);
+                var front = snapshot.FirstOrDefault(w => w.IsForeground);
+                var reading = ForegroundReading.Read(front);
+                var frontRole = front == null ? WindowUseRole.Unknown : _recorder.SemanticRole(front, reading);
                 if (trigger == "automatic-workspace" && !reading.Caret && _recorder.AwaitingOfficeSurface(reading.Root))
                 {
                     _workspaceMonitor.RequestCurrent();
                     return;
                 }
+                bool firstPlacement = trigger == "automatic-workspace" && front != null &&
+                    _focus.TakeInitialPlacement(front, focus, Environment.TickCount64, reading.LastInput);
+                liveHints = WindowUseRoles.Bind(snapshot, liveHints, focus, attention, placements,
+                    window => window.Handle == front?.Handle ? frontRole : _recorder.SemanticRole(window, reading), reading.Caret ? reading.Root : 0, activities,
+                    reading.Root, firstPlacement ? front!.Handle : 0, _taskPreferences.Profile);
                 if (!_lastPairs.SequenceEqual(pairs) || !_lastFloors.SequenceEqual(floors) ||
                     !_lastPlacements.SequenceEqual(placements) || !ReferenceEquals(rules, _lastRules) ||
                     focus.Main != _lastFocus?.Main || focus.Companion != _lastFocus?.Companion || focus.Evidence != _lastFocus?.Evidence ||
@@ -394,6 +399,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 {
                     PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill,
                     Focus = focus,
+                    InitialPlacementInputTick = liveHints.Any(h => h.InitialTextPlacement) ? reading.LastInput : null,
                     AllowGestureAssist = trigger == "automatic-gesture",
                     NavigationObservedAt = focus.Navigation is { Length: > 0 } ? focusObservedAt : null,
                     Attention = attention,
@@ -409,7 +415,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 var reference = _referenceStore.Read();
                 var preview = trigger == "automatic-gesture" && taskContext.GestureAnchor != 0 && taskContext.RecentGesture is { } release
                     ? _gesturePreview.Take(release, snapshot, foreground, capturedAt) : null;
-                taskContext = GesturePlacement.Resolve(taskContext, visibleWorkingSet, effectiveOptions, reference, preview);
+                taskContext = GesturePlacement.Resolve(taskContext with { Placement = placements }, visibleWorkingSet, effectiveOptions, reference, preview);
                 reusedPreview = preview?.Used == true;
                 // Save the learned inputs separately so an offline rule edit can replace an old slot.
                 recordedContext = taskContext with { Placement = learned };
@@ -558,7 +564,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         "full-tiling" => LayoutText.Get("Tiled"), "tiling-insufficient-space" => LayoutText.Get("InsufficientSpace"),
         "window-access" or "working-pair-access" => LayoutText.Get("WindowAccess"), "display-reflow" => LayoutText.Get("DisplayReflow"),
         "learned-position" => LayoutText.Get("LearnedPosition"),
-        "attention-layout" => LayoutText.Get("AttentionLayout"),
+        "attention-layout" or "attention-side-stack" => LayoutText.Get("AttentionLayout"),
         "working-overlap" => LayoutText.Get("WorkingOverlap"),
         "working-pair" => LayoutText.Get("WorkingPair"), "working-region" => LayoutText.Get("WatchedRegion"),
         "task-vertical-fill" => LayoutText.Get("ReversibleFill"),
