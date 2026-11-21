@@ -107,6 +107,9 @@ internal static class NativeMethods
     internal static extern nint GetShellWindow();
 
     [DllImport("user32.dll")]
+    internal static extern short GetAsyncKeyState(int virtualKey);
+
+    [DllImport("user32.dll")]
     internal static extern nint GetAncestor(nint hwnd, uint flags);
 
     [DllImport("user32.dll")]

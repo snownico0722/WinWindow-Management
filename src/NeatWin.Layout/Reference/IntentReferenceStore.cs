@@ -188,7 +188,7 @@ public sealed class IntentReferenceStore
 
     internal void AppendActivity(ActivitySample sample, WorkspaceFrame? geometry, long geometryTick) =>
         AppendJson("activity", new { sample.Version, sample.Session, sample.Tick, sample.Frame.Time, sample.ObservedMilliseconds,
-            GeometryTick = geometryTick, Frame = geometry, sample.Processes, sample.Windows, sample.Media, sample.InputIdleMilliseconds, sample.AudioTick, sample.DisplayRequired });
+            GeometryTick = geometryTick, Frame = geometry, sample.Processes, sample.Windows, sample.Media, sample.InputIdleMilliseconds, sample.AudioTick, sample.DisplayRequired, sample.Usage, sample.CoUse });
     internal void AppendBehavior(WindowBehaviorFrame frame) => AppendJson("behavior", frame);
     public void AppendTransition(WorkspaceTransition observation) => AppendJson("workspace", observation);
     public void AppendPlan(LayoutRunObservation observation) => AppendJson("plans", observation);

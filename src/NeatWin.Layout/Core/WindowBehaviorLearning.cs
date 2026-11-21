@@ -80,7 +80,7 @@ internal sealed class WindowBehaviorDiscovery
 {
     private sealed record Handoff(BehaviorWindow Source, BehaviorWindow Target, long Tick, bool Fresh);
     private sealed record Pending(WindowBehaviorRule Rule, long Delay, long Tick);
-    private readonly List<Handoff> _handoffs = [];
+    private Handoff? _handoff;
     private readonly List<Pending> _pending = [];
     private BehaviorWindow? _foreground;
     private long _focusedAt, _focusedUtc;
@@ -91,27 +91,27 @@ internal sealed class WindowBehaviorDiscovery
         var foreground = windows.FirstOrDefault(window => window.Foreground);
         if (foreground?.Id != _foreground?.Id)
         {
+            _handoff = null; // A different foreground ends the previous direct handoff.
             if (_foreground is { } old && foreground is { } next && tick - _focusedAt >= 1000 &&
                 !StringComparer.OrdinalIgnoreCase.Equals(old.App, next.App))
-                _handoffs.Add(new(old, next, tick, next.ProcessStartedUtc >= _focusedUtc));
+                _handoff = new(old, next, tick, next.ProcessStartedUtc >= _focusedUtc);
             _foreground = foreground;
             _focusedAt = tick;
             _focusedUtc = utc;
         }
 
-        _handoffs.RemoveAll(handoff => tick - handoff.Tick > 30_000);
+        if (_handoff is { } previous && tick - previous.Tick > 30_000) _handoff = null;
         foreach (var (id, departure) in departures)
         {
-            if (automaticDepartures.Contains(id)) continue;
-            var related = _handoffs.Where(h => h.Source.Id == id && h.Target.Id == foreground?.Id).ToArray();
-            var handoff = related.LastOrDefault(h => h.Tick < tick) ?? related.LastOrDefault();
-            if (handoff is null || windows.Any(w => StringComparer.OrdinalIgnoreCase.Equals(w.App, handoff.Source.App)))
+            if (automaticDepartures.Contains(id) || departure == BehaviorDeparture.Hidden) continue;
+            if (_handoff is not { } handoff || handoff.Source.Id != id || handoff.Target.Id != foreground?.Id ||
+                windows.Any(w => StringComparer.OrdinalIgnoreCase.Equals(w.App, handoff.Source.App)))
                 continue;
 
             var action = departure == BehaviorDeparture.Closed ? WindowBehaviorAction.Close : WindowBehaviorAction.Minimize;
             var rule = CreateRule(handoff, action);
             if (!rule.IsValid()) continue;
-            _handoffs.RemoveAll(h => h.Source.Id == id);
+            _handoff = null;
             _pending.RemoveAll(p => p.Rule.FitKey == rule.FitKey);
             _pending.Add(new(rule, tick - handoff.Tick, tick));
         }
@@ -144,7 +144,7 @@ internal sealed class WindowBehaviorDiscovery
 
     internal void Reset()
     {
-        _handoffs.Clear();
+        _handoff = null;
         _pending.Clear();
         _foreground = null;
     }
@@ -164,19 +164,26 @@ internal sealed class WindowBehaviorSequence(WindowBehaviorRule rule)
     private const long VisitTimeout = 120_000;
     private BehaviorWindow? _source, _target;
     private long _visitStarted, _sourceTick, _sourceUtc, _targetTick, _foregroundSince, _actionTick;
-    private bool _targetWasForeground, _sourceWasForeground, _autoDeparted;
+    private bool _targetWasForeground, _autoDeparted;
+    private int? _sourceForegroundId;
     private int? _autoWindow, _actionTarget, _blockedTarget;
     private long _blockedUntil;
 
     internal bool IsAutomatic(int id) => _autoWindow == id;
+
+    internal void SubmissionFailed(int id)
+    {
+        if (_autoWindow == id) _autoWindow = null;
+    }
 
     internal BehaviorUpdate Observe(long tick, long utc, IReadOnlyList<BehaviorWindow> windows,
         IReadOnlyDictionary<int, BehaviorDeparture> departures, WindowBehaviorFit fit, bool learn, bool canAct, IReadOnlySet<int>? automaticDepartures = null)
     {
         var foreground = windows.FirstOrDefault(window => window.Foreground);
         var sourceForeground = foreground is not null && rule.MatchesSource(foreground.App);
-        bool enteredSource = sourceForeground && !_sourceWasForeground;
-        _sourceWasForeground = sourceForeground;
+        int? sourceId = sourceForeground ? foreground!.Id : null;
+        bool enteredSource = sourceId.HasValue && _sourceForegroundId != sourceId;
+        _sourceForegroundId = sourceId;
 
         if (_autoWindow is int actionWindow)
         {
@@ -193,19 +200,30 @@ internal sealed class WindowBehaviorSequence(WindowBehaviorRule rule)
         }
 
         if (_source is not null && tick - _sourceTick > VisitTimeout) ClearVisit();
-        if (_source is null && enteredSource)
+        if (enteredSource)
         {
+            ClearVisit(); // Returning to the source starts a new visit and invalidates the old launch time.
             _source = foreground;
             _visitStarted = _sourceTick = tick;
             _sourceUtc = utc;
         }
         if (_source is null) return new();
+        if (foreground is null || (_target != null && foreground.Id != _target.Id) ||
+            (!sourceForeground && !rule.MatchesTarget(foreground.App)))
+        {
+            ClearVisit();
+            return new();
+        }
         if (sourceForeground && foreground!.Id == _source.Id && _target is null)
             _sourceTick = tick;
 
-        if (_target is null && foreground is not null && rule.MatchesTarget(foreground.App) &&
-            tick - _visitStarted >= 1000 && (!rule.RequireNewProcess || foreground.ProcessStartedUtc >= _sourceUtc))
+        if (_target is null && !sourceForeground)
         {
+            if (tick - _visitStarted < 1000 || rule.RequireNewProcess && foreground.ProcessStartedUtc < _sourceUtc)
+            {
+                ClearVisit();
+                return new();
+            }
             _target = foreground;
             _targetTick = tick;
         }
@@ -213,7 +231,7 @@ internal sealed class WindowBehaviorSequence(WindowBehaviorRule rule)
         {
             var observed = departures.GetValueOrDefault(_source.Id);
             bool fitsAction = departures.ContainsKey(_source.Id) && (rule.Action == WindowBehaviorAction.Close
-                ? observed is BehaviorDeparture.Closed or BehaviorDeparture.Hidden
+                ? observed == BehaviorDeparture.Closed
                 : observed == BehaviorDeparture.Minimized);
             bool relevant = _target is not null && tick - _targetTick <= 30_000 && automaticDepartures?.Contains(_source.Id) != true;
             var learned = learn && fitsAction && relevant ? fit.ObserveDismissal(tick - _targetTick) : null;
@@ -240,7 +258,7 @@ internal sealed class WindowBehaviorSequence(WindowBehaviorRule rule)
     {
         ClearVisit();
         _autoWindow = null;
-        _sourceWasForeground = false;
+        _sourceForegroundId = null;
         _blockedTarget = null;
         _blockedUntil = 0;
     }

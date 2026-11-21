@@ -111,6 +111,12 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     {
         try
         {
+            if (NativeWindowActivity.IsShellForeground(NativeMethods.GetForegroundWindow()))
+            {
+                _scheduler.Observe([], Environment.TickCount64, false, desktopFocused: true);
+                _timer.Stop();
+                return;
+            }
             var snapshot = _capture();
             // An unexpired property can belong to an earlier layout, including one before a
             // mode switch. Only a NEW stamp attributes an otherwise unknown change to NeatWin;
@@ -125,7 +131,8 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
             }
             var present = snapshot.Select(w => w.Handle).ToHashSet();
             foreach (var handle in _observedStamps.Keys.Where(h => !present.Contains(h)).ToArray()) _observedStamps.Remove(handle);
-            var request = _scheduler.Observe(snapshot, Environment.TickCount64, _busy(), marked);
+            var request = _scheduler.Observe(snapshot, Environment.TickCount64,
+                _busy() || NativeWindowActivity.PointerBusy, marked);
             if (!_scheduler.HasPending) _timer.Stop();
             if (request is not null) Requested?.Invoke(request);
         }

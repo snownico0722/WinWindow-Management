@@ -29,6 +29,10 @@ internal static partial class IntentLayoutPlanner
         if (!context.PairPlanningEnabled || context.Focus is { Companion: not 0 } ||
             context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true) return context;
         var mainHandle = context.Focus?.Main ?? 0;
+        var main = windows.FirstOrDefault(v => v.Window.Handle == mainHandle);
+        if (main != null)
+            windows = windows.Where(v => v.Window.MonitorHandle == main.Window.MonitorHandle &&
+                v.Window.WorkArea == main.Window.WorkArea).ToArray();
         // A persistent placement prior needs fresh evidence to participate in this task.
         bool CanJoin(nint handle) => context.Attention == null ||
             handle == mainHandle || context.HasRecentInput(handle);
@@ -52,6 +56,23 @@ internal static partial class IntentLayoutPlanner
             var rule = rules[0];
             var primary = mainHandle == 0 ? rule.First : mainHandle;
             return context with { Focus = new(primary, primary == rule.First ? rule.Second : rule.First, 0, "configured-pair") };
+        }
+        // A single direct transition can already connect two substantial, side-by-side
+        // work surfaces. Window size alone cannot promote an old parked application.
+        if (main != null && context.Attention != null && context.Focus != null)
+        {
+            var rect = main.Window.VisualRect;
+            var references = windows.Where(v => v.Window.Handle != mainHandle && v.Window.IsManageable &&
+                v.VisibleRatio >= .45 && main.VisibleRatio >= .45 &&
+                context.Attention.GetValueOrDefault(v.Window.Handle) is { Weight: >= .35 } recent &&
+                (recent.Association >= .55 || v.VisibleRatio >= .80 && main.VisibleRatio >= .80 && recent.Weight >= .45 &&
+                    context.WindowHints?.Any(h => (h.Handle == mainHandle || h.Handle == v.Window.Handle) && h.Role == WindowUseRole.Browser) == true) &&
+                v.Window.VisualRect.VerticalOverlapRatio(rect) >= .50 &&
+                Math.Abs(CenterX(v.Window.VisualRect) - CenterX(rect)) >= Math.Min(rect.Width, v.Window.VisualRect.Width) * .60 &&
+                context.WindowHints?.Any(h => h.Handle == v.Window.Handle && (h.Anchor || h.Role == WindowUseRole.FloatingEditor)) != true)
+                .Take(2).ToArray();
+            if (references.Length == 1)
+                return context with { Focus = new(mainHandle, references[0].Window.Handle, context.Focus.Switches, "visible-reference") };
         }
         var passive = context.WindowHints?.Where(h => h.MediaCompanion && !h.Anchor && h.Handle != mainHandle &&
             members.Contains(h.Handle) && CanJoin(h.Handle)).Take(2).ToArray();
@@ -177,10 +198,11 @@ internal static partial class IntentLayoutPlanner
         foreach (var i in candidate.Order)
         {
             var window = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
-            if (goals != null && (!goals[i].Movable && (a != b || Array.IndexOf(candidate.Order, i) != i) ||
-                !goals[i].Resizable && (a.Width != b.Width || a.Height != b.Height) &&
+            bool gestureEndpoint = window.Handle == context.GestureAnchor && b == context.GestureTarget;
+            if (goals != null && (!goals[i].Movable && (a != b && !gestureEndpoint || Array.IndexOf(candidate.Order, i) != i) ||
+                !goals[i].Resizable && !gestureEndpoint && (a.Width != b.Width || a.Height != b.Height) &&
                 !(candidate.Kind == "refined" && context.VideoHint?.WindowHandle == window.Handle))) return false;
-            if (window.Handle == context.GestureAnchor && a != b) return false;
+            if (window.Handle == context.GestureAnchor && a != b && !gestureEndpoint) return false;
             var bleed = BleedBudget(window, context);
             // A fixed/resize-disabled window larger than the work area cannot fit entirely.
             // Only the explicit rescue candidate may retain that unavoidable overflow; it must
@@ -220,6 +242,8 @@ internal static partial class IntentLayoutPlanner
                     ? hint.UsefulHeightDip.Value : context.Preferences.ComfortableHeightDip) * scale);
                 if (goals?[i] is { LearnedWidth: true } preferredWidth) usefulWidth = Math.Min(usefulWidth, preferredWidth.Width);
                 if (goals?[i] is { LearnedHeight: true } preferredHeight) usefulHeight = Math.Min(usefulHeight, preferredHeight.Height);
+                if (goals?[i] is { Role: AttentionRole.Main, FrameWidth: > 0 } primary)
+                    usefulWidth = Math.Min(usefulWidth, primary.Width);
                 if (goals?[i] is { Role: AttentionRole.Reference } reference)
                 {
                     usefulWidth = Math.Min(usefulWidth, reference.Width * .65);
@@ -281,7 +305,7 @@ internal static partial class IntentLayoutPlanner
         WindowSnapshot[]? obstacles = null, AttentionTarget[]? goals = null)
     {
         var profile = context.Preferences;
-        int mainDeficit = 0, accessDeficit = 0, comfortDeficit = 0;
+        int mainDeficit = 0, accessDeficit = 0, comfortDeficit = 0, gestureDeficit = 0;
         var information = 0.0; var switching = 0.0; var continuity = 0.0; var reflow = 0.0;
         var peripheral = 0.0; var alignment = 0.0; var uncertainty = 0.0;
         var handoffSource = context.Focus is { Evidence: "handoff" } handoff
@@ -293,6 +317,8 @@ internal static partial class IntentLayoutPlanner
             var w = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             var scale = w.Dpi / 96.0;
             var intent = demands[i];
+            if (w.Handle == context.GestureAnchor && context.GestureTarget is { } endpoint && b != endpoint)
+                gestureDeficit = 1;
             var blockers = (obstacles ?? []).Where(o => o.ZOrder < windows[rank].Window.ZOrder).Select(o => o.VisualRect);
             var exposure = ScreenExposure(b, front.Concat(blockers), area, w.Dpi);
             var windowHint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
@@ -313,6 +339,11 @@ internal static partial class IntentLayoutPlanner
                 // The working minimum and the comfortable upper bound serve different roles.
                 // Visible content and reachable title area are measured after all projected moves.
                 static int Missing(double fraction) => (int)Math.Round(20 * (1 - Math.Clamp(fraction, 0, 1)));
+                if (target.RestingCenter is double center)
+                {
+                    var offset = Math.Abs(CenterX(b) - center) / area.Width;
+                    alignment += 3 * Math.Max(0, offset - .04);
+                }
                 double exposedWidth = Math.Min(exposure.UsefulWidth, b.Width);
                 double exposedHeight = Math.Min(b.Height, b.Area * exposure.Visible / Math.Max(1, exposedWidth));
                 if (target.Role is AttentionRole.Main or AttentionRole.Reference &&
@@ -325,6 +356,21 @@ internal static partial class IntentLayoutPlanner
                     else accessDeficit += Missing(readable / .60);
                     comfortDeficit += (target.Role == AttentionRole.Main ? 2 : 1) *
                         (Missing(exposedWidth / target.Width) + Missing(exposedHeight / target.Height));
+                }
+                if (target.FrameWidth > target.Width)
+                {
+                    // Shared margins belong inside the workspace. Offscreen width and deep
+                    // overlap cannot substitute for visible content on the two-window desktop.
+                    var outside = Math.Max(0, area.Left - b.Left) + Math.Max(0, b.Right - area.Right);
+                    int allowed = 2 * (target.FrameWidth - target.Width);
+                    var shared = front.Select(r => InnerEdgeOverlap(b, r).Width).DefaultIfEmpty().Max();
+                    double waste = outside + Math.Max(0, shared - allowed);
+                    accessDeficit += (int)Math.Ceiling(Math.Max(0, waste - 3 * scale) / Math.Max(1, target.AccessWidth));
+
+                    // A few hidden edge pixels can preserve an application's useful content
+                    // width. Credit frame width only while the central area is fully readable.
+                    double edge = Math.Min(1, b.Width / (double)target.FrameWidth);
+                    comfortDeficit += Missing(Math.Min(edge, exposure.CenterVisible));
                 }
                 if (target.LearnedHeight) comfortDeficit += Missing(target.Height / (double)b.Height);
                 if (target.LearnedWidth) comfortDeficit += Missing(target.Width / (double)b.Width);
@@ -511,7 +557,7 @@ internal static partial class IntentLayoutPlanner
             personal += preference.Confidence * error;
         }
         return new(information, switching, continuity, reflow, peripheral, alignment, uncertainty, feedback, personal, pairCost,
-            new(mainDeficit, accessDeficit, comfortDeficit));
+            new(mainDeficit, accessDeficit, comfortDeficit, gestureDeficit));
     }
 
     internal static bool TaskRefinementAcceptable(IReadOnlyList<VisibleWindow> visible,
@@ -556,6 +602,7 @@ internal static partial class IntentLayoutPlanner
             var c = new Candidate("refined", after, order);
             var groupContext = ResolveWorkingPair(group, context);
             var goals = AttentionLayout.Targets(group, groupContext, options.SmartStrength);
+            AttentionLayout.SetRestingCenter(group, goals, beforeObstacles, groupContext);
             if (!TaskSafe(group, original, c, area, options, groupContext, afterObstacles, goals: goals)) return false;
             for (var i = 0; i < group.Length; i++)
                 foreach (var obstacle in afterObstacles)

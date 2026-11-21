@@ -132,8 +132,15 @@ public sealed class AutomaticLayoutScheduler
     }
 
     public AutomaticLayoutRequest? Observe(IReadOnlyList<WindowSnapshot> snapshot, long now, bool busy,
-        IReadOnlySet<nint>? markedByNeatWin = null)
+        IReadOnlySet<nint>? markedByNeatWin = null, bool desktopFocused = false)
     {
+        // The desktop and taskbar are excluded from window capture. Clear the last app and
+        // queued plan here, so activating the shell cannot arrange the previous task.
+        if (desktopFocused)
+        {
+            Reset(Mode, [], now);
+            return null;
+        }
         var next = Normalize(snapshot);
         var ignored = new HashSet<nint>();
         var ignoredOrder = new HashSet<nint>();

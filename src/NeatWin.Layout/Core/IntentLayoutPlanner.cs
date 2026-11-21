@@ -19,8 +19,15 @@ internal static partial class IntentLayoutPlanner
         if (taskContext.VerifiedRepeat && !taskContext.ExplicitArrange) return new([], [], []);
         // Anchored monitors keep their original location and remain in the desktop occlusion checks.
         desktop ??= visible.Select(v => v.Window).ToArray();
-        taskContext = ResolveExplicitFocus(visible, taskContext);
+        taskContext = GesturePlacement.Resolve(ResolveExplicitFocus(visible, taskContext), visible, options);
         visible = IncludeWorkingCompanion(visible, desktop, taskContext);
+        if (taskContext is { ExplicitArrange: false, GestureAnchor: 0, Focus: { Main: not 0 } editing } &&
+            taskContext.WindowHints?.Any(h => h.Handle == editing.Main && h.Role == WindowUseRole.FloatingEditor) == true)
+        {
+            // A writing overlay uses the desktop behind it as a reference. Keep both in place.
+            visible = visible.Where(v => v.Window.Handle == editing.Main).ToArray();
+            taskContext = taskContext with { Focus = editing with { Companion = 0 } };
+        }
         if (taskContext is { ExplicitArrange: false, Attention: not null })
         {
             var focus = ResolveWorkingPair(visible.ToArray(), taskContext).Focus;
@@ -48,7 +55,7 @@ internal static partial class IntentLayoutPlanner
             visible = taskWindows.Concat(bystanders.Select(x => x.Item)).ToArray();
             taskContext = taskContext with { Focus = focus };
         }
-        var anchors = (taskContext.WindowHints ?? []).Where(h => h.Anchor).Select(h => h.Handle).ToHashSet();
+        var anchors = (taskContext.WindowHints ?? []).Where(h => h.Anchor || h.Role == WindowUseRole.FloatingEditor && h.Handle != taskContext.GestureAnchor).Select(h => h.Handle).ToHashSet();
         var moves = new List<TidyMove>();
         var layers = new List<WindowLayerOrder>();
         var traces = new List<LayoutGroupTrace>();
@@ -80,6 +87,7 @@ internal static partial class IntentLayoutPlanner
                     { VisualRect = settled.GetValueOrDefault(w.Handle, w.VisualRect),
                       ZOrder = settledRanks.GetValueOrDefault(w.Handle, w.ZOrder) })
                     .Where(w => !w.VisualRect.Intersect(area).IsEmpty).ToArray();
+                AttentionLayout.SetRestingCenter(group, goals, obstacles, groupContext);
                 // Small topmost widgets still affect exposure and suggest obstacle-free candidates.
                 var lastRank = group[^1].Window.ZOrder;
                 var blockers = obstacles.Where(w => !monitorHandles.Contains(w.Handle) && w.ZOrder < lastRank &&
@@ -131,7 +139,7 @@ internal static partial class IntentLayoutPlanner
                 TaskCostBreakdown Breakdown(Candidate c) => EffectiveBreakdown(
                     TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, goals), options.SmartStrength, task);
                 if (goals != null)
-                    AddAttentionLayouts(candidates, group, original, goals, area, obstacles, hint.GapPixels, order, strength, Breakdown);
+                    AddAttentionLayouts(candidates, group, original, goals, area, obstacles, hint.GapPixels, order, strength, groupContext, Breakdown);
                 candidates = candidates.DistinctBy(CandidateKey).ToList();
                 var best = candidates[0]; var baselineBreakdown = Breakdown(best);
                 var baseline = baselineBreakdown.Total; var bestScore = baseline; var bestGoal = baselineBreakdown.Goal;

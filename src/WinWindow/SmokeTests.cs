@@ -118,6 +118,12 @@ internal static class SmokeTests
             Assert(source.IsManageable, "layout sees the normal fixture");
             CheckActivityRecording(source, data);
             var target = source.VisualRect with { X = source.VisualRect.X + (source.VisualRect.X > source.WorkArea.X + 40 ? -32 : 32) };
+            var stale = layoutWindows.ApplyLayout(new([new(source, target)], [], []), automaticForeground: (nint)(-1));
+            Assert(stale.Interrupted && stale.Plan.Moves.Count == 0 &&
+                layoutWindows.Capture().Single(w => w.Handle == source.Handle).VisualRect == source.VisualRect,
+                "an automatic request for a departed foreground leaves the native window in place");
+            Assert(NeatWin.Windows.NativeWindowActivity.IsShellForeground(NeatWin.Windows.NativeMethods.GetShellWindow()),
+                "the desktop is an automation boundary, including a session without a shell window");
             var applied = layoutWindows.ApplyLayout(new([new(source, target)], [], []));
             Assert(applied.Plan.Moves.Count == 1, "ordinary fixture is accepted for layout");
             bool Reached(NeatWin.Core.RectI rect) => layoutWindows.Capture().Any(w => w.Handle == item.Hwnd &&

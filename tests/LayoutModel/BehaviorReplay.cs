@@ -40,8 +40,8 @@ internal static class BehaviorReplay
                     ? followUp.Any(m => m.Tick > match.Tick && m.Tick - match.Tick <= 10_000 &&
                         m.Item.Event == "appeared" && m.Item.App.Equals(p.App, StringComparison.OrdinalIgnoreCase))
                         ? "returned-soon" : "observed-matching-dismissal"
-                    : followUp.Any(m => m.Item.WindowId == p.Window && m.Item.Cause == "winwindow" &&
-                        DismissalMatches(p.Action, m.Item.Event)) || ordered[^1].Tick - p.Tick < 30_000
+                    : followUp.Any(m => m.Item.WindowId == p.Window && (m.Item.Event is "hidden" or "unavailable" ||
+                        m.Item.Cause == "winwindow" && DismissalMatches(p.Action, m.Item.Event))) || ordered[^1].Tick - p.Tick < 30_000
                         ? "follow-up-unknown" : "no-matching-dismissal";
                 return new { p.Rule, p.App, p.Tick, Outcome = outcome, ObservedDelay = match.Item is null ? (long?)null : match.Tick - p.Tick };
             }).ToArray();
@@ -110,5 +110,5 @@ internal static class BehaviorReplay
     }
 
     private static bool DismissalMatches(WindowBehaviorAction action, string observed) =>
-        action == WindowBehaviorAction.Close ? observed is "closed" or "hidden" : observed == "minimized";
+        action == WindowBehaviorAction.Close ? observed == "closed" : observed == "minimized";
 }

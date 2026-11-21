@@ -171,7 +171,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
     {
         long now = Environment.TickCount64;
         var candidate = _idle.Choose(snapshot, applied, context, strength, now, _recorder.Identity.Id, history);
-        if (candidate is null || foreground == 0 || NativeWindowActivity.IsMoving ||
+        if (candidate is null || foreground == 0 || NativeWindowActivity.PointerBusy ||
             NativeMethods.GetForegroundWindow() != foreground || !DesktopActivity.Interactive()) return 0;
         NativeMethods.GetWindowThreadProcessId(foreground, out var frontPid);
         if (foreground != context.Focus?.Main && !(context.ExplicitArrange && frontPid == Environment.ProcessId)) return 0;
@@ -297,9 +297,14 @@ internal sealed class WindowBehaviorMonitor : IDisposable
                 }
                 if (update.Reopened is not null && foreground is not null)
                     trace?.Add(Event(foreground, "reopened", "observed", entry.Rule.Id));
-                if (update.Dismiss is not int id || !handled.Add(id) || foreground is null ||
-                    !current.TryGetValue(id, out var target)) continue;
+                if (update.Dismiss is not int id) continue;
+                if (!handled.Add(id) || foreground is null || !current.TryGetValue(id, out var target))
+                {
+                    entry.Sequence.SubmissionFailed(id);
+                    continue;
+                }
                 bool applied = TryDismiss(target, foreground.Window.Handle, entry.Rule.Action);
+                if (!applied) entry.Sequence.SubmissionFailed(id);
                 trace?.Add(Event(target, applied ? "dismiss-requested" : "dismiss-failed", "winwindow", entry.Rule.Id));
             }
             _previous = current;
@@ -346,6 +351,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
     private static bool TryDismiss(Observed source, nint foreground, WindowBehaviorAction action)
     {
         nint hwnd = source.Window.Handle;
+        if (!NativeWindowActivity.AllowsAutomaticPlacement(foreground)) return false;
         if (source.Window.IsTopmost || hwnd == foreground ||
             NativeMethods.GetForegroundWindow() != foreground ||
             !NativeMethods.IsWindowEnabled(hwnd) || !NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd))

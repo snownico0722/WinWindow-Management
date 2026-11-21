@@ -72,6 +72,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     internal event Action<ManualWindowGesture>? TidyRequested;
     internal event Action<nint, uint, long>? TaskInput;
 
+    internal bool TaskInputAvailable => _trackTaskInput && _mouseHook != 0;
     internal bool IsAvailable => _eventHook != nint.Zero;
     internal bool PointerTrackingActive => _attentionTimer.Enabled || _dragTimer.Enabled || _mouseHook != nint.Zero;
 

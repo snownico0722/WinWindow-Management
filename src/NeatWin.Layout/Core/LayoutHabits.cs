@@ -202,15 +202,24 @@ public sealed class ForegroundHistory
 
 public static class LayoutHabits
 {
-    public static LayoutHabit? Observe(WindowAdjustmentObservation o)
+    public static LayoutHabit? Observe(WindowAdjustmentObservation o, bool byInstance = false)
     {
-        if (o.Outcome != "stable" || o.Start == o.End || o.WorkArea != o.StartWorkArea ||
-            o.SettledContext is not { Truncated: false } frame || o.StartContext is not { Truncated: false } start ||
+        bool assisted = o.Outcome == "assisted-release";
+        var endpoint = byInstance || assisted ? o.EndContext : o.SettledContext;
+        bool eligible = byInstance ? o.Outcome == "manual-release" : o.Outcome == "stable" || assisted;
+        if (!eligible || o.Start == o.End || o.WorkArea != o.StartWorkArea ||
+            endpoint is not { Truncated: false } frame || o.StartContext is not { Truncated: false } start ||
             o.WorkArea.IsEmpty) return null;
         var moved = frame.Windows.FirstOrDefault(w => w.Id == o.WindowId);
-        if (moved?.AppKey == null || moved.Rect != o.End || moved.VisibleRatio < .2) return null;
+        if (moved == null || !moved.Manageable || moved.Rect != o.End || moved.VisibleRatio < .2) return null;
+        string? Key(ObservedWindow w) => byInstance ? w.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) : w.AppKey;
+        if (Key(moved) is not { } movedKey) return null;
+        // Two live documents can share a persistent application identity. Only a session
+        // observation can tell which document the user actually placed.
+        if (!byInstance && frame.Windows.Count(w => w.Manageable && w.WorkArea == o.WorkArea && w.AppKey == movedKey) > 1)
+            return null;
         var peers = from w in frame.Windows
-                    where w.Id != moved.Id && w.Manageable && w.AppKey != null && w.WorkArea == o.WorkArea && w.VisibleRatio >= .04
+                    where w.Id != moved.Id && w.Manageable && Key(w) != null && w.WorkArea == o.WorkArea && w.VisibleRatio >= .04
                     let before = start.Windows.FirstOrDefault(v => v.Id == w.Id && v.Rect == w.Rect && v.AppKey == w.AppKey)
                     where before != null
                     let gain = w.VisibleRatio - before.VisibleRatio
@@ -221,6 +230,8 @@ public static class LayoutHabits
         bool paired = peer.Window != null && (peer.Gain >= .04 || peersFound.Length == 1 && peer.Window.VisibleRatio >= .45);
         double center = (moved.Rect.X + moved.Rect.Width / 2d - o.WorkArea.X) / o.WorkArea.Width;
         var partner = paired ? peer.Window : null;
+        if (!byInstance && partner != null && frame.Windows.Count(w => w.Manageable && w.WorkArea == o.WorkArea && w.AppKey == partner.AppKey) > 1)
+            return null;
         int order = partner == null ? 0 : Math.Sign(moved.Rect.X + moved.Rect.Width / 2d - partner.Rect.X - partner.Rect.Width / 2d);
         int cell = -1;
         if (paired && peer.Gain >= .04 && peer.Window!.VisibleRatio <= .45 &&
@@ -233,7 +244,7 @@ public static class LayoutHabits
             Math.Clamp((partner.Rect.X + partner.Rect.Width / 2d - o.WorkArea.X) / o.WorkArea.Width, 0, 1);
         double? partnerWidth = partner == null ? null :
             Math.Clamp(partner.Rect.Width / (double)o.WorkArea.Width, .05, 1);
-        return new(o.Time, IntentEvidence.ContextFor(o.WorkArea), moved.AppKey, partner?.AppKey,
+        return new(o.Time, IntentEvidence.ContextFor(o.WorkArea), movedKey, partner == null ? null : Key(partner),
             Math.Clamp(center, 0, 1), Math.Clamp(moved.Rect.Width / (double)o.WorkArea.Width, .05, 1), order, cell,
             o.AfterRequest != null, partner != null && order != 0 && moved.Rect.VerticalOverlapRatio(partner.Rect) >= .5
                 ? moved.Rect.HorizontalOverlapRatio(partner.Rect) : null,
@@ -254,10 +265,12 @@ public static class LayoutHabits
     }
 
     public static PlacementPreference? Resolve(IEnumerable<LayoutHabit> history, WindowSnapshot window,
-        string app, string? partner, nint partnerHandle, DateTimeOffset now)
+        string app, string? partner, nint partnerHandle, DateTimeOffset now, bool sessionOnly = false)
     {
         string display = IntentEvidence.ContextFor(window.WorkArea);
-        var recent = history.Where(s => s.Display == display && s.Time <= now && s.Time >= now.AddDays(-120)).ToArray();
+        var earliest = sessionOnly ? now.AddHours(-4) : now.AddDays(-120);
+        int minimumVotes = sessionOnly ? 2 : 3;
+        var recent = history.Where(s => s.Display == display && s.Time <= now && s.Time >= earliest).ToArray();
         var direct = recent.Where(s => s.App == app).ToArray();
         var directPair = direct.Where(s => partner != null && s.Partner == partner).ToArray();
         // Include mirrored evidence when the user consistently dragged the companion relative to this stationary window.
@@ -267,22 +280,24 @@ public static class LayoutHabits
                 -s.Order, -1, s.Corrected, s.InnerOverlap)).ToArray();
         // Keep both original gestures for diagnostics and old files. A pair contributes at
         // most one vote per half hour, even if both windows were moved in that period.
-        static LayoutHabit[] Independent(IEnumerable<LayoutHabit> observations) =>
-            observations.GroupBy(s => s.Time.ToUnixTimeSeconds() / 1800)
+        LayoutHabit[] Independent(IEnumerable<LayoutHabit> observations) =>
+            observations.GroupBy(s => s.Time.ToUnixTimeSeconds() / (sessionOnly ? 120 : 1800))
                 .Select(g => g.MaxBy(s => s.Time)!).ToArray();
         var pair = Independent(directPair.Concat(mirroredPair));
-        bool specific = pair.Length >= 3;
-        var used = specific ? pair : Independent(direct);
-        if (used.Length < 3) return null;
+        bool specific = pair.Length >= minimumVotes;
+        var solo = direct.Where(s => s.Partner == null).ToArray();
+        var used = specific ? pair : Independent(solo);
+        if (used.Length < minimumVotes || sessionOnly && (used.Max(s => s.Time) - used.Min(s => s.Time)).TotalMinutes < 2)
+            return null;
         HashSet<LayoutHabit> mirrorSet = [.. mirroredPair];
-        double Weight(LayoutHabit s) => Math.Pow(.5, (now - s.Time).TotalDays / 30) *
+        double Weight(LayoutHabit s) => Math.Pow(.5, sessionOnly ? (now - s.Time).TotalMinutes / 45 : (now - s.Time).TotalDays / 30) *
             (s.Corrected ? 1.5 : 1) * (mirrorSet.Contains(s) ? .85 : 1);
         double sum = used.Sum(Weight);
         if (sum < 1) return null;
         double Mean(Func<LayoutHabit, double> get) => used.Sum(s => Weight(s) * get(s)) / sum;
         var center = Mean(s => s.Center);
         var dispersion = Mean(s => Math.Abs(s.Center - center));
-        double confidence = sum / (sum + 4) * Math.Clamp(1 - dispersion * 3, 0, 1);
+        double confidence = sum / (sum + (sessionOnly ? 2 : 4)) * Math.Clamp(1 - dispersion * 3, 0, 1);
         int cell = -1;
         if (specific)
         {
@@ -308,10 +323,10 @@ public static class LayoutHabits
         // a position-only edit can include geometry previously chosen by the layout engine.
         var heights = direct.Where(s => s.Height is >= .05 and <= 1).ToArray();
         var heightVotes = specific ? Independent(heights.Where(s => s.Partner == partner)) : [];
-        if (heightVotes.Length < 3) heightVotes = Independent(heights);
+        if (heightVotes.Length < minimumVotes) heightVotes = Independent(heights.Where(s => s.Partner == null));
         double? height = null;
         double totalHeightWeight = heightVotes.Sum(Weight);
-        if (heightVotes.Length >= 3 && totalHeightWeight >= 1)
+        if (heightVotes.Length >= minimumVotes && totalHeightWeight >= 1)
         {
             double meanHeight = heightVotes.Sum(s => Weight(s) * s.Height!.Value) / totalHeightWeight;
             double deviation = heightVotes.Sum(s => Weight(s) * Math.Abs(s.Height!.Value - meanHeight)) / totalHeightWeight;

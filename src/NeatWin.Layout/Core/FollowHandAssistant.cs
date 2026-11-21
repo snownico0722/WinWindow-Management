@@ -35,6 +35,10 @@ internal static class FollowHandAssistant
             return new FollowHandDecision(false, gesture.EndRect, FollowHandTargetKind.None, 0);
         }
 
+        double scale = Math.Max(.5, moved.Window.Dpi / 96d);
+        var delta = Math.Max(Math.Max(Math.Abs(gesture.StartRect.Left - gesture.EndRect.Left), Math.Abs(gesture.StartRect.Top - gesture.EndRect.Top)),
+            Math.Max(Math.Abs(gesture.StartRect.Right - gesture.EndRect.Right), Math.Abs(gesture.StartRect.Bottom - gesture.EndRect.Bottom)));
+        if (delta < 8 * scale) return new(false, gesture.EndRect, FollowHandTargetKind.None, 0);
         var radius = options.SmartStrength switch
         {
             SmartTidyStrength.Gentle => 14,
@@ -44,6 +48,11 @@ internal static class FollowHandAssistant
         var preferredGap = (int)Math.Round(personalization.PreferredGapPixels);
         var candidates = new List<Candidate>();
         AddScreenCandidates(candidates, gesture, radius);
+        var release = gesture.EndRect;
+        int centerX = gesture.WorkArea.Left + (gesture.WorkArea.Width - release.Width) / 2;
+        if (gesture.Kind == ManualGestureKind.Move && !gesture.WorkArea.IsEmpty &&
+            Math.Abs(release.Left - centerX) <= radius && Math.Abs(gesture.StartRect.Left - centerX) - Math.Abs(release.Left - centerX) >= 24 * scale)
+            Add(candidates, FollowHandTargetKind.EdgeAlignment, release with { X = centerX }, 1.05);
 
         foreach (var other in visibleWindows)
         {
@@ -432,14 +441,14 @@ internal static class FollowHandAssistant
 
         var rect = gesture.EndRect;
         var edges = ChangedEdges(gesture.StartRect, rect);
-        if (Math.Abs(rect.Width - other.Width) <= radius * 2)
+        if (edges.HorizontalMagnitude >= 2 && Math.Abs(rect.Width - other.Width) <= radius * 2)
         {
             var target = edges.Left && !edges.Right
                 ? new RectI(rect.Right - other.Width, rect.Top, other.Width, rect.Height)
                 : new RectI(rect.Left, rect.Top, other.Width, rect.Height);
             Add(candidates, FollowHandTargetKind.SizeMatch, target, 0.72);
         }
-        if (Math.Abs(rect.Height - other.Height) <= radius * 2)
+        if (edges.VerticalMagnitude >= 2 && Math.Abs(rect.Height - other.Height) <= radius * 2)
         {
             var target = edges.Top && !edges.Bottom
                 ? new RectI(rect.Left, rect.Bottom - other.Height, rect.Width, other.Height)
@@ -469,14 +478,14 @@ internal static class FollowHandAssistant
         foreach (var ratio in ratios)
         {
             var desiredWidth = (int)Math.Round(area.Width * ratio);
-            if (Math.Abs(desiredWidth - rect.Width) <= radius * 2)
+            if (edges.HorizontalMagnitude >= 2 && Math.Abs(desiredWidth - rect.Width) <= radius * 2)
             {
                 var left = edges.Left && !edges.Right ? rect.Right - desiredWidth : rect.Left;
                 Add(candidates, FollowHandTargetKind.WorkAreaRatio, new RectI(left, rect.Top, desiredWidth, rect.Height), 0.78);
             }
 
             var desiredHeight = (int)Math.Round(area.Height * ratio);
-            if (Math.Abs(desiredHeight - rect.Height) <= radius * 2)
+            if (edges.VerticalMagnitude >= 2 && Math.Abs(desiredHeight - rect.Height) <= radius * 2)
             {
                 var top = edges.Top && !edges.Bottom ? rect.Bottom - desiredHeight : rect.Top;
                 Add(candidates, FollowHandTargetKind.WorkAreaRatio, new RectI(rect.Left, top, rect.Width, desiredHeight), 0.78);

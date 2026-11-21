@@ -68,13 +68,13 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) { VisualSampling = _settingsStore.VisualSampling };
         _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder, snapshotObserver);
         _behaviorMonitor = new(_windowManager, _referenceStore, _settingsStore, _recorder,
-            () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.IsMoving);
+            () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.PointerBusy);
         _useImportedPlacement = _settingsStore.UseImportedPlacement;
-        _workspaceMonitor = new WorkspaceAutoTidyMonitor(() => _windowManager.CaptureCoalesced(),
-            () => _tidyRunning || NativeWindowActivity.IsMoving);
+        _workspaceMonitor = new WorkspaceAutoTidyMonitor(() => _windowManager.CaptureCoalesced(), () => _tidyRunning);
         _autoTidyManager.TaskInput += (target, pid, now) =>
         {
             _focus.Interact(target, pid, now);
+            _recorder.RecordPointer(target, pid);
             if (_workspaceMonitor.TaskInput(target, pid, now)) _taskSession.Invalidate();
         };
         _manualArrangeTimer.Tick += (_, _) => RunTidy();
@@ -192,6 +192,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         if (enabled == !_recorder.Status.IsPaused) return;
         _settingsStore.RecordingEnabled = enabled;
         _recorder.TogglePause();
+        ConfigureTaskInput(_automaticMode);
         _behaviorMonitor.RecordingChanged();
     }
 
@@ -217,8 +218,14 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         }
         // Full Smart uses discrete interaction events. Continuous samples are for follow-hand.
         _autoTidyManager.Enabled = mode == AutomaticLayoutMode.LightAssist;
-        _autoTidyManager.SetAttentionInput(AutomaticLayoutPolicy.UsesFullPlanner(mode));
+        ConfigureTaskInput(mode);
         return true;
+    }
+
+    private void ConfigureTaskInput(AutomaticLayoutMode mode)
+    {
+        _autoTidyManager.SetAttentionInput(AutomaticLayoutPolicy.UsesFullPlanner(mode) || _recorder.CanWriteDiagnostics);
+        _recorder.PointerCaptureAvailable = _autoTidyManager.TaskInputAvailable;
     }
 
     private void OnAutomaticLayoutRequested(AutomaticLayoutRequest request)
@@ -243,6 +250,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var moved = visible.FirstOrDefault(item => item.Window.Handle == gesture.WindowHandle);
             if (moved is null || moved.Window.WorkArea != gesture.WorkArea || !SameRect(moved.Window.VisualRect, gesture.EndRect)) return;
             var interaction = _autoTidyManager.CaptureInteractionContext(visible);
+            if (!NativeWindowActivity.AllowsAutomaticPlacement(interaction.ForegroundWindow)) return;
             var hint = IntentEvidence.Resolve(_referenceStore.Read(), moved.Window.WorkArea, moved.Window.Dpi, DateTimeOffset.UtcNow);
             var personal = SmartPersonalizationState.Default with { PreferredGapPixels = hint.GapPixels };
             var decision = FollowHandAssistant.Decide(gesture,
@@ -254,7 +262,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var assisted = new[] { new TidyMove(moved.Window, decision.TargetRect) };
             _workspaceMonitor.ApplicationRequested(snapshot, new(assisted, [], []));
             if (_stopping.IsCancellationRequested) return;
-            var application = _windowManager.ApplyLayout(new(assisted, [], []));
+            var application = _windowManager.ApplyLayout(new(assisted, [], []), interaction.ForegroundWindow);
             _journal.Record(snapshot, application, "follow-hand");
         }
         catch { /* Assistance must not interrupt the completed manual action. */ }
@@ -281,8 +289,13 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var explicitSmart = smart && route == LayoutRoute.ManualAlgorithm;
             var fullDesktop = explicitSmart || (smart && _automaticMode == AutomaticLayoutMode.AutoFullAssist);
             var trigger = source ?? (showActivity ? tiling ? "explicit-tiling" : smart ? "explicit" : "explicit-classic" : "classic-follow");
-            var snapshot = _windowManager.Capture();
             var foreground = NativeMethods.GetForegroundWindow();
+            if (!showActivity && !NativeWindowActivity.AllowsAutomaticPlacement(foreground))
+            {
+                _workspaceMonitor.RequestCurrent();
+                return;
+            }
+            var snapshot = _windowManager.Capture();
             var visibleWorkingSet = fullDesktop
                 ? _visibilityAnalyzer.SelectForManualArrange(snapshot, effectiveOptions.RescueOffscreenWindows)
                 : _visibilityAnalyzer.SelectVisibleWorkingSet(snapshot, includeStackAccess: smart);
@@ -319,6 +332,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 var learned = pairSmart ? _recorder.Preferences(snapshot, focus).Where(p => p.Confidence >= .40).ToArray() : [];
                 var slots = pairSmart && _useImportedPlacement ? _recorder.BindSlots(rules, snapshot) : [];
                 var placements = CompiledLayoutRules.ApplySlots(learned, slots);
+                liveHints = WindowUseRoles.Bind(snapshot, liveHints, focus, attention, placements, _recorder.SemanticRole);
                 if (!_lastPairs.SequenceEqual(pairs) || !_lastFloors.SequenceEqual(floors) ||
                     !_lastPlacements.SequenceEqual(placements) || !ReferenceEquals(rules, _lastRules) ||
                     focus.Main != _lastFocus?.Main || focus.Companion != _lastFocus?.Companion || focus.Evidence != _lastFocus?.Evidence ||
@@ -343,6 +357,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 };
                 if (trigger == "automatic-gesture" && taskContext.GestureAnchor != 0 && taskContext.GestureAnchor != focus.Main)
                     taskContext = taskContext with { Focus = new(taskContext.GestureAnchor, 0, 0, "manual-gesture") };
+                taskContext = GesturePlacement.Resolve(taskContext, visibleWorkingSet, effectiveOptions);
                 var reference = _referenceStore.Read();
                 // Save the learned inputs separately so an offline rule edit can replace an old slot.
                 recordedContext = taskContext with { Placement = learned };
@@ -381,13 +396,14 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _workspaceMonitor.ApplicationRequested(snapshot, detailed);
             if (_stopping.IsCancellationRequested) return;
             var proposed = detailed;
-            var application = _windowManager.ApplyLayout(detailed);
+            var application = _windowManager.ApplyLayout(detailed, showActivity ? null : foreground);
+            if (application.Interrupted && !showActivity) _workspaceMonitor.RequestCurrent();
             detailed = application.Plan; plan = detailed.Moves;
             _verticalFillManager.Track(plan, smart && _smartBehaviorOptions.PreferReversibleVerticalFill);
             var layerOrders = detailed.Layers;
             IReadOnlyList<WindowSnapshot> requestedDesktop = snapshot;
             nint reclaimed = 0;
-            if (fullDesktop && reclaimContext != null && application.Failures.Count == 0 &&
+            if (fullDesktop && reclaimContext != null && !application.Interrupted && application.Failures.Count == 0 &&
                 proposed.Moves.Count == plan.Count && proposed.Layers.Count == layerOrders.Count)
                 reclaimed = _behaviorMonitor.TryReclaim(snapshot, detailed, reclaimContext, effectiveOptions.SmartStrength, foreground, _focus);
             if (reclaimed != 0)

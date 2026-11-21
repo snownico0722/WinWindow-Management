@@ -58,17 +58,17 @@ internal sealed class LayoutRunJournal : IDisposable
             var observation = new LayoutRunObservation(6, _session, Guid.NewGuid().ToString("N"), trigger,
                 frame, targets, layers, groups, null, refused.Length > 0 ? "submission-failed" : "requested-not-yet-verified",
                 application.Notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
-                context == null ? null : RecordedTaskSignals.From(context, ids), strength, fullDesktop, refused.Length == 0 ? null : refused,
+                context == null ? null : RecordedTaskSignals.From(context, ids, before), strength, fullDesktop, refused.Length == 0 ? null : refused,
                 application.MinimizeRequested is { } minimized ? ids[minimized.Handle] : null);
             _snapshotObserver?.Invoke(observation);
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);
             if (recorded && (plan.Moves.Count > 0 || trigger == "undo"))
-                _recorder?.Applied(observation.RequestId, trigger == "undo" ? [] : plan.Moves.Select(m => m.Window.Handle));
+                _recorder?.Applied(observation.RequestId, trigger, application);
             if (_pending.Count >= 8) _pending.RemoveAt(0);
             foreach (var old in _pending) old.Intervened = true;
             _pending.Add(new(observation, before.Select(w => w.Handle).ToHashSet(), Environment.TickCount64, epoch,
-                recorded, plan.Moves, application.Failures, allowReplan, application.MinimizeRequested));
+                recorded, plan.Moves, application.Failures, allowReplan, application.MinimizeRequested) { Intervened = application.Interrupted });
             _timer.Start();
         }
         catch { } // Diagnostics must not prevent a layout or an undo.

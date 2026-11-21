@@ -2,7 +2,7 @@ namespace NeatWin.Core;
 
 internal enum AttentionRole { Main, Reference, Return, Background }
 
-internal sealed record AttentionTarget(AttentionRole Role, int Width, int Height, int AccessWidth, bool Movable, bool Resizable, bool LearnedHeight = false, bool LearnedWidth = false);
+internal sealed record AttentionTarget(AttentionRole Role, int Width, int Height, int AccessWidth, bool Movable, bool Resizable, bool LearnedHeight = false, bool LearnedWidth = false, int FrameWidth = 0, double? RestingCenter = null);
 
 // Frozen at the beginning of a solve. Dimensions are pixels in the window's current work area.
 internal static class AttentionLayout
@@ -16,6 +16,32 @@ internal static class AttentionLayout
         return new(Math.Clamp(rect.Left + (rect.Width - width) / 2, area.Left, area.Right - width),
             Math.Clamp(rect.Top + (rect.Height - height) / 2, area.Top, area.Bottom - height), width, height);
     }
+
+    internal static void SetRestingCenter(VisibleWindow[] group, AttentionTarget[]? targets, WindowSnapshot[] obstacles,
+        TaskLayoutContext context)
+    {
+        if (targets is not [{ Role: AttentionRole.Main, Movable: true } target] || context.GestureAnchor != 0) return;
+        var window = group[0].Window;
+        if (context.VideoHint?.WindowHandle == window.Handle || context.RecentGesture?.WindowHandle == window.Handle ||
+            context.Placement?.Any(p => p.Window == window.Handle && p.Confidence >= .40) == true) return;
+        var area = window.WorkArea;
+        var rect = WorkingArea(window, target);
+        var centered = rect with { X = area.Left + (area.Width - rect.Width) / 2 };
+        // A parked frame hidden underneath the current task has no visible content to sacrifice.
+        // Keep a neighboring working surface readable if centering would cover a sizable part.
+        var desktop = obstacles.Append(window).OrderBy(w => w.ZOrder).ToArray();
+        foreach (var other in obstacles.Where(w => w.IsManageable && w.ZOrder > window.ZOrder))
+        {
+            var overlap = centered.Intersect(other.VisualRect);
+            if (overlap.IsEmpty || overlap.Area <= other.VisualRect.Area * .12) continue;
+            var front = desktop.Where(w => w.ZOrder < other.ZOrder).Select(w => w.VisualRect);
+            if (ScreenArea(overlap, front, area, other.Dpi) > other.VisualRect.Area * .12) return;
+        }
+        targets[0] = target with { RestingCenter = area.Left + area.Width / 2d };
+    }
+
+    private static double ScreenArea(RectI rect, IEnumerable<RectI> covers, RectI area, uint dpi) =>
+        IntentLayoutPlanner.ScreenExposure(rect, covers, area, dpi).Visible * rect.Area;
 
     internal static AttentionTarget[]? Targets(VisibleWindow[] group, TaskLayoutContext context, SmartTidyStrength strength)
     {
@@ -35,7 +61,7 @@ internal static class AttentionLayout
                 (h.First == w.Handle && h.Second == focus.Main || h.Second == w.Handle && h.First == focus.Main)) == true)
                 role = AttentionRole.Return;
             var hint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
-            bool movable = context.GestureAnchor != w.Handle && hint?.Anchor != true;
+            bool movable = context.GestureAnchor != w.Handle && hint?.Anchor != true && hint?.Role != WindowUseRole.FloatingEditor;
             bool resize = movable && w.IsResizable && profile.AllowUsefulResize && context.VideoHint?.WindowHandle != w.Handle &&
                 !(context.RecentGesture is { } g && !context.ExplicitArrange && g.WindowHandle == w.Handle &&
                   (g.StartRect.Width != g.EndRect.Width || g.StartRect.Height != g.EndRect.Height));
@@ -65,14 +91,35 @@ internal static class AttentionLayout
         var readers = Enumerable.Range(0, group.Length).Where(i => targets[i].Role is AttentionRole.Main or AttentionRole.Reference &&
             targets[i].Height > area.Height / 2).ToArray();
         int usable = area.Width - Math.Max(0, readers.Length - 1) * (int)Math.Round(8 * group[0].Window.Dpi / 96d);
-        int widthDemand = readers.Sum(i => targets[i].Width);
+        if (readers.Length == 2 && strength != SmartTidyStrength.Gentle)
+        {
+            // Reading in the active browser needs a wider viewport. Let the neighboring
+            // reference keep its useful content and contribute any spare width first.
+            int focal = Array.FindIndex(targets, t => t.Role == AttentionRole.Main);
+            if (readers.Contains(focal) && targets[focal].Resizable && !targets[focal].LearnedWidth &&
+                context.WindowHints?.Any(h => h.Handle == group[focal].Window.Handle && h.Role == WindowUseRole.Browser &&
+                    h.UsefulWidthDip is null) == true)
+                targets[focal] = targets[focal] with { Width = Math.Min(area.Width, (int)Math.Round(targets[focal].Width * 1.12)) };
+        }
+        long widthDemand = readers.Sum(i => (long)targets[i].Width);
         if (readers.Length > 1 && widthDemand > usable)
         {
             // A reference can occupy a partial-width viewport when the desktop is crowded.
             // Keep fixed physical frames intact; the goal expresses useful visible content.
             double fraction = Math.Max(.60, usable / (double)widthDemand);
+            int innerEdge = 0;
+            if (readers.Length == 2 && strength != SmartTidyStrength.Gentle && !profile.ProtectWindowEdges &&
+                context.WindowHints?.Any(h => readers.Any(i => group[i].Window.Handle == h.Handle) &&
+                    (h.ProtectPeriphery || h.ProtectedRegions is { Length: > 0 })) != true &&
+                context.Placement?.Any(p => p.Partner != 0 && p.InnerOverlap.HasValue) != true &&
+                context.RulePairs?.Any(p => p.Overlap.HasValue) != true)
+                innerEdge = (int)Math.Round(Math.Min(48 * group[readers[0]].Window.Dpi / 96d, usable * .020));
             foreach (var i in readers)
-                targets[i] = targets[i] with { Width = Math.Max(1, (int)Math.Floor(targets[i].Width * fraction)) };
+            {
+                var target = targets[i];
+                int width = Math.Max(1, (int)Math.Floor(target.Width * fraction));
+                targets[i] = target with { Width = width, FrameWidth = Math.Min(target.Width, width + innerEdge) };
+            }
         }
         return targets;
     }
@@ -84,14 +131,46 @@ internal static partial class IntentLayoutPlanner
     // move on the next step. Only complete candidates that pass TaskSafe reach the native layer.
     private static void AddAttentionLayouts(List<Candidate> candidates, VisibleWindow[] group, RectI[] original,
         AttentionTarget[] targets, RectI area, WindowSnapshot[] obstacles, int gap, int[] order, SmartTidyStrength strength,
-        Func<Candidate, TaskCostBreakdown> score)
+        TaskLayoutContext context, Func<Candidate, TaskCostBreakdown> score)
     {
         int main = Array.FindIndex(targets, t => t.Role == AttentionRole.Main);
         var budget = strength switch { SmartTidyStrength.Gentle => 2, SmartTidyStrength.Balanced => 4, _ => 6 };
         var steps = order.OrderBy(i => targets[i].Role)
             .ThenBy(i => Math.Abs(CenterX(original[i]) - CenterX(original[main])))
             .Take(budget).ToArray();
+        // Compare complete left/right arrangements directly. An intermediate move toward the
+        // outside edge can temporarily worsen overlap and otherwise get pruned from the beam.
+        int reference = Array.FindIndex(targets, t => t.Role == AttentionRole.Reference);
+        if (reference >= 0 && targets[main].Movable && targets[reference].Movable &&
+            strength != SmartTidyStrength.Gentle)
+        {
+            var pair = new[] { main, reference }.OrderBy(i => CenterX(original[i])).ToArray();
+            foreach (bool shareEdge in new[] { false, true })
+            {
+                var rects = original.ToArray();
+                for (int side = 0; side < pair.Length; side++)
+                {
+                    int i = pair[side];
+                    var t = targets[i];
+                    int width = t.Resizable ? Math.Max(t.Width, shareEdge ? t.FrameWidth : 0) : original[i].Width;
+                    int height = t.Resizable ? (t.LearnedHeight ? t.Height : Math.Max(original[i].Height, t.Height)) : original[i].Height;
+                    if (width > area.Width || height > area.Height) continue;
+                    rects[i] = new(side == 0 ? area.Left : area.Right - width,
+                        Math.Clamp(original[i].Top, area.Top, area.Bottom - height), width, height);
+                }
+                candidates.Add(new("attention-layout", rects, order));
+            }
+        }
         var frontier = new List<Candidate> { new("attention-layout", original, order) };
+        int anchored = Array.FindIndex(group, v => v.Window.Handle == context.GestureAnchor);
+        if (anchored >= 0 && context.GestureTarget is { } endpoint)
+        {
+            var rects = original.ToArray();
+            rects[anchored] = endpoint;
+            var placement = new Candidate("attention-layout", rects, order);
+            candidates.Add(placement);
+            frontier.Add(placement);
+        }
         foreach (int i in steps)
         {
             var t = targets[i];
@@ -161,6 +240,8 @@ internal static partial class IntentLayoutPlanner
                 yield return Place(a.Left + (a.Width - size.Width) / 2, a.Top + (a.Height - size.Height) / 2);
                 if (i == main)
                 {
+                    if (target.RestingCenter is double center)
+                        yield return Place((int)Math.Round(center - size.Width / 2d), a.Top);
                     var covers = obstacles.Where(w => w.ZOrder < group[i].Window.ZOrder)
                         .Select(w => w.VisualRect).ToArray();
                     if (covers.Length > 0)

@@ -4,6 +4,7 @@ using NeatWin.Core;
 using NeatWin.Reference;
 
 var area = new RectI(0, 0, 1920, 1040);
+AttentionWorkspaceChecks.Run(Check);
 var home = new RectI(560, 100, 810, 700);
 WindowSnapshot Window(int id, RectI rect) => new(id, rect, rect, area, 1, default, true, id == 1, true, id - 1, 96, (uint)id);
 WindowSnapshot[] windows = [Window(1, home), Window(2, home with { X = 600 })];
@@ -12,6 +13,22 @@ void Check(bool condition, string description)
 {
     if (!condition) throw new InvalidOperationException(description);
     Console.WriteLine("PASS " + description);
+}
+
+{
+    var scheduler = new AutomaticLayoutScheduler();
+    scheduler.Reset(AutomaticLayoutMode.AutoFullAssist, windows, 0);
+    scheduler.RequestCurrent(10);
+    Check(scheduler.Observe(windows, 500, busy: false, desktopFocused: true) is null && !scheduler.HasPending,
+        "focusing the desktop cancels queued app layout even with the mouse released");
+    var returned = windows.Select(w => w with { IsForeground = w.Handle == 2 }).ToArray();
+    scheduler.Observe(returned, 700, busy: true);
+    var held = scheduler.Observe(returned, 3000, busy: true);
+    var justReleased = scheduler.Observe(returned, 3010, busy: false);
+    var settled = scheduler.Observe(returned, 3550, busy: false);
+    Check(held is null && justReleased is null && settled?.Trigger == LayoutTrigger.WorkspaceChange &&
+        scheduler.Observe(returned, 5000, false) is null,
+        "returning from desktop during a file drag waits for drop and settling, then runs one fresh pass");
 }
 
 var rect = new RectI(0, 0, 400, 400);
@@ -31,6 +48,56 @@ Check(focus == new LayoutFocus(1, 2, 2), "switching back identifies the main and
 history.Retire(2);
 Check(history.Resolve(windows, 3200).Companion == 0, "destroyed handles lose their history");
 
+{
+    Check(WindowUseRoles.Identify("msedge.exe", "Chrome_WidgetWin_1") == WindowUseRole.Browser &&
+        WindowUseRoles.Identify("client.exe", "Chrome_WidgetWin_1") == WindowUseRole.Unknown &&
+        WindowUseRoles.Identify("explorer.exe", "CabinetWClass") == WindowUseRole.FileManager &&
+        WindowUseRoles.Identify("explorer.exe", "Progman") == WindowUseRole.Unknown &&
+        WindowUseRoles.Identify("typora.exe", "#32770") == WindowUseRole.Unknown,
+        "common application evidence distinguishes browser, embedded Chromium, files and shell dialogs");
+    var work = new RectI(0, 0, 2560, 1380);
+    var note = Window(1, new(830, 433, 1185, 841)) with { WorkArea = work, Dpi = 120 };
+    var sourceWindow = Window(2, new(0, 95, 1462, 1114)) with { WorkArea = work, Dpi = 120 };
+    var noted = WindowUseRoles.Bind([note, sourceWindow], [], new(1, 2, 1, "handoff"), null, null,
+        w => w.Handle == 1 ? WindowUseRoles.Identify("Notepad.exe", "Notepad") : WindowUseRole.Browser);
+    var notedContext = new TaskLayoutContext(WindowHints: noted);
+    var savedNote = RecordedTaskSignals.From(notedContext, new Dictionary<nint, int> { [1] = 1, [2] = 2 });
+    Check(savedNote.ApplyToReplay(new()).WindowHints?.Single(h => h.Handle == 1).Role == WindowUseRole.FloatingEditor &&
+        WindowUseRoles.Contextualize(WindowUseRole.Editor, note with { VisualRect = work }, [note, sourceWindow], null, null, null) == WindowUseRole.Editor &&
+        WindowUseRoles.Contextualize(WindowUseRole.Editor, note, [note, sourceWindow], null, null,
+            [new(1, 0, .5, .8, 0, -1, .8)]) == WindowUseRole.Editor,
+        "a compact foreground note stays a floating editor in replay while large or habitually wide documents remain regular editors");
+    var rearNote = note with { IsForeground = false, ZOrder = 5 };
+    var foregroundReader = sourceWindow with { IsForeground = true, ZOrder = 0 };
+    Check(WindowUseRoles.Contextualize(WindowUseRole.Editor, rearNote, [foregroundReader, rearNote], new(2, 0, 0),
+        new Dictionary<nint, LayoutAttention> { [1] = new(.49, 1, 0, 0, false) }, null) == WindowUseRole.FloatingEditor &&
+        WindowUseRoles.Contextualize(WindowUseRole.Editor, rearNote, [foregroundReader, rearNote], new(2, 0, 0),
+            new Dictionary<nint, LayoutAttention> { [1] = new(.10, 1, 0, 0, false) }, null) == WindowUseRole.Editor,
+        "a note keeps its editing footprint during a recent return to reference material");
+}
+{
+    using var memory = new MemoryStream();
+    using (var captureZip = new ZipArchive(memory, ZipArchiveMode.Create, leaveOpen: true))
+    {
+        using (var writer = new StreamWriter(captureZip.CreateEntry("layout-decisions.jsonl").Open()))
+            writer.WriteLine("""{"Session":"A","RequestId":"1"}""");
+        using var timeline = new StreamWriter(captureZip.CreateEntry("timeline.jsonl").Open());
+        timeline.WriteLine(JsonSerializer.Serialize(new { Start = now }));
+        timeline.WriteLine(JsonSerializer.Serialize(new { ElapsedMs = 0, Windows = new[] {
+            new { App = "msedge.exe", Class = "Chrome_WidgetWin_1", Frame = (RectI?)home, Dpi = (uint?)96,
+                Visible = true, Minimized = false, Cloaked = false, Foreground = true },
+            new { App = "", Class = "", Frame = (RectI?)null, Dpi = (uint?)null,
+                Visible = false, Minimized = false, Cloaked = false, Foreground = false } } }));
+    }
+    memory.Position = 0;
+    using var archive = new ZipArchive(memory, ZipArchiveMode.Read);
+    var roles = new SnapshotRoles(archive);
+    Check(roles.Enrich("A", "1", now, windows, new()).Any(h => h.Role == WindowUseRole.Browser) &&
+        roles.Enrich("B", "1", now, windows, new()).Length == 0 &&
+        roles.Enrich("A", "2", now, windows, new()).Length == 0 &&
+        roles.Enrich("A", "1", now.AddSeconds(-1), windows, new()).Length == 0,
+        "legacy role enrichment requires the same capture session and request, a prior sample and matching geometry");
+}
 var tracker = new ObservationIdentityTracker();
 WorkspaceFrame Frame(WindowSnapshot[] items) => tracker.Capture(items, [new(area, area)], w => "app-" + w.Handle);
 var start = Frame(windows);
@@ -38,11 +105,36 @@ var left = home with { X = 0 };
 var moved = Frame([windows[0] with { VisualRect = left }, windows[1]]);
 var gesture = new WindowAdjustmentObservation(now, "session", 1, home, left, area, area, 96, 900, [], "stable",
     3, start, moved, moved, "arrange-request");
+{
+    WorkspaceFrame SameBrowser(WorkspaceFrame f) => f with
+        { Windows = f.Windows.Select(w => w with { AppKey = "browser" }).ToArray() };
+    var shared = gesture with { StartContext = SameBrowser(start), EndContext = SameBrowser(moved),
+        SettledContext = SameBrowser(moved), AfterRequest = null };
+    var release = shared with { Outcome = "manual-release", SettledContext = null };
+    var firstVote = LayoutHabits.Observe(release, byInstance: true)!;
+    var repeat = firstVote with { Time = now.AddMinutes(3) };
+    LayoutHabit[] votes = [firstVote, repeat];
+    var live = LayoutHabits.Resolve(votes, windows[0], "1", "2", 2, now.AddMinutes(4), sessionOnly: true);
+    var mirror = LayoutHabits.Resolve(votes, windows[1], "2", "1", 1, now.AddMinutes(4), sessionOnly: true);
+    Check(LayoutHabits.Observe(shared) == null && firstVote is { App: "1", Partner: "2", Order: -1 } &&
+        live is { Order: -1, Confidence: >= .4 } && mirror is { Order: 1, Confidence: >= .4 },
+        "same-app documents learn separate session sides from deliberate releases, without polluting app-wide history");
+    Check(LayoutHabits.Observe(shared with { Outcome = "automation" }, byInstance: true) == null &&
+        LayoutHabits.Resolve(votes, windows[0], "1", null, 0, now.AddMinutes(4), sessionOnly: true) == null &&
+        LayoutHabits.Resolve(votes, windows[0], "1", "2", 2, now.AddHours(3), sessionOnly: true) == null &&
+        LayoutHabits.Resolve([firstVote, repeat with { Time = now.AddSeconds(25) }], windows[0], "1", "2", 2,
+            now.AddSeconds(30), sessionOnly: true) == null,
+        "assisted frames, rapid tweaks, absent partners and stale sessions cannot recreate a paired placement");
+}
 var edit = LayoutHabits.Observe(gesture);
 Check(edit is { Partner: "app-2", Order: -1, Corrected: true }, "a stable manual correction learns the left/right pair");
 Check(LayoutHabits.Observe(gesture with { Outcome = "automation" }) == null &&
     LayoutHabits.Observe(gesture with { SettledContext = null }) == null, "automated and legacy incomplete gestures are excluded");
 {
+    var assisted = gesture with { Outcome = "assisted-release", SettledContext = start };
+    var assistedVote = LayoutHabits.Observe(assisted);
+    Check(assistedVote == edit && LayoutHabits.Observe(assisted with { Outcome = "changed-after-release" }) == null,
+        "verified assistance learns the original hand-picked endpoint, never the solver's final rectangle");
     var chosen = left with { Height = area.Height / 2 };
     var settled = Frame([windows[0] with { VisualRect = chosen }, windows[1]]);
     var resize = LayoutHabits.Observe(gesture with { End = chosen, SettledContext = settled })!;
@@ -642,6 +734,32 @@ BehaviorTick(7600, [nextTask], dismissed: true);
 Check(BehaviorTick(8100, [helper with { Id = 72 }, nextTask with { Foreground = false }]).Fit?.Reopens == 1,
     "reopening the helper after an automatic dismissal is negative feedback");
 
+sequence.Reset();
+BehaviorTick(0, [helper]);
+BehaviorTick(2000, [helper with { Foreground = false }, nextTask]);
+BehaviorTick(3000, [helper, nextTask with { Foreground = false }]);
+BehaviorTick(4600, [helper with { Foreground = false }, nextTask]);
+Check(BehaviorTick(10000, [helper with { Foreground = false }, nextTask]).Dismiss == null,
+    "returning to the launcher invalidates the earlier fresh-process handoff");
+foreach (var action in new[] { WindowBehaviorAction.Minimize, WindowBehaviorAction.Close })
+{
+    var traySequence = new WindowBehaviorSequence(discoveredRule.Rule with { Action = action });
+    traySequence.Observe(0, BehaviorUtc(0), [helper], new Dictionary<int, BehaviorDeparture>(), fit, true, false);
+    traySequence.Observe(2000, BehaviorUtc(2000), [helper with { Foreground = false }, nextTask], new Dictionary<int, BehaviorDeparture>(), fit, true, false);
+    var disappearance = new Dictionary<int, BehaviorDeparture> { [helper.Id] = BehaviorDeparture.Hidden };
+    var trayResult = traySequence.Observe(6500, BehaviorUtc(6500), [nextTask], disappearance, fit, true, false);
+    Check(trayResult.Fit == null, $"a tray hide does not confirm an observed {action} action");
+}
+behaviorDiscovery.Reset();
+behaviorDiscovery.Observe(0, BehaviorUtc(0), [helper], new Dictionary<int, BehaviorDeparture>(), new HashSet<int>());
+behaviorDiscovery.Observe(2000, BehaviorUtc(2000), [helper with { Foreground = false }, nextTask],
+    new Dictionary<int, BehaviorDeparture>(), new HashSet<int>());
+behaviorDiscovery.Observe(5000, BehaviorUtc(5000), [nextTask],
+    new Dictionary<int, BehaviorDeparture> { [helper.Id] = BehaviorDeparture.Hidden }, new HashSet<int>());
+Check(behaviorDiscovery.Observe(16000, BehaviorUtc(16000), [nextTask],
+    new Dictionary<int, BehaviorDeparture>(), new HashSet<int>()).Count == 0,
+    "discovery records no inferred minimize or close example for a tray hide");
+
 var routine = new WindowBehaviorSequence(discoveredRule.Rule with { RequireNewProcess = false });
 var reopenedHelper = helper with { Id = 72 };
 BehaviorUpdate RoutineTick(long tick, BehaviorWindow[] current, Dictionary<int, BehaviorDeparture>? departures = null) =>
@@ -656,6 +774,31 @@ RoutineTick(14_000, [reopenedHelper, nextTask with { Foreground = false }]);
 RoutineTick(16_000, [reopenedHelper with { Foreground = false }, nextTask]);
 Check(RoutineTick(22_000, [reopenedHelper with { Foreground = false }, nextTask]).Dismiss is null,
     "reopening blocks repeated dismissal in the same task even with personalization disabled");
+
+{
+    var usage = new RecordedUsage();
+    Check(usage.Sample(1_000, 1, true) == null, "first usage sample establishes a boundary");
+    usage.Foreground(2_000, 2);
+    usage.Input(2);
+    usage.Foreground(2_400, 1);
+    var interval = usage.Sample(6_000, 1, true)!;
+    Check(interval.Foreground.SequenceEqual([new(1, 0, 1000), new(2, 1000, 400), new(1, 1400, 3600)]) &&
+        interval.PointerActions is [{ Id: 2, Count: 1 }], "usage intervals retain sub-sample round trips and aggregate real pointer actions");
+    var oldFrame = Frame([Window(1, home), Window(2, home with { X = 0 })]);
+    var recordedIds = oldFrame.Windows.Select(w => w.Id).ToArray();
+    var shared = RecordedUsage.CoUse(new([new(recordedIds[0], 0, 5000)], null), oldFrame, oldFrame);
+    Check(shared is [{ ForegroundMsWithPeerVisibleAtBothEnds: 5000 }] &&
+        RecordedUsage.CoUse(interval, oldFrame with { Truncated = true }, oldFrame) == null,
+        "co-use joins stable visible peers and excludes truncated endpoint evidence");
+    Check(usage.Sample(11_000, 2, true) == null && usage.Sample(22_000, 2, true) == null &&
+        usage.Sample(26_000, 2, false)?.PointerActions == null,
+        "missing foreground events, sampling gaps, and unavailable input keep unknown evidence distinct from zero");
+    var targets = new[] { Window(1, new(0, 0, 400, 400)), Window(2, new(0, 0, 800, 400)) };
+    var video = new VideoBlackBarHint(2, VideoBlackBarOrientation.Horizontal, 2, new(0, 0, 800, 400), .95);
+    var data = RecordedTaskSignals.From(new(VideoHint: video), targets.ToDictionary(w => w.Handle, w => (int)w.Handle), targets);
+    Check(data.Video?.Exposure?.Visible == .5 && data.ApplyToReplay(new()).VideoHint == video,
+        "record and replay the detected video viewport independently of full-window exposure");
+}
 
 // A dormant window lies above a still-relevant reference, while the main window stays active.
 {
@@ -706,6 +849,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
         if (overrideRules?.IsValid() != true) throw new InvalidDataException("Invalid candidate layout rules.");
     }
     using var archive = ZipFile.OpenRead(path);
+    var snapshotRoles = new SnapshotRoles(archive);
     var corrections = new Dictionary<(string Session, string Request), List<WindowAdjustmentObservation>>();
     foreach (var adjEntry in archive.Entries.Where(e => e.Name.StartsWith("adjustments-") && e.Name.EndsWith(".jsonl")))
     {
@@ -756,6 +900,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                 var slotPrefs = activeRules.BindSlots(keyed);
                 var mergedPrefs = CompiledLayoutRules.ApplySlots(ctx.Placement ?? [], slotPrefs);
                 ctx = ctx with { Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities), Placement = mergedPrefs };
+                ctx = ctx with { WindowHints = snapshotRoles.Enrich(run.Session, run.RequestId, frame.Time, desktop, ctx) };
                 var fullDesktop = run.FullDesktop ?? explicitRun;
                 var workingSet = fullDesktop ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);
                 var plan = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : LayoutRoute.Smart,
@@ -788,6 +933,8 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                 }
                 Console.WriteLine(JsonSerializer.Serialize(new { run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
                     PostArrangeRegret = runRegret, PostArrangeVerticalError = verticalError, ProtectedRegionsPreserved = regionsPreserved,
+                    Roles = (ctx.WindowHints ?? []).Where(h => h.Role != WindowUseRole.Unknown)
+                        .Select(h => new { Id = (int)h.Handle, Role = h.Role.ToString() }),
                     Moves = plan.Moves.Select(m => new { Id = (int)m.Window.Handle, Before = m.Window.VisualRect, After = m.TargetVisualRect }),
                     Selected = plan.Groups.Select(g => g.Selected) }));
             }

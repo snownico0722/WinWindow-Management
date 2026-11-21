@@ -231,7 +231,7 @@ public sealed partial class WindowManager
         return false;
     }
 
-    private static bool IsSystemSurface(nint hwnd)
+    internal static bool IsSystemSurface(nint hwnd)
     {
         var className = new StringBuilder(256);
         _ = NativeMethods.GetClassName(hwnd, className, className.Capacity);
