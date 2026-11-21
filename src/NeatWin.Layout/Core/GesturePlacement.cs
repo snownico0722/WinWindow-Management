@@ -31,6 +31,25 @@ internal static class GesturePlacement
         if (left || right || center)
         {
             int width = a.Width, height = a.Height;
+            if ((left || right) && Math.Abs(dx) >= Math.Max(96 * scale, area.Width * .10) &&
+                context.Focus is { Companion: 0 } focus && focus.Main == window.Handle && context.UseWorkingPairs &&
+                window.Owner == 0 && !window.IsTopmost && context.WindowHints?.Any(h => h.Handle == window.Handle &&
+                    (h.PassiveVisual || h.FloatingAffinity >= .5 || WindowUseRoles.IsFloating(h.Role))) != true &&
+                focus.Evidence is not ("handoff" or "navigation-return") && focus.NavigationAncestors is not { Length: > 0 } &&
+                context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) != true && context.RulePairs is not { Length: > 0 })
+            {
+                // The release supplies task evidence for this solve only. Ignore utility strips
+                // and require an unambiguous second reading surface on the opposite side.
+                var peers = visible.Where(v => v.Window.Handle != window.Handle && v.Window.MonitorHandle == window.MonitorHandle &&
+                    v.Window.WorkArea == area && v.Window.IsManageable && !v.Window.IsTopmost && v.Window.Owner == 0 &&
+                    v.VisibleRatio >= .45 && v.LargestVisibleFragmentArea >= area.Area * .08 &&
+                    context.WindowHints?.Any(h => h.Handle == v.Window.Handle && (h.Anchor || h.PassiveVisual || h.MediaCompanion ||
+                        h.FloatingAffinity >= .5 || WindowUseRoles.IsFloating(h.Role))) != true).Take(2).ToArray();
+                if (peers is [var peer] && a.VerticalOverlapRatio(peer.Window.VisualRect) >= .5 &&
+                    (left ? peer.Window.VisualRect.Left + peer.Window.VisualRect.Width / 2 > centerX :
+                        peer.Window.VisualRect.Left + peer.Window.VisualRect.Width / 2 < centerX))
+                    context = context with { Focus = focus with { Companion = peer.Window.Handle, Evidence = "gesture-side-pair" } };
+            }
             var adjacent = visible.Where(v => v.Window.Handle != window.Handle && v.Window.MonitorHandle == window.MonitorHandle &&
                 (context.Focus?.Companion == v.Window.Handle || context.HasRecentInput(v.Window.Handle)))
                 .Any(v => a.VerticalOverlapRatio(v.Window.VisualRect) >= .5);

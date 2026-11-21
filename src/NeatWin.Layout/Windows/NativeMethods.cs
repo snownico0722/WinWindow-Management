@@ -5,6 +5,13 @@ namespace NeatWin.Windows;
 
 internal static class NativeMethods
 {
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsChild(nint parent, nint child);
+
+    [DllImport("oleacc.dll")]
+    internal static extern int AccessibleObjectFromWindow(nint window, uint objectId, ref Guid id,
+        [MarshalAs(UnmanagedType.Interface)] out Accessibility.IAccessible? accessible);
+
     internal const int GwlStyle = -16;
     internal const int GwlExStyle = -20;
     internal const long WsChild = 0x40000000L;

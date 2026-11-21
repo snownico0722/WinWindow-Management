@@ -343,6 +343,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             TaskLayoutContext? recordedContext = null, reclaimContext = null;
             IntentLayoutPlan? baseline = null;
             Func<IntentLayoutPlan>? diagnosticBaseline = null;
+            ForegroundReading? initialReading = null;
             bool reusedPreview = false;
             IntentLayoutPlan? scored = null;
             if (tiling)
@@ -379,11 +380,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     _workspaceMonitor.RequestCurrent();
                     return;
                 }
-                bool firstPlacement = trigger == "automatic-workspace" && front != null &&
+                bool firstPlacement = trigger == "automatic-workspace" && front != null && reading.Root == front.Handle && reading.LastInput.HasValue &&
                     _focus.TakeInitialPlacement(front, focus, Environment.TickCount64, reading.LastInput);
                 liveHints = WindowUseRoles.Bind(snapshot, liveHints, focus, attention, placements,
                     window => window.Handle == front?.Handle ? frontRole : _recorder.SemanticRole(window, reading), reading.Caret ? reading.Root : 0, activities,
                     reading.Root, firstPlacement ? front!.Handle : 0, _taskPreferences.Profile);
+                if (liveHints.Any(h => h.InitialTextPlacement)) initialReading = reading;
                 if (!_lastPairs.SequenceEqual(pairs) || !_lastFloors.SequenceEqual(floors) ||
                     !_lastPlacements.SequenceEqual(placements) || !ReferenceEquals(rules, _lastRules) ||
                     focus.Main != _lastFocus?.Main || focus.Companion != _lastFocus?.Companion || focus.Evidence != _lastFocus?.Evidence ||
@@ -399,7 +401,6 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 {
                     PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill,
                     Focus = focus,
-                    InitialPlacementInputTick = liveHints.Any(h => h.InitialTextPlacement) ? reading.LastInput : null,
                     AllowGestureAssist = trigger == "automatic-gesture",
                     NavigationObservedAt = focus.Navigation is { Length: > 0 } ? focusObservedAt : null,
                     Attention = attention,
@@ -457,7 +458,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             if (_stopping.IsCancellationRequested) return;
             var proposed = detailed;
             var releaseInput = trigger == "automatic-gesture" ? recordedContext?.RecentGesture : null;
-            var application = _windowManager.ApplyLayout(detailed, showActivity ? null : foreground, reclaimContext, releaseInput?.WindowHandle ?? 0);
+            var application = _windowManager.ApplyLayout(detailed, showActivity ? null : foreground, reclaimContext, releaseInput?.WindowHandle ?? 0, initialReading);
             if (application.Interrupted && !showActivity) _workspaceMonitor.RequestCurrent();
             detailed = application.Plan; plan = detailed.Moves;
             _verticalFillManager.Track(plan, smart && _smartBehaviorOptions.PreferReversibleVerticalFill);

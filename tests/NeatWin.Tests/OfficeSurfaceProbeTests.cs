@@ -7,6 +7,41 @@ namespace NeatWin.Tests;
 public sealed class OfficeSurfaceProbeTests
 {
     [Fact]
+    public void StalledProviderLeavesOneSlotForAnotherWindowAndCannotPublishAfterRetirement()
+    {
+        var queries = new List<TaskCompletionSource<FocusedOfficeSurface>>();
+        var probe = new OfficeSurfaceProbe(_ =>
+        {
+            var work = new TaskCompletionSource<FocusedOfficeSurface>();
+            queries.Add(work);
+            return work.Task;
+        });
+        ForegroundReading first = new(1, 2, 10, false, 55), second = new(3, 4, 20, false, 65);
+        probe.Sample(first, 100);
+        probe.Sample(second, 200);
+        Assert.Single(queries);
+        probe.Sample(second, 1700);
+        probe.Sample(second with { Root = 7 }, 3500);
+        Assert.Equal(2, queries.Count);
+        queries[1].SetResult(FocusedOfficeSurface.Grid);
+        Assert.Equal(FocusedOfficeSurface.Grid, probe.Sample(second, 3600));
+        probe.Retire(first.Root);
+        queries[0].SetResult(FocusedOfficeSurface.Canvas);
+        Assert.Equal(FocusedOfficeSurface.Unknown, probe.Sample(first, 3720));
+    }
+
+    [Fact]
+    public void OnlyAnUnchangedInitialInputSurfaceAllowsFirstPlacement()
+    {
+        ForegroundReading start = new(1, 2, 3, true, 42);
+        Assert.True(start.AllowsInitialPlacement(start));
+        Assert.False(start.AllowsInitialPlacement(start with { LastInput = 43 }));
+        Assert.False(start.AllowsInitialPlacement(start with { Focus = 5 }));
+        Assert.False((start with { Caret = false }).AllowsInitialPlacement(start));
+        Assert.False(start.AllowsInitialPlacement(start with { LastInput = null }));
+    }
+
+    [Fact]
     public void SparseSamplesReuseTheSameInputTargetButNeverCarryItsSurfaceAcrossInputOrRetirement()
     {
         var queries = new List<TaskCompletionSource<FocusedOfficeSurface>>();

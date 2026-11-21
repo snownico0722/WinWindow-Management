@@ -71,8 +71,6 @@ internal static class DesktopSnapshot
             bool lookbackEnabled = capture?.LookbackEnabled == true;
             int pastRequests = pastPlans.Select(d => d.Observation.RequestId).Distinct().Count();
             int liveRequests = livePlans.Select(d => d.Observation.RequestId).Distinct().Count();
-            var fileName = $"WinWindow-snapshot-{start:yyyyMMdd-HHmmss-fff}.zip";
-            var output = Path.Combine(directory, fileName);
             var temporary = Path.Combine(directory, "." + Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
@@ -104,7 +102,9 @@ internal static class DesktopSnapshot
                     }
                     using (var writer = Writer(zip, "timeline.jsonl"))
                     {
-                        writer.WriteLine(JsonSerializer.Serialize(new { Version = 2, Start = start, PreviousForeground = Handle(previousForeground), Mode = mode, Displays = displays,
+                        writer.WriteLine(JsonSerializer.Serialize(new { Version = 2, SmartLayoutModel = LayoutDispatch.ModelVersion(TidyAlgorithmMode.Smart),
+                            ClassicLayoutModel = LayoutDispatch.ModelVersion(TidyAlgorithmMode.Classic), LearningModel = PlacementPreferences.ModelVersion,
+                            Start = start, PreviousForeground = Handle(previousForeground), Mode = mode, Displays = displays,
                             LookbackEnabled = lookbackEnabled, LookbackMilliseconds = DesktopSnapshotHistory.LookbackMilliseconds,
                             SamplesBeforeClick = past.Length, LayoutRequestsBeforeClick = pastRequests, LayoutRequestsAfterClick = liveRequests }));
                         foreach (var frame in frames) writer.WriteLine(JsonSerializer.Serialize(frame));
@@ -124,11 +124,41 @@ internal static class DesktopSnapshot
                     using (var writer = Writer(zip, "layout-decisions.jsonl"))
                         foreach (var plan in plans) writer.WriteLine(JsonSerializer.Serialize(plan));
                 }
-                File.Move(temporary, output);
-                return output;
+                cancellation.ThrowIfCancellationRequested();
+                return PublishNumbered(temporary, directory);
             }
             finally { File.Delete(temporary); }
         }, cancellation);
+
+    internal static string PublishNumbered(string temporary, string directory)
+    {
+        for (int edition = 1; ; edition = checked(edition + 1))
+        {
+            var output = Path.Combine(directory, $"第{EditionNumber(edition)}版.zip");
+            if (File.Exists(output) || Directory.Exists(output)) continue;
+            try { File.Move(temporary, output); return output; }
+            catch (IOException) when (File.Exists(output) || Directory.Exists(output)) { }
+        }
+    }
+
+    private static string EditionNumber(int number)
+    {
+        if (number >= 10000) return number.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        const string digits = "零一二三四五六七八九";
+        string[] units = ["", "十", "百", "千"];
+        var text = new StringBuilder();
+        bool zero = false;
+        for (int place = 3, divisor = 1000; place >= 0; place--, divisor /= 10)
+        {
+            int digit = number / divisor % 10;
+            if (digit == 0) { zero |= text.Length > 0; continue; }
+            if (zero) text.Append(digits[0]);
+            if (place != 1 || digit != 1 || text.Length > 0) text.Append(digits[digit]);
+            text.Append(units[place]);
+            zero = false;
+        }
+        return text.ToString();
+    }
 
     private static StreamWriter Writer(ZipArchive archive, string entry) =>
         new(archive.CreateEntry(entry, CompressionLevel.Optimal).Open(), new UTF8Encoding(false));

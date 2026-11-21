@@ -36,14 +36,10 @@
      </Button.ContextMenu>
      <Grid VerticalAlignment="Center">
       <Grid.ColumnDefinitions>
-       <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+       <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
       </Grid.ColumnDefinitions>
       <Image Width="22" Height="22" Source="{Binding Icon, RelativeSource={RelativeSource AncestorType=Window}}" RenderOptions.BitmapScalingMode="HighQuality"/>
       <TextBlock Grid.Column="1" TextTrimming="CharacterEllipsis" x:Name="BrandTitleText" Text="WinWindow" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="8,0,0,0"/>
-      <Border Grid.Column="2" x:Name="BrandCollapseHint" Background="{DynamicResource Surface}" CornerRadius="4" Padding="4,2" Margin="7,0,0,0" VerticalAlignment="Center">
-       <Path x:Name="BrandHintIcon" Data="M2,7.5 L7.5,2 M7.5,2 L3.5,2 M7.5,2 L7.5,6"
-         Stroke="{DynamicResource Muted}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="9" Height="9"/>
-      </Border>
      </Grid>
     </Button>
 
@@ -207,6 +203,9 @@
               <Border Background="{DynamicResource Line}" Height="1" Width="94"/>
             </ListBoxItem>
             <ListBoxItem Tag="LayoutSection" Content="{DynamicResource Text.DesktopLayout}"/>
+            <ListBoxItem Tag="ViewingSection" AutomationProperties.Name="{DynamicResource Text.AdvancedViewing}">
+              <TextBlock Text="{DynamicResource Text.AdvancedViewing}" TextWrapping="Wrap"/>
+            </ListBoxItem>
             <ListBoxItem Tag="DataSection" Content="{DynamicResource Text.DataAndRecords}"/>
             <ListBoxItem Tag="PlacementSection" Content="{DynamicResource Text.PlacementLearning}"/>
             <ListBoxItem Tag="BehaviorSection" Content="{DynamicResource Text.BehaviorLearning}"/>
@@ -237,12 +236,53 @@
             <CheckBox x:Name="LockCursorPosBox" Content="{DynamicResource Text.LockBackgroundCursor}" Click="Settings_Click" ToolTip="{DynamicResource Text.LockBackgroundCursorHint}"/>
           </StackPanel>
         </ScrollViewer>
+        <ScrollViewer x:Name="ViewingSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+          <StackPanel Margin="18,0,10,14">
+            <TextBlock Text="{DynamicResource Text.AdvancedViewing}" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
+            <CheckBox x:Name="UsefulResize" Content="{DynamicResource Text.AllowResize}" Click="LayoutPreference_Click"/>
+            <CheckBox x:Name="ProtectEdges" Content="{DynamicResource Text.ProtectEdges}" Click="LayoutPreference_Click"/>
+            <CheckBox x:Name="AllowBleed" Content="{DynamicResource Text.AllowBleed}" Click="LayoutPreference_Click"/>
+            <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+              <TextBox x:Name="BleedAmount" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="0,48" AutomationProperties.Name="{DynamicResource Text.MaxBleed}" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+              <TextBlock Text="{DynamicResource Text.MaxBleed}" VerticalAlignment="Center"/>
+            </DockPanel>
+            <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+              <TextBox x:Name="ComfortWidth" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="480,2400" AutomationProperties.Name="{DynamicResource Text.ComfortWidth}" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+              <TextBlock Text="{DynamicResource Text.ComfortWidth}" VerticalAlignment="Center"/>
+            </DockPanel>
+            <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+              <TextBox x:Name="ComfortHeight" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="320,1600" AutomationProperties.Name="{DynamicResource Text.ComfortHeight}" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+              <TextBlock Text="{DynamicResource Text.ComfortHeight}" VerticalAlignment="Center"/>
+            </DockPanel>
+            <CheckBox x:Name="Calibrate" Content="{DynamicResource Text.Calibrate}" Click="LayoutPreference_Click"/>
+            <StackPanel x:Name="CalibrationFields">
+              <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                <TextBox x:Name="PhysicalWidth" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="150,4000" AutomationProperties.Name="{DynamicResource Text.DisplayWidth}" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                <TextBlock Text="{DynamicResource Text.DisplayWidth}" VerticalAlignment="Center"/>
+              </DockPanel>
+              <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
+                <TextBox x:Name="ViewDistance" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="200,3000" AutomationProperties.Name="{DynamicResource Text.ViewingDistance}" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
+                <TextBlock Text="{DynamicResource Text.ViewingDistance}" VerticalAlignment="Center"/>
+              </DockPanel>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
         <ScrollViewer x:Name="LayoutSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
           <StackPanel Margin="18,0,10,14">
             <TextBlock Text="{DynamicResource Text.LayoutAlgorithm}" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
             <WrapPanel x:Name="AlgorithmChoices" Margin="0,0,0,6">
               <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AlgorithmChoices" Content="{DynamicResource Text.Smart}" Tag="Smart" Click="LayoutPreference_Click"/>
               <RadioButton Style="{StaticResource SettingsChoice}" GroupName="AlgorithmChoices" Content="{DynamicResource Text.Classic}" Tag="Classic" Click="LayoutPreference_Click"/>
+            </WrapPanel>
+            <WrapPanel Margin="0,0,0,4" TextElement.Foreground="{DynamicResource Muted}">
+              <StackPanel Orientation="Horizontal" Margin="0,0,14,0">
+                <TextBlock Text="{DynamicResource Text.LayoutModelVersion}" Margin="0,0,5,0"/>
+                <TextBlock x:Name="LayoutModelNumber"/>
+              </StackPanel>
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="{DynamicResource Text.LearningModelVersion}" Margin="0,0,5,0"/>
+                <TextBlock x:Name="LearningModelNumber"/>
+              </StackPanel>
             </WrapPanel>
             <StackPanel x:Name="SmartOptions">
               <TextBlock Text="{DynamicResource Text.LayoutStrength}" Style="{StaticResource SectionTitle}" Margin="0,12,0,6"/>
@@ -257,36 +297,6 @@
                 <RadioButton Style="{StaticResource SettingsChoice}" GroupName="VideoChoices" Content="{DynamicResource Text.PreferShrink}" Tag="Shrink" Click="LayoutPreference_Click"/>
                 <RadioButton Style="{StaticResource SettingsChoice}" GroupName="VideoChoices" Content="{DynamicResource Text.PreferEnlarge}" Tag="Expand" Click="LayoutPreference_Click"/>
               </WrapPanel>
-              <Expander Header="{DynamicResource Text.AdvancedViewing}" Foreground="{DynamicResource Ink}" Margin="0,6">
-                <StackPanel Margin="10,6,0,0">
-                  <CheckBox x:Name="UsefulResize" Content="{DynamicResource Text.AllowResize}" Click="LayoutPreference_Click"/>
-                  <CheckBox x:Name="ProtectEdges" Content="{DynamicResource Text.ProtectEdges}" Click="LayoutPreference_Click"/>
-                  <CheckBox x:Name="AllowBleed" Content="{DynamicResource Text.AllowBleed}" Click="LayoutPreference_Click"/>
-                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
-                    <TextBox x:Name="BleedAmount" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="0,48" AutomationProperties.Name="{DynamicResource Text.MaxBleed}" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
-                    <TextBlock Text="{DynamicResource Text.MaxBleed}" VerticalAlignment="Center"/>
-                  </DockPanel>
-                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
-                    <TextBox x:Name="ComfortWidth" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="480,2400" AutomationProperties.Name="{DynamicResource Text.ComfortWidth}" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
-                    <TextBlock Text="{DynamicResource Text.ComfortWidth}" VerticalAlignment="Center"/>
-                  </DockPanel>
-                  <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
-                    <TextBox x:Name="ComfortHeight" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="320,1600" AutomationProperties.Name="{DynamicResource Text.ComfortHeight}" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
-                    <TextBlock Text="{DynamicResource Text.ComfortHeight}" VerticalAlignment="Center"/>
-                  </DockPanel>
-                  <CheckBox x:Name="Calibrate" Content="{DynamicResource Text.Calibrate}" Click="LayoutPreference_Click"/>
-                  <StackPanel x:Name="CalibrationFields">
-                    <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
-                      <TextBox x:Name="PhysicalWidth" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="150,4000" AutomationProperties.Name="{DynamicResource Text.DisplayWidth}" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
-                      <TextBlock Text="{DynamicResource Text.DisplayWidth}" VerticalAlignment="Center"/>
-                    </DockPanel>
-                    <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320">
-                      <TextBox x:Name="ViewDistance" DockPanel.Dock="Right" Width="76" MinHeight="26" Padding="5,3" Tag="200,3000" AutomationProperties.Name="{DynamicResource Text.ViewingDistance}" LostKeyboardFocus="LayoutNumber_LostFocus" KeyDown="LayoutNumber_Key"/>
-                      <TextBlock Text="{DynamicResource Text.ViewingDistance}" VerticalAlignment="Center"/>
-                    </DockPanel>
-                  </StackPanel>
-                </StackPanel>
-              </Expander>
             </StackPanel>
             <StackPanel x:Name="ClassicOptions">
               <Expander Header="{DynamicResource Text.AdvancedSnap}" Foreground="{DynamicResource Ink}" Margin="0,6" IsExpanded="False">

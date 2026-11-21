@@ -88,6 +88,28 @@ internal sealed class IdleWindowReclaim
                 best = possible;
             }
         }
+        if (best != null || strength == SmartTidyStrength.Gentle || monitor == null) return best;
+
+        // An old window behind the task can leave a narrow, unusable strip. Count pixels
+        // that actually return to the desktop; hiding one strip to reveal another gains nothing.
+        var local = projected.Where(w => w.MonitorHandle == monitor).ToArray();
+        if (local.Count(w => w.IsManageable) < 4) return null;
+        var taskOrder = local.Where(w => w.Handle == main || w.Handle == peer || context.HasRecentInput(w.Handle)).Max(w => w.ZOrder);
+        long idleLimit = Math.Max((long)TimeSpan.FromMinutes(15).TotalMilliseconds, (long)age.TotalMilliseconds * 3);
+        double bestCleared = 0;
+        foreach (var w in local.Where(w => w.ZOrder > taskOrder && idle.Contains(w.Handle)))
+        {
+            if (w.Owner != 0 || tick - _lastUse[identity(w)] < idleLimit || w.WorkArea.IsEmpty) continue;
+            var front = local.Where(o => o.ZOrder < w.ZOrder).Select(o => o.VisualRect);
+            var view = IntentLayoutPlanner.ScreenExposure(w.VisualRect, front, w.WorkArea, w.Dpi);
+            if (view.Visible is <= 0 or > .18 || view.CenterVisible > .08) continue;
+            var others = local.Where(o => o.Handle != w.Handle).Select(o => o.VisualRect);
+            var cleared = IntentLayoutPlanner.ScreenExposure(w.VisualRect, others, w.WorkArea, w.Dpi).Visible *
+                w.VisualRect.Area / w.WorkArea.Area;
+            if (cleared < .003 || cleared <= bestCleared) continue;
+            bestCleared = cleared;
+            best = w;
+        }
         return best;
     }
 

@@ -611,10 +611,11 @@ public partial class MainWindow : Window
             _expandedBounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
             _expandedState = WindowState == WindowState.Maximized ? WindowState.Maximized : WindowState.Normal;
             _compact = true; WindowState = WindowState.Normal;
-            MinWidth = 240; MinHeight = 46; Width = 240; Height = 46;
+            MinWidth = 188; MinHeight = 36; Width = MinWidth; Height = MinHeight;
+            HeaderRow.Height = new GridLength(34);
+            Header.Margin = new Thickness(4, 0, 4, 0);
             Workspace.Visibility = HeaderActions.Visibility = Visibility.Collapsed;
             CompactActions.Visibility = Visibility.Visible;
-            BrandCollapseHint.Visibility = Visibility.Collapsed;
             BrandArea.SetResourceReference(ToolTipProperty, "Text.ExpandHint");
             ShellFrame.CornerRadius = new CornerRadius(14);
             ResizeMode = ResizeMode.NoResize; DismissStatus();
@@ -628,7 +629,8 @@ public partial class MainWindow : Window
             Height = Math.Max(MinHeight, _expandedBounds.Height);
             Workspace.Visibility = HeaderActions.Visibility = Visibility.Visible;
             CompactActions.Visibility = Visibility.Collapsed;
-            BrandCollapseHint.Visibility = Visibility.Visible;
+            HeaderRow.Height = new GridLength(44);
+            Header.Margin = new Thickness(10, 0, 8, 0);
             BrandArea.SetResourceReference(ToolTipProperty, "Text.CollapseHint");
             ShellFrame.CornerRadius = new CornerRadius(12);
             WindowState = _expandedState;

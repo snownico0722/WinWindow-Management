@@ -376,7 +376,7 @@ internal static class SmokeTests
             Capture(shell, Path.Combine(output, "workbench-dark.png"));
             ((Button)shell.FindName("BrandArea")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Task.Delay(100);
             nint own = new WindowInteropHelper(shell).Handle;
-            Assert(shell.Width == 240 && Native.IsTopmost(own), "compact mode pins the native HWND, independently of WPF Topmost");
+            Assert(shell.Width == 188 && shell.Height == 36 && Native.IsTopmost(own), "compact mode pins the native HWND, independently of WPF Topmost");
             shell.UpdateLayout();
             var compactPick = (Button)shell.FindName("CompactPickerButton");
             var compactArrange = (Button)shell.FindName("CompactArrangeButton");
@@ -415,6 +415,10 @@ internal static class SmokeTests
             var layoutSettings = new NeatWin.App.SettingsStore(Path.Combine(store.DirectoryPath, "Layout", "settings.json"));
             await WaitAsync("layout edit persists through unified UI", () => layoutSettings.LoadTidyOptions().SmartStrength == NeatWin.Core.SmartTidyStrength.Assertive);
             shell.UpdateLayout(); Capture(shell, Path.Combine(output, "settings-layout.png"));
+            Assert(((TextBlock)shell.FindName("LayoutModelNumber")).Text == NeatWin.Core.LayoutDispatch.ModelVersion(layoutSettings.LoadTidyOptions().AlgorithmMode) &&
+                ((TextBlock)shell.FindName("LearningModelNumber")).Text == NeatWin.Core.PlacementPreferences.ModelVersion, "desktop settings show both runtime model versions");
+            OpenSection("ViewingSection");
+            await WaitAsync("calibration has a separate working page", () => ((CheckBox)shell.FindName("Calibrate")).IsVisible && !layoutPage.IsVisible);
             OpenSection("DataSection");
             await WaitAsync("recorder shares the same settings window", () => ((CheckBox)shell.FindName("RecordSwitch")).IsVisible && !layoutPage.IsVisible);
             var lookback = (CheckBox)shell.FindName("SnapshotLookbackSwitch");
@@ -440,8 +444,12 @@ internal static class SmokeTests
             shell.SnapshotHistory.ObserveGesture("smoke-gesture", new(1, 7, "start", gestureTick, new(10, 20, 300, 240),
                 new(0, 0, 1920, 1040), 96, false));
             var snapshot = shell.SnapshotHistory.BeginCapture();
+            var snapshotDir = Directory.CreateDirectory(Path.Combine(output, Guid.NewGuid().ToString("N"))).FullName;
+            File.WriteAllText(Path.Combine(snapshotDir, "第一版.zip"), "existing");
             var archivePath = await DesktopSnapshot.ExportAsync(new HashSet<nint>(), new WindowInteropHelper(shell).Handle,
-                0, "Off", directory: output, durationMs: 510, capture: snapshot);
+                0, "Off", directory: snapshotDir, durationMs: 510, capture: snapshot);
+            Assert(Path.GetFileName(archivePath) == "第二版.zip" && File.ReadAllText(Path.Combine(snapshotDir, "第一版.zip")) == "existing",
+                "snapshot takes the next numbered name and preserves an existing file");
             shell.SnapshotHistory.EndCapture(snapshot);
             using (var archive = System.IO.Compression.ZipFile.OpenRead(archivePath))
             using (var timeline = new StreamReader(archive.GetEntry("timeline.jsonl")!.Open()))

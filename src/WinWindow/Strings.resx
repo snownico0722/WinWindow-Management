@@ -272,4 +272,6 @@
   <data name="SnapshotDesktopMissing" xml:space="preserve"><value>找不到 Windows 桌面文件夹。</value></data>
   <data name="BehaviorNoRules" xml:space="preserve"><value>暂无行为规则。重复出现的操作序列会在这里显示，也可以导入规则。</value></data>
   <data name="BehaviorNewProcessHint" xml:space="preserve"><value>从 {0} 切到新启动的 {1} 后{2}。</value></data>
+  <data name="LayoutModelVersion" xml:space="preserve"><value>桌面整理模型</value></data>
+  <data name="LearningModelVersion" xml:space="preserve"><value>学习模型</value></data>
 </root>

@@ -31,6 +31,12 @@ internal static class ReadingFocusChecks
             Role("wpscloudsvr.exe", qt, FocusedOfficeSurface.Grid) == WindowUseRole.Unknown,
             "WPS distinguishes documents, workbook cells and slides using the focused surface; the launcher, mixed shell and slideshow gain no implicit text focus");
 
+        check(Role("Code.exe", "Chrome_WidgetWin_1") == WindowUseRole.Editor &&
+            Role("Code.exe", "IME") == WindowUseRole.Unknown &&
+            Role("WindowsTerminal.exe", "CASCADIA_HOSTING_WINDOW_CLASS") == WindowUseRole.Editor &&
+            Role("Feishu.exe", "Chrome_WidgetWin_1") == WindowUseRole.Chat &&
+            Role("PaperTodo.exe", "HwndWrapper[PaperTodo]") == WindowUseRole.Note,
+            "developer, terminal, collaboration and note priors distinguish working frames from helpers");
         var engaged = new LayoutAttention(1, .8, 0, 0, true);
         TaskWindowHint? Hint(WindowUseRole role, WindowSnapshot? target = null, LayoutAttention? use = null, nint caret = 0,
             string? activity = null, LayoutFocus? focus = null, WindowSnapshot? behind = null)
@@ -77,8 +83,8 @@ internal static class ReadingFocusChecks
         check(first.TakeInitialPlacement(small, visit, 1500) && !first.TakeInitialPlacement(small, visit, 1550) &&
             firstHint is { InitialTextPlacement: true, TextFocus: false } &&
             firstPlan.Moves.Any(m => m.TargetVisualRect.Width > small.VisualRect.Width) &&
-            FirstHint(small, 1).TextFocus && FirstHint(main).TextFocus,
-            "a genuinely new undersized document gets one placement at scheduler time while a caret or readable size protects the view");
+            FirstHint(small, 1) is { TextFocus: false, InitialTextPlacement: true } && FirstHint(main).TextFocus,
+            "a genuinely new undersized document gets one placement at scheduler time including a default caret, while a readable frame stays protected");
         var input = NewVisit();
         input.Interact(1, small.ProcessId, 1200);
         var returning = NewVisit();
