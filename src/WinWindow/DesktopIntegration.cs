@@ -30,6 +30,7 @@ internal sealed class DesktopIntegration : IDisposable
     private bool _disposed, _eventQueued, _foregroundPending;
     public event Action<string>? ActionRequested;
     public event Action<bool>? WindowsChanged;
+    internal nint LastExternalForeground { get; private set; }
     public event Action<WindowItem>? RecoveryRequested;
 
     public DesktopIntegration(MainWindow window, WindowManager manager)
@@ -89,6 +90,7 @@ internal sealed class DesktopIntegration : IDisposable
         var initialForeground = Native.GetForegroundWindow();
         Native.GetWindowThreadProcessId(initialForeground, out uint lastForegroundProcess);
         _window.LayoutFocus.Visit(initialForeground, lastForegroundProcess, Environment.TickCount64);
+        if (initialForeground != 0 && Native.IsTarget(initialForeground)) LastExternalForeground = initialForeground;
         _eventCallback = (_, ev, hwnd, objectId, childId, _, _) =>
         {
             if (_disposed || hwnd == 0 || (ev >= 0x8000 && (objectId != 0 || childId != 0)) || _window.Dispatcher.HasShutdownStarted) return;
@@ -97,6 +99,7 @@ internal sealed class DesktopIntegration : IDisposable
             {
                 Native.GetWindowThreadProcessId(hwnd, out var current);
                 _window.LayoutFocus.Visit(hwnd, current, Environment.TickCount64);
+                if (Native.IsTarget(hwnd)) LastExternalForeground = hwnd;
                 var previous = lastForegroundProcess;
                 lastForegroundProcess = current;
                 if (previous != 0 && current != previous)

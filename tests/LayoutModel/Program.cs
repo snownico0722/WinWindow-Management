@@ -306,9 +306,62 @@ Check(ActivityHints.Classify(false, .8, .4, 0, true, .5, true, processWindowCoun
     ActivityHints.Classify(false, .8, .4, 2, true, .5, true, processWindowCount: 2) == "media-with-motion",
     "a static browser sibling needs local evidence even when shared audio and playback are active");
 
-if (args.Length > 0) Replay(args[0], args.ElementAtOrDefault(1));
+var behaviorDiscovery = new WindowBehaviorDiscovery();
+long BehaviorUtc(long elapsed) => now.UtcTicks + elapsed * TimeSpan.TicksPerMillisecond;
+var helper = new BehaviorWindow(70, "utility-test.exe", BehaviorUtc(-20000), true);
+var nextTask = new BehaviorWindow(71, "task-test.exe", BehaviorUtc(1600), true);
+behaviorDiscovery.Observe(0, BehaviorUtc(0), [helper], new Dictionary<int, BehaviorDeparture>(), new HashSet<int>());
+behaviorDiscovery.Observe(2000, BehaviorUtc(2000), [helper with { Foreground = false }, nextTask],
+    new Dictionary<int, BehaviorDeparture>(), new HashSet<int>());
+behaviorDiscovery.Observe(6000, BehaviorUtc(6000), [nextTask],
+    new Dictionary<int, BehaviorDeparture> { [helper.Id] = BehaviorDeparture.Closed }, new HashSet<int>());
+var discoveredRule = behaviorDiscovery.Observe(16000, BehaviorUtc(16000), [nextTask],
+    new Dictionary<int, BehaviorDeparture>(), new HashSet<int>()).Single();
+Check(discoveredRule.Rule.SourceApp == helper.App && discoveredRule.Rule.NextApps!.Single() == nextTask.App &&
+    discoveredRule.Rule.RequireNewProcess && discoveredRule.Rule.Action == WindowBehaviorAction.Close &&
+    discoveredRule.DelayMilliseconds == 4000, "behavior discovery learns a generic fresh-task handoff from observed window actions");
 
-static void Replay(string path, string? rulesPath)
+var sequence = new WindowBehaviorSequence(discoveredRule.Rule);
+var fit = new WindowBehaviorFit().ObserveDismissal(4000).ObserveDismissal(4000);
+BehaviorUpdate BehaviorTick(long tick, BehaviorWindow[] current, bool enabled = true, bool dismissed = false) =>
+    sequence.Observe(tick, BehaviorUtc(tick), current,
+        dismissed ? new Dictionary<int, BehaviorDeparture> { [helper.Id] = BehaviorDeparture.Closed } : new Dictionary<int, BehaviorDeparture>(),
+        fit, learn: true, canAct: enabled);
+BehaviorTick(0, [helper]);
+BehaviorTick(2400, [helper with { Foreground = false }, nextTask with { ProcessStartedUtc = BehaviorUtc(-10) }]);
+Check(BehaviorTick(8000, [helper with { Foreground = false }, nextTask with { ProcessStartedUtc = BehaviorUtc(-10) }]).Dismiss is null,
+    "a previously running task does not trigger a learned fresh-launch action");
+sequence.Reset();
+BehaviorTick(0, [helper]);
+BehaviorTick(2000, [helper with { Foreground = false }, nextTask]);
+Check(BehaviorTick(6900, [helper with { Foreground = false }, nextTask], enabled: false).Dismiss is null &&
+    BehaviorTick(7000, [helper with { Foreground = false }, nextTask]).Dismiss == helper.Id,
+    "a fitted action waits for the task and requires the individual rule to be enabled");
+BehaviorTick(7600, [nextTask], dismissed: true);
+Check(BehaviorTick(8100, [helper with { Id = 72 }, nextTask with { Foreground = false }]).Fit?.Reopens == 1,
+    "reopening the helper after an automatic dismissal is negative feedback");
+
+var routine = new WindowBehaviorSequence(discoveredRule.Rule with { RequireNewProcess = false });
+var reopenedHelper = helper with { Id = 72 };
+BehaviorUpdate RoutineTick(long tick, BehaviorWindow[] current, Dictionary<int, BehaviorDeparture>? departures = null) =>
+    routine.Observe(tick, BehaviorUtc(tick), current, departures ?? [], fit, learn: false, canAct: true);
+RoutineTick(0, [helper]);
+RoutineTick(2000, [helper with { Foreground = false }, nextTask]);
+RoutineTick(6500, [helper with { Foreground = false }, nextTask]);
+RoutineTick(7000, [nextTask], new() { [helper.Id] = BehaviorDeparture.Closed });
+RoutineTick(7500, [reopenedHelper, nextTask with { Foreground = false }]);
+RoutineTick(8000, [reopenedHelper with { Foreground = false }, nextTask]);
+RoutineTick(14_000, [reopenedHelper, nextTask with { Foreground = false }]);
+RoutineTick(16_000, [reopenedHelper with { Foreground = false }, nextTask]);
+Check(RoutineTick(22_000, [reopenedHelper with { Foreground = false }, nextTask]).Dismiss is null,
+    "reopening blocks repeated dismissal in the same task even with personalization disabled");
+
+if (args is ["--behavior", var zip, var behaviorRules, ..])
+    BehaviorReplay.Run(zip, behaviorRules, args.ElementAtOrDefault(3));
+else if (args.Length > 0)
+    Replay(args[0], args.ElementAtOrDefault(1), args.ElementAtOrDefault(2));
+
+static void Replay(string path, string? rulesPath, string? sessionFilter)
 {
     CompiledLayoutRules? overrideRules = null;
     if (rulesPath != null)
@@ -342,7 +395,8 @@ static void Replay(string path, string? rulesPath)
         while (reader.ReadLine() is { } line)
         {
             var run = JsonSerializer.Deserialize<LayoutRunObservation>(line);
-            if (run is not { Trigger: "explicit" or "automatic-gesture" or "automatic-workspace", Actual: not null } || !seen.Add((run.Session, run.RequestId))) continue;
+            if (run is not { Trigger: "explicit" or "automatic-gesture" or "automatic-workspace", Actual: not null } ||
+                (sessionFilter is not null && run.Session != sessionFilter) || !seen.Add((run.Session, run.RequestId))) continue;
             var frame = run.Before;
             var areas = frame.Windows.Select(w => w.WorkArea).Distinct().ToArray();
             bool explicitRun = run.Trigger == "explicit";

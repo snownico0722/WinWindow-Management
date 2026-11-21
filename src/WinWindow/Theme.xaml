@@ -250,6 +250,9 @@
               <Setter TargetName="Frame" Property="Background" Value="{DynamicResource Selection}"/>
               <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
             </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+              <Setter TargetName="Frame" Property="Opacity" Value="0.76"/>
+            </Trigger>
             <Trigger Property="IsKeyboardFocused" Value="True">
               <Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/>
               <Setter TargetName="Frame" Property="BorderThickness" Value="1"/>

@@ -66,3 +66,34 @@
 在仓库根目录运行 `dotnet run --project tests/LayoutModel -c Release`。追加 `-- path/to/Recorder.zip [candidate.json]` 可在本地回放手动、拖动手势及桌面变化触发的 Smart 请求，并关联 `adjustments-*.jsonl` 中的 `AfterRequest` 人工二次微调，在有对应手动修正的请求上输出候选规则与修正结果的横向中心/宽度归一化误差（`PostArrangeRegret`）及纵向中心/高度误差（`PostArrangeVerticalError`）。有完整快照和受保护区域时，`ProtectedRegionsPreserved` 给出候选方案能否保住该区域；缺少证据的指标留空。每个请求分别按可缩放和固定尺寸两种假设输出目标位置，旧记录缺少可缩放字段时这两种结果构成敏感性检查。回放仅使用当时快照可以还原的信号。
 
 设计依据包括通过窗口切换推断任务关系的 [Taskposé](https://hci.stanford.edu/publications/2008/taskpose/taskpose-uist08.pdf)、对窗口局部进行独立观察的 [WinCuts](https://www.microsoft.com/en-us/research/publication/wincuts-manipulating-arbitrary-window-regions-for-more-effective-use-of-screen-space/)，以及记录应用级播放状态的 [Windows 媒体会话接口](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssession)。评分阈值是本项目的工程选择。
+
+## 行为学习
+
+「行为学习摆放」分别控制本机已学的摆放习惯与导入的摆放规则。「行为学习」处理工具窗口被下一项任务接手后何时退出桌面。开启本地学习时，应用观察跨应用的前台交接、随后出现的关闭或最小化，以及短时间内是否重新出现。同一模式出现三个有效样本后才提供候选规则。每条候选或导入规则由用户独立开启。连续重新打开会放慢或暂停该规则。关闭使用窗口的标准关闭请求，最小化保留后台进程。
+
+开启「数据与记录」后的导出包附带 `SKILL.md`、`layout-guide.md`、两种规则文件和时间线。新增的 `behavior-*.jsonl` 由 `Session + Segment + Tick` 排序，事件包括应用可执行文件名、会话内窗口编号、进程启动时刻、前台、出现、关闭、隐藏、最小化与 WinWindow 发起的动作。观察到的外部变化可能来自用户、应用或系统。录制由用户控制，应用路径、标题和原始句柄仍不加入这份长期记录。
+
+行为候选文件的结构如下。示例中的应用名可以替换为日志中实际出现的名字。
+
+```json
+{
+  "Version": 1,
+  "Rules": [
+    {
+      "Id": "helper-handoff",
+      "Name": "任务接手后收起辅助窗口",
+      "SourceApp": "helper.exe",
+      "NextApps": ["task.exe"],
+      "Action": "Minimize",
+      "RequireNewProcess": false,
+      "DelayMilliseconds": 3500
+    }
+  ]
+}
+```
+
+`Action` 支持 `Minimize` 和 `Close`。关闭需要指定下一项任务。`RequireNewProcess` 要求下一项任务的进程在源窗口获得前台后启动。`DelayMilliseconds` 是下一扇窗持续处于前台时的初始等待，范围 1500～30000 毫秒。开启本机学习后，实际等待时间会随样本调整。外部规则可以在「行为学习」中导入，摆放规则在「行为学习摆放」中导入。
+
+用 `dotnet run --project tests/LayoutModel -c Release -- --behavior recordings.zip behavior-rules.json [session]` 回放尚未参与拟合的会话。输出每条触发及观察到的后续结果，包括匹配的收起、迅速回到源窗口、未观察到收起和证据不完整。摆放回放也支持末尾的会话参数。
+
+「当前快照」是独立的排查入口。它从点击时开始连续采集约 10 秒，并在桌面生成 ZIP。包内摘要、时间序列和采集期间的整理决策可用于排查，窗口状态包含标题、位置、DPI、前台、层级、最小化、透明度与显示器边界。

@@ -166,7 +166,7 @@
   <data name="Quit" xml:space="preserve"><value>退出</value></data>
   <data name="ReadPlacement" xml:space="preserve"><value>读取窗口位置</value></data>
   <data name="RecordActivity" xml:space="preserve"><value>记录窗口活动习惯</value></data>
-  <data name="RecordPrivacy" xml:space="preserve"><value>在本机记录匿名窗口、可见区域、使用时段、进程资源、音量峰值和可用的播放状态。画面变化可单独开启，只保存变化摘要。</value></data>
+  <data name="RecordPrivacy" xml:space="preserve"><value>在本机记录匿名窗口、可见区域、使用时段、进程资源、音量峰值和可用的播放状态。连续行为另记应用文件名，不含路径。画面变化可单独开启，只保存变化摘要。</value></data>
   <data name="RecorderCounts" xml:space="preserve"><value>{0} · 已记录 {1} 次手势、{2} 次窗口变化</value></data>
   <data name="RecordsCleared" xml:space="preserve"><value>记录已清空。</value></data>
   <data name="RefreshWindows" xml:space="preserve"><value>刷新窗口列表</value></data>
@@ -240,4 +240,30 @@
   <data name="Working" xml:space="preserve"><value>正在处理</value></data>
   <data name="ZipFilter" xml:space="preserve"><value>ZIP 压缩包|*.zip</value></data>
   <data name="VisualSampling" xml:space="preserve"><value>记录可见区域的画面变化（仅存变化标记）</value></data>
+  <data name="PlacementLearning" xml:space="preserve"><value>行为学习摆放</value></data>
+  <data name="BehaviorLearning" xml:space="preserve"><value>行为学习</value></data>
+  <data name="LocalPlacementHint" xml:space="preserve"><value>根据你稳定的手动移动和缩放，学习常用位置、宽度和主副窗关系。</value></data>
+  <data name="UseImportedPlacement" xml:space="preserve"><value>应用已导入的摆放规则</value></data>
+  <data name="ImportPlacementHint" xml:space="preserve"><value>把「数据与记录」导出的 ZIP 交给 AI，分析和回放后导入返回的摆放规则。</value></data>
+  <data name="ImportPlacementRules" xml:space="preserve"><value>导入摆放规则</value></data>
+  <data name="LearnBehaviorTiming" xml:space="preserve"><value>从日常操作中学习执行时机</value></data>
+  <data name="BehaviorLearningHint" xml:space="preserve"><value>根据你收起、关闭和重新打开窗口的行为调整时机。只执行已勾选的规则。</value></data>
+  <data name="BehaviorClose" xml:space="preserve"><value>关闭窗口</value></data>
+  <data name="BehaviorMinimize" xml:space="preserve"><value>最小化窗口</value></data>
+  <data name="BehaviorNextApp" xml:space="preserve"><value>其他应用</value></data>
+  <data name="BehaviorImportedHint" xml:space="preserve"><value>从 {0} 切到 {1} 后{2}。</value></data>
+  <data name="BehaviorPausedAfterReopen" xml:space="preserve"><value>多次重新打开，暂缓此规则，等待新的手动样本。</value></data>
+  <data name="BehaviorFit" xml:space="preserve"><value>已学习 {0} 条样本 · 等待约 {1:0.0} 秒</value></data>
+  <data name="ImportBehaviorRules" xml:space="preserve"><value>导入连续行为规则</value></data>
+  <data name="PlacementRulesImported" xml:space="preserve"><value>已导入并应用摆放规则。</value></data>
+  <data name="BehaviorRulesImported" xml:space="preserve"><value>已导入行为规则，请勾选要自动执行的规则。</value></data>
+  <data name="RuleImportFailed" xml:space="preserve"><value>导入规则失败。{0}</value></data>
+  <data name="JsonFilter" xml:space="preserve"><value>JSON 规则|*.json</value></data>
+  <data name="CurrentSnapshot" xml:space="preserve"><value>当前快照</value></data>
+  <data name="CurrentSnapshotHint" xml:space="preserve"><value>记录接下来 10 秒的窗口变化，在桌面生成 ZIP。包含窗口标题。</value></data>
+  <data name="SnapshotCapturing" xml:space="preserve"><value>正在采集 10 秒窗口快照…</value></data>
+  <data name="SnapshotSaved" xml:space="preserve"><value>已保存到桌面 · {0}</value></data>
+  <data name="SnapshotDesktopMissing" xml:space="preserve"><value>找不到 Windows 桌面文件夹。</value></data>
+  <data name="BehaviorNoRules" xml:space="preserve"><value>暂无行为规则。重复出现的操作序列会在这里显示，也可以导入规则。</value></data>
+  <data name="BehaviorNewProcessHint" xml:space="preserve"><value>从 {0} 切到新启动的 {1} 后{2}。</value></data>
 </root>

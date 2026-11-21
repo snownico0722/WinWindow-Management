@@ -187,15 +187,21 @@ internal static class SmokeTests
             Assert(!shell.IsVisible, "the workbench shortcut hides the foreground workbench");
             await shell.OnDesktopActionAsync("togglePanel");
             Assert(shell.IsVisible, "the same shortcut shows the hidden workbench");
-            var language = (ComboBox)shell.FindName("LanguageBox");
+            var languages = ((Panel)shell.FindName("LanguageChoices")).Children.OfType<RadioButton>().ToArray();
+            void SelectLanguage(string tag)
+            {
+                var radio = languages.Single(button => (string)button.Tag == tag);
+                radio.IsChecked = true;
+                radio.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            }
             var arrange = (Button)shell.FindName("ArrangeButton");
-            language.SelectedValue = "en";
+            SelectLanguage("en");
             await WaitAsync("English applies to the visible workbench", () => Equals(arrange.Content, "Arrange"));
             Assert(NeatWin.App.LayoutStrings.LayoutText.Get("NothingToUndo") == "No arrangement to undo.",
                 "the layout worker uses the workbench language");
             store.SavePreferences();
             Assert(new StateStore(data).Preferences.Language == "en", "the display language survives a restart");
-            language.SelectedValue = "zh-CN";
+            SelectLanguage("zh-CN");
             await WaitAsync("Chinese applies without restarting", () => Equals(arrange.Content, "整理桌面"));
             await CheckArrangeButtonAsync(shell, layoutWindows, item.Hwnd, stubborn.Hwnd);
             await shell.Manager.RefreshAsync();
@@ -359,13 +365,15 @@ internal static class SmokeTests
             Palette.Apply(false); shell.Width = 500; shell.Height = 380; shell.UpdateLayout();
             Capture(shell, Path.Combine(output, "workbench-minimum.png"));
             await CheckFooterModesAsync(shell, store, output);
-            ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            ((ToggleButton)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             await Task.Delay(100); shell.UpdateLayout();
             Assert(((TextBox)shell.FindName("ShowKeyBox")).Text == "Win+Ctrl+Space", "settings retain the actual hotkey text");
             Capture(shell, Path.Combine(output, "settings-minimum.png"));
             var nav = (ListBox)shell.FindName("SettingsNav");
-            nav.SelectedIndex = 1;
+            Assert(((ToggleButton)shell.FindName("SettingsButton")).IsChecked == true, "settings icon stays pressed while its page is open");
+            void OpenSection(string name) => nav.SelectedItem = nav.Items.OfType<ListBoxItem>().Single(item => Equals(item.Tag, name));
+            OpenSection("LayoutSection");
             var layoutPage = (ScrollViewer)shell.FindName("LayoutSection");
             await WaitAsync("integrated layout settings loaded", () => layoutPage.IsVisible && layoutPage.IsEnabled && ((CheckBox)shell.FindName("VerticalFill")).IsChecked.HasValue);
             var strength = ((Panel)shell.FindName("StrengthChoices")).Children.OfType<RadioButton>().Single(x => (string)x.Tag == "Assertive");
@@ -374,12 +382,29 @@ internal static class SmokeTests
             var layoutSettings = new NeatWin.App.SettingsStore(Path.Combine(store.DirectoryPath, "Layout", "settings.json"));
             await WaitAsync("layout edit persists through unified UI", () => layoutSettings.LoadTidyOptions().SmartStrength == NeatWin.Core.SmartTidyStrength.Assertive);
             shell.UpdateLayout(); Capture(shell, Path.Combine(output, "settings-layout.png"));
-            nav.SelectedIndex = 3;
+            OpenSection("DataSection");
             await WaitAsync("recorder shares the same settings window", () => ((CheckBox)shell.FindName("RecordSwitch")).IsVisible && !layoutPage.IsVisible);
-            nav.SelectedIndex = 2;
+            OpenSection("KeysSection");
             await WaitAsync("hotkeys are reachable from the same sidebar", () => ((TextBox)shell.FindName("ShowKeyBox")).IsVisible);
             await CheckHotkeyDraftAsync(shell, store);
-            ((Button)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            OpenSection("PlacementSection");
+            await WaitAsync("placement learning has its own settings page",
+                () => ((CheckBox)shell.FindName("ReferenceEnabled")).IsVisible && ((CheckBox)shell.FindName("ImportedPlacementEnabled")).IsVisible);
+            OpenSection("BehaviorSection");
+            await WaitAsync("continuous behavior learning has an independent settings page",
+                () => ((CheckBox)shell.FindName("LearnBehaviorSwitch")).IsVisible && !((CheckBox)shell.FindName("ReferenceEnabled")).IsVisible);
+            var archivePath = await DesktopSnapshot.ExportAsync(new HashSet<nint>(), new WindowInteropHelper(shell).Handle,
+                0, "Off", directory: output, durationMs: 510);
+            using (var archive = System.IO.Compression.ZipFile.OpenRead(archivePath))
+            using (var timeline = new StreamReader(archive.GetEntry("timeline.jsonl")!.Open()))
+            {
+                var samples = (await timeline.ReadToEndAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                Assert(samples.Length >= 3 && samples.Any(line => line.Contains(DesktopSnapshot.Handle(item.Hwnd), StringComparison.Ordinal)) &&
+                    archive.GetEntry("summary.txt") is not null && archive.GetEntry("layout-decisions.jsonl") is not null,
+                    "the snapshot ZIP includes sampled top-level windows and a human-readable summary");
+            }
+            File.Delete(archivePath);
+            ((ToggleButton)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             var row = await FindRowAsync(shell, chosen);
             var slider = (Slider)row.FindName("OpacitySlider");
             var label = (TextBlock)row.FindName("BackgroundLabel");
@@ -744,7 +769,9 @@ internal static class SmokeTests
         var footer = (Border)shell.FindName("DesktopFooter");
         var undo = (Button)shell.FindName("UndoArrangeButton");
         Rect Bounds(FrameworkElement element) => element.TransformToAncestor(footer).TransformBounds(new Rect(element.RenderSize));
-        Assert(buttons.Length == 4 && buttons.All(b => b.IsVisible) && Bounds(group).Right <= Bounds(undo).Left,
+        var snapshot = (Button)shell.FindName("SnapshotButton");
+        Assert(buttons.Length == 4 && buttons.All(b => b.IsVisible) && Bounds(group).Right <= Bounds(snapshot).Left &&
+            Bounds(snapshot).Right <= Bounds(undo).Left,
             "all four mode choices fit to the left of the desktop commands at minimum width");
         Assert(buttons[0].IsChecked == true && shell.Icon is not null, "the workbench starts in manual mode with its application icon");
         var settingsPath = Path.Combine(store.DirectoryPath, "Layout", "settings.json");

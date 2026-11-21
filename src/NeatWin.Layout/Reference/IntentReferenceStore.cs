@@ -79,6 +79,70 @@ public sealed class IntentReferenceStore
     public void ExportReference(string destination) =>
         File.WriteAllText(destination, JsonSerializer.Serialize(Read(respectEnabled: false), new JsonSerializerOptions { WriteIndented = true }));
 
+    private string BehaviorFitsPath => Path.Combine(_directory, "behavior-fit.json");
+
+    internal WindowBehaviorProfile ReadBehaviorProfile()
+    {
+        try
+        {
+            var profile = ReadCandidate<WindowBehaviorProfile>(BehaviorFitsPath, LayoutRuleFile.Json);
+            var fits = (profile.Fits ?? []).Where(pair => pair.Value is
+                { Observations: >= 0 and <= 100, DelayMilliseconds: >= 1500 and <= 30_000, Reopens: >= 0 and <= 2 })
+                .ToDictionary(pair => pair.Key, pair => pair.Value);
+            var rules = (profile.Candidates ?? []).Where(rule => rule is { IsLocal: true } && rule.IsValid())
+                .DistinctBy(rule => rule.Id).Take(48).ToArray();
+            return new(fits, rules);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return new(); }
+    }
+
+    internal void SaveBehaviorProfile(WindowBehaviorProfile profile) =>
+        WriteCandidate(BehaviorFitsPath, profile, LayoutRuleFile.Json);
+
+    internal WindowBehaviorRules ReadBehaviorRules()
+    {
+        try
+        {
+            var rules = ReadCandidate<WindowBehaviorRules>(Path.Combine(_directory, WindowBehaviorRules.FileName), WindowBehaviorRules.Json);
+            if (rules.IsValid()) return rules;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
+        return new(Rules: []);
+    }
+
+    internal void ImportBehaviorRules(string source)
+    {
+        var rules = ReadCandidate<WindowBehaviorRules>(source, WindowBehaviorRules.Json);
+        if (!rules.IsValid()) throw new JsonException("Invalid behavior rules.");
+        WriteCandidate(Path.Combine(_directory, WindowBehaviorRules.FileName), rules, WindowBehaviorRules.Json);
+    }
+
+    internal void ImportPlacementRules(string source)
+    {
+        var rules = ReadCandidate<CompiledLayoutRules>(source, LayoutRuleFile.Json);
+        if (!rules.IsValid()) throw new JsonException("Invalid placement rules.");
+        WriteCandidate(Path.Combine(_directory, LayoutRuleFile.Name), rules, LayoutRuleFile.Json);
+    }
+
+    private static T ReadCandidate<T>(string path, JsonSerializerOptions json) where T : class
+    {
+        using var stream = File.OpenRead(path);
+        if (stream.Length is <= 0 or > 65536) throw new JsonException("Invalid rules file size.");
+        return JsonSerializer.Deserialize<T>(stream, json) ?? throw new JsonException("Empty rules file.");
+    }
+
+    private static void WriteCandidate<T>(string path, T value, JsonSerializerOptions json)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        string temporary = path + ".tmp";
+        try
+        {
+            using (var stream = File.Create(temporary)) JsonSerializer.Serialize(stream, value, json);
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally { File.Delete(temporary); }
+    }
+
     public void Clear()
     {
         if (!Directory.Exists(_directory)) return;
@@ -86,6 +150,7 @@ public sealed class IntentReferenceStore
         Placement.Clear();
         File.Delete(ProfilePath);
         File.Delete(ProfilePath + ".tmp");
+        File.Delete(BehaviorFitsPath);
     }
 
     public void ExportRecords(string destination)
@@ -107,18 +172,24 @@ public sealed class IntentReferenceStore
             guide.CopyTo(output);
         using (var rules = archive.CreateEntry(LayoutRuleFile.Name).Open())
             JsonSerializer.Serialize(rules, Rules.Read(), LayoutRuleFile.Json);
+        using (var rules = archive.CreateEntry(WindowBehaviorRules.FileName).Open())
+            JsonSerializer.Serialize(rules, ReadBehaviorRules(), WindowBehaviorRules.Json);
+        using (var skill = typeof(IntentReferenceStore).Assembly.GetManifestResourceStream("NeatWin.Layout.LearningSkill")!)
+        using (var output = archive.CreateEntry("SKILL.md").Open())
+            skill.CopyTo(output);
         using (var preferences = archive.CreateEntry("placement-v1.json").Open())
             JsonSerializer.Serialize(preferences, Placement.Read());
         using var writer = new StreamWriter(archive.CreateEntry("intent-reference.json").Open());
         writer.Write(JsonSerializer.Serialize(Read(respectEnabled: false)));
     }
 
-    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl", "activity-*.jsonl" }
+    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl", "activity-*.jsonl", "behavior-*.jsonl" }
         .SelectMany(pattern => Directory.EnumerateFiles(_directory, pattern));
 
     internal void AppendActivity(ActivitySample sample, WorkspaceFrame? geometry, long geometryTick) =>
         AppendJson("activity", new { sample.Version, sample.Session, sample.Tick, sample.Frame.Time, sample.ObservedMilliseconds,
             GeometryTick = geometryTick, Frame = geometry, sample.Processes, sample.Windows, sample.Media, sample.InputIdleMilliseconds, sample.AudioTick, sample.DisplayRequired });
+    internal void AppendBehavior(WindowBehaviorFrame frame) => AppendJson("behavior", frame);
     public void AppendTransition(WorkspaceTransition observation) => AppendJson("workspace", observation);
     public void AppendPlan(LayoutRunObservation observation) => AppendJson("plans", observation);
 

@@ -24,6 +24,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private readonly ReversibleVerticalFillManager _verticalFillManager;
     private readonly AutoTidyManager _autoTidyManager;
     private readonly RecorderSession _recorder;
+    private readonly WindowBehaviorMonitor _behaviorMonitor;
+    private bool _useImportedPlacement;
     private TidyOptions _tidyOptions;
     private SmartBehaviorOptions _smartBehaviorOptions;
     private readonly IntentReferenceStore _referenceStore;
@@ -62,6 +64,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _autoTidyManager = new AutoTidyManager();
         _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) { VisualSampling = _settingsStore.VisualSampling };
         _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder);
+        _behaviorMonitor = new(_windowManager, _referenceStore, _settingsStore, _recorder,
+            () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.IsMoving);
+        _useImportedPlacement = _settingsStore.UseImportedPlacement;
         _workspaceMonitor = new WorkspaceAutoTidyMonitor(() => _windowManager.CaptureCoalesced(),
             () => _tidyRunning || NativeWindowActivity.IsMoving);
         _manualArrangeTimer.Tick += (_, _) => RunTidy();
@@ -99,7 +104,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         {
             _manualArrangeTimer.Dispose();
             _autoTidyManager.TidyRequested -= OnFollowHandRequested;
-            _workspaceMonitor.Dispose(); _autoTidyManager.Dispose(); _journal.Dispose();
+            _workspaceMonitor.Dispose(); _autoTidyManager.Dispose(); _journal.Dispose(); _behaviorMonitor.Dispose();
             _recorder.StatusChanged -= OnRecorderStatusChanged; _recorder.Dispose();
             _verticalFillManager.Dispose(); _dispatch.Dispose();
         }
@@ -110,8 +115,19 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     internal Task<T> ReadAsync<T>(Func<T> read) => _dispatch.InvokeAsync(read);
 
     internal LayoutPreferences Preferences => new(_automaticMode, _tidyOptions, _smartBehaviorOptions,
-        _taskPreferences, _referenceStore.Enabled, _recorder.VisualSampling);
+        _taskPreferences, _referenceStore.Enabled, _recorder.VisualSampling, _useImportedPlacement);
     internal RecorderStatus Recorder => _recorder.Status;
+    internal BehaviorSettings Behavior => _behaviorMonitor.Status;
+    internal void ObserveSnapshot(Action<LayoutRunObservation>? observer) => _journal.SnapshotObserver = observer;
+    internal void SetBehaviorLearning(bool enabled) => _behaviorMonitor.SetLearning(enabled);
+    internal void SetBehaviorEnabled(string id, bool enabled) => _behaviorMonitor.SetEnabled(id, enabled);
+    internal void ImportBehaviorRules(string path) => _behaviorMonitor.ImportRules(path);
+    internal void ImportPlacementRules(string path)
+    {
+        _referenceStore.ImportPlacementRules(path);
+        _settingsStore.UseImportedPlacement = _useImportedPlacement = true;
+        _taskSession.Invalidate();
+    }
 
     internal void ApplyPreferences(LayoutPreferences value)
     {
@@ -133,6 +149,11 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _recorder.VisualSampling = value.VisualSampling;
         }
         if (value.UseReference != _referenceStore.Enabled) _referenceStore.SetEnabled(value.UseReference);
+        if (value.UseImportedPlacement != _useImportedPlacement)
+        {
+            _settingsStore.UseImportedPlacement = value.UseImportedPlacement;
+            _useImportedPlacement = value.UseImportedPlacement;
+        }
         _taskSession.Invalidate();
         if (value.Mode == _automaticMode) return;
         var previous = _automaticMode;
@@ -157,11 +178,17 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         if (enabled == !_recorder.Status.IsPaused) return;
         _settingsStore.RecordingEnabled = enabled;
         _recorder.TogglePause();
+        _behaviorMonitor.RecordingChanged();
     }
 
     internal void OpenRecorderData() => _recorder.OpenDataDirectory();
     internal void ExportRecorderData(string path) => _recorder.ExportRecords(path);
-    internal void ClearRecorderData() { _recorder.Clear(); _taskSession.Invalidate(); }
+    internal void ClearRecorderData()
+    {
+        _recorder.Clear();
+        _behaviorMonitor.ClearLearning();
+        _taskSession.Invalidate();
+    }
     private void OnRecorderStatusChanged(RecorderStatus status) => _recorderChanged?.Invoke(status);
 
     private bool ConfigureAutomation(AutomaticLayoutMode mode, bool arrangeNow = false)
@@ -266,10 +293,10 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     liveHints = [.. liveHints.Where(w => w.Handle != videoHint.WindowHandle), mediaHint];
                 }
                 bool pairSmart = explicitSmart || trigger is "automatic-gesture" or "automatic-workspace";
-                var pairs = pairSmart ? _recorder.BindRules(rules, snapshot, liveHints, activities) : [];
+                var pairs = pairSmart && _useImportedPlacement ? _recorder.BindRules(rules, snapshot, liveHints, activities) : [];
                 var floors = _recorder.BindSizeFloors(snapshot);
                 var learned = pairSmart ? _recorder.Preferences(snapshot, focus).Where(p => p.Confidence >= .40).ToArray() : [];
-                var slots = pairSmart ? _recorder.BindSlots(rules, snapshot) : [];
+                var slots = pairSmart && _useImportedPlacement ? _recorder.BindSlots(rules, snapshot) : [];
                 var placements = CompiledLayoutRules.ApplySlots(learned, slots);
                 if (!_lastPairs.SequenceEqual(pairs) || !_lastFloors.SequenceEqual(floors) ||
                     !_lastPlacements.SequenceEqual(placements) || !ReferenceEquals(rules, _lastRules) || focus.Main != _lastFocus?.Main || focus.Companion != _lastFocus?.Companion ||
@@ -286,7 +313,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     Focus = focus,
                     WindowHints = liveHints,
                     VideoHint = videoHint is { Confidence: >= .82 } ? videoHint : null,
-                    Rules = rules, Activities = activities,
+                    Rules = _useImportedPlacement ? rules : rules with { Pairs = [], RolePairs = [], AppSlots = [] }, Activities = activities,
                     UseWorkingPairs = pairSmart,
                     RulePairs = pairs,
                     SizeFloors = floors,

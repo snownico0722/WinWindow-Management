@@ -16,6 +16,7 @@ internal sealed class LayoutRunJournal : IDisposable
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 600 };
     private readonly List<Pending> _pending = [];
     internal event Action<LayoutRunObservation>? Completed;
+    internal Action<LayoutRunObservation>? SnapshotObserver { get; set; }
 
     internal LayoutRunJournal(WindowManager manager, IntentReferenceStore store, RecorderSession? recorder = null)
     {
@@ -50,6 +51,7 @@ internal sealed class LayoutRunJournal : IDisposable
             var observation = new LayoutRunObservation(5, _session, Guid.NewGuid().ToString("N"), trigger,
                 frame, targets, layers, groups, null, "requested-not-yet-verified", notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
                 context == null ? null : RecordedTaskSignals.From(context, ids), strength, fullDesktop);
+            SnapshotObserver?.Invoke(observation);
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);
             if (recorded && (plan.Moves.Count > 0 || trigger == "undo"))
@@ -100,6 +102,7 @@ internal sealed class LayoutRunJournal : IDisposable
                 // Pause/clear stops writes, not the runtime's placement verification. An old
                 // completion must not resurrect cleared data or become a new recording session.
                 if (pending.Recorded) TryAppend(actual, pending.Epoch);
+                SnapshotObserver?.Invoke(actual);
                 Completed?.Invoke(actual);
             }
             catch { }

@@ -5,7 +5,7 @@ using NeatWin.Recording;
 namespace NeatWin.App;
 
 internal sealed record LayoutPreferences(AutomaticLayoutMode Mode, TidyOptions Options,
-    SmartBehaviorOptions Behavior, TaskPreferences Task, bool UseReference, bool VisualSampling = false);
+    SmartBehaviorOptions Behavior, TaskPreferences Task, bool UseReference, bool VisualSampling = false, bool UseImportedPlacement = true);
 
 // WinForms timers and out-of-context window events need a message pump. Keep
 // layout planning and foreign-window calls off the WPF UI.
@@ -37,7 +37,9 @@ internal sealed class DesktopLayout : IDisposable
     internal static bool NeedsBackgroundSession(string directory)
     {
         var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
-        return settings.RecordingEnabled || settings.LoadAutomaticLayoutMode() != Core.AutomaticLayoutMode.Off;
+        var behavior = settings.LoadBehaviorConfiguration();
+        return settings.RecordingEnabled || settings.LoadAutomaticLayoutMode() != AutomaticLayoutMode.Off ||
+            behavior.Learn || behavior.Enabled is { Length: > 0 };
     }
 
     private async Task RunAsync(Action<NeatWinApplicationContext> action)
@@ -48,14 +50,19 @@ internal sealed class DesktopLayout : IDisposable
     }
 
     internal Task ArrangeAsync() => RunAsync(context => context.RunTidy());
+    internal Task ObserveSnapshotAsync(Action<LayoutRunObservation>? observer) => RunAsync(context => context.ObserveSnapshot(observer));
     internal Task UndoAsync() => RunAsync(context => context.UndoTidy());
-    internal async Task<(LayoutPreferences Preferences, RecorderStatus Recorder)> ReadSettingsAsync()
+    internal async Task<(LayoutPreferences Preferences, RecorderStatus Recorder, BehaviorSettings Behavior)> ReadSettingsAsync()
     {
         var context = await _ready.Task.ConfigureAwait(false);
-        return await context.ReadAsync(() => (context.Preferences, context.Recorder)).ConfigureAwait(false);
+        return await context.ReadAsync(() => (context.Preferences, context.Recorder, context.Behavior)).ConfigureAwait(false);
     }
     internal Task ApplyAsync(LayoutPreferences value) => RunAsync(context => context.ApplyPreferences(value));
     internal Task SetRecordingAsync(bool value) => RunAsync(context => context.SetRecording(value));
+    internal Task SetBehaviorLearningAsync(bool enabled) => RunAsync(context => context.SetBehaviorLearning(enabled));
+    internal Task SetBehaviorEnabledAsync(string id, bool enabled) => RunAsync(context => context.SetBehaviorEnabled(id, enabled));
+    internal Task ImportBehaviorRulesAsync(string path) => RunAsync(context => context.ImportBehaviorRules(path));
+    internal Task ImportPlacementRulesAsync(string path) => RunAsync(context => context.ImportPlacementRules(path));
     internal Task OpenDataAsync() => RunAsync(context => context.OpenRecorderData());
     internal Task ExportAsync(string path) => RunAsync(context => context.ExportRecorderData(path));
     internal Task ClearAsync() => RunAsync(context => context.ClearRecorderData());

@@ -79,6 +79,21 @@ internal sealed class SettingsStore
             stored.FollowGestureSamples ?? defaults.FollowGestureSamples).Normalize();
     }
 
+    internal BehaviorConfiguration LoadBehaviorConfiguration() => LoadStoredSettings().Behavior ?? new();
+
+    internal void SaveBehaviorConfiguration(BehaviorConfiguration behavior)
+    {
+        var settings = LoadStoredSettings();
+        settings.Behavior = behavior;
+        WriteStoredSettings(settings);
+    }
+
+    internal bool UseImportedPlacement
+    {
+        get => LoadStoredSettings().UseImportedPlacement ?? true;
+        set { var settings = LoadStoredSettings(); settings.UseImportedPlacement = value; WriteStoredSettings(settings); }
+    }
+
     internal bool VisualSampling
     {
         get => LoadStoredSettings().VisualSampling;
@@ -182,6 +197,8 @@ internal sealed class SettingsStore
     private sealed class StoredSettings
     {
         public bool RecordingEnabled { get; set; }
+        public bool? UseImportedPlacement { get; set; }
+        public BehaviorConfiguration? Behavior { get; set; }
         public bool VisualSampling { get; set; }
         public bool? AutoTidyEnabled { get; set; }
         public int? AutomaticLayoutMode { get; set; }
