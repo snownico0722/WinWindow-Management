@@ -9,6 +9,7 @@ namespace NeatWin.Windows;
 // A GUI caret owned by an unrelated window or stale queue must not protect a new task.
 internal readonly record struct ForegroundReading(nint Root, nint Focus, uint Pid, bool Caret, uint? LastInput = null)
 {
+    // 有些编辑器打开时就有插入点，此时仍有机会完成首次摆位。求解期间若换了输入框、发生输入或新出现插入点，移动窗口会打断编辑。
     internal bool AllowsInitialPlacement(ForegroundReading live) =>
         Root != 0 && Focus != 0 && LastInput.HasValue && live.Root == Root && live.Focus == Focus &&
         live.Pid == Pid && live.LastInput == LastInput && (Caret || !live.Caret);

@@ -13,6 +13,7 @@ public sealed record RecordedGeometryChange(int Dx, int Dy, int DWidth, int DHei
 {
     internal static RecordedGeometryChange From(RectI start, RectI end, RecordedPlacementLink? prior)
     {
+        // 缺少前一次排布时无法判断用户撤回了哪一轴。空数组专用于已有参照、但这次没有任何轴回到原值的情况。
         List<string>? returned = null;
         if (prior != null)
         {

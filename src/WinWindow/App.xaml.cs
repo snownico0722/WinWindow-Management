@@ -75,6 +75,7 @@ public partial class App : Application
                     await Task.Run(() => RelaunchAsAdministrator(e.Args, directory));
                     Shutdown(); return;
                 }
+                // 用户取消权限提示后仍可管理普通窗口。这里继续当前实例的启动流程，让本次选择生效。
                 catch (Win32Exception ex) when (ex.NativeErrorCode == ElevationCancelled) { }
                 catch (Exception ex) when (ex is Win32Exception or InvalidOperationException) { elevationError = ex.Message; }
             }

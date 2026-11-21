@@ -49,6 +49,7 @@ internal sealed class StateStore
     private void Write<T>(string name, T value)
     {
         string path = Path.Combine(DirectoryPath, name), temp = path + ".tmp";
+        // 序列化和写入期间保留旧文件。临时文件写完才替换，避免下次启动读到只写了一半的设置或恢复记录。
         File.WriteAllText(temp, JsonSerializer.Serialize(value, Json));
         File.Move(temp, path, true);
     }

@@ -203,6 +203,7 @@ public sealed partial class WindowManager
         return failures;
     }
 
+    // 规划用可见边框计算对齐，原生移动接口接收外框。提交时补回每扇窗自己的边距，才能让并排后的可见边缘对齐。
     private static RectI ToOuterRect(WindowSnapshot window, RectI visualRect)
     {
         var insets = window.FrameInsets;

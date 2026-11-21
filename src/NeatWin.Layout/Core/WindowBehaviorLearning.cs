@@ -103,6 +103,7 @@ internal sealed class WindowBehaviorDiscovery
         if (_handoff is { } previous && tick - previous.Tick > 30_000) _handoff = null;
         foreach (var (id, departure) in departures)
         {
+            // 窗口可能由应用自行隐藏，也可能刚被本工具回收。这两种情况都不足以说明用户习惯手动关闭或最小化它。
             if (automaticDepartures.Contains(id) || departure == BehaviorDeparture.Hidden) continue;
             if (_handoff is not { } handoff || handoff.Source.Id != id || handoff.Target.Id != foreground?.Id ||
                 windows.Any(w => StringComparer.OrdinalIgnoreCase.Equals(w.App, handoff.Source.App)))

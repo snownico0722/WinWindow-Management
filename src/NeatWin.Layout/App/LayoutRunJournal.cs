@@ -104,6 +104,7 @@ internal sealed class LayoutRunJournal : IDisposable
                 var current = snapshot.ToDictionary(w => w.Handle);
                 var frame = _recorder?.Capture(snapshot) ?? _identity.Capture(snapshot);
                 var requested = pending.Observation;
+                // 验证前用户可能已接手。此时坐标不同不能证明目标应用拒绝移动，也不能作为下轮绕开它的依据。
                 bool intervened = pending.Intervened || NativeWindowActivity.IsMoving;
                 bool blocked = false;
                 bool smart = requested.Trigger is "explicit" or "automatic-gesture" or "automatic-workspace";

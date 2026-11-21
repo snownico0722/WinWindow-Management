@@ -218,14 +218,13 @@ internal static partial class IntentLayoutPlanner
         if (context.IsWorkspaceObservation && !context.ExplicitArrange && context.GestureAnchor == 0 &&
             context.Focus is { OpeningResidentLeft: null } orderedFocus && goals != null)
         {
-            // Reading widths may change on a focus switch. A pair that already spans two
-            // distinct sides can share the new budget without crossing paths.
             int main = Array.FindIndex(windows, v => v.Window.Handle == orderedFocus.Main);
             for (int j = 0; main >= 0 && j < windows.Length; j++)
             {
                 if (goals[j].Role != AttentionRole.Reference) continue;
                 var a = original[main]; var b = original[j];
                 double dx = CenterX(a) - CenterX(b), dy = CenterY(a) - CenterY(b);
+                // 焦点切换可以重新分配阅读宽度。保留两窗中心的相对次序，用户仍能在原来的方向找到参考窗。
                 if (Math.Abs(dx) > area.Width * .28 && a.VerticalOverlapRatio(b) >= .45 &&
                     dx * (CenterX(candidate.Rects[main]) - CenterX(candidate.Rects[j])) < 0) return false;
                 if (Math.Abs(dy) > area.Height * .28 && a.HorizontalOverlapRatio(b) >= .45 &&

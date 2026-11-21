@@ -110,6 +110,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
         {
             var tick = Environment.TickCount64;
             Trim(tick);
+            // 复制点击前的记录和接收后续事件共用同一把锁，恰逢点击发生的排布或手势就不会落在两段记录之间。
             return _capture = new(DateTimeOffset.Now, tick, _timer is not null, _windows.ToArray(), _decisions.ToArray(),
                 _gestures.ToArray(), _timer == null ? tick : Math.Max(_clearedAt, tick - LookbackMilliseconds));
         }

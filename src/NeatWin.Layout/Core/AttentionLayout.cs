@@ -161,6 +161,7 @@ internal static class AttentionLayout
     {
         if (first.IsEmpty || second.IsEmpty || area.IsEmpty) return false;
         double middle = area.Left + area.Width / 2d;
+        // 用较大窗口的面积衡量重叠，能区分两份叠放的正文和正文上方的小工具窗。
         return Math.Abs(first.Left + first.Width / 2d - middle) < area.Width * .10 &&
             Math.Abs(second.Left + second.Width / 2d - middle) < area.Width * .10 &&
             first.Intersect(second).Area >= .72 * Math.Max(first.Area, second.Area);
@@ -178,6 +179,7 @@ internal static class AttentionLayout
             context.Focus?.Navigation is { Length: > 0 } || context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true ||
             context.RulePairs?.Length > 0) return null;
         var area = group[0].Window.WorkArea;
+        // 在两个居中窗之间切回一次，可能只是翻回刚才看的内容。两边都有输入，或多次切换且各自有停留，才有更强的并排使用证据。
         if (group.Length == 2 && context.Focus is { Evidence: "recent-switch-pair" } focus &&
             !(focus.Companion != 0 && (group.All(v => context.Attention?.GetValueOrDefault(v.Window.Handle)?.Input >= .35) ||
                 focus.Switches >= 3 && group.All(v => context.Attention?.GetValueOrDefault(v.Window.Handle)?.Dwell >= .6))) &&
@@ -206,6 +208,7 @@ internal static class AttentionLayout
                 context.Placement?.Any(p => p.Window == window.Handle && p.Confidence >= .40) == true) return null;
             occupied += seen.Visible * frame.Area;
         }
+        // 两扇小窗也可能完全可见。再检查实际使用了多少工作区，给空白过多的桌面留下扩容机会。
         return occupied >= area.Area * .65 ? "workspace-already-readable" : null;
     }
 

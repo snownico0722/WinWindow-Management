@@ -53,6 +53,7 @@ internal sealed class IdleWindowReclaim
         idle.ExceptWith(plan.Layers.SelectMany(l => l.FrontToBack.Select(w => w.Handle)));
         if (idle.Count == 0) return null;
 
+        // 按本轮摆完的位置评估回收收益。若主窗移动后自己就能露出来，原先挡住它的窗口可以留着。
         var projected = TaskLayoutSession.Project(snapshot, plan);
         WindowSnapshot? best = null;
         double bestGain = .12;

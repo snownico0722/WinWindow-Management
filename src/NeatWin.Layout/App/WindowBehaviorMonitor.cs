@@ -367,6 +367,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
         return observed;
     }
 
+    // 用户给某一扇窗开启后台保持后，过去学到的关闭习惯要让步。核对实例身份，避免句柄复用后把保护带给另一扇窗。
     private bool KeepProtects(Observed source, WindowBehaviorAction action) =>
         action == WindowBehaviorAction.Close && _keepRunning?.Invoke(source.Window.Handle, source.Window.ProcessId,
             source.Behavior.ProcessStartedUtc, source.Class) == true;

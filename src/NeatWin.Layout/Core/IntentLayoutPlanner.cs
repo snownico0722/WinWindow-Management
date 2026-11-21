@@ -187,6 +187,7 @@ internal static partial class IntentLayoutPlanner
                     var breakdown = Breakdown(candidate);
                     var score = breakdown.Total;
                     audits.Add(new(candidate.Kind, score, null, breakdown, generation));
+                    // 先比较主窗能否阅读、副窗能否点到，再用总成本挑摆法。否则少挪几像素就可能压过露出一整扇参考窗的收益。
                     var priority = breakdown.Goal.CompareTo(bestGoal);
                     if (breakdown.Feedback == 0 && (priority < 0 || priority == 0 && score < bestScore &&
                         (bestGoal.CompareTo(baselineBreakdown.Goal) < 0 || score < baseline - threshold) ||

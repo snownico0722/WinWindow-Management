@@ -222,6 +222,7 @@ public sealed class AutomaticLayoutScheduler
         else
         {
             if (busy) { _lastChange = now; return null; }
+            // 已确认的开窗碰撞可以抢在常规静稳期之前处理。导航静默期仍优先，让用户有时间点开下一层内容。
             if (now < navigationSettleUntil || !openingReady && (now - _lastChange < SettleMilliseconds || now < _notBefore)) return null;
         }
         _pending = false; _manual.Clear(); _notBefore = now + MinimumIntervalMilliseconds;

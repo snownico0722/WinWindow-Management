@@ -33,12 +33,11 @@ internal static class OcclusionMetrics
             VisiblePieces(center, blockers).Sum(r => r.Area) / (double)Math.Max(1, center.Area), access, useful);
     }
 
-    // A readable rectangle can span the seams of the disjoint pieces used for area.
-    // Slide a strip of the required height up until it touches the frame or a blocker.
-    // For each such position, measure horizontal gaps in the union of blocked intervals.
+    // 一行正文可以跨过计算可见面积时留下的分块边界，因此要单独测量连续可读的宽度。
     private static int ClearWidth(RectI frame, RectI[] blockers, double heightFraction)
     {
         int height = (int)Math.Ceiling(frame.Height * heightFraction);
+        // 把一条无遮挡的横带向上平移，直到顶边碰到窗口顶端或某个遮挡物的底边，原有宽度仍然可用。只需枚举这些高度。
         int best = GapAt(frame.Top);
         foreach (var blocker in blockers)
         {

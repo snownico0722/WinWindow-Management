@@ -21,6 +21,7 @@ public static class WindowLayerSafety
 
         if (current.Any(w => w.Owner != 0 && (handles.Contains(w.Handle) || handles.Contains(w.Owner))))
         {
+            // 按候选顺序先推演一次层级。所有者窗口若盖住自己的对话框，用户可能看得到主窗却无法继续操作。
             var ranks = current.Select((w, i) => (w.Handle, i)).ToDictionary(p => p.Handle, p => p.i);
             for (int i = 0; i < desired.Count; i++) ranks[desired[i].Handle] = slots[i].i;
             foreach (var window in current)

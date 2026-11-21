@@ -28,6 +28,7 @@ internal sealed class PlacementHistoryStore(string directory)
             _key = File.ReadAllBytes(KeyPath);
         }
         if (_key.Length != 32) return null;
+        // 同一安装需要跨会话认出同一应用。用本机密钥派生稳定标识，使摆放记录可以关联样本并省去原始身份字符串。
         return Convert.ToHexString(HMACSHA256.HashData(_key, Encoding.UTF8.GetBytes(identity)))[..24];
     }
 

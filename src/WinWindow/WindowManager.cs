@@ -401,6 +401,7 @@ internal sealed class WindowManager
         var snapshot = owner.Original!;
         var baseline = new Dictionary<string, bool>(snapshot.OriginalAudioMutes!, StringComparer.Ordinal);
         var changes = current.Where(pair => pair.Value != value).ToDictionary();
+        // 同一进程会陆续出现新的音频会话。首次改动时记下各自的静音状态，多次切换后仍能还原到接管前。
         foreach (var (id, muted) in changes) baseline.TryAdd(id, muted);
         if (baseline.Count != snapshot.OriginalAudioMutes!.Count) Track(owner, s => s.OriginalAudioMutes = baseline);
         await Task.Run(() => _writeMutes(snapshot.Identity, changes, value));

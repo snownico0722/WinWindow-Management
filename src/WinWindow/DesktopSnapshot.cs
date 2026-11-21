@@ -136,6 +136,7 @@ internal static class DesktopSnapshot
         {
             var output = Path.Combine(directory, $"第{EditionNumber(edition)}版.zip");
             if (File.Exists(output) || Directory.Exists(output)) continue;
+            // ZIP 完整写好才占用版号。同名检查之后仍可能有别的导出先完成，因此以这次移动是否成功决定是否试下一个版号。
             try { File.Move(temporary, output); return output; }
             catch (IOException) when (File.Exists(output) || Directory.Exists(output)) { }
         }

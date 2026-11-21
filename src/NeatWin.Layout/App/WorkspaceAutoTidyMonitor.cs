@@ -117,6 +117,7 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
             {
                 if (Interlocked.Exchange(ref _foregroundChanged, 0) != 0)
                 {
+                    // 前台刚换过，短时缓存仍可能指向上一扇窗。下一次观察直接取现场，让进入的窗口尽早获得正确位置。
                     _freshCapture = true;
                     _timer.Interval = AutomaticLayoutScheduler.ReleaseRetryMilliseconds;
                 }

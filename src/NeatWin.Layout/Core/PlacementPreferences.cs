@@ -41,6 +41,7 @@ internal static class PlacementPreferences
             var indexed = Index(samples).ToLookup(item => (item.Sample.Display, item.Key));
             foreach (var monitor in entries.GroupBy(e => e.Window.MonitorHandle))
             {
+                // 同屏两份文档可能共用应用标识。只有标识唯一时才能把票投给具体窗口，否则一次左侧习惯会同时套到两份文档上。
                 var live = monitor.Select(e => (e.Window, Key: instance ? e.Instance : e.App))
                     .Where(e => !string.IsNullOrEmpty(e.Key)).GroupBy(e => e.Key!)
                     .Where(g => g.Count() == 1).ToDictionary(g => g.Key, g => g.First().Window);

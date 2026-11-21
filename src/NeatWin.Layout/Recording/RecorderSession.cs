@@ -543,6 +543,7 @@ internal sealed class RecorderSession : IDisposable
             _lastPlan[move.Window.Handle] = new(_identity.Id(move.Window), request, tick, move.Window.VisualRect, move.TargetVisualRect);
             var pending = _pending.LastOrDefault(p => p.Handle == move.Window.Handle && !p.Superseded);
             if (pending == null) continue;
+            // 松手后的辅助吸附会改变实测终点。只关联同一进程、同一落点的手势请求，才能把原始手势与辅助结果分别记录。
             pending.AssistedTarget = (trigger is "automatic-gesture" or "follow-hand") && !application.Interrupted &&
                 pending.ProcessId == move.Window.ProcessId && pending.Observation.End == move.Window.VisualRect &&
                 application.Failures.All(f => f.Move.Window.Handle != move.Window.Handle) ? move.TargetVisualRect : null;

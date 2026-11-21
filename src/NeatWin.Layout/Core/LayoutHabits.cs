@@ -171,6 +171,7 @@ public sealed class ForegroundHistory
                 double center = rect.Left + rect.Width / 2d;
                 double middle = other.WorkArea.Left + other.WorkArea.Width / 2d;
                 bool centralStack = AttentionLayout.IsCentralStack(rect, incoming, other.WorkArea);
+                // 两扇旧窗可能一直叠在中央。近期的创建或显示事件能佐证一次开窗，单凭切到前台就拆开它们会打断阅读。
                 if (centralStack)
                 {
                     var key = (front.Handle, front.ProcessId);
@@ -572,6 +573,7 @@ public static class LayoutHabits
         double? partnerWidth = partner == null ? null :
             Math.Clamp(partner.Rect.Width / (double)o.WorkArea.Width, .05, 1);
         int tolerance = Math.Max(3, (int)Math.Round(4 * o.Dpi / 96d));
+        // 拖一条边也会改变窗口中心。两条边同向移动才给位置偏好投票，宽度和高度各看自己的变化量。
         int leftDelta = o.End.Left - o.Start.Left, rightDelta = o.End.Right - o.Start.Right;
         var edited = Math.Abs(o.End.Width - o.Start.Width) > tolerance ? HorizontalEdit.Width : HorizontalEdit.None;
         if (Math.Sign(leftDelta) == Math.Sign(rightDelta) && Math.Min(Math.Abs(leftDelta), Math.Abs(rightDelta)) > tolerance)

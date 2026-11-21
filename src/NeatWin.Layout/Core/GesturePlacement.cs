@@ -24,6 +24,7 @@ internal static class GesturePlacement
         double dy = a.Top - gesture.StartRect.Top;
         var travel = Math.Max(Math.Max(Math.Abs(dx), Math.Abs(dy)), Math.Max(
             Math.Abs(a.Right - gesture.StartRect.Right), Math.Abs(a.Bottom - gesture.StartRect.Bottom)));
+        // 轻微挪动常用于微调。按 DPI 换算位移，避免同一个动作在高缩放显示器上意外触发贴边或放大。
         if (travel < 24 * scale) return context;
         var (left, right, center) = preview?.Exact(gesture) == true ? preview.Directions() : Directions(gesture, scale);
         int centerX = area.Left + area.Width / 2;

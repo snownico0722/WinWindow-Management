@@ -13,6 +13,7 @@ internal static class NativeWindowActivity
 
     internal static bool SuspendsWorkspace(nint foreground)
     {
+        // 工作台被排除在布局采样之外。用户进设置时必须中断旧任务，否则残留的应用焦点会继续移动背后的窗口。
         if (IsShellForeground(foreground) || AutomationGuard.IsUtility(foreground)) return true;
         NativeMethods.GetWindowThreadProcessId(foreground, out uint pid);
         return pid == 0 || pid == Environment.ProcessId;

@@ -203,6 +203,7 @@ internal sealed class DesktopIntegration : IDisposable
 
     public void ApplyHotkeys(Dictionary<string, string> settings)
     {
+        // 两个动作可能互换快捷键，旧绑定会占着新方案要用的键。整组释放后再注册，遇到占用时尝试恢复旧方案。
         foreach (int id in _actions.Keys) Native.UnregisterHotKey(_hwnd, id);
         try { _actions = Register(settings); _hotkeys = new(settings); }
         catch { _actions = Register(_hotkeys); throw; }
