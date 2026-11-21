@@ -179,7 +179,7 @@ internal static class AttentionLayout
             if (target.Role is not (AttentionRole.Main or AttentionRole.Reference) ||
                 frame.Intersect(area) != frame || seen.Visible < .90 || seen.CenterVisible < .94 ||
                 seen.AccessWidth < target.AccessWidth || seen.UsefulWidth < target.Width * .84 ||
-                seen.Visible * frame.Area / Math.Max(1, seen.UsefulWidth) < target.Height * .84 ||
+                seen.UsefulHeight(frame) < target.Height * .84 ||
                 target.MinimumFrameWidth > frame.Width ||
                 context.Placement?.Any(p => p.Window == window.Handle && p.Confidence >= .40) == true) return false;
             occupied += seen.Visible * frame.Area;

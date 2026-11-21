@@ -9,7 +9,11 @@ internal static class OcclusionMetrics
 {
     internal const double HorizontalInsetFraction = .18;
 
-    internal sealed record Exposure(double Visible, double CenterVisible, int AccessWidth, int UsefulWidth);
+    internal sealed record Exposure(double Visible, double CenterVisible, int AccessWidth, int UsefulWidth)
+    {
+        internal double UsefulHeight(RectI frame) =>
+            Math.Min(frame.Height, frame.Area * Visible / Math.Max(1, UsefulWidth));
+    }
 
     internal static Exposure Measure(RectI rect, IEnumerable<RectI> occluders, uint dpi)
     {

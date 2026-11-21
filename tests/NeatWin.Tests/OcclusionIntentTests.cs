@@ -97,6 +97,7 @@ public sealed class OcclusionIntentTests
         var right = new RectI(960, 500, 40, 40);
         var exposure = OcclusionMetrics.Measure(frame, [left, right], 96);
         Assert.Equal(960, exposure.UsefulWidth);
+        Assert.Equal(frame.Height, exposure.UsefulHeight(frame));
         Assert.Equal(1000, exposure.AccessWidth);
         Assert.Equal(exposure, OcclusionMetrics.Measure(frame, [right, left], 96));
         Assert.Equal(450, OcclusionMetrics.Measure(frame, [new(450, 0, 100, 800)], 96).UsefulWidth);

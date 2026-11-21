@@ -408,7 +408,7 @@ internal static partial class IntentLayoutPlanner
                     continuity += 8 * stability * (displacement + resize);
                 }
                 double exposedWidth = Math.Min(exposure.UsefulWidth, b.Width);
-                double exposedHeight = Math.Min(b.Height, b.Area * exposure.Visible / Math.Max(1, exposedWidth));
+                double exposedHeight = exposure.UsefulHeight(b);
                 if (target.Role is AttentionRole.Main or AttentionRole.Reference &&
                     context.VideoHint?.WindowHandle != w.Handle)
                 {
