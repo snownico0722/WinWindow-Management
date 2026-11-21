@@ -97,6 +97,8 @@ internal static partial class IntentLayoutPlanner
                             AddDisplayLayouts(candidates, group, original, packingArea, task, options, groupContext, hint.GapPixels, order);
                 }
                 AddAccessRepairs(candidates, group, original, beforeExposure, obstacles, area, hint.GapPixels, order);
+                if (localOnly && groupContext.PairPlanningEnabled)
+                    AddCoveredWorkingPairRepair(candidates, group, original, obstacles, area, hint.GapPixels, groupContext, order);
                 if (groupContext.PairPlanningEnabled && group.Length == 1 &&
                     groupContext.Placement?.FirstOrDefault(p => p.Window == group[0].Window.Handle) is { Confidence: > .40 } habit)
                 {

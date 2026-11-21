@@ -381,6 +381,22 @@ var soloPlan = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer()
 Check(soloPlan.Groups is [{ Handles: [1] }] && soloPlan.Moves.All(m => m.Window.Handle == 1),
     "a covered background window stays put when only the foreground belongs to the current task");
 
+var observedStack = new[]
+{
+    AttentionWindow(1, new(1656, 156, 904, 1071)),
+    AttentionWindow(2, new(1113, 280, 1472, 928)),
+    AttentionWindow(3, focusArea) with { IsManageable = false, IsResizable = false },
+};
+var stackVisible = new VisibilityAnalyzer().SelectForManualArrange(observedStack, true);
+var gentle = new TidyOptions(SmartStrength: SmartTidyStrength.Gentle);
+var opened = LayoutDispatch.Create(LayoutRoute.Smart, stackVisible, gentle, null, observedStack, workingContext);
+Check(opened.Moves is [{ Window.Handle: 2, TargetVisualRect: var separatedRect }] &&
+    separatedRect.Width == observedStack[1].VisualRect.Width && separatedRect.Height == observedStack[1].VisualRect.Height &&
+    separatedRect.Intersect(observedStack[0].VisualRect).IsEmpty && separatedRect.Intersect(focusArea) == separatedRect,
+    "conservative Smart opens a severely covered active pair at full size over a maximized background");
+var parked = LayoutDispatch.Create(LayoutRoute.Smart, stackVisible, gentle, null, observedStack, soloContext);
+Check(parked.Moves.Count == 0, "the same severe stack stays in place if the rear window is outside the task");
+
 var videoWindow = Window(1, new(100, 100, 1200, 800));
 var videoHint = new VideoBlackBarHint(1, VideoBlackBarOrientation.Horizontal, 2, new(150, 190, 1100, 620), .95);
 var videoContext = workingContext with { Focus = new(1, 0, 0), VideoHint = videoHint };

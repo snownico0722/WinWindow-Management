@@ -56,6 +56,34 @@ internal static partial class IntentLayoutPlanner
             .Select(columns => Math.Clamp(columns, 1, count)).Distinct();
     }
 
+    private static void AddCoveredWorkingPairRepair(List<Candidate> candidates, VisibleWindow[] windows, RectI[] original,
+        WindowSnapshot[] obstacles, RectI area, int gap, TaskLayoutContext context, int[] order)
+    {
+        if (context.Focus is not { Main: not 0, Companion: not 0 } focus) return;
+        int main = Array.FindIndex(windows, v => v.Window.Handle == focus.Main);
+        int companion = Array.FindIndex(windows, v => v.Window.Handle == focus.Companion);
+        if (main < 0 || companion < 0 || main == companion) return;
+
+        int front = Math.Min(main, companion), rear = Math.Max(main, companion);
+        var covered = original[rear];
+        var cover = original[front];
+        if (!CoversHalfOfRear(cover, covered)) return;
+
+        // Open a severely covered task window at full size without moving the front window.
+        // Surfaces below the target do not take away its available space.
+        var paddedCover = RectI.FromEdges(cover.Left - gap, cover.Top - gap, cover.Right + gap, cover.Bottom + gap);
+        var occupied = original.Where((_, i) => i < rear && i != front).Append(paddedCover)
+            .Concat(obstacles.Where(w => w.ZOrder < windows[rear].Window.ZOrder).Select(w => w.VisualRect));
+        foreach (var free in RectRegion.FreeRectangles(area, occupied, covered.Width, covered.Height))
+        {
+            var target = covered with { X = Math.Clamp(covered.X, free.Left, free.Right - covered.Width),
+                Y = Math.Clamp(covered.Y, free.Top, free.Bottom - covered.Height) };
+            var layout = original.ToArray();
+            layout[rear] = target;
+            candidates.Add(new("working-pair-access", layout, order));
+        }
+    }
+
     private static void AddDisplayLayouts(List<Candidate> candidates, VisibleWindow[] windows, RectI[] original,
         RectI area, TaskEvidence[] relations, TidyOptions options, TaskLayoutContext context, int gap, int[] order)
     {
