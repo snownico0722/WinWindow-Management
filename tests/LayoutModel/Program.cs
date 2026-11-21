@@ -374,6 +374,12 @@ Check(workingPlan.Moves.Count > 0 && Placed(workingPlan, coveredTask[0]).Height 
     Placed(workingPlan, coveredTask[0]).Intersect(Placed(workingPlan, coveredTask[1])).Area <
     coveredTask[0].VisualRect.Intersect(coveredTask[1].VisualRect).Area,
     "automatic arrangement still repairs real occlusion between two task windows");
+var soloContext = workingContext with { Focus = new(1, 0, 0),
+    Attention = new Dictionary<nint, LayoutAttention> { [1] = workingAttention[1] } };
+var soloPlan = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(coveredTask, true),
+    new(SmartStrength: SmartTidyStrength.Assertive), null, coveredTask, soloContext);
+Check(soloPlan.Groups is [{ Handles: [1] }] && soloPlan.Moves.All(m => m.Window.Handle == 1),
+    "a covered background window stays put when only the foreground belongs to the current task");
 
 var videoWindow = Window(1, new(100, 100, 1200, 800));
 var videoHint = new VideoBlackBarHint(1, VideoBlackBarOrientation.Horizontal, 2, new(150, 190, 1100, 620), .95);
