@@ -417,6 +417,16 @@ internal static class SmokeTests
             shell.UpdateLayout(); Capture(shell, Path.Combine(output, "settings-layout.png"));
             Assert(((TextBlock)shell.FindName("LayoutModelNumber")).Text == NeatWin.Core.LayoutDispatch.ModelVersion(layoutSettings.LoadTidyOptions().AlgorithmMode) &&
                 ((TextBlock)shell.FindName("LearningModelNumber")).Text == NeatWin.Core.PlacementPreferences.ModelVersion, "desktop settings show both runtime model versions");
+            var algorithms = ((Panel)shell.FindName("AlgorithmChoices")).Children.OfType<RadioButton>().ToArray();
+            foreach (string mode in new[] { "Classic", "Smart" })
+            {
+                var choice = algorithms.Single(x => (string)x.Tag == mode);
+                choice.IsChecked = true;
+                choice.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                await WaitAsync("model version follows algorithm selection: " + mode, () =>
+                    layoutSettings.LoadTidyOptions().AlgorithmMode.ToString() == mode &&
+                    ((TextBlock)shell.FindName("LayoutModelNumber")).Text.StartsWith(mode, StringComparison.Ordinal));
+            }
             OpenSection("ViewingSection");
             await WaitAsync("calibration has a separate working page", () => ((CheckBox)shell.FindName("Calibrate")).IsVisible && !layoutPage.IsVisible);
             OpenSection("DataSection");

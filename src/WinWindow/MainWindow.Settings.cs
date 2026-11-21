@@ -88,8 +88,6 @@ public partial class MainWindow
         var o = value.Options;
         var b = value.Behavior;
         var p = value.Task.Profile;
-        LayoutModelNumber.Text = LayoutDispatch.ModelVersion(o.AlgorithmMode);
-        LearningModelNumber.Text = PlacementPreferences.ModelVersion;
         Choose(AlgorithmChoices, o.AlgorithmMode);
         Choose(StrengthChoices, o.SmartStrength);
         Choose(VideoChoices, b.VideoBlackBarTendency);
@@ -120,6 +118,8 @@ public partial class MainWindow
 
     private void UpdateLayoutFields(LayoutPreferences value)
     {
+        LayoutModelNumber.Text = LayoutDispatch.ModelVersion(value.Options.AlgorithmMode);
+        LearningModelNumber.Text = PlacementPreferences.ModelVersion;
         bool smart = value.Options.AlgorithmMode == TidyAlgorithmMode.Smart;
         SmartOptions.Visibility = smart ? Visibility.Visible : Visibility.Collapsed;
         ClassicOptions.Visibility = smart ? Visibility.Collapsed : Visibility.Visible;
