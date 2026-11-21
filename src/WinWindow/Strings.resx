@@ -204,6 +204,10 @@
   <data name="ShowMainWindow" xml:space="preserve"><value>显示 / 隐藏主窗口</value></data>
   <data name="Smart" xml:space="preserve"><value>智能整理</value></data>
   <data name="StartWithWindows" xml:space="preserve"><value>开机自动启动</value></data>
+  <data name="RunAsAdministrator" xml:space="preserve"><value>以管理员权限启动</value></data>
+  <data name="RunAsAdministratorHint" xml:space="preserve"><value>下次启动生效。若取消 Windows 权限确认，本次以普通权限打开。</value></data>
+  <data name="AdministratorLaunchFailed" xml:space="preserve"><value>请求管理员权限失败，已按普通权限启动。{0}</value></data>
+  <data name="AdministratorProcessMissing" xml:space="preserve"><value>Windows 未返回新的程序进程。</value></data>
   <data name="StyleRejected" xml:space="preserve"><value>目标未接受窗口样式修改。</value></data>
   <data name="TargetReplaced" xml:space="preserve"><value>目标窗口已关闭或已被替换。</value></data>
   <data name="ThroughRejected" xml:space="preserve"><value>窗口未接受鼠标穿透设置。</value></data>
@@ -260,7 +264,9 @@
   <data name="RuleImportFailed" xml:space="preserve"><value>导入规则失败。{0}</value></data>
   <data name="JsonFilter" xml:space="preserve"><value>JSON 规则|*.json</value></data>
   <data name="CurrentSnapshot" xml:space="preserve"><value>当前快照</value></data>
-  <data name="CurrentSnapshotHint" xml:space="preserve"><value>记录接下来 10 秒的窗口变化，在桌面生成 ZIP。包含窗口标题。</value></data>
+  <data name="CurrentSnapshotHint" xml:space="preserve"><value>在桌面生成 ZIP。包含接下来 10 秒的窗口变化和标题，开启追溯时还会附上过去 1 分钟。</value></data>
+  <data name="SnapshotLookback" xml:space="preserve"><value>快照追溯记录</value></data>
+  <data name="SnapshotLookbackHint" xml:space="preserve"><value>在内存中保留最近 1 分钟的窗口位置、标题和整理决策，点击「当前快照」时一并导出。关闭后清空本次追溯记录。</value></data>
   <data name="SnapshotCapturing" xml:space="preserve"><value>正在采集 10 秒窗口快照…</value></data>
   <data name="SnapshotSaved" xml:space="preserve"><value>已保存到桌面 · {0}</value></data>
   <data name="SnapshotDesktopMissing" xml:space="preserve"><value>找不到 Windows 桌面文件夹。</value></data>

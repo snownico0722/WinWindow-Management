@@ -1,8 +1,11 @@
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -15,6 +18,8 @@ namespace WinWindow;
 
 public partial class App : Application
 {
+    private const int ElevationCancelled = 1223;
+    private const string ElevationHandoff = "--elevation-parent";
     private Mutex? _instance;
     private bool _ownsInstance;
     protected override async void OnStartup(StartupEventArgs e)
@@ -30,6 +35,15 @@ public partial class App : Application
             }
             bool dev = e.Args.Contains("--dev");
             string title = dev ? "WinWindow Management · Dev" : "WinWindow Management";
+            bool isAdministrator = IsAdministrator();
+            string? handoffDirectory = null;
+            if (isAdministrator && e.Args.Length >= 3 && e.Args[^3] == ElevationHandoff &&
+                int.TryParse(e.Args[^2], NumberStyles.None, CultureInfo.InvariantCulture, out int parentId) &&
+                parentId > 0 && parentId != Environment.ProcessId)
+            {
+                await WaitForStartupParentAsync(parentId);
+                handoffDirectory = e.Args[^1];
+            }
             try { _instance = new Mutex(true, @"Local\WinWindow.Management." + (dev ? "dev" : "main"), out _ownsInstance); }
             catch (UnauthorizedAccessException) { _ownsInstance = false; }
             if (!_ownsInstance)
@@ -52,6 +66,18 @@ public partial class App : Application
             string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), dev ? "WinWindow-Management-dev" : "WinWindow-Management");
             int dataIndex = Array.IndexOf(e.Args, "--data-dir");
             if (dev && dataIndex >= 0 && dataIndex + 1 < e.Args.Length) directory = Path.GetFullPath(e.Args[dataIndex + 1]);
+            directory = handoffDirectory ?? directory;
+            string? elevationError = null;
+            if (!isAdministrator && StateStore.RequestAdministratorOnLaunch(directory))
+            {
+                try
+                {
+                    await Task.Run(() => RelaunchAsAdministrator(e.Args, directory));
+                    Shutdown(); return;
+                }
+                catch (Win32Exception ex) when (ex.NativeErrorCode == ElevationCancelled) { }
+                catch (Exception ex) when (ex is Win32Exception or InvalidOperationException) { elevationError = ex.Message; }
+            }
             var store = new StateStore(directory);
             var window = new MainWindow(store) { Title = title };
             MainWindow = window;
@@ -62,6 +88,7 @@ public partial class App : Application
             if (e.Args.Contains("--minimized")) new WindowInteropHelper(window).EnsureHandle();
             else window.Show();
             await window.InitializeAsync();
+            if (elevationError is not null) window.ShowStatus(UiText.Format("AdministratorLaunchFailed", elevationError));
         }
         catch (Exception exception)
         {
@@ -69,6 +96,35 @@ public partial class App : Application
             Shutdown(1);
         }
     }
+
+    private static bool IsAdministrator()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+    }
+
+    private static async Task WaitForStartupParentAsync(int parentId)
+    {
+        // The original instance keeps the lock while Windows waits for confirmation.
+        Process parent;
+        try { parent = Process.GetProcessById(parentId); }
+        catch (ArgumentException) { return; } // The parent already exited.
+        using (parent) await parent.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    private static void RelaunchAsAdministrator(string[] args, string dataDirectory)
+    {
+        string executable = Environment.ProcessPath ?? throw new InvalidOperationException(UiText.Get("MissingExePath"));
+        var start = new ProcessStartInfo(executable) { UseShellExecute = true, Verb = "runas" };
+        if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
+            start.ArgumentList.Add(Path.GetFullPath(Environment.GetCommandLineArgs()[0]));
+        foreach (string arg in args) start.ArgumentList.Add(arg);
+        start.ArgumentList.Add(ElevationHandoff);
+        start.ArgumentList.Add(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
+        start.ArgumentList.Add(dataDirectory);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException(UiText.Get("AdministratorProcessMissing"));
+    }
+
     private static void PublishFixtureHandle(string path, nint hwnd)
     {
         // Readers treat the marker's existence as readiness. Publish it only after its writer closes.

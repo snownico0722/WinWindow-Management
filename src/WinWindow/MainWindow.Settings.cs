@@ -59,7 +59,7 @@ public partial class MainWindow
 
     private async Task ReadLayoutSettingsAsync()
     {
-        LayoutSection.IsEnabled = DataSection.IsEnabled = PlacementSection.IsEnabled = BehaviorSection.IsEnabled = FooterModes.IsEnabled = false;
+        LayoutSection.IsEnabled = ActivityRecordSettings.IsEnabled = PlacementSection.IsEnabled = BehaviorSection.IsEnabled = FooterModes.IsEnabled = false;
         try
         {
             var snapshot = await EnsureLayout().ReadSettingsAsync();
@@ -72,7 +72,7 @@ public partial class MainWindow
         finally
         {
             FooterModes.IsEnabled = true;
-            LayoutSection.IsEnabled = DataSection.IsEnabled = PlacementSection.IsEnabled = BehaviorSection.IsEnabled = _layoutPreferences is not null;
+            LayoutSection.IsEnabled = ActivityRecordSettings.IsEnabled = PlacementSection.IsEnabled = BehaviorSection.IsEnabled = _layoutPreferences is not null;
         }
     }
 
@@ -389,6 +389,16 @@ public partial class MainWindow
         catch (Exception ex) { await LoadLayoutSettingsAsync(); ShowStatus(ex.Message); }
     }
 
+    private void UpdateSnapshotLookback() => SnapshotHistory.SetEnabled(_store.Preferences.SnapshotLookbackEnabled,
+        _hwnd, () => System.Threading.Volatile.Read(ref _snapshotManaged));
+
+    private void SnapshotLookback_Click(object sender, RoutedEventArgs e)
+    {
+        _store.Preferences.SnapshotLookbackEnabled = SnapshotLookbackSwitch.IsChecked == true;
+        UpdateSnapshotLookback();
+        _store.SaveSoon();
+    }
+
     private async void OpenData_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().OpenDataAsync());
     private async void ExportData_Click(object sender, RoutedEventArgs e)
     {
@@ -398,6 +408,6 @@ public partial class MainWindow
     private async void ClearData_Click(object sender, RoutedEventArgs e)
     {
         if (MessageBox.Show(this, UiText.Get("ClearQuestion"), UiText.Get("ClearRecords"), MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK)
-            await RunAsync(async () => { await EnsureLayout().ClearAsync(); ShowStatus(UiText.Get("RecordsCleared")); });
+            await RunAsync(async () => { SnapshotHistory.Clear(); await EnsureLayout().ClearAsync(); ShowStatus(UiText.Get("RecordsCleared")); });
     }
 }

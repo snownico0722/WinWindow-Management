@@ -46,7 +46,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private bool _tidyRunning;
     private readonly ForegroundHistory _focus;
 
-    internal NeatWinApplicationContext(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged, Action<bool>? undoChanged, CancellationToken stopping, ForegroundHistory? focus = null)
+    internal NeatWinApplicationContext(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged,
+        Action<bool>? undoChanged, CancellationToken stopping, ForegroundHistory? focus = null,
+        Action<LayoutRunObservation>? snapshotObserver = null)
     {
         _stopping = stopping;
         _focus = focus ?? new();
@@ -62,8 +64,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _smartBehaviorOptions = _settingsStore.LoadSmartBehaviorOptions();
         _verticalFillManager = new ReversibleVerticalFillManager();
         _autoTidyManager = new AutoTidyManager();
+        _autoTidyManager.TaskInput += _focus.Interact;
         _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) { VisualSampling = _settingsStore.VisualSampling };
-        _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder);
+        _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder, snapshotObserver);
         _behaviorMonitor = new(_windowManager, _referenceStore, _settingsStore, _recorder,
             () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.IsMoving);
         _useImportedPlacement = _settingsStore.UseImportedPlacement;
@@ -118,7 +121,6 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _taskPreferences, _referenceStore.Enabled, _recorder.VisualSampling, _useImportedPlacement);
     internal RecorderStatus Recorder => _recorder.Status;
     internal BehaviorSettings Behavior => _behaviorMonitor.Status;
-    internal void ObserveSnapshot(Action<LayoutRunObservation>? observer) => _journal.SnapshotObserver = observer;
     internal void SetBehaviorLearning(bool enabled) => _behaviorMonitor.SetLearning(enabled);
     internal void SetBehaviorEnabled(string id, bool enabled) => _behaviorMonitor.SetEnabled(id, enabled);
     internal void ImportBehaviorRules(string path) => _behaviorMonitor.ImportRules(path);
@@ -197,10 +199,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         if (!_workspaceMonitor.SetMode(mode, arrangeNow))
         {
             _autoTidyManager.Enabled = false;
+            _autoTidyManager.SetAttentionInput(false);
             return false;
         }
-        // Only the legacy light mode needs pointer sampling; full Smart does not.
+        // Full Smart uses discrete interaction events. Continuous samples are for follow-hand.
         _autoTidyManager.Enabled = mode == AutomaticLayoutMode.LightAssist;
+        _autoTidyManager.SetAttentionInput(AutomaticLayoutPolicy.UsesFullPlanner(mode));
         return true;
     }
 
@@ -284,7 +288,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 _recorder.SetLiveSensing(_automaticMode, manualRequest: explicitSmart);
                 var rules = _referenceStore.Rules.Read();
                 var activities = _recorder.LiveActivities(snapshot);
-                var focus = _focus.Resolve(snapshot, Environment.TickCount64);
+                var focus = _focus.Resolve(snapshot, Environment.TickCount64, out var attention);
                 var liveHints = _recorder.LiveHints(snapshot);
                 if (videoHint is { Confidence: >= .82 })
                 {
@@ -311,6 +315,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 {
                     PreferReversibleVerticalFill = _smartBehaviorOptions.PreferReversibleVerticalFill,
                     Focus = focus,
+                    Attention = attention,
                     WindowHints = liveHints,
                     VideoHint = videoHint is { Confidence: >= .82 } ? videoHint : null,
                     Rules = _useImportedPlacement ? rules : rules with { Pairs = [], RolePairs = [], AppSlots = [] }, Activities = activities,
@@ -318,6 +323,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     RulePairs = pairs,
                     SizeFloors = floors,
                 };
+                if (trigger == "automatic-gesture" && taskContext.GestureAnchor != 0 && taskContext.GestureAnchor != focus.Main)
+                    taskContext = taskContext with { Focus = new(taskContext.GestureAnchor, 0, 0, "manual-gesture") };
                 var reference = _referenceStore.Read();
                 // Save the learned inputs separately so an offline rule edit can replace an old slot.
                 recordedContext = taskContext with { Placement = learned };
@@ -433,12 +440,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private static string KindName(string kind) => kind switch
     {
         "full-tiling" => LayoutText.Get("Tiled"), "tiling-insufficient-space" => LayoutText.Get("InsufficientSpace"),
-        "window-access" => LayoutText.Get("WindowAccess"), "display-reflow" => LayoutText.Get("DisplayReflow"),
+        "window-access" or "working-pair-access" => LayoutText.Get("WindowAccess"), "display-reflow" => LayoutText.Get("DisplayReflow"),
         "learned-position" => LayoutText.Get("LearnedPosition"),
         "working-overlap" => LayoutText.Get("WorkingOverlap"),
         "working-pair" => LayoutText.Get("WorkingPair"), "working-region" => LayoutText.Get("WatchedRegion"),
         "task-vertical-fill" => LayoutText.Get("ReversibleFill"),
-        "task-edge" => LayoutText.Get("SharedEdge"), "task-fit" => LayoutText.Get("ContentFit"), "task-bleed" => LayoutText.Get("EdgeBleed"),
+        "task-edge" => LayoutText.Get("SharedEdge"), "task-fit" or "working-pair-grow" => LayoutText.Get("ContentFit"), "task-bleed" => LayoutText.Get("EdgeBleed"),
         "task-columns" => LayoutText.Get("KeepColumns"), "rescue" => LayoutText.Get("RescueArea"),
         "edge-row" => LayoutText.Get("EdgeRow"), "stack" => LayoutText.Get("Stack"), "restack" => LayoutText.Get("Restack"),
         "columns" => LayoutText.Get("Columns"), "rows" => LayoutText.Get("Rows"), "grid" => LayoutText.Get("Grid"), "local" => LayoutText.Get("LocalAdjust"), _ => LayoutText.Get("PreservePlacement"),

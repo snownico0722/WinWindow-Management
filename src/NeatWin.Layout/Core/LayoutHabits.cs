@@ -13,19 +13,29 @@ public sealed record PlacementPreference(nint Window, nint Partner, double Cente
 
 public sealed record LayoutFocus(nint Main, nint Companion, int Switches, string Evidence = "recent-switch-pair");
 
+public sealed record LayoutAttention(double Recency, double Dwell, double Input, double Association, bool Foreground)
+{
+    public double Weight => Foreground ? 1 : Math.Clamp(Recency * (.70 + .15 * Dwell) + .35 * Input, 0, 1);
+}
+
 public sealed class ForegroundHistory
 {
+    internal const double WorkingAttention = .50;
+    private const int AttentionHalfLifeMilliseconds = 12_000;
     private readonly List<(nint Handle, uint Pid, long Time)> _visits = [];
+    private readonly Dictionary<(nint Handle, uint Pid), long> _input = new();
 
     public void Visit(nint handle, uint pid, long now)
     {
-        if (handle == 0 || pid == 0 || pid == Environment.ProcessId) return;
+        if (handle == 0 || pid == 0) return;
+        // Opening WinWindow ends the foreground dwell without creating a task window.
+        if (pid == Environment.ProcessId) { handle = 0; pid = 0; }
         lock (_visits)
         {
             if (_visits.Count > 0 && _visits[^1].Handle == handle && _visits[^1].Pid == pid)
                 return;
             // Collapse transient Alt+Tab pass-throughs (A -> B -> C where B dwelled < 450ms and A != C).
-            if (_visits.Count >= 2 && _visits[^1].Handle != 0 && _visits[^2].Handle != handle &&
+            if (handle != 0 && _visits.Count >= 2 && _visits[^1].Handle != 0 && _visits[^2].Handle != handle &&
                 now - _visits[^1].Time is >= 0 and < 450)
                 _visits.RemoveAt(_visits.Count - 1);
             _visits.Add((handle, pid, now));
@@ -36,20 +46,64 @@ public sealed class ForegroundHistory
     public void Retire(nint handle)
     {
         lock (_visits)
+        {
             // Keep the interruption in the sequence without trusting a reused handle.
             for (var i = 0; i < _visits.Count; i++)
                 if (_visits[i].Handle == handle) _visits[i] = (0, 0, _visits[i].Time);
+            foreach (var key in _input.Keys.Where(key => key.Handle == handle).ToArray()) _input.Remove(key);
+        }
     }
 
-    public LayoutFocus Resolve(IReadOnlyList<WindowSnapshot> windows, long now)
+    internal void Interact(nint handle, uint pid, long now)
+    {
+        if (handle == 0 || pid == 0 || pid == Environment.ProcessId) return;
+        lock (_visits)
+        {
+            if (_input.Count >= 128 && !_input.ContainsKey((handle, pid)))
+                _input.Remove(_input.MinBy(x => x.Value).Key);
+            _input[(handle, pid)] = now;
+        }
+    }
+
+    public LayoutFocus Resolve(IReadOnlyList<WindowSnapshot> windows, long now) => Resolve(windows, now, out _);
+
+    internal LayoutFocus Resolve(IReadOnlyList<WindowSnapshot> windows, long now, out Dictionary<nint, LayoutAttention> attention)
     {
         lock (_visits)
         {
             var valid = windows.Where(w => w.IsManageable).ToDictionary(w => w.Handle);
             bool IsCurrentVisit((nint Handle, uint Pid, long Time) v) => now - v.Time is >= 0 and <= 600_000 &&
                 valid.TryGetValue(v.Handle, out var w) && w.ProcessId == v.Pid;
-            var main = valid.Values.FirstOrDefault(w => w.IsForeground)?.Handle ??
-                _visits.LastOrDefault(IsCurrentVisit).Handle;
+            static double Decay(long elapsed, int halfLife = AttentionHalfLifeMilliseconds) => Math.Pow(.5, elapsed / (double)halfLife);
+            attention = new();
+            var foreground = windows.FirstOrDefault(w => w.IsForeground);
+            bool hasForeground = foreground?.IsManageable == true;
+            int foregroundVisit = hasForeground ? _visits.FindLastIndex(v => v.Handle == foreground!.Handle &&
+                v.Pid == foreground.ProcessId && v.Time <= now) : -1;
+            long foregroundSince = foregroundVisit >= 0 ? _visits[foregroundVisit].Time : now;
+            bool establishedTask = hasForeground && now - foregroundSince >= 6_000 &&
+                _input.TryGetValue((foreground!.Handle, foreground.ProcessId), out long currentInput) &&
+                currentInput >= foregroundSince && now - currentInput is >= 0 and <= 4_000;
+            double InputFor(WindowSnapshot w) => _input.TryGetValue((w.Handle, w.ProcessId), out var tick) &&
+                now - tick is >= 0 and <= 15_000 ? Decay(now - tick, 5_000) : 0;
+            for (var i = _visits.Count - 1; i >= 0; i--)
+            {
+                var visit = _visits[i];
+                if (!IsCurrentVisit(visit) || attention.ContainsKey(visit.Handle)) continue;
+                var end = i + 1 < _visits.Count ? Math.Clamp(_visits[i + 1].Time, visit.Time, now) : now;
+                var dwell = Math.Min(1, (end - visit.Time) / 4000d);
+                double input = InputFor(valid[visit.Handle]);
+                int halfLife = establishedTask && end <= foregroundSince && input < .5 ? 5_000 : AttentionHalfLifeMilliseconds;
+                attention.Add(visit.Handle, new(Decay(now - end, halfLife), dwell, input, 0, visit.Handle == foreground?.Handle));
+            }
+            foreach (var w in valid.Values)
+                if (!attention.ContainsKey(w.Handle) && (w.IsForeground || InputFor(w) > 0))
+                    attention.Add(w.Handle, new(0, 0, InputFor(w), 0, w.IsForeground));
+            // A maximized/full-screen task is still the task even though we cannot move it.
+            if (foreground is { IsManageable: false, SurfaceState: not null }) return new(0, 0, 0);
+            var latest = _visits.LastOrDefault(IsCurrentVisit).Handle;
+            var main = hasForeground ? foreground!.Handle :
+                attention.GetValueOrDefault(latest)?.Weight >= WorkingAttention ? latest : 0;
             if (main == 0) return new(0, 0, 0);
 
             var monitor = valid[main].MonitorHandle;
@@ -60,11 +114,12 @@ public sealed class ForegroundHistory
                 var a = _visits[i - 1];
                 var b = _visits[i];
                 if (a.Handle == b.Handle || b.Time - a.Time is < 0 or > 120_000 ||
+                    now - b.Time > 3 * AttentionHalfLifeMilliseconds ||
                     !IsCurrentVisit(a) || !IsCurrentVisit(b) ||
                     valid[a.Handle].MonitorHandle != monitor || valid[b.Handle].MonitorHandle != monitor)
                     continue;
 
-                double weight = Math.Exp(-(now - b.Time) / 180_000.0);
+                double weight = Decay(now - b.Time);
                 traffic[a.Handle] = traffic.GetValueOrDefault(a.Handle) + weight;
                 traffic[b.Handle] = traffic.GetValueOrDefault(b.Handle) + weight;
                 var peer = a.Handle == main ? b.Handle : b.Handle == main ? a.Handle : 0;
@@ -75,15 +130,22 @@ public sealed class ForegroundHistory
 
             // Normalize direct, recent transitions against both windows' traffic. A window
             // shared across several tasks can have many switches without a dominant peer.
-            var ranked = partners.Select(p => (Peer: p.Key, p.Value.Count, p.Value.Weight,
-                    Association: 2 * p.Value.Weight / (traffic[main] + traffic[p.Key])))
-                .OrderByDescending(p => p.Association).ThenByDescending(p => p.Weight)
+            var weights = attention;
+            var associations = partners.Select(p => (Peer: p.Key, p.Value.Count, p.Value.Weight,
+                Association: 2 * p.Value.Weight / (traffic[main] + traffic[p.Key]))).ToArray();
+            foreach (var p in associations)
+                weights[p.Peer] = weights[p.Peer] with { Association = p.Association };
+            var ranked = associations
+                .Where(p => weights.GetValueOrDefault(p.Peer)?.Weight >= WorkingAttention)
+                .Select(p => (p.Peer, p.Count, p.Weight, p.Association,
+                    Score: p.Association * (.65 + .25 * weights[p.Peer].Weight + .10 * weights[p.Peer].Input)))
+                .OrderByDescending(p => p.Score).ThenByDescending(p => p.Weight)
                 .Take(2).ToArray();
             if (ranked.Length == 0) return new(main, 0, 0);
             var best = ranked[0];
             // A second plausible companion or a few stale switches leave the relationship unresolved.
             bool clear = best.Count >= 2 && best.Weight >= 1 && best.Association >= .55 &&
-                (ranked.Length == 1 || ranked[1].Association < best.Association * .8);
+                (ranked.Length == 1 || ranked[1].Score < best.Score * .8);
             return new(main, clear ? best.Peer : 0, best.Count);
         }
     }

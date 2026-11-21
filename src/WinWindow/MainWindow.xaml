@@ -224,6 +224,7 @@
             <CheckBox x:Name="DarkBox" Content="{DynamicResource Text.DarkTheme}" Click="Settings_Click"/>
             <CheckBox x:Name="TrayBox" Content="{DynamicResource Text.ExitOnClose}" Click="Settings_Click"/>
             <CheckBox x:Name="StartupBox" Content="{DynamicResource Text.StartWithWindows}" Click="Startup_Click"/>
+            <CheckBox x:Name="AdministratorStartupBox" Content="{DynamicResource Text.RunAsAdministrator}" Click="AdministratorStartup_Click" ToolTip="{DynamicResource Text.RunAsAdministratorHint}"/>
             <TextBlock Text="{DynamicResource Text.Feedback}" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
             <CheckBox x:Name="SoundBox" Content="{DynamicResource Text.PinSound}" Click="Settings_Click"/>
             <CheckBox x:Name="NotificationBox" Content="{DynamicResource Text.PinNotifications}" Click="Settings_Click"/>
@@ -362,16 +363,20 @@
         </ScrollViewer>
         <ScrollViewer x:Name="DataSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
           <StackPanel Margin="18,0,10,14">
-            <TextBlock Text="{DynamicResource Text.ActivityRecords}" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
-            <TextBlock Text="{DynamicResource Text.RecordPrivacy}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,2,0,10"/>
-            <CheckBox x:Name="RecordSwitch" Content="{DynamicResource Text.RecordActivity}" Click="RecordSwitch_Click"/>
-            <TextBlock x:Name="RecordStatus" Style="{StaticResource MutedText}" Margin="0,4,0,10" TextWrapping="Wrap"/>
-            <CheckBox x:Name="VisualSampling" Content="{DynamicResource Text.VisualSampling}" Click="LayoutPreference_Click"/>
-            <WrapPanel Margin="0,12,0,0">
-              <Button Content="{DynamicResource Text.OpenDataFolder}" Click="OpenData_Click" Margin="0,0,8,0"/>
-              <Button Content="{DynamicResource Text.ExportRecords}" Click="ExportData_Click" Margin="0,0,8,0"/>
-              <Button Content="{DynamicResource Text.ClearRecordsEllipsis}" Click="ClearData_Click" Style="{StaticResource QuietButton}"/>
-            </WrapPanel>
+            <CheckBox x:Name="SnapshotLookbackSwitch" Content="{DynamicResource Text.SnapshotLookback}" Click="SnapshotLookback_Click" Margin="0,8,0,0"/>
+            <TextBlock Text="{DynamicResource Text.SnapshotLookbackHint}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,12"/>
+            <StackPanel x:Name="ActivityRecordSettings">
+              <TextBlock Text="{DynamicResource Text.ActivityRecords}" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
+              <TextBlock Text="{DynamicResource Text.RecordPrivacy}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,2,0,10"/>
+              <CheckBox x:Name="RecordSwitch" Content="{DynamicResource Text.RecordActivity}" Click="RecordSwitch_Click"/>
+              <TextBlock x:Name="RecordStatus" Style="{StaticResource MutedText}" Margin="0,4,0,10" TextWrapping="Wrap"/>
+              <CheckBox x:Name="VisualSampling" Content="{DynamicResource Text.VisualSampling}" Click="LayoutPreference_Click"/>
+              <WrapPanel Margin="0,12,0,0">
+                <Button Content="{DynamicResource Text.OpenDataFolder}" Click="OpenData_Click" Margin="0,0,8,0"/>
+                <Button Content="{DynamicResource Text.ExportRecords}" Click="ExportData_Click" Margin="0,0,8,0"/>
+                <Button Content="{DynamicResource Text.ClearRecordsEllipsis}" Click="ClearData_Click" Style="{StaticResource QuietButton}"/>
+              </WrapPanel>
+            </StackPanel>
           </StackPanel>
         </ScrollViewer>
         <ScrollViewer x:Name="PlacementSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">

@@ -14,6 +14,14 @@ internal sealed class StateStore
     public string LoadWarning { get; private set; } = "";
     public event Action<string>? Error;
     private readonly DispatcherTimer _saveTimer;
+
+    public static bool RequestAdministratorOnLaunch(string directory)
+    {
+        // Leave invalid settings for the running instance to recover and report.
+        try { return ReadJson<Preferences>(Path.Combine(directory, "settings.json"))?.RunAsAdministrator ?? true; }
+        catch (JsonException) { return true; }
+    }
+
     public StateStore(string directory)
     {
         DirectoryPath = directory;
@@ -28,8 +36,7 @@ internal sealed class StateStore
     private T? Read<T>(string name)
     {
         string path = Path.Combine(DirectoryPath, name);
-        if (!File.Exists(path)) return default;
-        try { return JsonSerializer.Deserialize<T>(File.ReadAllText(path), Json); }
+        try { return ReadJson<T>(path); }
         catch (JsonException)
         {
             File.Move(path, path + ".invalid-" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff"));
@@ -37,6 +44,8 @@ internal sealed class StateStore
             return default;
         }
     }
+    private static T? ReadJson<T>(string path) => File.Exists(path)
+        ? JsonSerializer.Deserialize<T>(File.ReadAllText(path), Json) : default;
     private void Write<T>(string name, T value)
     {
         string path = Path.Combine(DirectoryPath, name), temp = path + ".tmp";
