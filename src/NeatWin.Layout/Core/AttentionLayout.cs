@@ -66,7 +66,7 @@ internal static class AttentionLayout
                 role = AttentionRole.Return;
             var hint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
             double floating = Math.Max(Floating(hint), role == AttentionRole.Main ? transition : 0);
-            bool movable = !waiting && context.GestureAnchor != w.Handle && hint?.Anchor != true;
+            bool movable = !waiting && context.GestureAnchor != w.Handle && hint?.Anchor != true && !context.HoldsTextView(w);
             bool resize = movable && w.IsResizable && profile.AllowUsefulResize && context.VideoHint?.WindowHandle != w.Handle &&
                 !(context.RecentGesture is { } g && !context.ExplicitArrange && g.WindowHandle == w.Handle &&
                   (g.StartRect.Width != g.EndRect.Width || g.StartRect.Height != g.EndRect.Height));

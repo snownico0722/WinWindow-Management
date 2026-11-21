@@ -3,20 +3,43 @@ namespace NeatWin.Core;
 // Application and class identify a content category. Floating intent is inferred from this
 // particular window's geometry, relationships and recent user behavior.
 [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<WindowUseRole>))]
-public enum WindowUseRole { Unknown, Browser, FileManager, Editor, FloatingEditor }
+public enum WindowUseRole { Unknown, Browser, FileManager, Editor, FloatingEditor, Chat, Document, Spreadsheet, Presentation }
+
+internal enum FocusedOfficeSurface { Unknown, Document, Grid, Canvas }
 
 internal static class WindowUseRoles
 {
-    internal static WindowUseRole Identify(string? executable, string? windowClass)
+    private static bool QtFrame(string? name) => name?.StartsWith("Qt", StringComparison.Ordinal) == true &&
+        name.EndsWith("QWindowIcon", StringComparison.Ordinal);
+
+    internal static bool IsSharedOfficeFrame(string? executable, string? windowClass) =>
+        QtFrame(windowClass) && Path.GetFileNameWithoutExtension(executable)?.ToLowerInvariant() is "wps" or "et" or "wpp";
+
+    internal static WindowUseRole Identify(string? executable, string? windowClass,
+        FocusedOfficeSurface surface = FocusedOfficeSurface.Unknown)
     {
         if (windowClass is "#32770" or "Progman" or "WorkerW") return WindowUseRole.Unknown;
         if (windowClass is "CabinetWClass" or "ExploreWClass") return WindowUseRole.FileManager;
         if (windowClass is "Notepad" or "Notepad++" or "WordPadClass") return WindowUseRole.Editor;
         string app = Path.GetFileNameWithoutExtension(executable)?.ToLowerInvariant() ?? "";
+        if (IsSharedOfficeFrame(app, windowClass))
+            return surface switch
+            {
+                FocusedOfficeSurface.Grid when app is "wps" or "et" => WindowUseRole.Spreadsheet,
+                FocusedOfficeSurface.Canvas when app is "wps" or "wpp" => WindowUseRole.Presentation,
+                FocusedOfficeSurface.Document when app == "wpp" => WindowUseRole.Presentation,
+                FocusedOfficeSurface.Document when app == "wps" => WindowUseRole.Document,
+                _ => WindowUseRole.Unknown
+            };
         return app switch
         {
             "chrome" or "msedge" or "firefox" or "brave" or "vivaldi" or "opera" => WindowUseRole.Browser,
             "notepad" or "notepad++" or "wordpad" or "typora" or "sublime_text" => WindowUseRole.Editor,
+            "winword" or "wps" when windowClass == "OpusApp" => WindowUseRole.Document,
+            "excel" or "et" when windowClass == "XLMAIN" => WindowUseRole.Spreadsheet,
+            "powerpnt" or "wpp" when windowClass == "PPTFrameClass" => WindowUseRole.Presentation,
+            "wechat" or "weixin" when windowClass is "WeChatMainWndForPC" or "ChatWnd" || QtFrame(windowClass) => WindowUseRole.Chat,
+            "qq" or "tim" when windowClass is "TXGuiFoundation" or "Chrome_WidgetWin_1" => WindowUseRole.Chat,
             "totalcmd64" or "totalcmd" or "doublecmd" => WindowUseRole.FileManager,
             _ => WindowUseRole.Unknown
         };
@@ -89,18 +112,41 @@ internal static class WindowUseRoles
         return best * compact * commitment;
     }
 
+    // A caret belongs to one native input target. While reading, a foreground document,
+    // cell grid, slide canvas or conversation may have no caret. Require a settled visit
+    // or recent input for this weaker signal, and never carry it to a newly opened chat surface.
+    private static bool KeepsTextFocus(WindowSnapshot window, WindowUseRole role, LayoutFocus? focus,
+        LayoutAttention? visit, IReadOnlyList<WindowSnapshot> desktop, bool caret, string? activity, TaskWindowHint? hint)
+    {
+        if (!window.IsForeground || !window.IsManageable || window.IsTopmost || window.SurfaceState == "fullscreen" ||
+            window.WorkArea.Intersect(window.VisualRect).IsEmpty) return false;
+        if (caret) return true;
+        if (window.Owner != 0 || !window.IsResizable || focus?.Main != window.Handle || visit is not { Foreground: true } ||
+            role is not (WindowUseRole.Editor or WindowUseRole.Chat or WindowUseRole.Document or
+                WindowUseRole.Spreadsheet or WindowUseRole.Presentation) ||
+            activity is "game-like-interaction" or "media-with-motion" or "audible-with-motion" or "audible-media-session" ||
+            hint is { MediaCompanion: true } or { PassiveVisual: true }) return false;
+        if (role == WindowUseRole.Chat && focus.Navigation?.Any(hop => hop.Target == window.Handle &&
+            desktop.Any(source => source.Handle == hop.Source && source.ProcessId == window.ProcessId)) == true) return false;
+        return visit.Input >= .35 || visit.Dwell >= AutomaticLayoutScheduler.SettleMilliseconds / 4000d;
+    }
+
     internal static TaskWindowHint[] Bind(IReadOnlyList<WindowSnapshot> desktop, TaskWindowHint[] hints,
         LayoutFocus? focus, IReadOnlyDictionary<nint, LayoutAttention>? attention, IReadOnlyList<PlacementPreference>? placements,
-        Func<WindowSnapshot, WindowUseRole> identify)
+        Func<WindowSnapshot, WindowUseRole> identify, nint foregroundCaret = 0,
+        IReadOnlyDictionary<nint, string>? activities = null, nint? keyboardRoot = null)
     {
         var byWindow = hints.ToDictionary(h => h.Handle);
         foreach (var window in desktop.Where(w => w.IsManageable))
         {
             var role = identify(window);
             double affinity = FloatingAffinity(role, window, desktop, focus, attention, placements);
-            if (role == WindowUseRole.Unknown && affinity == 0) continue;
-            var hint = byWindow.GetValueOrDefault(window.Handle) ?? new TaskWindowHint(window.Handle);
-            byWindow[window.Handle] = hint with { Role = role, FloatingAffinity = affinity };
+            var hint = byWindow.GetValueOrDefault(window.Handle);
+            bool text = (!keyboardRoot.HasValue || keyboardRoot == window.Handle) &&
+                KeepsTextFocus(window, role, focus, attention?.GetValueOrDefault(window.Handle), desktop,
+                window.Handle == foregroundCaret, activities?.GetValueOrDefault(window.Handle), hint);
+            if (hint == null && role == WindowUseRole.Unknown && affinity == 0 && !text) continue;
+            byWindow[window.Handle] = (hint ?? new(window.Handle)) with { Role = role, FloatingAffinity = affinity, TextFocus = text };
         }
         return byWindow.Values.ToArray();
     }

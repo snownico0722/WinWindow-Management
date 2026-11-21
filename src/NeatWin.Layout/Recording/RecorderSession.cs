@@ -388,6 +388,8 @@ internal sealed class RecorderSession : IDisposable
             var previous = _latest?.Frame;
             var usage = writeDisk && _foregroundHook != 0
                 ? _usage.Sample(now, RecordingId(NativeMethods.GetForegroundWindow()), PointerCaptureAvailable) : null;
+            if (snapshot.FirstOrDefault(w => w.IsForeground && w.IsManageable) is { } active)
+                _activity.SemanticRole(active, ForegroundReading.Read(active));
             _latest = _activity.Sample(_session, now, frame, snapshot, _identity, VisualSampling, _store.Rules.Read(), persistKeys: writeDisk);
             if (!writeDisk) return;
             if (usage != null && _latest.ObservedMilliseconds > 0)
@@ -480,7 +482,9 @@ internal sealed class RecorderSession : IDisposable
     internal WindowSizeFloor[] BindSizeFloors(IReadOnlyList<WindowSnapshot> windows) =>
         SizeMemory.Bind(windows.Where(w => w.IsManageable).Select(w => (w, _activity.AppKey(w, false))));
 
-    internal WindowUseRole SemanticRole(WindowSnapshot window) => _activity.SemanticRole(window);
+    internal bool AwaitingOfficeSurface(nint handle) => _activity.AwaitingOfficeSurface(handle);
+
+    internal WindowUseRole SemanticRole(WindowSnapshot window, ForegroundReading reading) => _activity.SemanticRole(window, reading);
 
     internal string? TryReadAppKey(WindowSnapshot window) => _activity.AppKey(window, false);
 

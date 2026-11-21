@@ -30,7 +30,8 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     private readonly byte[] _ephemeralKey = RandomNumberGenerator.GetBytes(32);
     private readonly Dictionary<uint, ProcessInfo> _process = [];
     private readonly Dictionary<(uint Pid, nint Hwnd), string?> _keys = [];
-    private readonly Dictionary<(uint Pid, nint Hwnd), WindowUseRole> _roles = [];
+    private readonly Dictionary<(uint Pid, nint Hwnd), (string? App, string Class, WindowUseRole Role)> _roles = [];
+    private readonly OfficeSurfaceProbe _officeSurface = new();
     private readonly Dictionary<(uint Pid, DateTime Start), (long Tick, TimeSpan Cpu)> _cpu = [];
     private readonly Dictionary<int, (RectI Rect, string Cells, int[] Colors)> _colors = [];
     private readonly Dictionary<int, (RectI Window, RectI Patch, int[] Colors, int Streak)> _fragments = [];
@@ -48,6 +49,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     {
         foreach (var key in _keys.Keys.Where(k => k.Hwnd == hwnd).ToArray()) _keys.Remove(key);
         foreach (var key in _roles.Keys.Where(k => k.Hwnd == hwnd).ToArray()) _roles.Remove(key);
+        _officeSurface.Retire(hwnd);
     }
 
     internal void ResetVisual() { _colors.Clear(); _fragments.Clear(); _previous.Clear(); }
@@ -65,22 +67,31 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     private string ResolveKey(string identity, bool persist) =>
         store.Key(identity, persist) ?? EphemeralKey(identity);
 
-    internal WindowUseRole SemanticRole(WindowSnapshot window)
+    internal WindowUseRole SemanticRole(WindowSnapshot window, ForegroundReading reading = default)
     {
         var key = (window.ProcessId, window.Handle);
-        if (_roles.TryGetValue(key, out var role)) return role;
-        var name = new StringBuilder(256);
-        NativeMethods.GetClassName(window.Handle, name, name.Capacity);
-        string? executable = null;
-        try
+        if (!_roles.TryGetValue(key, out var identity))
         {
-            using var process = Process.GetProcessById((int)window.ProcessId);
-            executable = process.ProcessName;
+            var name = new StringBuilder(256);
+            NativeMethods.GetClassName(window.Handle, name, name.Capacity);
+            string? executable = null;
+            try
+            {
+                using var process = Process.GetProcessById((int)window.ProcessId);
+                executable = process.ProcessName;
+            }
+            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException) { }
+            if (_roles.Count >= 512) _roles.Clear();
+            string windowClass = name.ToString();
+            _roles[key] = identity = (executable, windowClass, WindowUseRoles.Identify(executable, windowClass));
         }
-        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException) { }
-        if (_roles.Count >= 512) _roles.Clear();
-        return _roles[key] = WindowUseRoles.Identify(executable, name.ToString());
+        return reading.Root == window.Handle && reading.Pid == window.ProcessId &&
+            WindowUseRoles.IsSharedOfficeFrame(identity.App, identity.Class)
+            ? WindowUseRoles.Identify(identity.App, identity.Class, _officeSurface.Sample(reading, Environment.TickCount64))
+            : identity.Role;
     }
+
+    internal bool AwaitingOfficeSurface(nint handle) => _officeSurface.JustStarted(handle, Environment.TickCount64);
 
     internal string? AppKey(WindowSnapshot w, bool create)
     {

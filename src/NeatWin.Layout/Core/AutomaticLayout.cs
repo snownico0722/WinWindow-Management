@@ -6,6 +6,8 @@ public enum LayoutTrigger { Manual, AfterGesture, WorkspaceChange }
 public enum LayoutRoute { ManualAlgorithm, LightAssist, Smart, FullTiling }
 public sealed record AutomaticLayoutRequest(AutomaticLayoutMode Mode, LayoutTrigger Trigger);
 
+internal enum GestureReleaseState { Discard, Wait, Ready }
+
 public static class AutomaticLayoutPolicy
 {
     public static AutomaticLayoutMode Read(int? value, bool? legacyEnabled)
@@ -32,6 +34,15 @@ public static class AutomaticLayoutPolicy
             AutomaticLayoutMode.AutoFullAssist => LayoutRoute.Smart,
             _ => null,
         };
+    // An END event is authoritative about the window-frame gesture. The pointer can still
+    // belong to a native move loop, menu or file drag when the event reaches our UI thread.
+    internal static GestureReleaseState ReleaseState(ManualWindowGesture gesture, nint foreground, uint pid, long now, bool busy)
+    {
+        if (foreground == 0 || foreground != gesture.WindowHandle || gesture.ProcessId != 0 && gesture.ProcessId != pid ||
+            gesture.ReleasedTick is long released && now - released > 4000) return GestureReleaseState.Discard;
+        return busy ? GestureReleaseState.Wait : GestureReleaseState.Ready;
+    }
+
     public static string Name(AutomaticLayoutMode mode) => mode switch
     {
         AutomaticLayoutMode.LightAssist => "轻度辅助",
@@ -55,6 +66,7 @@ public static class AutomaticLayoutPolicy
 public sealed class AutomaticLayoutScheduler
 {
     public const int SettleMilliseconds = 450;
+    internal const int ReleaseRetryMilliseconds = 16;
     public const int MinimumIntervalMilliseconds = 1000;
     private WindowSnapshot[] _observed = [];
     private readonly Dictionary<nint, WindowSnapshot> _own = new();
@@ -62,7 +74,9 @@ public sealed class AutomaticLayoutScheduler
     private long _ownUntil, _settleUntil, _notBefore, _lastChange;
     private bool _pending;
     private LayoutTrigger _trigger;
-    private nint _foreground;
+    private nint _foreground, _dragging;
+    private ManualWindowGesture? _release;
+    internal ManualWindowGesture? PendingRelease => _release;
     private (nint Handle, uint Pid) _inputTarget;
     private long _inputStarted, _lastInput;
     private bool _sustainedInputReported;
@@ -72,7 +86,7 @@ public sealed class AutomaticLayoutScheduler
     public void Reset(AutomaticLayoutMode mode, IReadOnlyList<WindowSnapshot> snapshot, long now)
     {
         Mode = AutomaticLayoutPolicy.Read((int)mode, false);
-        _own.Clear(); _manual.Clear(); _pending = false; _foreground = 0;
+        _own.Clear(); _manual.Clear(); _pending = false; _foreground = _dragging = 0; _release = null;
         _inputTarget = default;
         _observed = Normalize(snapshot); _notBefore = now; _lastChange = now;
     }
@@ -80,6 +94,11 @@ public sealed class AutomaticLayoutScheduler
     public void RequestCurrent(long now)
     {
         if (AutomaticLayoutPolicy.WatchesWorkspace(Mode)) Queue(LayoutTrigger.WorkspaceChange, now);
+    }
+
+    internal void DeferWorkspaceWhileBusy(long now)
+    {
+        if (_pending && _release == null) _lastChange = now;
     }
 
     internal bool TaskInput(nint handle, uint pid, long now)
@@ -107,22 +126,35 @@ public sealed class AutomaticLayoutScheduler
     public void GestureStarted(nint handle)
     {
         if (!AutomaticLayoutPolicy.UsesFullPlanner(Mode)) return;
-        _pending = false;
+        if (_release != null) _pending = false;
+        _release = null; _dragging = handle;
         if (_manual.Count >= 128) _manual.Clear();
         _manual.Add(handle); _own.Remove(handle);
     }
 
     public void GestureCompleted(ManualWindowGesture gesture, long now)
     {
-        // A click on a title bar / cancelled drag is not a request to reorganize the desktop.
-        if (gesture.StartRect == gesture.EndRect || !AutomaticLayoutPolicy.UsesFullPlanner(Mode)) return;
+        if (!AutomaticLayoutPolicy.UsesFullPlanner(Mode)) return;
+        if (_dragging != 0 && _dragging != gesture.WindowHandle) return;
+        _dragging = 0;
+        var previous = _observed.FirstOrDefault(w => w.Handle == gesture.WindowHandle);
+        if (gesture.StartRect == gesture.EndRect)
+        {
+            // Intermediate drag geometry was never an independent workspace change. Restore
+            // the baseline for this window while retaining unrelated events from the same drag.
+            if (previous != null && (gesture.ProcessId == 0 || previous.ProcessId == gesture.ProcessId))
+                _observed[Array.IndexOf(_observed, previous)] = previous with { VisualRect = gesture.EndRect };
+            _manual.Remove(gesture.WindowHandle);
+            return;
+        }
+        _release = gesture.ProcessId == 0 && previous != null ? gesture with { ProcessId = previous.ProcessId } : gesture;
         _manual.Add(gesture.WindowHandle); _own.Remove(gesture.WindowHandle);
         Queue(LayoutTrigger.AfterGesture, now);
     }
 
     public void ApplicationRequested(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan, long now)
     {
-        _pending = false; _manual.Clear(); _observed = Normalize(before);
+        _pending = false; _release = null; _dragging = 0; _manual.Clear(); _observed = Normalize(before);
         _own.Clear();
         var targets = plan.Moves.ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
         foreach (var window in plan.Moves.Select(m => m.Window).Concat(plan.Layers.SelectMany(l => l.FrontToBack)))
@@ -146,6 +178,7 @@ public sealed class AutomaticLayoutScheduler
         var ignoredOrder = new HashSet<nint>();
         foreach (var w in next)
         {
+            if (busy && w.Handle == _dragging) { ignored.Add(w.Handle); continue; }
             if (_manual.Contains(w.Handle)) continue;
             if (_own.TryGetValue(w.Handle, out var expected) && expected.ProcessId == w.ProcessId)
             {
@@ -168,10 +201,26 @@ public sealed class AutomaticLayoutScheduler
             else if (_pending) _lastChange = now;
         }
         if (!_pending) return null;
-        // Do not tidy while the mouse owns a drag/resize or an application is applying a plan.
-        if (busy) { _lastChange = now; return null; }
-        if (now - _lastChange < SettleMilliseconds || now < _notBefore ||
-            (_trigger == LayoutTrigger.WorkspaceChange && now < navigationSettleUntil)) return null;
+        if (_release is { } gesture)
+        {
+            // Normalize intentionally remembers an excluded foreground for workspace diffs.
+            // A release instead needs the actual captured foreground and process identity.
+            var active = snapshot.FirstOrDefault(w => w.IsForeground && w.IsManageable && !w.IsTopmost);
+            var state = AutomaticLayoutPolicy.ReleaseState(gesture, active?.Handle ?? 0, active?.ProcessId ?? 0, now, busy);
+            if (state == GestureReleaseState.Wait) return null;
+            _release = null;
+            if (state == GestureReleaseState.Discard)
+            {
+                _manual.Clear(); _pending = false;
+                if (AutomaticLayoutPolicy.WatchesWorkspace(Mode) && active != null) Queue(LayoutTrigger.WorkspaceChange, now);
+                return null;
+            }
+        }
+        else
+        {
+            if (busy) { _lastChange = now; return null; }
+            if (now - _lastChange < SettleMilliseconds || now < _notBefore || now < navigationSettleUntil) return null;
+        }
         _pending = false; _manual.Clear(); _notBefore = now + MinimumIntervalMilliseconds;
         return new(Mode, _trigger);
     }

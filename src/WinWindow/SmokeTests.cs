@@ -106,8 +106,6 @@ internal static class SmokeTests
             var twins = await FixtureAsync(output, false, twins: true);
             processes.Add(twins.Process);
             await CheckDuplicateRulesAsync(twins.Hwnd, data);
-            Stop(twins.Process);
-            await twins.Process.WaitForExitAsync();
             var normal = await FixtureAsync(output, false); processes.Add(normal.Process);
             manager = new WindowManager(store);
             var item = manager.SelectTarget(normal.Hwnd);
@@ -118,20 +116,32 @@ internal static class SmokeTests
             Assert(source.IsManageable, "layout sees the normal fixture");
             CheckActivityRecording(source, data);
             var target = source.VisualRect with { X = source.VisualRect.X + (source.VisualRect.X > source.WorkArea.X + 40 ? -32 : 32) };
-            var stale = layoutWindows.ApplyLayout(new([new(source, target)], [], []), automaticForeground: (nint)(-1));
+            var stale = layoutWindows.ApplyLayout(new([new(source, target)], [], []),
+                automaticForeground: (nint)(-1), gestureWindow: source.Handle);
             Assert(stale.Interrupted && stale.Plan.Moves.Count == 0 &&
+                stale.FirstGeometrySubmittedTick == null && stale.GestureWindowSubmittedTick == null &&
                 layoutWindows.Capture().Single(w => w.Handle == source.Handle).VisualRect == source.VisualRect,
-                "an automatic request for a departed foreground leaves the native window in place");
+                "a departed foreground leaves the native window in place and produces no submission timestamp");
             Assert(NeatWin.Windows.NativeWindowActivity.IsShellForeground(NeatWin.Windows.NativeMethods.GetShellWindow()),
                 "the desktop is an automation boundary, including a session without a shell window");
-            var applied = layoutWindows.ApplyLayout(new([new(source, target)], [], []));
-            Assert(applied.Plan.Moves.Count == 1, "ordinary fixture is accepted for layout");
+            long releaseTick = Environment.TickCount64;
+            var applied = layoutWindows.ApplyLayout(new([new(source, target)], [], []),
+                automaticForeground: null, gestureWindow: normal.Hwnd);
+            long returnedTick = Environment.TickCount64;
+            Assert(applied.Plan.Moves.Count == 1 && applied.Failures.Count == 0 &&
+                applied.GestureWindowSubmittedTick is long submitted && submitted >= releaseTick && submitted <= returnedTick &&
+                applied.FirstGeometrySubmittedTick == submitted, "the native fixture move records the target's successful submission");
             bool Reached(NeatWin.Core.RectI rect) => layoutWindows.Capture().Any(w => w.Handle == item.Hwnd &&
-                NeatWin.Core.WindowStateRules.Near(w.VisualRect, rect));
+                w.ProcessId == (uint)normal.Process.Id && NeatWin.Core.WindowStateRules.Near(w.VisualRect, rect));
             await WaitAsync("fixture reaches layout target", () => Reached(target));
+            Report($"Native fixture timing: synthetic release to target submission {applied.GestureWindowSubmittedTick - releaseTick} ms");
             var undo = NeatWin.Core.LayoutUndoPlanner.Create(applied.Plan, layoutWindows.Capture());
-            Assert(layoutWindows.ApplyLayout(undo).Plan.Moves.Count == 1, "verified layout can be undone");
+            var restored = layoutWindows.ApplyLayout(undo, automaticForeground: null, gestureWindow: twins.Hwnd);
+            Assert(restored.Plan.Moves.Count == 1 && restored.Failures.Count == 0 && restored.FirstGeometrySubmittedTick.HasValue &&
+                restored.GestureWindowSubmittedTick == null, "undoing the native move cannot count as submission for another fixture");
             await WaitAsync("layout undo restores fixture geometry", () => Reached(source.VisualRect));
+            Stop(twins.Process);
+            await twins.Process.WaitForExitAsync();
             await manager.SetPinAsync(item, true);
             Assert(store.Preferences.Rules.Single().Pinned, "pinning automatically persists a rule");
             Native.SetTopmost(item.Hwnd, false);
@@ -1120,10 +1130,33 @@ internal static class SmokeTests
         store.Preferences.Rules.Add(rule);
         store.SavePreferences();
         var app = await StartMainAsync(store, processes);
-        await WaitAsync("running workbench enabled background keep, pin and mute", () =>
-            store.ReadRecovery().Any(s => s.Identity.Hwnd == hwnd && s.OriginalAudioMutes is not null && s.RestoreActivation) &&
-            Native.IsTopmost(hwnd) && (!nativeKeep || Native.IsNoFocusLossInjected(hwnd)) &&
-            (!audio || Native.GetProp(hwnd, "WinWindow.Test.Mix") == 4), 6000);
+        string journalPath = Path.Combine(store.DirectoryPath, "recovery.json");
+        string observed = "";
+        try
+        {
+            await WaitAsync("running workbench enabled background keep, pin and mute", () =>
+            {
+                // The child publishes each complete journal with an atomic replacement.
+                // Our polling handle must leave that replacement available on Windows.
+                WindowSnapshot[] journal = [];
+                if (File.Exists(journalPath))
+                {
+                    using var file = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    journal = JsonSerializer.Deserialize<WindowSnapshot[]>(file) ?? [];
+                }
+                var target = journal.Where(s => s.Identity.Hwnd == hwnd).ToArray();
+                bool pinned = Native.IsTopmost(hwnd), background = !nativeKeep || Native.IsNoFocusLossInjected(hwnd);
+                nint mix = audio ? Native.GetProp(hwnd, "WinWindow.Test.Mix") : 0;
+                observed = $"records={target.Length}, audioBaseline={target.Any(s => s.OriginalAudioMutes != null)}, " +
+                    $"restoreActivation={target.Any(s => s.RestoreActivation)}, pinned={pinned}, " +
+                    $"backgroundReady={background} (required={nativeKeep}), audioMix={mix} (required={audio})";
+                return target.Any(s => s.OriginalAudioMutes != null && s.RestoreActivation) && pinned && background && (!audio || mix == 4);
+            }, 6000);
+        }
+        catch (TimeoutException error)
+        {
+            throw new TimeoutException($"{error.Message}. {observed}, workbenchExited={app.Process.HasExited}, fixtureExited={game.HasExited}.", error);
+        }
         // A real Quit, without first disabling the options or removing the game.
         Native.PostMessage(app.Hwnd, 0x10, 0, 0);
         await WaitAsync("workbench exited with the game still managed", () => app.Process.HasExited);

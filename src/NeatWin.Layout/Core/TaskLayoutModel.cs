@@ -221,6 +221,15 @@ internal static partial class IntentLayoutPlanner
         {
             var window = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             bool gestureEndpoint = window.Handle == context.GestureAnchor && b == context.GestureTarget;
+            bool textView = context.HoldsTextView(window);
+            if (textView)
+            {
+                int rank = Array.IndexOf(candidate.Order, i);
+                var prior = windows.Where(v => v.Window.ZOrder < window.ZOrder).Select(v => v.Window.VisualRect)
+                    .Concat((obstacles ?? []).Where(w => w.ZOrder < window.ZOrder).Select(w => w.VisualRect));
+                var next = front.Concat((obstacles ?? []).Where(w => w.ZOrder < windows[rank].Window.ZOrder).Select(w => w.VisualRect));
+                if (!TextViewAcceptsFrame(window, b, context, prior, next)) return false;
+            }
             if (goals != null && (!goals[i].Movable && (a != b && !gestureEndpoint || Array.IndexOf(candidate.Order, i) != i) ||
                 !goals[i].Resizable && !gestureEndpoint && (a.Width != b.Width || a.Height != b.Height) &&
                 !(candidate.Kind == "refined" && context.VideoHint?.WindowHandle == window.Handle))) return false;
@@ -233,7 +242,7 @@ internal static partial class IntentLayoutPlanner
                 (!window.IsResizable || !context.Preferences.AllowUsefulResize) &&
                 (a.Width > area.Width || a.Height > area.Height) &&
                 b == Fit(a, window, options, allowResize: false);
-            if (!IntentEvidence.IsValidRect(b) || ((b != a || options.RescueOffscreenWindows && goals?[i].Movable != false) && !oversizedRescue &&
+            if (!IntentEvidence.IsValidRect(b) || ((b != a || options.RescueOffscreenWindows && goals?[i].Movable != false && !textView) && !oversizedRescue &&
                 (b.Left < area.Left - bleed.Left || b.Right > area.Right + bleed.Right ||
                  b.Top < area.Top || b.Bottom > area.Bottom))) return false;
             if (window.IsTopmost && b != a) return false;
@@ -614,11 +623,12 @@ internal static partial class IntentLayoutPlanner
         IntentLayoutPlan planned, IReadOnlyList<TidyMove> refined, TidyOptions options,
         TaskLayoutContext context, IReadOnlyList<WindowSnapshot> desktop)
     {
-        if (context.VerifiedRepeat && !context.ExplicitArrange) return refined.Count == 0;
+        if (context.VerifiedRepeat && !context.ExplicitArrange) return refined.Count == 0 && planned.Layers.Count == 0;
         context = ResolveExplicitFocus(visible, context);
         visible = IncludeWorkingCompanion(visible, desktop, context);
         var known = planned.Groups.SelectMany(g => g.Handles).ToHashSet();
         if (refined.Any(m => !known.Contains(m.Window.Handle))) return false;
+        if (!TextViewAcceptsPlan(desktop, planned with { Moves = refined }, context)) return false;
         var ranks = desktop.ToDictionary(w => w.Handle, w => w.ZOrder);
         foreach (var layer in planned.Layers)
         {

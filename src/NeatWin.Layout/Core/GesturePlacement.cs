@@ -5,8 +5,9 @@ namespace NeatWin.Core;
 internal static class GesturePlacement
 {
     internal static TaskLayoutContext Resolve(TaskLayoutContext context, IReadOnlyList<VisibleWindow> visible,
-        TidyOptions options, IntentReferenceDocument? reference)
+        TidyOptions options, IntentReferenceDocument? reference, GesturePreview? preview = null)
     {
+        if (!context.AllowGestureAssist) return context.GestureTarget.HasValue ? context with { GestureTarget = null } : context;
         if (context.ExplicitArrange || context.GestureAnchor == 0 || context.GestureTarget.HasValue ||
             context.RecentGesture is not { } gesture || gesture.WindowHandle != context.GestureAnchor ||
             visible.FirstOrDefault(v => v.Window.Handle == gesture.WindowHandle) is not { } moved ||
@@ -24,13 +25,8 @@ internal static class GesturePlacement
         var travel = Math.Max(Math.Max(Math.Abs(dx), Math.Abs(dy)), Math.Max(
             Math.Abs(a.Right - gesture.StartRect.Right), Math.Abs(a.Bottom - gesture.StartRect.Bottom)));
         if (travel < 24 * scale) return context;
-        int sideZone = (int)Math.Round(Math.Min(area.Width * .045, 64 * scale));
-        int centerX = area.Left + area.Width / 2, endCenter = a.Left + a.Width / 2;
-        bool horizontal = gesture.Kind == ManualGestureKind.Move && Math.Abs(dx) >= Math.Max(24 * scale, Math.Abs(dy) * .45);
-        bool left = horizontal && dx < 0 && Math.Abs(a.Left - area.Left) <= sideZone;
-        bool right = horizontal && dx > 0 && Math.Abs(area.Right - a.Right) <= sideZone;
-        bool center = horizontal && Math.Abs(endCenter - centerX) <= sideZone &&
-            Math.Abs(gesture.StartRect.Left + a.Width / 2 - centerX) - Math.Abs(endCenter - centerX) >= 20 * scale;
+        var (left, right, center) = preview?.Exact(gesture) == true ? preview.Directions() : Directions(gesture, scale);
+        int centerX = area.Left + area.Width / 2;
         RectI target;
         if (left || right || center)
         {
@@ -57,12 +53,27 @@ internal static class GesturePlacement
                 (v.Window.Handle == window.Handle || v.Window.Handle == context.Focus?.Companion || context.HasRecentInput(v.Window.Handle))).ToArray();
             var hint = IntentEvidence.Resolve(reference, area, window.Dpi == 0 ? 96u : window.Dpi, DateTimeOffset.UtcNow);
             var snap = FollowHandAssistant.Decide(gesture, neighborhood, options, SmartInteractionContext.Empty,
-                SmartPersonalizationState.Default with { PreferredGapPixels = hint.GapPixels });
+                SmartPersonalizationState.Default with { PreferredGapPixels = hint.GapPixels }, preview);
             if (!snap.ShouldApply || gesture.Kind == ManualGestureKind.Move &&
                 snap.TargetKind == FollowHandTargetKind.ScreenEdge) return context;
             target = snap.TargetRect;
         }
         if (target == a || target.Intersect(area) != target) return context;
         return context with { GestureTarget = target };
+    }
+
+    internal static (bool Left, bool Right, bool Center) Directions(ManualWindowGesture gesture, double scale)
+    {
+        var a = gesture.EndRect;
+        var area = gesture.WorkArea;
+        double dx = a.Left - gesture.StartRect.Left, dy = a.Top - gesture.StartRect.Top;
+        int sideZone = (int)Math.Round(Math.Min(area.Width * .045, 64 * scale));
+        int centerX = area.Left + area.Width / 2, endCenter = a.Left + a.Width / 2;
+        bool horizontal = gesture.Kind == ManualGestureKind.Move && Math.Abs(dx) >= Math.Max(24 * scale, Math.Abs(dy) * .45);
+        bool left = horizontal && dx < 0 && Math.Abs(a.Left - area.Left) <= sideZone;
+        bool right = horizontal && dx > 0 && Math.Abs(area.Right - a.Right) <= sideZone;
+        bool center = horizontal && Math.Abs(endCenter - centerX) <= sideZone &&
+            Math.Abs(gesture.StartRect.Left + a.Width / 2 - centerX) - Math.Abs(endCenter - centerX) >= 20 * scale;
+        return (left, right, center);
     }
 }

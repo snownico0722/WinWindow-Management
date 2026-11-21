@@ -31,6 +31,46 @@ internal static partial class IntentLayoutPlanner
     private static bool HasRegionProtection(TaskLayoutContext context) => context.Preferences.ProtectWindowEdges ||
         context.WindowHints?.Any(h => h.ProtectPeriphery || h.ProtectedRegions?.Length > 0) == true;
 
+    // Preserve the actual on-screen text, including its wrap width and all previously
+    // unobstructed parts. Equal area elsewhere cannot replace the line the user was reading.
+    internal static bool TextViewAcceptsPlan(IReadOnlyList<WindowSnapshot> desktop, IntentLayoutPlan plan,
+        TaskLayoutContext context, nint foregroundCaret = default)
+    {
+        if (context.ExplicitArrange || foregroundCaret == 0 && context.WindowHints?.Any(h => h.TextFocus) != true) return true;
+        var window = desktop.FirstOrDefault(w => context.HoldsTextView(w) || w.Handle == foregroundCaret && w.IsForeground &&
+            w.IsManageable && !w.IsTopmost && w.SurfaceState != "fullscreen");
+        if (window == null) return true;
+        var after = TaskLayoutSession.Project(desktop, plan);
+        var target = after.First(w => w.Handle == window.Handle);
+        return TextViewAcceptsFrame(window, target.VisualRect, context,
+            desktop.Where(w => w.ZOrder < window.ZOrder).Select(w => w.VisualRect),
+            after.Where(w => w.ZOrder < target.ZOrder).Select(w => w.VisualRect));
+    }
+
+    private static bool TextViewAcceptsFrame(WindowSnapshot window, RectI target, TaskLayoutContext context,
+        IEnumerable<RectI> oldCovers, IEnumerable<RectI> newCovers)
+    {
+        if (target != window.VisualRect && !(context.AllowGestureAssist && context.GestureAnchor == window.Handle && context.GestureTarget == target))
+            return false;
+        // For an authorized release, compare the target with neighbors held in their old
+        // positions. The gesture authorizes moving this frame, not newly covering it.
+        var view = target.Intersect(window.WorkArea);
+        var prior = oldCovers.Where(r => !r.Intersect(view).IsEmpty).ToHashSet();
+        foreach (var rect in newCovers)
+        {
+            var cut = rect.Intersect(view);
+            if (cut.IsEmpty || prior.Contains(rect)) continue;
+            var uncovered = new List<RectI> { cut };
+            foreach (var old in prior)
+            {
+                uncovered = RectRegion.Subtract(uncovered, old);
+                if (uncovered.Count == 0) break;
+            }
+            if (uncovered.Count > 0) return false;
+        }
+        return true;
+    }
+
     internal static bool DesktopRegionsPreserved(IReadOnlyList<WindowSnapshot> before,
         IReadOnlyList<WindowSnapshot> after, TaskLayoutContext context)
     {

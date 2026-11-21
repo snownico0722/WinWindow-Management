@@ -17,13 +17,17 @@ public sealed record PlannedGroup(int[] Ids, string Selected, double StackEviden
     LayoutCandidateTrace[] Candidates, TaskGroupExplanation? Task = null);
 public sealed record ProjectedPlan(PlannedWindow[] Targets, int[][] Layers, string[] Selected);
 public sealed record RejectedWindowMove(int Id, RectI Target, int Win32Error);
+public sealed record RecordedGestureTiming(int WindowId, bool ReusedPreview, long? ReleaseToFirstGeometrySubmitMs,
+    long? ReleaseToGestureWindowSubmitMs);
 public sealed record LayoutRunObservation(int Version, string Session, string RequestId, string Trigger,
     WorkspaceFrame Before, PlannedWindow[] Targets, int[][] Layers, PlannedGroup[] Groups,
     WorkspaceFrame? Actual, string Outcome, string[] ApplyNotes, ProjectedPlan? BasePlan = null, ProjectedPlan? Proposal = null, ProjectedPlan? ScoredPlan = null,
     CompiledLayoutRules? Rules = null, RecordedTaskSignals? Signals = null, SmartTidyStrength? Strength = null, bool? FullDesktop = null, RejectedWindowMove[]? SubmissionFailures = null,
     int? MinimizeTarget = null, bool? MinimizeVerified = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    string? UndoOfRequest = null);
+    string? UndoOfRequest = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RecordedGestureTiming? GestureTiming = null);
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
 public sealed class ObservationIdentityTracker
@@ -80,7 +84,9 @@ public sealed record RecordedWindowHint(int Id, bool Passive, bool Media, bool A
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     WindowUseRole Role = WindowUseRole.Unknown,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    double FloatingAffinity = 0);
+    double FloatingAffinity = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    bool TextFocus = false);
 public sealed record RecordedPlacement(int Id, int Partner, double Center, double Width, double Order,
     int Cell, double Confidence, double? Overlap,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
@@ -138,7 +144,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         }
         return new(Id(focus?.Main ?? 0), Id(focus?.Companion ?? 0), focus?.Switches ?? 0, focus?.Evidence,
             (context.WindowHints ?? []).Where(h => Id(h.Handle) != 0)
-                .Select(h => new RecordedWindowHint(Id(h.Handle), h.PassiveVisual, h.MediaCompanion, h.Anchor, h.ProtectedRegions, h.Role, h.FloatingAffinity)).ToArray(),
+                .Select(h => new RecordedWindowHint(Id(h.Handle), h.PassiveVisual, h.MediaCompanion, h.Anchor, h.ProtectedRegions, h.Role, h.FloatingAffinity, h.TextFocus)).ToArray(),
             (context.Placement ?? []).Where(p => Id(p.Window) != 0)
                 .Select(p => new RecordedPlacement(Id(p.Window), Id(p.Partner), p.Center, p.Width, p.Order,
                     p.RevealedCell, p.Confidence, p.InnerOverlap, p.Height, p.PreferWidth, p.PreferCenter)).ToArray(),
@@ -155,7 +161,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             Navigation?.Hops.Select(h => new NavigationHop(h.Source, h.Target, h.Evidence, h.AgeMilliseconds)).ToArray()),
         NavigationObservedAt = Navigation?.ObservedAt,
         WindowHints = Hints.Select(h => new TaskWindowHint(h.Id, h.Passive, ProtectedRegions: h.Regions,
-            Anchor: h.Anchor, MediaCompanion: h.Media, Role: h.Role, FloatingAffinity: h.FloatingAffinity)).ToArray(),
+            Anchor: h.Anchor, MediaCompanion: h.Media, Role: h.Role, FloatingAffinity: h.FloatingAffinity, TextFocus: h.TextFocus)).ToArray(),
         Placement = Placements.Select(p => new PlacementPreference(p.Id, p.Partner, p.Center, p.Width,
             p.Order, p.Cell, p.Confidence, p.Overlap, p.Height, p.PreferWidth, p.PreferCenter)).ToArray(),
         Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),

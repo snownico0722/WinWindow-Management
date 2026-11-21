@@ -42,7 +42,7 @@
 | 前台停留期间是否有操作？ | `Usage.PointerActions` 按窗口统计实际鼠标按下、滚动及已完成的拖动或缩放事件。一串拖动可产生多个事件。输入监听不可用时此项为 null。结合系统 `InputIdleMilliseconds`、前台时长和后续操作判断使用强度。键盘输入内容与鼠标坐标不会写入此日志。 |
 | 哪些窗口常一起用？ | `CoUse` 配对本时段的前台窗和两端都可见且位置稳定的其他窗口。时长取前台窗的事件停留时长。按会话归集重复配对，再查看双向切换、各自可见比例和手动调整。一个前台窗可与多扇副窗同时配对，各对时长不能相加成使用总时长。两端采样无法验证整段持续可见或用户注视。 |
 | 内容角色及露出面积如何？ | `Windows.ApplicationRole` 给出识别的应用类别，`ActivityHint` 给出该时刻的媒体、动态或前后台线索。整理时的判定在 `plans.Signals`，包含主副关系、注意力信号、角色和受保护区域。`VisibleRatio`、`LargestFragmentRatio` 分别表示全窗可见比例、最大可见矩形占原窗比例。结合几何帧的 `Exposure.Cells` 和 `LargestFragment` 判断露出的是哪个角。 |
-| 多次打开新窗口后，哪些来源在等待？ | 整理记录的 `Signals.Navigation.Hops` 按打开顺序保存各次跳转。每一跳的 `Source`、`Target` 使用本次会话的匿名窗口编号，可与同条记录的 `Before.Windows[].Id` 对照。末跳目标是当前主窗。`SourceRole` 标示直接返回入口（`return`）、等待的祖先（`waiting`），或只观察到了跳转的来源（`source`）。`Evidence` 给出该跳所依据的输入、窗口归属或创建和前台事件。`ObservedAt` 是采集导航状态时的 UTC 时间，减去每跳的 `AgeMilliseconds` 可得到事件时间。整理导出的 `plans-*.jsonl` 和桌面快照的 `layout-decisions.jsonl` 都使用此字段。 |
+| 多次打开新窗口后，哪些来源在等待？ | 整理记录的 `Signals.Navigation.Hops` 按打开顺序保存各次跳转。每一跳的 `Source`、`Target` 使用本次会话的匿名窗口编号，可与同条记录的 `Before.Windows[].Id` 对照。末跳目标是当前主窗。`SourceRole` 标示直接返回入口（`return`）、等待的祖先（`waiting`），或只观察到了跳转的来源（`source`）。`Evidence` 给出该跳所依据的输入、窗口归属或创建和前台事件。`ObservedAt` 是采集导航状态时的 UTC 时间，减去每跳的 `AgeMilliseconds` 可得到事件时间。整理导出的 `plans-*.jsonl` 和桌面快照的 `layout-decisions.jsonl` 都使用此字段。行为回放的 `NavigationSources` 列出该帧因导航关系而暂停回收的匿名窗口编号。 |
 | 视频画面本身能看到多少？ | 存在可信的视频视口检测结果时，`plans.Signals.Video` 记录会话内窗口编号、屏幕坐标下的视口矩形、内容宽高比、检测置信度，以及按视口计算的 `Exposure`。没有视口证据时此项为 null。全窗的可见比例和媒体状态不能直接代表视频画面的可见比例。 |
 | 一组同进程窗口占多少内存？ | 按同一行 `Windows.Process` 关联 `Processes.Instance`。每个根进程在该行只计算一次。`OwnWorkingSetBytes` 为根进程当前驻留内存，`OwnPrivateBytes` 为根进程专用提交内存，单位均为字节。`WorkingSetBytes` 包含成功采样的后代进程，`DescendantsRead` 和 `DescendantsConsidered` 标注有界遍历覆盖情况。进程树共享页可能重复计入工作集。比较应用内存时按进程实例去重；无法直接拆出单个窗口的内存。 |
 
@@ -132,3 +132,6 @@
 
 
 回放还会汇总实际观察到的手动摆放次数。每轮的 `RecordedManualFollowups` 统计已确认的、同一窗口在关联请求后的手动摆放。`RecordedUndoOfThisRequest` 通过用户撤销的源请求编号关联。整段的 `WithoutLinkedRequest` 是没有关联请求的手动操作，包含开始新任务和独立摆放等情况。快照缺少手势记录时，手势总数留空。时间上相邻的手势可能另有目的；没有后续记录也不足以认定用户满意。对比新旧策略应同时观察手动介入、可读面积、可返回性和布局稳定性。
+
+
+实际松手辅助若进入原生提交阶段，`plans` 与快照里的 `GestureTiming` 可用于比较预计算和临时求解。`WindowId` 是手动操作窗的会话内编号，`ReusedPreview` 表示松手校验通过、候选集参与了决策。`ReleaseToFirstGeometrySubmitMs` 从 Windows 报告移动或缩放结束的单调时刻计到第一个成功提交的几何操作，`ReleaseToGestureWindowSubmitMs` 只计算被手动操作的那一扇。未发几何请求或该窗未成功提交时，对应字段为空。屏幕实际绘制还取决于目标应用和桌面合成器。验证定时器后续采样的时间不能用来计算首帧到屏延时。

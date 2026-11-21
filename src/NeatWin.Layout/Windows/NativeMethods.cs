@@ -32,6 +32,7 @@ internal static class NativeMethods
     internal const uint SwpAsyncWindowPos = 0x4000;
     internal const int WmHotkey = 0x0312;
     internal const int WmLButtonDown = 0x0201;
+    internal const int WmLButtonUp = 0x0202;
     internal const int WmRButtonDown = 0x0204;
     internal const int WmMButtonDown = 0x0207;
     internal const int WmMouseWheel = 0x020A;

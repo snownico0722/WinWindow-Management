@@ -7,6 +7,7 @@ namespace NeatWin.App;
 /// <summary>Cheap native notifications; capture/plan/apply only on the owning UI thread.</summary>
 internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
 {
+    private const int WorkspacePollMilliseconds = 150;
     private const int ChangedMessage = 0x8000 + 79;
     private readonly Func<IReadOnlyList<WindowSnapshot>> _capture;
     private readonly Func<bool> _busy;
@@ -15,7 +16,7 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     private readonly NativeMethods.WinEventProc _callback;
     private readonly List<nint> _hooks = [];
     private readonly Dictionary<nint, nint> _observedStamps = new();
-    private readonly System.Windows.Forms.Timer _timer = new() { Interval = 150 };
+    private readonly System.Windows.Forms.Timer _timer = new() { Interval = WorkspacePollMilliseconds };
     private int _messageQueued;
     private bool _disposed;
     internal event Action<AutomaticLayoutRequest>? Requested;
@@ -34,7 +35,8 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
 
     internal bool SetMode(AutomaticLayoutMode mode, bool arrangeNow = false)
     {
-        _timer.Stop(); RemoveHooks();
+        _timer.Stop(); _timer.Interval = WorkspacePollMilliseconds;
+        RemoveHooks();
         var baseline = _capture();
         _scheduler.Reset(mode, baseline, Environment.TickCount64);
         _observedStamps.Clear();
@@ -59,11 +61,18 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     }
 
     internal void GestureStarted(nint handle) => _scheduler.GestureStarted(handle);
-    internal void GestureCompleted(ManualWindowGesture gesture)
+    internal void GestureCompleted(ManualWindowGesture gesture, IReadOnlyList<WindowSnapshot> releasedDesktop)
     {
+        if (_disposed || !AutomaticLayoutPolicy.UsesFullPlanner(Mode)) return;
         _scheduler.GestureCompleted(gesture, Environment.TickCount64);
-        if (_scheduler.HasPending) _timer.Start();
+        if (_scheduler.PendingRelease != null) ObserveAndDispatch(releasedDesktop);
+        else if (_scheduler.HasPending) ScheduleNextObservation();
     }
+    internal void PointerReleased()
+    {
+        if (!_disposed && _scheduler.PendingRelease != null) ObserveAndDispatch();
+    }
+
     internal void ApplicationRequested(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan) =>
         _scheduler.ApplicationRequested(before, plan, Environment.TickCount64);
 
@@ -108,7 +117,15 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
         }
         base.WndProc(ref m);
     }
-    private void OnTick(object? sender, EventArgs e)
+    private void OnTick(object? sender, EventArgs e) => ObserveAndDispatch();
+
+    private void ScheduleNextObservation()
+    {
+        _timer.Interval = _scheduler.PendingRelease != null ? AutomaticLayoutScheduler.ReleaseRetryMilliseconds : WorkspacePollMilliseconds;
+        _timer.Start();
+    }
+
+    private void ObserveAndDispatch(IReadOnlyList<WindowSnapshot>? releasedDesktop = null)
     {
         try
         {
@@ -118,7 +135,27 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
                 _timer.Stop();
                 return;
             }
-            var snapshot = _capture();
+            if (releasedDesktop == null && _scheduler.PendingRelease == null && (_busy() || NativeWindowActivity.PointerBusy))
+            {
+                // Leave the UI thread to the live gesture. Workspace membership and geometry
+                // are captured together after release, including independent window changes.
+                _scheduler.DeferWorkspaceWhileBusy(Environment.TickCount64);
+                return;
+            }
+            // While Windows still owns the pointer, retry the inexpensive release guard.
+            // A fresh snapshot and normal planning run only when the gesture can execute.
+            if (releasedDesktop == null && _scheduler.PendingRelease is { } pending)
+            {
+                var foreground = NativeMethods.GetForegroundWindow();
+                NativeMethods.GetWindowThreadProcessId(foreground, out var pid);
+                if (AutomaticLayoutPolicy.ReleaseState(pending, foreground, pid, Environment.TickCount64,
+                    _busy() || NativeWindowActivity.PointerBusy) == GestureReleaseState.Wait)
+                {
+                    ScheduleNextObservation();
+                    return;
+                }
+            }
+            var snapshot = releasedDesktop ?? _capture();
             // An unexpired property can belong to an earlier layout, including one before a
             // mode switch. Only a NEW stamp attributes an otherwise unknown change to NeatWin;
             // known requested targets are tracked separately by the scheduler through settling.
@@ -133,14 +170,17 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
             var present = snapshot.Select(w => w.Handle).ToHashSet();
             foreach (var handle in _observedStamps.Keys.Where(h => !present.Contains(h)).ToArray()) _observedStamps.Remove(handle);
             long tick = Environment.TickCount64;
-            var navigation = _focus.NavigationFor(snapshot, tick);
+            // Navigation quiet time only gates workspace changes. If a release loses focus,
+            // the scheduler defers that new task to its own normal workspace observation.
+            var navigation = _scheduler.PendingRelease == null ? _focus.NavigationFor(snapshot, tick) : null;
             long quiet = navigation?.SettleUntil ?? 0;
             if (navigation != null && quiet > 0 && tick <= quiet + 200 && NativeMethods.GetCursorPos(out var pointer) &&
                 snapshot.FirstOrDefault(w => w.Handle == navigation.Main) is { } endpoint)
                 quiet = _focus.PointerQuietUntil(navigation, new(pointer.X, pointer.Y), endpoint, tick);
             var request = _scheduler.Observe(snapshot, tick, _busy() || NativeWindowActivity.PointerBusy, marked,
                 navigationSettleUntil: quiet);
-            if (!_scheduler.HasPending) _timer.Stop();
+            if (_scheduler.HasPending) ScheduleNextObservation();
+            else { _timer.Stop(); _timer.Interval = WorkspacePollMilliseconds; }
             if (request is not null) Requested?.Invoke(request);
         }
         catch (Exception ex) { _timer.Stop(); Failed?.Invoke(ex); }

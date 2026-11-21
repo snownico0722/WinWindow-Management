@@ -38,7 +38,8 @@ internal sealed class LayoutRunJournal : IDisposable
 
     internal string? Record(IReadOnlyList<WindowSnapshot> before, LayoutApplication application, string trigger,
         IntentLayoutPlan? baseline = null, IntentLayoutPlan? proposal = null, IntentLayoutPlan? scored = null,
-        TaskLayoutContext? context = null, SmartTidyStrength? strength = null, bool? fullDesktop = null, bool allowReplan = false, string? undoOfRequest = null)
+        TaskLayoutContext? context = null, SmartTidyStrength? strength = null, bool? fullDesktop = null, bool allowReplan = false, string? undoOfRequest = null,
+        ManualWindowGesture? releaseInput = null, bool reusedPreview = false)
     {
         try
         {
@@ -55,11 +56,18 @@ internal sealed class LayoutRunJournal : IDisposable
                 p.Groups.Select(g => g.Selected).ToArray());
             var refused = application.Failures.Select(f => new RejectedWindowMove(ids[f.Move.Window.Handle],
                 f.Move.TargetVisualRect, f.Win32Error)).ToArray();
+            RecordedGestureTiming? timing = null;
+            if (releaseInput?.ReleasedTick is long release && ids.TryGetValue(releaseInput.WindowHandle, out int windowId) &&
+                before.Any(w => w.Handle == releaseInput.WindowHandle && w.ProcessId == releaseInput.ProcessId))
+            {
+                long? Elapsed(long? tick) => tick >= release ? tick - release : null;
+                timing = new(windowId, reusedPreview, Elapsed(application.FirstGeometrySubmittedTick), Elapsed(application.GestureWindowSubmittedTick));
+            }
             var observation = new LayoutRunObservation(6, _session, Guid.NewGuid().ToString("N"), trigger,
                 frame, targets, layers, groups, null, refused.Length > 0 ? "submission-failed" : "requested-not-yet-verified",
                 application.Notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
                 context == null ? null : RecordedTaskSignals.From(context, ids, before), strength, fullDesktop, refused.Length == 0 ? null : refused,
-                application.MinimizeRequested is { } minimized ? ids[minimized.Handle] : null, UndoOfRequest: undoOfRequest);
+                application.MinimizeRequested is { } minimized ? ids[minimized.Handle] : null, UndoOfRequest: undoOfRequest, GestureTiming: timing);
             _snapshotObserver?.Invoke(observation);
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);

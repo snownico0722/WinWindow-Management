@@ -55,8 +55,39 @@ public sealed class AutomaticLayoutTests
         Assert.Null(s.Observe([after], 100, false)); Assert.Null(s.Observe([after], 1000, false));
         var gesture = Gesture(after); s.GestureStarted(a.Handle); s.GestureCompleted(gesture, 1200);
         var ended = after with { VisualRect = gesture.EndRect };
-        Assert.Null(s.Observe([ended], 1250, false));
-        Assert.Equal(LayoutTrigger.AfterGesture, s.Observe([ended], 1700, false)!.Trigger);
+        Assert.Equal(LayoutTrigger.AfterGesture, s.Observe([ended], 1200, false)!.Trigger);
+        Assert.Null(s.Observe([ended], 1700, false));
+    }
+
+    [Theory]
+    [InlineData(AutomaticLayoutMode.FullAssist)]
+    [InlineData(AutomaticLayoutMode.AutoFullAssist)]
+    public void FirstSafeObservationAfterTheNativeEndExecutesOnceEvenInsideTheWorkspaceCooldown(AutomaticLayoutMode mode)
+    {
+        var w = W(1);
+        var s = Scheduler(mode, w);
+        s.ApplicationRequested([w], new([], [], []), 100);
+        s.GestureStarted(w.Handle);
+        var gesture = Gesture(w) with { ReleasedTick = 160, ProcessId = w.ProcessId };
+        var released = w with { VisualRect = gesture.EndRect };
+        s.GestureCompleted(gesture, 160);
+        Assert.Null(s.Observe([released], 160, busy: true));
+        Assert.Null(s.Observe([released], 164, busy: true));
+        Assert.Equal(LayoutTrigger.AfterGesture, s.Observe([released], 167, false)!.Trigger);
+        Assert.Null(s.Observe([released], 168, false));
+    }
+
+    [Fact]
+    public void LightAssistUsesTheSameNativeReleaseGateForAnImmediateOrDelayedButtonUp()
+    {
+        var w = W(1);
+        var gesture = Gesture(w) with { ReleasedTick = 230, ProcessId = w.ProcessId };
+        Assert.Equal(LayoutRoute.LightAssist, AutomaticLayoutPolicy.Route(AutomaticLayoutMode.LightAssist, LayoutTrigger.AfterGesture));
+        Assert.Equal(GestureReleaseState.Wait, AutomaticLayoutPolicy.ReleaseState(gesture, w.Handle, w.ProcessId, 230, busy: true));
+        Assert.Equal(GestureReleaseState.Ready, AutomaticLayoutPolicy.ReleaseState(gesture, w.Handle, w.ProcessId, 231, busy: false));
+        Assert.Equal(GestureReleaseState.Discard, AutomaticLayoutPolicy.ReleaseState(gesture, w.Handle, w.ProcessId + 1, 231, busy: false));
+        Assert.Equal(GestureReleaseState.Discard, AutomaticLayoutPolicy.ReleaseState(gesture, 0, w.ProcessId, 231, busy: false));
+        Assert.Equal(GestureReleaseState.Discard, AutomaticLayoutPolicy.ReleaseState(gesture, w.Handle, w.ProcessId, 9000, busy: false));
     }
 
     [Fact]
@@ -73,7 +104,7 @@ public sealed class AutomaticLayoutTests
         var a = W(1); var b = W(2, 1100); var s = Scheduler(AutomaticLayoutMode.AutoFullAssist, a);
         Assert.Null(s.Observe([a, b], 100, false));
         Assert.Null(s.Observe([a, b], 550, true));
-        Assert.Null(s.Observe([a, b], 900, true));
+        s.DeferWorkspaceWhileBusy(900); // native monitor avoids capturing the desktop while the pointer is occupied
         Assert.Null(s.Observe([a, b], 1100, false));
         Assert.NotNull(s.Observe([a, b], 1350, false));
         Assert.Null(s.Observe([a, b], 5000, false));
@@ -126,8 +157,8 @@ public sealed class AutomaticLayoutTests
         var s = Scheduler(AutomaticLayoutMode.FullAssist, w);
         s.GestureStarted(w.Handle);
         s.GestureCompleted(gesture, 100);
-        Assert.Null(s.Observe([w with { VisualRect = gesture.EndRect }], 150, false));
-        Assert.Equal(LayoutTrigger.AfterGesture, s.Observe([w with { VisualRect = gesture.EndRect }], 550, false)!.Trigger);
+        Assert.Equal(LayoutTrigger.AfterGesture, s.Observe([w with { VisualRect = gesture.EndRect }], 100, false)!.Trigger);
+        Assert.Null(s.Observe([w with { VisualRect = gesture.EndRect }], 550, false));
     }
 
     [Theory]
@@ -176,8 +207,8 @@ public sealed class AutomaticLayoutTests
         var settled = a with { VisualRect = target }; s.Observe([settled], 150, false);
         s.GestureStarted(a.Handle); var gesture = Gesture(settled); s.GestureCompleted(gesture, 300);
         var actual = settled with { VisualRect = gesture.EndRect };
-        s.Observe([actual], 350, false, new HashSet<nint> { a.Handle });
-        Assert.Equal(LayoutTrigger.AfterGesture, s.Observe([actual], 1100, false)!.Trigger);
+        Assert.Equal(LayoutTrigger.AfterGesture, s.Observe([actual], 300, false, new HashSet<nint> { a.Handle })!.Trigger);
+        Assert.Null(s.Observe([actual], 1100, false));
     }
 
     [Fact]

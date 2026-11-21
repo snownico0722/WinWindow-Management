@@ -13,15 +13,17 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
 {
     private const int MoveSizeStartMessage = 0x8000 + 71;
     private const int MoveSizeEndMessage = 0x8000 + 72;
+    private const int PointerReleasedMessage = 0x8000 + 74;
     private const int PointerInputMessage = 0x8000 + 73;
-    private const int DebounceMilliseconds = 140;
+    private const int GesturePreviewMilliseconds = 48;
+    private const int SettledPreviewRefreshMilliseconds = 300;
     private const int AttentionSampleMilliseconds = 120;
     private const int DragSampleMilliseconds = 25;
     private const int MaximumPointerSamples = 96;
 
     private readonly NativeMethods.WinEventProc _winEventProc;
     private readonly NativeMethods.LowLevelMouseProc _mouseProc;
-    private readonly System.Windows.Forms.Timer _debounceTimer;
+    private readonly System.Windows.Forms.Timer _releaseTimer;
     private readonly System.Windows.Forms.Timer _attentionTimer;
     private readonly System.Windows.Forms.Timer _dragTimer;
     private readonly nint _eventHook;
@@ -29,7 +31,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     private readonly Dictionary<nint, AttentionState> _attention = new();
     private long _suppressUntilTick;
     private bool _enabled;
-    private bool _trackTaskInput;
+    private bool _trackTaskInput, _previewEnabled, _awaitingPointerUp;
     private bool _disposed;
     private ActiveGesture? _activeGesture;
     private ManualWindowGesture? _pendingGesture;
@@ -45,8 +47,8 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
             Parent = NativeMethods.HwndMessage,
         });
 
-        _debounceTimer = new System.Windows.Forms.Timer { Interval = DebounceMilliseconds };
-        _debounceTimer.Tick += OnDebounceTick;
+        _releaseTimer = new System.Windows.Forms.Timer { Interval = AutomaticLayoutScheduler.ReleaseRetryMilliseconds };
+        _releaseTimer.Tick += OnReleaseTick;
         _attentionTimer = new System.Windows.Forms.Timer { Interval = AttentionSampleMilliseconds };
         _attentionTimer.Tick += OnAttentionTick;
         _dragTimer = new System.Windows.Forms.Timer { Interval = DragSampleMilliseconds };
@@ -68,11 +70,14 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     }
 
     internal event Action<nint>? GestureStarted;
+    internal event Action<ManualWindowGesture>? GestureProgress;
+    internal event Action? GesturePointerReleased;
     internal event Action<ManualWindowGesture>? GestureObserved;
     internal event Action<ManualWindowGesture>? TidyRequested;
     internal event Action<nint, uint, long, bool>? TaskInput;
 
     internal bool TaskInputAvailable => _trackTaskInput && _mouseHook != 0;
+    internal bool IsGestureInProgress => _activeGesture != null;
     internal bool IsAvailable => _eventHook != nint.Zero;
     internal bool PointerTrackingActive => _attentionTimer.Enabled || _dragTimer.Enabled || _mouseHook != nint.Zero;
 
@@ -86,7 +91,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
             UpdatePointerTracking();
             if (!_enabled)
             {
-                _debounceTimer.Stop();
+                _releaseTimer.Stop();
                 _pendingGesture = null;
             }
         }
@@ -96,6 +101,13 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     {
         if (_disposed) return;
         _trackTaskInput = enabled;
+        UpdatePointerTracking();
+    }
+
+    internal void SetGesturePreview(bool enabled)
+    {
+        if (_disposed) return;
+        _previewEnabled = enabled && IsAvailable;
         UpdatePointerTracking();
     }
 
@@ -111,14 +123,12 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
             _ = NativeMethods.UnhookWindowsHookEx(_mouseHook);
             _mouseHook = nint.Zero;
         }
-        if (_enabled)
-        {
-            _attentionTimer.Start();
-            if (_activeGesture is not null) _dragTimer.Start();
-        }
+        if (_activeGesture != null && (_enabled || _previewEnabled)) _dragTimer.Start();
+        else _dragTimer.Stop();
+        if (_enabled) _attentionTimer.Start();
         else
         {
-            _attentionTimer.Stop(); _dragTimer.Stop();
+            _attentionTimer.Stop();
             _attention.Clear(); _hasAttentionPoint = false;
         }
     }
@@ -172,7 +182,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     {
         var until = Environment.TickCount64 + Math.Max(0, milliseconds);
         Interlocked.Exchange(ref _suppressUntilTick, until);
-        _debounceTimer.Stop();
+        _releaseTimer.Stop();
         _pendingGesture = null;
     }
 
@@ -185,13 +195,13 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
 
         _disposed = true;
         _enabled = false;
-        _debounceTimer.Stop();
+        _releaseTimer.Stop();
         _attentionTimer.Stop();
         _dragTimer.Stop();
-        _debounceTimer.Tick -= OnDebounceTick;
+        _releaseTimer.Tick -= OnReleaseTick;
         _attentionTimer.Tick -= OnAttentionTick;
         _dragTimer.Tick -= OnDragTick;
-        _debounceTimer.Dispose();
+        _releaseTimer.Dispose();
         _attentionTimer.Dispose();
         _dragTimer.Dispose();
 
@@ -233,7 +243,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
                 : 0;
         if (message != 0)
         {
-            _ = NativeMethods.PostMessage(Handle, (uint)message, hwnd, nint.Zero);
+            _ = NativeMethods.PostMessage(Handle, (uint)message, hwnd, unchecked((nint)(int)eventTime));
         }
     }
 
@@ -242,6 +252,9 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
         try
         {
             int kind = (int)message;
+            if (!_disposed && code >= NativeMethods.HcAction && kind == NativeMethods.WmLButtonUp &&
+                (_activeGesture != null || _awaitingPointerUp))
+                _ = NativeMethods.PostMessage(Handle, PointerReleasedMessage, 0, 0);
             if (!_disposed && code >= NativeMethods.HcAction &&
                 (kind == NativeMethods.WmLButtonDown || _trackTaskInput && kind is
                  NativeMethods.WmRButtonDown or NativeMethods.WmMButtonDown or NativeMethods.WmMouseWheel or NativeMethods.WmMouseHWheel))
@@ -272,8 +285,13 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
             case MoveSizeStartMessage:
                 BeginGesture(message.WParam);
                 return;
+            case PointerReleasedMessage:
+                _awaitingPointerUp = false;
+                if (_pendingGesture != null) DispatchLightRelease();
+                GesturePointerReleased?.Invoke();
+                return;
             case MoveSizeEndMessage:
-                EndGesture(message.WParam);
+                EndGesture(message.WParam, unchecked((uint)(int)message.LParam));
                 return;
             case >= PointerInputMessage + NativeMethods.WmLButtonDown and <= PointerInputMessage + NativeMethods.WmMouseHWheel:
                 int kind = message.Msg - PointerInputMessage;
@@ -305,11 +323,12 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
             return;
         }
 
+        NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
+        if (pid == 0) return;
         // A genuine new drag overrides our own placement cooldown. SetWindowPos does not
         // start a user move/size loop, and must not hide a quick corrective gesture.
         Interlocked.Exchange(ref _suppressUntilTick, 0);
-        GestureStarted?.Invoke(hwnd);
-        _debounceTimer.Stop();
+        _releaseTimer.Stop();
         _pendingGesture = null;
         var now = Environment.TickCount64;
         _ = NativeMethods.GetCursorPos(out var cursor);
@@ -317,75 +336,83 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
         {
             new(new PointI(cursor.X, cursor.Y), 0),
         };
-        _activeGesture = new ActiveGesture(
-            hwnd,
-            rect,
-            GetWorkArea(hwnd),
-            now,
-            samples);
+        _awaitingPointerUp = false;
+        var active = new ActiveGesture(hwnd, pid, rect, GetWorkArea(hwnd), now, samples);
+        _activeGesture = active;
+        GestureStarted?.Invoke(hwnd);
         TouchManipulation(hwnd, now, impulse: 0.45);
-        if (_enabled) _dragTimer.Start();
+        if (_enabled || _previewEnabled) _dragTimer.Start();
+        if (_previewEnabled) PublishPreview(active, rect, now);
     }
 
-    private void EndGesture(nint hwnd)
+    private void EndGesture(nint hwnd, uint eventTime)
     {
         var active = _activeGesture;
+        if (_disposed || active == null || active.WindowHandle != hwnd) return;
         _activeGesture = null;
         _dragTimer.Stop();
-        if (_disposed || active is null || active.WindowHandle != hwnd ||
-            !TryGetVisualRect(hwnd, out var endRect))
-        {
-            return;
-        }
-
+        NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
+        if (pid != active.ProcessId || !TryGetVisualRect(hwnd, out var endRect)) return;
         AddPointerSample(active);
-        var duration = Math.Max(1, Environment.TickCount64 - active.StartTick);
-        var kind = ClassifyGesture(active.StartRect, endRect);
-        var gesture = new ManualWindowGesture(
-            hwnd,
-            active.StartRect,
-            endRect,
-            active.WorkArea,
-            kind,
-            active.Samples.ToArray(),
-            duration,
-            EstimateEndSpeed(active.Samples));
+        var observedAt = Environment.TickCount64;
+        long releasedAt = observedAt - unchecked((uint)observedAt - eventTime);
+        var gesture = BuildGesture(active, endRect, releasedAt, releasedAt);
         LastGesture = gesture;
-        if (_trackTaskInput && active.StartRect != endRect)
-        {
-            NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
-            TaskInput?.Invoke(hwnd, pid, Environment.TickCount64, false);
-        }
-        TouchManipulation(hwnd, Environment.TickCount64, impulse: 1.0);
+        _awaitingPointerUp = NativeMethods.GetAsyncKeyState(0x01) < 0;
+        if (_trackTaskInput && active.StartRect != endRect) TaskInput?.Invoke(hwnd, pid, observedAt, false);
+        TouchManipulation(hwnd, observedAt, impulse: 1.0);
         GestureObserved?.Invoke(gesture);
-
-        if (_enabled)
+        if (_enabled && gesture.StartRect != gesture.EndRect)
         {
             _pendingGesture = gesture;
-            _debounceTimer.Stop();
-            _debounceTimer.Start();
+            DispatchLightRelease();
         }
     }
 
-    private void OnDebounceTick(object? sender, EventArgs eventArgs)
-    {
-        _debounceTimer.Stop();
-        if (_disposed || !_enabled || IsSuppressed || _activeGesture is not null ||
-            _pendingGesture is not ManualWindowGesture gesture)
-        {
-            return;
-        }
+    private static ManualWindowGesture BuildGesture(ActiveGesture active, RectI rect, long now, long? releasedAt = null) =>
+        new(active.WindowHandle, active.StartRect, rect, active.WorkArea, ClassifyGesture(active.StartRect, rect),
+            active.Samples.ToArray(), Math.Max(1, now - active.StartTick), EstimateEndSpeed(active.Samples), releasedAt)
+        { ProcessId = active.ProcessId };
 
+    private void OnReleaseTick(object? sender, EventArgs e) => DispatchLightRelease();
+
+    private void DispatchLightRelease()
+    {
+        _releaseTimer.Stop();
+        if (_disposed || !_enabled || IsSuppressed || _activeGesture != null || _pendingGesture is not { } gesture) return;
+        var foreground = NativeMethods.GetForegroundWindow();
+        NativeMethods.GetWindowThreadProcessId(foreground, out var pid);
+        var state = AutomaticLayoutPolicy.ReleaseState(gesture, foreground, pid, Environment.TickCount64, NativeWindowActivity.PointerBusy);
+        if (state == GestureReleaseState.Wait) { _releaseTimer.Start(); return; }
         _pendingGesture = null;
-        TidyRequested?.Invoke(gesture);
+        if (state == GestureReleaseState.Ready) TidyRequested?.Invoke(gesture);
     }
 
-    private void OnDragTick(object? sender, EventArgs eventArgs)
+    private void OnDragTick(object? sender, EventArgs e)
     {
-        if (_activeGesture is ActiveGesture active)
-        {
-            AddPointerSample(active);
-        }
+        if (_activeGesture is not { } active) return;
+        AddPointerSample(active);
+        long now = Environment.TickCount64;
+        if (!_previewEnabled || now - active.PreviewTick < GesturePreviewMilliseconds ||
+            !TryGetVisualRect(active.WindowHandle, out var rect)) return;
+        NativeMethods.GetWindowThreadProcessId(active.WindowHandle, out var pid);
+        if (active.ProcessId != pid || NativeMethods.GetForegroundWindow() != active.WindowHandle) return;
+        PublishPreview(active, rect, now);
+    }
+
+    private void PublishPreview(ActiveGesture active, RectI rect, long now)
+    {
+        // Even if the frame stops changing, emit one settled speed sample after a fast
+        // approach. A held, settled frame keeps existing preview data fresh without
+        // submitting a new computation at pointer-sampling frequency.
+        active.PreviewTick = now;
+        bool settled = EstimateEndSpeed(active.Samples) < 100;
+        if (active.PreviewRect is { } last && WindowStateRules.Near(last, rect) && active.PreviewSettled == settled &&
+            (!settled || now - active.PreviewOfferedAt < SettledPreviewRefreshMilliseconds)) return;
+        active.PreviewOfferedAt = now;
+        active.PreviewRect = rect;
+        active.PreviewSettled = settled;
+        GestureProgress?.Invoke(BuildGesture(active, rect, now));
     }
 
     private void AddPointerSample(ActiveGesture active)
@@ -572,13 +599,18 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     }
 
     private sealed class ActiveGesture(
-        nint windowHandle,
+        nint windowHandle, uint processId,
         RectI startRect,
         RectI workArea,
         long startTick,
         List<PointerMotionSample> samples)
     {
         internal nint WindowHandle { get; } = windowHandle;
+        internal uint ProcessId { get; } = processId;
+        internal long PreviewTick { get; set; }
+        internal long PreviewOfferedAt { get; set; }
+        internal RectI? PreviewRect { get; set; }
+        internal bool PreviewSettled { get; set; }
         internal RectI StartRect { get; } = startRect;
         internal RectI WorkArea { get; } = workArea;
         internal long StartTick { get; } = startTick;

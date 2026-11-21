@@ -5,9 +5,12 @@ using NeatWin.Reference;
 
 var area = new RectI(0, 0, 1920, 1040);
 AttentionWorkspaceChecks.Run(Check);
+ReadingFocusChecks.Run(Check);
+TextViewChecks.Run(Check);
 NavigationChecks.Run(Check);
 PlacementPreferenceChecks.Run(Check);
 GeneralLayoutChecks.Run(Check);
+GesturePreviewChecks.Run(Check);
 var home = new RectI(560, 100, 810, 700);
 WindowSnapshot Window(int id, RectI rect) => new(id, rect, rect, area, 1, default, true, id == 1, true, id - 1, 96, (uint)id);
 WindowSnapshot[] windows = [Window(1, home), Window(2, home with { X = 600 })];
@@ -985,7 +988,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                 var focus = desktop.FirstOrDefault(w => w.IsForeground);
                 var ctx = new TaskLayoutContext(Displays: displays, ExplicitArrange: explicitRun, UseWorkingPairs: true,
                     PreferReversibleVerticalFill: true, Focus: new(focus?.Handle ?? 0, 0, 0));
-                ctx = run.Signals?.ApplyToReplay(ctx) ?? ctx;
+                ctx = (run.Signals?.ApplyToReplay(ctx) ?? ctx) with { AllowGestureAssist = run.Trigger == "automatic-gesture" };
                 var activeRules = overrideRules ?? run.Rules ?? CompiledLayoutRules.Default;
                 var keyed = desktop.Zip(frame.Windows.OrderBy(w => w.ZOrder), (window, observed) => (window, observed.AppKey)).ToArray();
                 var slotPrefs = activeRules.BindSlots(keyed);
@@ -1023,11 +1026,11 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                     }
                 }
                 Console.WriteLine(JsonSerializer.Serialize(new { run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
-                    RecordedManualFollowups = followups?.Count, RecordedUndoOfThisRequest =
+                    run.GestureTiming, RecordedManualFollowups = followups?.Count, RecordedUndoOfThisRequest =
                         edits.Undone.Contains((run.Session, run.RequestId)) ? true : (bool?)null,
                     PostArrangeRegret = runRegret, PostArrangeVerticalError = verticalError, ProtectedRegionsPreserved = regionsPreserved,
-                    Roles = (ctx.WindowHints ?? []).Where(h => h.Role != WindowUseRole.Unknown || h.FloatingAffinity > 0)
-                        .Select(h => new { Id = (int)h.Handle, Role = h.Role.ToString(), h.FloatingAffinity }),
+                    Roles = (ctx.WindowHints ?? []).Where(h => h.Role != WindowUseRole.Unknown || h.FloatingAffinity > 0 || h.TextFocus)
+                        .Select(h => new { Id = (int)h.Handle, Role = h.Role.ToString(), h.FloatingAffinity, h.TextFocus }),
                     Moves = plan.Moves.Select(m => new { Id = (int)m.Window.Handle, Before = m.Window.VisualRect, After = m.TargetVisualRect }),
                     Selected = plan.Groups.Select(g => g.Selected) }));
             }

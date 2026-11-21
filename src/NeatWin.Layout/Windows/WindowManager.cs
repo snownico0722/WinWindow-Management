@@ -146,10 +146,12 @@ public sealed partial class WindowManager
         return result;
     }
 
-    public void Apply(IReadOnlyList<TidyMove> plan) => SubmitMoves(plan, []);
+    public void Apply(IReadOnlyList<TidyMove> plan) => SubmitMoves(plan, [], 0, out _, out _);
 
-    private IReadOnlyList<WindowMoveFailure> SubmitMoves(IReadOnlyList<TidyMove> plan, List<string> notes)
+    private IReadOnlyList<WindowMoveFailure> SubmitMoves(IReadOnlyList<TidyMove> plan, List<string> notes,
+        nint gestureWindow, out long? firstSubmitTick, out long? gestureSubmitTick)
     {
+        firstSubmitTick = gestureSubmitTick = null;
         if (plan.Count == 0) return [];
 
         InvalidateCache();
@@ -174,7 +176,12 @@ public sealed partial class WindowManager
                 if (deferred != 0)
                 {
                     stage = "EndDeferWindowPos";
-                    if (NativeMethods.EndDeferWindowPos(deferred)) return [];
+                    if (NativeMethods.EndDeferWindowPos(deferred))
+                    {
+                        firstSubmitTick = Environment.TickCount64;
+                        if (gestureWindow != 0 && plan.Any(m => m.Window.Handle == gestureWindow)) gestureSubmitTick = firstSubmitTick;
+                        return [];
+                    }
                 }
             }
             notes.Add($"{stage}: Win32 {Marshal.GetLastPInvokeError()}. Retrying individually.");
@@ -186,6 +193,12 @@ public sealed partial class WindowManager
             var outer = ToOuterRect(move.Window, move.TargetVisualRect);
             if (!NativeMethods.SetWindowPos(move.Window.Handle, 0, outer.X, outer.Y, outer.Width, outer.Height, flags))
                 failures.Add(new(move, Marshal.GetLastPInvokeError()));
+            else
+            {
+                long tick = Environment.TickCount64;
+                firstSubmitTick ??= tick;
+                if (move.Window.Handle == gestureWindow) gestureSubmitTick = tick;
+            }
         }
         return failures;
     }
