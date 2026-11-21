@@ -445,7 +445,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         "working-overlap" => LayoutText.Get("WorkingOverlap"),
         "working-pair" => LayoutText.Get("WorkingPair"), "working-region" => LayoutText.Get("WatchedRegion"),
         "task-vertical-fill" => LayoutText.Get("ReversibleFill"),
-        "task-edge" => LayoutText.Get("SharedEdge"), "task-fit" => LayoutText.Get("ContentFit"), "task-bleed" => LayoutText.Get("EdgeBleed"),
+        "task-edge" => LayoutText.Get("SharedEdge"), "task-fit" or "working-pair-grow" => LayoutText.Get("ContentFit"), "task-bleed" => LayoutText.Get("EdgeBleed"),
         "task-columns" => LayoutText.Get("KeepColumns"), "rescue" => LayoutText.Get("RescueArea"),
         "edge-row" => LayoutText.Get("EdgeRow"), "stack" => LayoutText.Get("Stack"), "restack" => LayoutText.Get("Restack"),
         "columns" => LayoutText.Get("Columns"), "rows" => LayoutText.Get("Rows"), "grid" => LayoutText.Get("Grid"), "local" => LayoutText.Get("LocalAdjust"), _ => LayoutText.Get("PreservePlacement"),

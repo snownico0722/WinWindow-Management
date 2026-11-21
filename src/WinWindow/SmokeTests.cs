@@ -94,6 +94,10 @@ internal static class SmokeTests
                 CheckNativeResource("x64", Machine.Amd64);
             }
             CheckSmartArrangeScenarios();
+            Assert(StateStore.RequestAdministratorOnLaunch(data), "new installations request administrator startup by default");
+            Directory.CreateDirectory(data);
+            File.WriteAllText(Path.Combine(data, "settings.json"), "{\"CloseToTray\":true}");
+            Assert(StateStore.RequestAdministratorOnLaunch(data), "settings from earlier builds default to administrator startup");
             var store = new StateStore(data);
             store.Preferences.Language = "zh-CN";
             store.Preferences.Rules.Add(new() { Title = "roundtrip", Opacity = 0, ClickThrough = true }); store.SavePreferences();
@@ -374,6 +378,12 @@ internal static class SmokeTests
             var nav = (ListBox)shell.FindName("SettingsNav");
             Assert(((ToggleButton)shell.FindName("SettingsButton")).IsChecked == true, "settings icon stays pressed while its page is open");
             void OpenSection(string name) => nav.SelectedItem = nav.Items.OfType<ListBoxItem>().Single(item => Equals(item.Tag, name));
+            OpenSection("GeneralSection");
+            var administratorStartup = (CheckBox)shell.FindName("AdministratorStartupBox");
+            Assert(administratorStartup.IsVisible && administratorStartup.IsChecked == true, "administrator startup is checked by default in General settings");
+            administratorStartup.IsChecked = false;
+            administratorStartup.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            Assert(!StateStore.RequestAdministratorOnLaunch(store.DirectoryPath), "disabling administrator startup is persisted for the next launch");
             OpenSection("LayoutSection");
             var layoutPage = (ScrollViewer)shell.FindName("LayoutSection");
             await WaitAsync("integrated layout settings loaded", () => layoutPage.IsVisible && layoutPage.IsEnabled && ((CheckBox)shell.FindName("VerticalFill")).IsChecked.HasValue);
@@ -528,6 +538,7 @@ internal static class SmokeTests
     {
         var store = new StateStore(Path.Combine(output, "desktop-" + Guid.NewGuid().ToString("N")));
         store.Preferences.CloseToTray = tray;
+        store.Preferences.RunAsAdministrator = false;
         store.Preferences.Hotkeys = new()
         {
             ["show"] = "Ctrl+Alt+Shift+F5", ["pin"] = "Ctrl+Alt+Shift+F6", ["park"] = "Ctrl+Alt+Shift+F7",

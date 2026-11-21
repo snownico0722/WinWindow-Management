@@ -147,6 +147,7 @@ internal sealed class Preferences
     public bool Dark { get; set; }
     public bool CloseToTray { get; set; } = true;
     public bool StartWithWindows { get; set; }
+    public bool RunAsAdministrator { get; set; } = true;
     public bool PinWhenFocused { get; set; } = true;
     public bool AbsoluteTopmost { get; set; } = true;
     public bool AggressiveTopmost { get; set; }

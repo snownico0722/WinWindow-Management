@@ -397,6 +397,32 @@ Check(opened.Moves is [{ Window.Handle: 2, TargetVisualRect: var separatedRect }
 var parked = LayoutDispatch.Create(LayoutRoute.Smart, stackVisible, gentle, null, observedStack, soloContext);
 Check(parked.Moves.Count == 0, "the same severe stack stays in place if the rear window is outside the task");
 
+var spaciousPair = new[]
+{
+    AttentionWindow(1, new(119, 227, 627, 725)),
+    AttentionWindow(2, new(756, 246, 1249, 888)),
+    AttentionWindow(3, focusArea) with { IsManageable = false, IsResizable = false },
+};
+var pairVisible = new VisibilityAnalyzer().SelectForManualArrange(spaciousPair, true);
+IntentLayoutPlan GrowWorkingPair(TaskLayoutContext c, SmartTidyStrength strength) =>
+    LayoutDispatch.Create(LayoutRoute.Smart, pairVisible, new(SmartStrength: strength), null, spaciousPair, c);
+var growthPlan = GrowWorkingPair(workingContext, SmartTidyStrength.Assertive);
+var grownMain = Placed(growthPlan, spaciousPair[0]);
+var grownPeer = Placed(growthPlan, spaciousPair[1]);
+Check(growthPlan.Groups is [{ Selected: "working-pair-grow" }] && growthPlan.Moves.Count == 2 &&
+    grownMain.Width > spaciousPair[0].VisualRect.Width && grownMain.Height > spaciousPair[0].VisualRect.Height &&
+    grownPeer.Width > spaciousPair[1].VisualRect.Width && grownPeer.Height > spaciousPair[1].VisualRect.Height &&
+    grownMain.Left == spaciousPair[0].VisualRect.Left && grownMain.Right < grownPeer.Left && grownPeer.Right <= focusArea.Right,
+    "assertive Smart expands both readable windows into spare space, preserving sides and giving the smaller focal window more room");
+var restrained = GrowWorkingPair(workingContext, SmartTidyStrength.Balanced);
+Check(Placed(restrained, spaciousPair[0]).Height < grownMain.Height && Placed(restrained, spaciousPair[1]).Width < grownPeer.Width &&
+    GrowWorkingPair(workingContext, SmartTidyStrength.Gentle).Moves.Count == 0,
+    "balanced growth stays below assertive, and conservative leaves a readable pair at its current size");
+var growthOff = GrowWorkingPair(workingContext with { Profile = new(AllowUsefulResize: false) }, SmartTidyStrength.Assertive);
+Check(growthOff.Moves.All(m => m.TargetVisualRect.Width == m.Window.VisualRect.Width && m.TargetVisualRect.Height == m.Window.VisualRect.Height) &&
+    GrowWorkingPair(workingContext with { GestureAnchor = 1 }, SmartTidyStrength.Assertive).Moves.All(m => m.Window.Handle != 1),
+    "working-pair growth respects the resizing option and a protected manual placement");
+
 var videoWindow = Window(1, new(100, 100, 1200, 800));
 var videoHint = new VideoBlackBarHint(1, VideoBlackBarOrientation.Horizontal, 2, new(150, 190, 1100, 620), .95);
 var videoContext = workingContext with { Focus = new(1, 0, 0), VideoHint = videoHint };
