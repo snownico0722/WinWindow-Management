@@ -94,14 +94,13 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
         {
             if (!result.TryGetValue(slot.Window, out var prior)) { result[slot.Window] = slot; continue; }
             // A rule choosing only one dimension leaves evidence on the other dimensions available.
-            var stronger = prior.Confidence >= slot.Confidence ? prior : slot;
-            var other = stronger == prior ? slot : prior;
-            var position = stronger.PreferCenter ? stronger : other;
-            var size = stronger.PreferWidth ? stronger : other;
+            var position = prior.PositionConfidence >= slot.PositionConfidence ? prior : slot;
+            var size = prior.WidthConfidence >= slot.WidthConfidence ? prior : slot;
             result[slot.Window] = position with
             {
-                Width = size.Width, PreferWidth = size.PreferWidth,
-                Height = prior.Height, Confidence = stronger.Confidence,
+                Width = size.Width, PreferWidth = size.PreferWidth, Height = prior.Height,
+                Confidence = Math.Max(position.PositionConfidence, Math.Max(size.WidthConfidence, prior.HeightConfidence)),
+                AxisConfidence = new(position.PositionConfidence, size.WidthConfidence, prior.HeightConfidence),
             };
         }
         return result.Values.ToArray();

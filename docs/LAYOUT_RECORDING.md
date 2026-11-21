@@ -153,3 +153,9 @@
 实际松手辅助若进入原生提交阶段，`plans` 与快照里的 `GestureTiming` 可用于比较预计算和临时求解。`WindowId` 是手动操作窗的会话内编号，`ReusedPreview` 表示松手校验通过、候选集参与了决策。`ReleaseToFirstGeometrySubmitMs` 从 Windows 报告移动或缩放结束的单调时刻计到第一个成功提交的几何操作，`ReleaseToGestureWindowSubmitMs` 只计算被手动操作的那一扇。未发几何请求或该窗未成功提交时，对应字段为空。屏幕实际绘制还取决于目标应用和桌面合成器。验证定时器后续采样的时间不能用来计算首帧到屏延时。
 
 小型文字窗口在首次独立打开时取得一次摆放机会，记录会在对应窗口提示中写入 `InitialTextPlacement`。已进入阅读保护的窗口使用 `TextFocus`。候选方案中的 `attention-side-stack` 表示主窗口旁边上下排列两个参考窗口，可以查看它的评分和拒绝原因。个人收起规则遇到用户开启后台保持的窗口时，行为记录用 `dismiss-skipped` 和 `background-keep` 标记跳过软关闭。
+
+## Smart v1.5 的请求与置信度
+
+第 7 版布局决策在 `Signals.WorkspaceCause` 中记录调度时合并的焦点、窗口增减、几何、状态、层级或主动复查原因。`Requested` 表示程序要求复查；旧记录缺少原因时保留未知。候选中的 `InterventionWeight` 和 `GainThreshold` 描述同等可读性目标下的执行门槛，可与保持原位的成本比较。它们没有经过概率校准。
+
+`Signals.Attention[id].Correction` 记录同一任务中有反向行为证据的 x、y、宽、高，以及每一轴的原提交值、人工松手值和反向程度。手势流的 `ReturnedAxes` 仍表示回到旧值附近的精确命中。两种证据应分别分析。`Signals.Placements[].AxisConfidence` 提供位置、宽、高的独立习惯可信度，旧回放缺少它时沿用当时的组级可信度。六秒仍可用于解释一次持续访问中的注意力变化，普通指针事件不会生成几何请求或补做上一次整理。

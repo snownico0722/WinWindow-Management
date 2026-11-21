@@ -3,9 +3,13 @@ namespace NeatWin.Core;
 // Persisted numeric values. These are trigger/arrangement policies, not Smart scoring weights.
 public enum AutomaticLayoutMode { Off, LightAssist, FullAssist, AutoFullAssist }
 public enum LayoutTrigger { Manual, AfterGesture, WorkspaceChange }
+[Flags]
+public enum WorkspaceChangeCause { None = 0, Focus = 1, Membership = 2, Geometry = 4, Order = 8, WindowState = 16, Requested = 32 }
+
 public enum LayoutRoute { ManualAlgorithm, LightAssist, Smart, FullTiling }
 public sealed record AutomaticLayoutRequest(AutomaticLayoutMode Mode, LayoutTrigger Trigger)
 {
+    public WorkspaceChangeCause Cause { get; init; }
     internal ForegroundHistory.Opening? Opening { get; init; }
 }
 
@@ -80,9 +84,7 @@ public sealed class AutomaticLayoutScheduler
     private nint _foreground, _dragging;
     private ManualWindowGesture? _release;
     internal ManualWindowGesture? PendingRelease => _release;
-    private (nint Handle, uint Pid) _inputTarget;
-    private long _inputStarted, _lastInput;
-    private bool _sustainedInputReported;
+    private WorkspaceChangeCause _cause;
     public AutomaticLayoutMode Mode { get; private set; }
     public bool HasPending => _pending;
 
@@ -90,7 +92,7 @@ public sealed class AutomaticLayoutScheduler
     {
         Mode = AutomaticLayoutPolicy.Read((int)mode, false);
         _own.Clear(); _manual.Clear(); _pending = false; _foreground = _dragging = 0; _release = null;
-        _inputTarget = default;
+        _cause = WorkspaceChangeCause.None;
         _observed = Normalize(snapshot); _notBefore = now; _lastChange = now;
     }
 
@@ -102,28 +104,6 @@ public sealed class AutomaticLayoutScheduler
     internal void DeferWorkspaceWhileBusy(long now)
     {
         if (_pending && _release == null) _lastChange = now;
-    }
-
-    internal bool TaskInput(nint handle, uint pid, long now)
-    {
-        if (!AutomaticLayoutPolicy.WatchesWorkspace(Mode) || handle == 0 || pid == 0) return false;
-        // A scroll can transfer attention to a reference without changing native focus.
-        // One more pass after sustained interaction lets the previous task decay.
-        bool newTarget = (handle, pid) != _inputTarget || now - _lastInput > ForegroundHistory.RecentInputMilliseconds;
-        _lastInput = now;
-        if (newTarget)
-        {
-            _inputTarget = (handle, pid);
-            _inputStarted = now;
-            _sustainedInputReported = false;
-        }
-        else
-        {
-            if (_sustainedInputReported || now - _inputStarted < ForegroundHistory.EstablishedTaskMilliseconds) return false;
-            _sustainedInputReported = true;
-        }
-        if (!_pending) RequestCurrent(now);
-        return true;
     }
 
     public void GestureStarted(nint handle)
@@ -198,9 +178,9 @@ public sealed class AutomaticLayoutScheduler
         }
         var changed = UpdateObserved(next, ignored, ignoredOrder);
         if (now >= _ownUntil) _own.Clear();
-        if (changed)
+        if (changed != WorkspaceChangeCause.None)
         {
-            if (AutomaticLayoutPolicy.WatchesWorkspace(Mode)) Queue(LayoutTrigger.WorkspaceChange, now);
+            if (AutomaticLayoutPolicy.WatchesWorkspace(Mode)) Queue(LayoutTrigger.WorkspaceChange, now, changed);
             else if (_pending) _lastChange = now;
         }
         if (!_pending) return null;
@@ -226,11 +206,12 @@ public sealed class AutomaticLayoutScheduler
             if (now < navigationSettleUntil || !openingReady && (now - _lastChange < SettleMilliseconds || now < _notBefore)) return null;
         }
         _pending = false; _manual.Clear(); _notBefore = now + MinimumIntervalMilliseconds;
-        return new(Mode, _trigger);
+        return new(Mode, _trigger) { Cause = _cause };
     }
 
-    private void Queue(LayoutTrigger trigger, long now)
+    private void Queue(LayoutTrigger trigger, long now, WorkspaceChangeCause cause = WorkspaceChangeCause.Requested)
     {
+        _cause = trigger == LayoutTrigger.AfterGesture ? WorkspaceChangeCause.None : (_pending ? _cause | cause : cause);
         if (!_pending || trigger == LayoutTrigger.AfterGesture) _trigger = trigger;
         _pending = true; _lastChange = now;
     }
@@ -241,24 +222,32 @@ public sealed class AutomaticLayoutScheduler
         // Activating our own settings, the taskbar or another excluded utility is not a new task.
         if (foreground != 0) _foreground = foreground;
         if (!snapshot.Any(w => w.Handle == _foreground)) _foreground = 0;
-        return snapshot.OrderBy(w => w.ZOrder).Select((w, rank) => w with
+        // 输入候选、提示等小型被动浮层仍保留在求解时的真实遮挡快照里。它们自己出现或消失不代表新的工作窗口。
+        var relevant = snapshot.Where(w => w.IsManageable || w.SurfaceState != null || w.IsForeground ||
+            !w.IsTopmost || w.VisualRect.Intersect(w.WorkArea).Area >= w.WorkArea.Area * .15);
+        return relevant.OrderBy(w => w.ZOrder).Select((w, rank) => w with
             { ZOrder = rank, IsForeground = w.Handle == _foreground }).ToArray();
     }
 
-    private bool UpdateObserved(WindowSnapshot[] next, HashSet<nint> ignoreGeometry, HashSet<nint> ignoreOrder)
+    private WorkspaceChangeCause UpdateObserved(WindowSnapshot[] next, HashSet<nint> ignoreGeometry, HashSet<nint> ignoreOrder)
     {
         var before = _observed;
         var old = before.ToDictionary(w => w.Handle);
-        var changed = before.Length != next.Length;
+        var changed = before.Length != next.Length ? WorkspaceChangeCause.Membership : WorkspaceChangeCause.None;
         for (var i = 0; i < next.Length; i++)
         {
             var w = next[i];
-            if (!old.TryGetValue(w.Handle, out var a) || a.ProcessId != w.ProcessId ||
-                a.WorkArea != w.WorkArea || a.MonitorHandle != w.MonitorHandle || a.Dpi != w.Dpi ||
-                a.IsManageable != w.IsManageable || a.IsResizable != w.IsResizable ||
-                a.IsTopmost != w.IsTopmost || a.FrameInsets != w.FrameInsets || a.IsForeground != w.IsForeground)
+            if (!old.TryGetValue(w.Handle, out var a) || a.ProcessId != w.ProcessId)
             {
-                changed = true;
+                changed |= WorkspaceChangeCause.Membership;
+                continue;
+            }
+            if (a.IsForeground != w.IsForeground) changed |= WorkspaceChangeCause.Focus;
+            if (a.WorkArea != w.WorkArea || a.MonitorHandle != w.MonitorHandle || a.Dpi != w.Dpi ||
+                a.IsManageable != w.IsManageable || a.IsResizable != w.IsResizable ||
+                a.IsTopmost != w.IsTopmost || a.FrameInsets != w.FrameInsets || a.SurfaceState != w.SurfaceState)
+            {
+                changed |= WorkspaceChangeCause.WindowState;
                 continue;
             }
             if (ignoreGeometry.Contains(w.Handle) || a.VisualRect == w.VisualRect) continue;
@@ -268,20 +257,21 @@ public sealed class AutomaticLayoutScheduler
                 // The planner captures fresh geometry when the request runs.
                 next[i] = w with { VisualRect = a.VisualRect };
             }
-            else changed = true;
+            else changed |= WorkspaceChangeCause.Geometry;
         }
         _observed = next;
         // Moving a member within our layer block renumbers unrelated windows. Compare their
         // relative sequence, not raw Z ranks; a real external restack still causes a new decision.
-        return changed || !before.Where(w => !ignoreOrder.Contains(w.Handle)).Select(w => w.Handle)
-            .SequenceEqual(next.Where(w => !ignoreOrder.Contains(w.Handle)).Select(w => w.Handle));
+        if (!before.Where(w => !ignoreOrder.Contains(w.Handle)).Select(w => w.Handle)
+            .SequenceEqual(next.Where(w => !ignoreOrder.Contains(w.Handle)).Select(w => w.Handle))) changed |= WorkspaceChangeCause.Order;
+        return changed;
     }
 }
 
 internal static class LayoutDispatch
 {
     internal static string ModelVersion(TidyAlgorithmMode mode) =>
-        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v1.4";
+        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v1.5";
 
     internal static IntentLayoutPlan Create(LayoutRoute route, IReadOnlyList<VisibleWindow> visible,
         TidyOptions options, IntentReferenceDocument? reference, IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext? context)

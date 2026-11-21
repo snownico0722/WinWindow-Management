@@ -64,7 +64,7 @@ internal sealed class LayoutRunJournal : IDisposable
                 long? Elapsed(long? tick) => tick >= release ? tick - release : null;
                 timing = new(windowId, reusedPreview, Elapsed(application.FirstGeometrySubmittedTick), Elapsed(application.GestureWindowSubmittedTick));
             }
-            var observation = new LayoutRunObservation(6, _session, Guid.NewGuid().ToString("N"), trigger,
+            var observation = new LayoutRunObservation(7, _session, Guid.NewGuid().ToString("N"), trigger,
                 frame, targets, layers, groups, null, refused.Length > 0 ? "submission-failed" : "requested-not-yet-verified",
                 application.Notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
                 context == null ? null : RecordedTaskSignals.From(context, ids, before), strength, fullDesktop, refused.Length == 0 ? null : refused,

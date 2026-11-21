@@ -83,13 +83,6 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
         _timer.Start();
     }
 
-    internal bool TaskInput(nint handle, uint pid, long now)
-    {
-        if (_disposed || !_scheduler.TaskInput(handle, pid, now)) return false;
-        _timer.Start();
-        return true;
-    }
-
     private void OnWinEvent(nint hook, uint eventType, nint hwnd, int idObject, int idChild, uint thread, uint time)
     {
         // Destruction can invalidate HWND before delivery, so membership changes are confirmed

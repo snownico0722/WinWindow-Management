@@ -415,10 +415,8 @@ internal static partial class IntentLayoutPlanner
                 {
                     // During direct input, movement is salient relative to the surface
                     // containing the controls, even when it spans a small part of the monitor.
-                    double input = target.Role == AttentionRole.Main ? context.Attention?.GetValueOrDefault(w.Handle)?.Input ?? 0 : 0;
                     double dx = Math.Abs(CenterX(a) - CenterX(b)), dy = Math.Abs(CenterY(a) - CenterY(b));
-                    double displacement = (1 - input) * (dx / area.Width + dy / area.Height) +
-                        input * (dx / Math.Min(area.Width, a.Width) + dy / Math.Min(area.Height, a.Height));
+                    double displacement = dx / Math.Min(area.Width, a.Width) + dy / Math.Min(area.Height, a.Height);
                     double resize = Math.Abs(Math.Log(b.Width / (double)a.Width)) + Math.Abs(Math.Log(b.Height / (double)a.Height));
                     comfortDeficit += (int)Math.Round(20 * stability * (displacement + resize));
                     continuity += 8 * stability * (displacement + resize);
@@ -542,6 +540,8 @@ internal static partial class IntentLayoutPlanner
             var distance = Math.Sqrt(Math.Pow(CenterX(a) - CenterX(b), 2) + Math.Pow(CenterY(a) - CenterY(b), 2));
             continuity += .35 * profile.SpatialContinuityWeight * distance / Math.Max(300 * scale, Math.Min(area.Width, area.Height));
             reflow += .18 * (Math.Abs(Math.Log(b.Width / (double)a.Width)) + Math.Abs(Math.Log(b.Height / (double)a.Height)));
+            if (!context.ExplicitArrange && context.Attention?.GetValueOrDefault(w.Handle)?.Correction is { } correction)
+                continuity += correction.Cost(a, b);
             if (context.RecentGesture is { } gesture && gesture.WindowHandle == w.Handle &&
                 gesture.WorkArea == area && gesture.EndRect == a && gesture.Kind != ManualGestureKind.Move)
                 reflow += .45 * (Math.Abs(Math.Log(b.Width / (double)a.Width)) + Math.Abs(Math.Log(b.Height / (double)a.Height)));
@@ -628,21 +628,21 @@ internal static partial class IntentLayoutPlanner
             if (index < 0) continue;
             var r = candidate.Rects[index];
             double targetCenter = (CenterX(r) - area.Left) / area.Width;
-            double error = preference.PreferCenter ? Math.Abs(targetCenter - preference.Center) : 0;
-            if (preference.PreferWidth) error += .5 * Math.Abs(r.Width / (double)area.Width - preference.Width);
+            double error = preference.PositionConfidence * Math.Abs(targetCenter - preference.Center);
+            error += .5 * preference.WidthConfidence * Math.Abs(r.Width / (double)area.Width - preference.Width);
             int peer = Array.FindIndex(windows, w => w.Window.Handle == preference.Partner);
             if (peer >= 0 && Math.Abs(preference.Order) >= .5 &&
                 Math.Sign(CenterX(r) - CenterX(candidate.Rects[peer])) != Math.Sign(preference.Order))
-                error += 2 * Math.Abs(preference.Order);
+                error += 2 * preference.PositionConfidence * Math.Abs(preference.Order);
             if (peer >= 0 && preference.RevealedCell is >= 0 and < 16)
             {
                 var cell = WindowExposure.Cell(candidate.Rects[peer], preference.RevealedCell);
                 var slot = Array.IndexOf(candidate.Order, peer);
                 var covers = candidate.Order.Take(slot).Select(i => candidate.Rects[i])
                     .Concat((obstacles ?? []).Where(w => w.ZOrder < ranks[slot]).Select(w => w.VisualRect));
-                error += 2 * (1 - ScreenExposure(cell, covers, area, windows[peer].Window.Dpi).Visible);
+                error += 2 * preference.PositionConfidence * (1 - ScreenExposure(cell, covers, area, windows[peer].Window.Dpi).Visible);
             }
-            personal += preference.Confidence * error;
+            personal += error;
         }
         return new(information, switching, continuity, reflow, peripheral, alignment, uncertainty, feedback, personal, pairCost,
             new(mainDeficit, accessDeficit, comfortDeficit, gestureDeficit));
@@ -653,7 +653,7 @@ internal static partial class IntentLayoutPlanner
         TaskLayoutContext context, IReadOnlyList<WindowSnapshot> desktop)
     {
         if (context.VerifiedRepeat && !context.ExplicitArrange) return refined.Count == 0 && planned.Layers.Count == 0;
-        context = ResolveExplicitFocus(visible, context);
+        context = ResolveExplicitFocus(visible, context.WithCurrentCorrections(desktop));
         visible = IncludeWorkingCompanion(visible, desktop, context);
         var known = planned.Groups.SelectMany(g => g.Handles).ToHashSet();
         if (refined.Any(m => !known.Contains(m.Window.Handle))) return false;

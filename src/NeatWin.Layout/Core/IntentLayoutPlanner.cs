@@ -21,7 +21,7 @@ internal static partial class IntentLayoutPlanner
         desktop ??= visible.Select(v => v.Window).ToArray();
         if (taskContext is { ExplicitArrange: false, IsWorkspaceObservation: true, Attention: not null } &&
             !desktop.Any(w => w.IsForeground)) return new([], [], []);
-        taskContext = GesturePlacement.Resolve(ResolveExplicitFocus(visible, taskContext), visible, options, reference);
+        taskContext = GesturePlacement.Resolve(ResolveExplicitFocus(visible, taskContext.WithCurrentCorrections(desktop)), visible, options, reference);
         visible = IncludeWorkingCompanion(visible, desktop, taskContext);
         if (taskContext is { ExplicitArrange: false, Attention: not null })
         {
@@ -151,11 +151,12 @@ internal static partial class IntentLayoutPlanner
                 candidates = candidates.DistinctBy(CandidateKey).ToList();
                 var best = candidates[0]; var baselineBreakdown = Breakdown(best);
                 var baseline = baselineBreakdown.Total; var bestScore = baseline; var bestGoal = baselineBreakdown.Goal;
-                var threshold = SelectionThreshold(strength, task) * (groupContext.ExplicitArrange ? .60 : 1);
+                var baseThreshold = SelectionThreshold(strength, task) * .60;
                 var needsRescue = options.RescueOffscreenWindows && original.Any(r =>
                     r.Intersect(area).Area < r.Area * .90 || r.Top < area.Top || r.Bottom > area.Bottom);
                 var audits = new List<LayoutCandidateTrace>(generationNotes) { new("keep", baseline, null, baselineBreakdown) };
                 var seen = candidates.Select(CandidateKey).ToHashSet();
+                int gestureIndex = Array.FindIndex(group, v => v.Window.Handle == groupContext.GestureAnchor);
                 foreach (var candidate in candidates.Skip(1)) Evaluate(candidate, 0);
                 // Finish useful geometry in this call, but freeze task evidence, content demand,
                 // safety floors and movement origin. Never learn or re-infer from our own output.
@@ -190,8 +191,12 @@ internal static partial class IntentLayoutPlanner
                     if (rejection is not null) { audits.Add(new(candidate.Kind, null, rejection, Generation: generation)); return; }
                     var breakdown = Breakdown(candidate);
                     var score = breakdown.Total;
-                    audits.Add(new(candidate.Kind, score, null, breakdown, generation));
                     // 先比较主窗能否阅读、副窗能否点到，再用总成本挑摆法。否则少挪几像素就可能压过露出一整扇参考窗的收益。
+                    bool followsGesture = groupContext.AllowGestureAssist && gestureIndex >= 0 &&
+                        groupContext.GestureTarget == candidate.Rects[gestureIndex] && candidate.Rects[gestureIndex] != original[gestureIndex];
+                    var weight = groupContext.InterventionWeight(followsGesture);
+                    var threshold = baseThreshold / weight;
+                    audits.Add(new(candidate.Kind, score, null, breakdown, generation, weight, threshold));
                     var priority = breakdown.Goal.CompareTo(bestGoal);
                     if (breakdown.Feedback == 0 && (priority < 0 || priority == 0 && score < bestScore &&
                         (bestGoal.CompareTo(baselineBreakdown.Goal) < 0 || score < baseline - threshold) ||

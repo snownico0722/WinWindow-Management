@@ -22,6 +22,44 @@ internal static class AttentionWorkspaceChecks
             { [2] = new(1, 1, 1, 1, false), [3] = new(1, 1, 1, 1, false) } };
         IntentLayoutPlan Balanced(WindowSnapshot[] windows, TaskLayoutContext task) => LayoutDispatch.Create(LayoutRoute.Smart,
             new VisibilityAnalyzer().SelectForManualArrange(windows, true), new(SmartStrength: SmartTidyStrength.Balanced), null, windows, task);
+        // 用陌生窗口、镜像及不同原点回放第六版的因果链。同时验证参考消失时可以重新居中。
+        foreach (bool right in new[] { false, true })
+        foreach (string surface in new[] { "maximized", "fullscreen" })
+        {
+            var side = Window(1, right ? 860 : 0, 30, 1060, 980);
+            var rear = Window(2, 0, 0, area.Width, area.Height) with { IsManageable = false, SurfaceState = surface };
+            var workspace = context with { IsWorkspaceObservation = true, AllowGestureAssist = false };
+            check(Balanced([side, rear], workspace).Moves.Count == 0 &&
+                Balanced([side], workspace).Moves.Any(m => m.TargetVisualRect.X != side.VisualRect.X),
+                $"a single eligible window preserves a visible {surface} reference until it leaves (right: {right})");
+        }
+        var left = Window(1, 0, 30, 1100, 990);
+        var center = left.VisualRect with { X = area.X + 410 };
+        var release = left.VisualRect with { X = area.X + 48 };
+        var released = left with { VisualRect = release };
+        var corrections = new ForegroundHistory();
+        corrections.Visit(1, 1, 0);
+        corrections.Submitted(new([new(left, center)], [], []), [left, peer]);
+        var manual = new ManualWindowGesture(1, center, release, area, ManualGestureKind.Move, [], 400, 0);
+        corrections.Placed(released, manual, 2000, [released, peer]);
+        corrections.Submitted(new([new(released, left.VisualRect)], [], []), [released, peer]);
+        corrections.Interact(1, 1, 16000);
+        corrections.Resolve([left, peer], 30000, out var observedCorrection);
+        var evidence = observedCorrection[1].Correction;
+        check(evidence is { X.Confidence: > .8, Y: null, Width: null, Height: null } &&
+            evidence.Cost(left.VisualRect, center) > .8 && evidence.Cost(left.VisualRect, left.VisualRect with { Height = 800 }) == 0,
+            "a partial reversal and subsequent edge assist revise only the returned axis after the gesture expires");
+        var oldHabit = new PlacementPreference(1, 0, .50, .55, 0, -1, .9, AxisConfidence: new(.75, .9, 0));
+        var countered = context with { Attention = observedCorrection, Placement = [oldHabit], WorkspaceCause = WorkspaceChangeCause.Focus };
+        var logged = RecordedTaskSignals.From(countered, new Dictionary<nint, int> { [1] = 1 });
+        var replayed = System.Text.Json.JsonSerializer.Deserialize<RecordedTaskSignals>(
+            System.Text.Json.JsonSerializer.Serialize(logged))!.ApplyToReplay(new());
+        check(replayed.WorkspaceCause == WorkspaceChangeCause.Focus &&
+            replayed.WithCurrentCorrections([left, peer]).Placement is [{ PreferCenter: false, PreferWidth: true, WidthConfidence: .9 }],
+            "replay preserves current counterevidence, the independent width prior and the dispatch cause");
+        corrections.Resolve([left], 31000, out var differentTask);
+        check(differentTask[1].Correction == null, "closing the former companion ends the situational correction");
+
         var dockedWindow = Window(1, 1240, 150, 600, 500);
         var opposite = Window(2, 180, 100, 740, 710);
         var drag = new ManualWindowGesture(1, dockedWindow.VisualRect with { X = area.Left + 610 },

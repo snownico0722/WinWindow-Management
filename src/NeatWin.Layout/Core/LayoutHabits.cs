@@ -13,9 +13,17 @@ public sealed record LayoutHabit(DateTimeOffset Time, string Display, string App
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? Height = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] HorizontalEdit? Edited = null);
 
+public sealed record PlacementConfidence(double Position, double Width, double Height);
+
 public sealed record PlacementPreference(nint Window, nint Partner, double Center, double Width,
     double Order, int RevealedCell, double Confidence, double? InnerOverlap = null, double? Height = null,
-    bool PreferWidth = true, bool PreferCenter = true);
+    bool PreferWidth = true, bool PreferCenter = true, PlacementConfidence? AxisConfidence = null)
+{
+    // 老快照只有组级置信度，沿用其证据。新样本按实际调整的轴投票，熟悉宽度不会让左右偏好更可信。
+    internal double PositionConfidence => PreferCenter ? AxisConfidence?.Position ?? Confidence : 0;
+    internal double WidthConfidence => PreferWidth ? AxisConfidence?.Width ?? Confidence : 0;
+    internal double HeightConfidence => Height.HasValue ? AxisConfidence?.Height ?? Confidence : 0;
+}
 
 public sealed record NavigationHop(nint Source, nint Target, string Evidence, long AgeMilliseconds);
 
@@ -28,7 +36,8 @@ public sealed record LayoutFocus(nint Main, nint Companion, int Switches, string
 
 public sealed record LayoutAttention(double Recency, double Dwell, double Input, double Association, bool Foreground,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double SustainedForeground = 0,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double ManualFloatPreference = 0)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double ManualFloatPreference = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementCorrection? Correction = null)
 {
     public double Weight => Foreground ? 1 : Math.Clamp(Recency * (.70 + .15 * Dwell) + .35 * Input, 0, 1);
 }
@@ -42,6 +51,8 @@ public sealed class ForegroundHistory
     private readonly List<(nint Handle, uint Pid, long Time)> _visits = [];
     private readonly Dictionary<(nint Handle, uint Pid), long> _input = new();
     private readonly Dictionary<nint, (uint Pid, RectI WorkArea, RectI End, double Strength, long Tick)> _manualPlaces = [];
+    private readonly Dictionary<nint, (TidyMove Move, WindowSnapshot[] Neighbors)> _submitted = [];
+    private readonly Dictionary<nint, (WindowSnapshot Window, WindowSnapshot[] Neighbors, PlacementCorrection Evidence)> _corrections = [];
     private sealed record RememberedNavigation((nint Handle, uint Pid, long Time) Visit, NavigationState Path, long Sampled);
     private RememberedNavigation? _rememberedNavigation;
     private ((nint Handle, uint Pid, long Time) Visit, PointI Position)? _openingPointer;
@@ -218,10 +229,31 @@ public sealed class ForegroundHistory
             _clicks.RemoveAll(click => click.Handle == handle);
             if (_rememberedNavigation?.Path.Hops.Any(hop => hop.Source == handle) == true) _rememberedNavigation = null;
             _manualPlaces.Remove(handle);
+            _submitted.Remove(handle);
+            _corrections.Remove(handle);
         }
     }
 
-    internal void Placed(WindowSnapshot window, ManualWindowGesture gesture, long now)
+    internal void Submitted(IntentLayoutPlan plan, IReadOnlyList<WindowSnapshot> before)
+    {
+        if (plan.Moves.Count == 0) return;
+        var projected = TaskLayoutSession.Project(before, plan);
+        lock (_visits)
+            foreach (var move in plan.Moves)
+                _submitted[move.Window.Handle] = (move, ContentNeighbors(move.Window, projected));
+    }
+
+    // 邻窗关闭、换屏或可用视野变化时，旧任务里的回拖不能锁死新任务。层级比较只关心内容窗口之间的顺序。
+    private static WindowSnapshot[] ContentNeighbors(WindowSnapshot target, IReadOnlyList<WindowSnapshot> desktop) =>
+        desktop.Where(w => w.Handle != target.Handle && w.MonitorHandle == target.MonitorHandle &&
+            (w.IsManageable || w.SurfaceState is "maximized" or "fullscreen")).OrderBy(w => w.ZOrder).ToArray();
+
+    private static bool SameNeighbors(WindowSnapshot[] previous, WindowSnapshot[] current) =>
+        previous.Length == current.Length && previous.Zip(current).All(pair =>
+            pair.First.SurfaceState == pair.Second.SurfaceState && WindowStateRules.Matches(pair.First, pair.Second, pair.First.VisualRect));
+
+    internal void Placed(WindowSnapshot window, ManualWindowGesture gesture, long now,
+        IReadOnlyList<WindowSnapshot>? desktop = null)
     {
         if (gesture.WindowHandle != window.Handle || gesture.StartRect == gesture.EndRect ||
             gesture.WorkArea != window.WorkArea || !WindowStateRules.Near(window.VisualRect, gesture.EndRect)) return;
@@ -239,6 +271,17 @@ public sealed class ForegroundHistory
         double intent = 2 * Math.Min(interior, sameOrSmaller) - 1;
         lock (_visits)
         {
+            if (desktop != null)
+            {
+                var neighbors = ContentNeighbors(window, desktop);
+                bool linked = _submitted.Remove(window.Handle, out var last) && SameNeighbors(last.Neighbors, neighbors) &&
+                    WindowStateRules.Matches(last.Move.Window, window, end) && WindowStateRules.Near(start, last.Move.TargetVisualRect);
+                _corrections.Remove(window.Handle, out var old);
+                var previous = old.Evidence != null && WindowStateRules.Matches(old.Window, window, end) && SameNeighbors(old.Neighbors, neighbors) ? old.Evidence : null;
+                var evidence = PlacementCorrection.Observe(start, end, linked ? last.Move!.Window.VisualRect : null,
+                    linked ? last.Move!.TargetVisualRect : null, window.Dpi, previous);
+                if (evidence != null) _corrections[window.Handle] = (window, neighbors, evidence);
+            }
             if (_manualPlaces.Count >= 64 && !_manualPlaces.ContainsKey(window.Handle))
                 _manualPlaces.Remove(_manualPlaces.MinBy(entry => entry.Value.Tick).Key);
             _manualPlaces[window.Handle] = (window.ProcessId, work, end, intent * Math.Min(1, travel / distance), now);
@@ -446,6 +489,17 @@ public sealed class ForegroundHistory
                 var signal = attention.GetValueOrDefault(target.Handle) ?? new(0, 0, 0, 0, target.IsForeground);
                 double strength = 1 - Math.Clamp(((now - placed.Tick) / (double)AttentionHalfLifeMilliseconds - 1) / 2, 0, 1);
                 attention[target.Handle] = signal with { ManualFloatPreference = placed.Strength * strength };
+            }
+            foreach (var (handle, item) in _corrections.ToArray())
+            {
+                if (!valid.TryGetValue(handle, out var w) || !WindowStateRules.Matches(item.Window, w, w.VisualRect) ||
+                    !SameNeighbors(item.Neighbors, ContentNeighbors(w, windows)))
+                {
+                    _corrections.Remove(handle);
+                    continue;
+                }
+                var current = attention.GetValueOrDefault(handle) ?? new(0, 0, 0, 0, w.IsForeground);
+                attention[handle] = current with { Correction = item.Evidence };
             }
             // A maximized/full-screen task is still the task even though we cannot move it.
             if (foreground is { IsManageable: false } && (foreground.SurfaceState != null || foreground.Owner != 0))
@@ -708,6 +762,6 @@ public static class LayoutHabits
             preferCenter ? center.Value : descriptiveCenter, preferWidth ? width.Value : descriptiveWidth,
             specific && preferCenter ? positions.Sum(s => Weight(s) * s.Order) / positions.Sum(Weight) : 0,
             preferCenter ? cell : -1, confidence, preferCenter ? overlap : null, height.Confidence >= .40 ? height.Value : null,
-            PreferWidth: preferWidth, PreferCenter: preferCenter);
+            PreferWidth: preferWidth, PreferCenter: preferCenter, AxisConfidence: new(center.Confidence, width.Confidence, height.Confidence));
     }
 }

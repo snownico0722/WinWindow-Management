@@ -19,7 +19,7 @@ public sealed partial class WindowManager
 
     public LayoutApplication ApplyLayout(IntentLayoutPlan plan) => ApplyLayout(plan, null);
 
-    internal LayoutApplication ApplyLayout(IntentLayoutPlan plan, nint? automaticForeground, TaskLayoutContext? context = null, nint gestureWindow = default, ForegroundReading? initialReading = null)
+    internal LayoutApplication ApplyLayout(IntentLayoutPlan plan, nint? automaticForeground, TaskLayoutContext? context = null, nint gestureWindow = default, ForegroundReading? initialReading = null, ForegroundReading? workspaceReading = null)
     {
         var current = Capture();
         var needed = plan.Moves.Select(m => m.Window).Concat(plan.Layers.SelectMany(l => l.FrontToBack))
@@ -38,6 +38,9 @@ public sealed partial class WindowManager
             var live = ForegroundReading.Read(desktop.FirstOrDefault(w => w.IsForeground));
             if (initialReading is { } initial)
                 return initial.AllowsInitialPlacement(live) ? 0 : automaticForeground.Value;
+            // 后台求解时用户又开始操作，普通浏览器未必暴露系统插入点。只保护当前视图，仍允许邻窗自己改善。
+            if (workspaceReading is { } start && (live.Root != start.Root || live.LastInput != start.LastInput))
+                return automaticForeground.Value;
             return live.Caret ? live.Root : 0;
         }
         var caret = ProtectedInputRoot(current);
@@ -57,7 +60,7 @@ public sealed partial class WindowManager
             Layers = plan.Layers.Except(failed).ToArray(),
         };
         if (failed.Length != 0) notes.Add("指定层级未实现，未套用依赖该层级的窗口位置。");
-        var afterCaret = plan.Layers.Count > 0 || initialReading.HasValue ? ProtectedInputRoot(afterLayers) : caret;
+        var afterCaret = plan.Layers.Count > 0 || initialReading.HasValue || workspaceReading.HasValue ? ProtectedInputRoot(afterLayers) : caret;
         bool readingChanged = false;
         if (context != null && (failed.Length > 0 || afterCaret != caret) &&
             !IntentLayoutPlanner.TextViewAcceptsPlan(afterLayers, accepted with { Layers = [] }, context, afterCaret))

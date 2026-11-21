@@ -29,22 +29,25 @@ public sealed class AutomaticLayoutTests
             AutomaticLayoutPolicy.Route((AutomaticLayoutMode)mode, LayoutTrigger.Manual));
 
     [Fact]
-    public void InputOnAReferenceTriggersASettledPassWithoutRepeatedReflowsDuringScroll()
+    public void ReadingAReferenceDoesNotQueueGeometryWhileANewWindowStillDoes()
     {
         var desktop = new[] { W(1), W(2, 1100) };
         var s = Scheduler(AutomaticLayoutMode.AutoFullAssist, desktop);
-        Assert.True(s.TaskInput(2, 2, 1000));
-        Assert.False(s.TaskInput(2, 2, 1100));
-        Assert.NotNull(s.Observe(desktop, 1450, false));
-        Assert.False(s.TaskInput(2, 2, 6700));
-        Assert.True(s.TaskInput(2, 2, 7100));
-        Assert.False(s.TaskInput(2, 2, 7200));
-        Assert.NotNull(s.Observe(desktop, 7550, false));
-        Assert.True(s.TaskInput(1, 1, 8300));
-
-        s.Reset(AutomaticLayoutMode.FullAssist, desktop, 9000);
-        Assert.False(s.TaskInput(1, 1, 9100));
+        var history = new ForegroundHistory();
+        foreach (long tick in new long[] { 1000, 1300, 7100, 15500, 81000 })
+        {
+            history.Interact(2, 2, tick);
+            Assert.Null(s.Observe(desktop, tick, false));
+            Assert.False(s.HasPending);
+        }
+        var popup = W(3, 100) with { IsForeground = false, IsManageable = false, IsTopmost = true,
+            VisualRect = new(20, 30, 150, 45) };
+        Assert.Null(s.Observe([.. desktop, popup], 81010, false));
+        Assert.Null(s.Observe(desktop, 81090, false));
         Assert.False(s.HasPending);
+        var opened = desktop.Append(W(3, 100)).ToArray();
+        Assert.Null(s.Observe(opened, 81100, false));
+        Assert.True(s.Observe(opened, 81600, false)!.Cause.HasFlag(WorkspaceChangeCause.Membership));
     }
 
     [Fact]

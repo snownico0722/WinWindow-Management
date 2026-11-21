@@ -27,11 +27,24 @@ internal static class AttentionLayout
         var area = window.WorkArea;
         var rect = WorkingArea(window, target);
         var centered = rect with { X = area.Left + (area.Width - rect.Width) / 2 };
-        // A parked frame hidden underneath the current task has no visible content to sacrifice.
-        // Keep a neighboring working surface readable if centering would cover a sizable part.
+        // 将用户刚推开的摆法当作本次任务的反证，邻窗改变后重新评估。一个横向回拖不会否定纵向尺寸收益。
+        if (!context.ExplicitArrange && context.Attention?.GetValueOrDefault(window.Handle)?.Correction?.X
+            ?.Cost(window.VisualRect.X, centered.X) >= .5) return;
+        // 最大化或全屏内容同样可能供人瞄一眼。前景从侧面移到中央会切断连续视野，即使总露出面积完全相同。
+        // 这里只评估默认居中的收益。真正的开窗碰撞、手势与有效画面尺寸仍走全局比较。
         var desktop = obstacles.Append(window).OrderBy(w => w.ZOrder).ToArray();
-        foreach (var other in obstacles.Where(w => w.IsManageable && w.ZOrder > window.ZOrder))
+        foreach (var other in obstacles.Where(w => w.MonitorHandle == window.MonitorHandle && w.ZOrder > window.ZOrder &&
+            (w.IsManageable || w.SurfaceState is "maximized" or "fullscreen")))
         {
+            if (other.SurfaceState is "maximized" or "fullscreen")
+            {
+                var covers = desktop.Where(w => w.Handle != window.Handle && w.ZOrder < other.ZOrder).Select(w => w.VisualRect).ToArray();
+                var before = IntentLayoutPlanner.ScreenExposure(other.VisualRect, covers.Append(window.VisualRect), area, other.Dpi);
+                var after = IntentLayoutPlanner.ScreenExposure(other.VisualRect, covers.Append(centered), area, other.Dpi);
+                // 连续横向可读区允许跨过细小遮挡；以原有视野为基准，显著切碎或缩减它才放弃默认居中。
+                if (after.UsefulWidth < before.UsefulWidth * .88 || after.Visible < before.Visible * .88) return;
+                continue;
+            }
             var overlap = centered.Intersect(other.VisualRect);
             if (overlap.IsEmpty || overlap.Area <= other.VisualRect.Area * .12) continue;
             var front = desktop.Where(w => w.ZOrder < other.ZOrder).Select(w => w.VisualRect);
@@ -346,10 +359,9 @@ internal static class AttentionLayout
             bool knownWidth = !goal.Resizable || goal.LearnedWidth || explicitWidth is > 0 and <= 4000;
             allocated[i] = knownWidth ? goal.Width : Math.Min(goal.Width, Math.Max(floor, goal.Width * .60));
             var attention = context.Attention?.GetValueOrDefault(w.Handle);
-            // The front task starts with a small prior even before its first click. Recent
-            // input and sustained direct transitions let a reference compete for space.
-            double engaged = attention?.Weight ?? (goal.Role == AttentionRole.Main ? 1 : 0);
-            weights[i] = 1 + engaged + (attention?.Input ?? 0);
+            // 前后台、共同使用和停留描述本轮空间需求。单次滚轮／点击只更新观察，不按输入强度再奖励一份宽度。
+            double engaged = goal.Role == AttentionRole.Main ? 1 : (attention?.Recency ?? 0) * (attention?.Dwell ?? 0);
+            weights[i] = 1 + engaged * (1 + (attention?.Association ?? 0));
         }
         var frameFloors = (double[])allocated.Clone();
         double reserved = allocated.Sum();

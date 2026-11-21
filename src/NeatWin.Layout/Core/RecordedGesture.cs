@@ -8,6 +8,45 @@ internal sealed record SubmittedPlacement(int Instance, string Request, long Tic
         instance == Instance && start >= Tick ? new(Request, start - Tick, Before, Submitted) : null;
 }
 
+// 一个回拖可以表达方向，即使手没有精确回到原像素。可信度描述的是这次改动的反向幅度，只作用于这一轴。
+public sealed record AxisCorrection(int Submitted, int Released, double Confidence)
+{
+    internal static AxisCorrection? Observe(int before, int submitted, int released, uint dpi)
+    {
+        double travel = (double)submitted - before;
+        if (Math.Abs(travel) <= 3) return null;
+        double reversal = (submitted - (double)released) / travel;
+        if (reversal <= 0 || Math.Abs(released - (double)before) >= Math.Abs(travel)) return null;
+        // 极小的系统误差和随手抖动提供的证据很弱；反向大幅移动无需精准命中旧位置。
+        double confidence = Math.Min(1, reversal) * Math.Min(1, Math.Abs(travel) / (32 * Math.Max(96u, dpi) / 96d));
+        return new(submitted, released, confidence);
+    }
+
+    internal double Cost(int current, int candidate) => Confidence * Math.Clamp(
+        (Math.Abs(current - (double)Submitted) - Math.Abs(candidate - (double)Submitted)) /
+        Math.Max(1, Math.Abs(Released - (double)Submitted)), 0, 1);
+}
+
+public sealed record PlacementCorrection(AxisCorrection? X, AxisCorrection? Y, AxisCorrection? Width, AxisCorrection? Height)
+{
+    internal static PlacementCorrection? Observe(RectI start, RectI end, RectI? before, RectI? submitted,
+        uint dpi, PlacementCorrection? previous = null)
+    {
+        bool linked = submitted.HasValue && before.HasValue && WindowStateRules.Near(start, submitted.Value);
+        AxisCorrection? Axis(int from, int to, int? old, int? target, AxisCorrection? prior) =>
+            from == to ? prior : linked ? AxisCorrection.Observe(old!.Value, target!.Value, to, dpi) : null;
+        var result = new PlacementCorrection(Axis(start.X, end.X, before?.X, submitted?.X, previous?.X),
+            Axis(start.Y, end.Y, before?.Y, submitted?.Y, previous?.Y),
+            Axis(start.Width, end.Width, before?.Width, submitted?.Width, previous?.Width),
+            Axis(start.Height, end.Height, before?.Height, submitted?.Height, previous?.Height));
+        return result is { X: null, Y: null, Width: null, Height: null } ? null : result;
+    }
+
+    internal double Cost(RectI current, RectI candidate) => (X?.Cost(current.X, candidate.X) ?? 0) +
+        (Y?.Cost(current.Y, candidate.Y) ?? 0) + (Width?.Cost(current.Width, candidate.Width) ?? 0) +
+        (Height?.Cost(current.Height, candidate.Height) ?? 0);
+}
+
 public sealed record RecordedGeometryChange(int Dx, int Dy, int DWidth, int DHeight,
     bool? StartedAtSubmitted, string[]? ReturnedAxes)
 {

@@ -79,9 +79,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             () => _tidyRunning || _autoTidyManager.IsGestureInProgress, _focus);
         _autoTidyManager.TaskInput += (target, pid, now, click) =>
         {
+            // 点击和滚动可以更新任务关系。桌面几何只由独立的空间变化或松手调度，持续操作同一窗口不能再次授权搬动它。
             _focus.Interact(target, pid, now, click);
             _recorder.RecordPointer(target, pid);
-            if (_workspaceMonitor.TaskInput(target, pid, now)) _taskSession.Invalidate();
         };
         _manualArrangeTimer.Tick += (_, _) => RunTidy();
         _autoTidyManager.GestureStarted += handle =>
@@ -104,7 +104,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     w.IsForeground && w.IsManageable && !w.IsTopmost) is { } moved)
                 {
                     _taskSession.Gesture(gesture, DateTimeOffset.UtcNow);
-                    _focus.Placed(moved, gesture, Environment.TickCount64);
+                    _focus.Placed(moved, gesture, Environment.TickCount64, releasedDesktop);
                 }
                 _workspaceMonitor.GestureCompleted(gesture, releasedDesktop);
             }
@@ -256,7 +256,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         var trigger = request.Trigger == LayoutTrigger.AfterGesture ? "automatic-gesture" : "automatic-workspace";
         bool mayReplan = !_placementRetryPending;
         _placementRetryPending = false;
-        RunTidy(showActivity: false, route.Value, trigger, mayReplan, request.Opening);
+        RunTidy(showActivity: false, route.Value, trigger, mayReplan, request.Opening, request.Cause);
     }
 
     private void OnFollowHandRequested(ManualWindowGesture gesture)
@@ -293,7 +293,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
 
     internal void RunTidy() => RunTidy(showActivity: true, LayoutRoute.ManualAlgorithm);
 
-    private void RunTidy(bool showActivity, LayoutRoute route = LayoutRoute.ManualAlgorithm, string? source = null, bool allowPlacementReplan = false, ForegroundHistory.Opening? opening = null)
+    private void RunTidy(bool showActivity, LayoutRoute route = LayoutRoute.ManualAlgorithm, string? source = null, bool allowPlacementReplan = false, ForegroundHistory.Opening? opening = null, WorkspaceChangeCause cause = WorkspaceChangeCause.None)
     {
         if (_stopping.IsCancellationRequested) return;
         if (_tidyRunning || _autoTidyManager.IsGestureInProgress || NativeWindowActivity.IsMoving)
@@ -345,7 +345,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             TaskLayoutContext? recordedContext = null, reclaimContext = null;
             IntentLayoutPlan? baseline = null;
             Func<IntentLayoutPlan>? diagnosticBaseline = null;
-            ForegroundReading? initialReading = null;
+            ForegroundReading? initialReading = null, workspaceReading = null;
             bool reusedPreview = false;
             IntentLayoutPlan? scored = null;
             if (tiling)
@@ -370,6 +370,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 var placements = CompiledLayoutRules.ApplySlots(learned, slots);
                 var front = snapshot.FirstOrDefault(w => w.IsForeground);
                 var reading = ForegroundReading.Read(front);
+                if (trigger == "automatic-workspace" && reading.LastInput.HasValue) workspaceReading = reading;
                 var frontRole = front == null ? WindowUseRole.Unknown : _recorder.SemanticRole(front, reading);
                 if (trigger == "automatic-workspace" && !reading.Caret && _recorder.AwaitingOfficeSurface(reading.Root))
                 {
@@ -426,6 +427,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     Focus = focus,
                     AllowGestureAssist = trigger == "automatic-gesture",
                     IsWorkspaceObservation = trigger == "automatic-workspace",
+                    WorkspaceCause = cause,
                     NavigationObservedAt = focus.Navigation is { Length: > 0 } ? focusObservedAt : null,
                     Attention = attention,
                     WindowHints = liveHints,
@@ -466,8 +468,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             if (_stopping.IsCancellationRequested) return;
             var proposed = detailed;
             var releaseInput = trigger == "automatic-gesture" ? recordedContext?.RecentGesture : null;
-            var application = _windowManager.ApplyLayout(detailed, showActivity ? null : foreground, reclaimContext, releaseInput?.WindowHandle ?? 0, initialReading);
-            if (application.Interrupted && !showActivity) _workspaceMonitor.RequestCurrent();
+            var application = _windowManager.ApplyLayout(detailed, showActivity ? null : foreground, reclaimContext, releaseInput?.WindowHandle ?? 0, initialReading, workspaceReading);
+            // 刚输入或开始手动操作时放弃旧方案；新手势、焦点或窗口结构变化有自己的调度入口。
             detailed = application.Plan; plan = detailed.Moves;
             if (videoHint != null && proposed.Groups.Any(g => g.Selected is "video-aspect-shrink" or "video-aspect-expand") &&
                 plan.FirstOrDefault(m => m.Window.Handle == videoHint.WindowHandle) is { } videoMove)
@@ -495,7 +497,10 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 _undoChanged?.Invoke(true);
             }
             if (smart)
+            {
+                _focus.Submitted(detailed, requestedDesktop);
                 _taskSession.Requested(requestedDesktop, detailed, DateTimeOffset.UtcNow, explicitSmart);
+            }
             if (diagnosticBaseline != null)
             {
                 try { baseline = diagnosticBaseline(); }
