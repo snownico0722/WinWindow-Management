@@ -53,11 +53,11 @@
         Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
         StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="15" Height="15"/>
      </ToggleButton>
-     <Button x:Name="SettingsButton" Style="{StaticResource TitleButton}" ToolTip="{DynamicResource Text.Settings}" AutomationProperties.Name="{DynamicResource Text.Settings}" Click="SettingsButton_Click">
+     <ToggleButton x:Name="SettingsButton" Style="{StaticResource IconToggle}" Width="32" ToolTip="{DynamicResource Text.Settings}" AutomationProperties.Name="{DynamicResource Text.Settings}" Click="SettingsButton_Click">
       <Path Data="M2.5,4.5 L8.5,4.5 M11.5,4.5 L13.5,4.5 M10,2.8 L10,6.2 M2.5,11.5 L4.5,11.5 M7.5,11.5 L13.5,11.5 M6,9.8 L6,13.2"
-        Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+        Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
         StrokeThickness="1.5" StrokeStartLineCap="Round" Width="15" Height="15"/>
-     </Button>
+     </ToggleButton>
      <Button Style="{StaticResource TitleButton}" ToolTip="{DynamicResource Text.Minimize}" AutomationProperties.Name="{DynamicResource Text.Minimize}" Click="Minimize_Click">
       <Path Data="M3.5,8 L12.5,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" Width="15" Height="15"/>
      </Button>
@@ -159,12 +159,12 @@
       </Border>
      </Grid>
 
-     <Border x:Name="DesktopFooter" Grid.Row="3" Margin="0,8,0,0" Padding="11,7" CornerRadius="9" Background="{DynamicResource Surface}">
+     <Border x:Name="DesktopFooter" Grid.Row="3" SizeChanged="DesktopFooter_SizeChanged" Margin="0,8,0,0" Padding="11,7" CornerRadius="9" Background="{DynamicResource Surface}">
       <DockPanel LastChildFill="False">
        <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
         <Path Data="M2,2.5 L6.5,2.5 L6.5,7 L2,7 Z M8.5,2.5 L13,2.5 L13,7 L8.5,7 Z M2,9 L6.5,9 L6.5,13 L2,13 Z M8.5,9 L13,9 L13,13 L8.5,13 Z"
           Stroke="{DynamicResource Muted}" StrokeThickness="1.3" StrokeLineJoin="Round" Width="14" Height="14" VerticalAlignment="Center"/>
-        <TextBlock Text="{DynamicResource Text.DesktopScope}" FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center" Margin="7,0,0,0"/>
+        <TextBlock x:Name="DesktopScopeLabel" Text="{DynamicResource Text.DesktopScope}" FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center" Margin="7,0,0,0"/>
         <Border Background="{DynamicResource Panel}" CornerRadius="6" Padding="2" Margin="8,0,0,0">
          <StackPanel x:Name="FooterModes" Orientation="Horizontal" AutomationProperties.Name="{DynamicResource Text.ArrangeMode}">
           <RadioButton Style="{StaticResource FooterModeChoice}" GroupName="FooterMode" Content="{DynamicResource Text.Manual}" Tag="Off" IsChecked="True" ToolTip="{DynamicResource Text.ManualHint}" AutomationProperties.Name="{DynamicResource Text.ManualArrange}" Checked="FooterMode_Checked"/>
@@ -175,6 +175,7 @@
         </Border>
        </StackPanel>
        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+        <Button x:Name="SnapshotButton" Content="{DynamicResource Text.CurrentSnapshot}" Margin="0,0,4,0" Style="{StaticResource QuietButton}" FontSize="12" Click="Snapshot_Click" ToolTip="{DynamicResource Text.CurrentSnapshotHint}"/>
         <Button x:Name="UndoArrangeButton" IsEnabled="False" Content="{DynamicResource Text.UndoArrange}" Margin="0,0,6,0" Style="{StaticResource QuietButton}" FontSize="12" Click="UndoLayout_Click" ToolTip="{DynamicResource Text.UndoArrangeHint}"/>
         <Button x:Name="ArrangeButton" Content="{DynamicResource Text.Arrange}" MinHeight="27" Padding="11,4" FontSize="12.5" Click="Arrange_Click" ToolTip="{DynamicResource Text.ArrangeHint}"/>
        </StackPanel>
@@ -200,22 +201,26 @@
         </Grid.ColumnDefinitions>
         <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0" Padding="0,2,8,0">
           <ListBox x:Name="SettingsNav" SelectionChanged="SettingsNav_Changed" SelectedIndex="0" AutomationProperties.Name="{DynamicResource Text.SettingsCategories}" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-            <ListBoxItem Content="{DynamicResource Text.General}"/>
-            <ListBoxItem Content="{DynamicResource Text.DesktopLayout}"/>
-            <ListBoxItem Content="{DynamicResource Text.Shortcuts}"/>
-            <ListBoxItem Content="{DynamicResource Text.DataAndRecords}"/>
+            <ListBoxItem Tag="GeneralSection" Content="{DynamicResource Text.General}"/>
+            <ListBoxItem Tag="KeysSection" Content="{DynamicResource Text.Shortcuts}"/>
+            <ListBoxItem Focusable="False" IsEnabled="False" IsHitTestVisible="False" Padding="5,4">
+              <Border Background="{DynamicResource Line}" Height="1" Width="94"/>
+            </ListBoxItem>
+            <ListBoxItem Tag="LayoutSection" Content="{DynamicResource Text.DesktopLayout}"/>
+            <ListBoxItem Tag="DataSection" Content="{DynamicResource Text.DataAndRecords}"/>
+            <ListBoxItem Tag="PlacementSection" Content="{DynamicResource Text.PlacementLearning}"/>
+            <ListBoxItem Tag="BehaviorSection" Content="{DynamicResource Text.BehaviorLearning}"/>
           </ListBox>
         </Border>
         <ScrollViewer x:Name="GeneralSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
           <StackPanel Margin="18,0,10,14">
             <TextBlock Text="{DynamicResource Text.AppearanceStartup}" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
             <TextBlock Text="{DynamicResource Text.Language}" Margin="0,4,0,2"/>
-            <ComboBox x:Name="LanguageBox" HorizontalAlignment="Left" MinWidth="144" Margin="0,0,0,6"
-                      SelectedValuePath="Tag" SelectionChanged="Language_Changed" AutomationProperties.Name="{DynamicResource Text.Language}">
-              <ComboBoxItem Tag="system" Content="{DynamicResource Text.FollowSystem}"/>
-              <ComboBoxItem Tag="zh-CN" Content="简体中文"/>
-              <ComboBoxItem Tag="en" Content="English"/>
-            </ComboBox>
+            <WrapPanel x:Name="LanguageChoices" Margin="0,0,0,6" AutomationProperties.Name="{DynamicResource Text.Language}">
+              <RadioButton Style="{StaticResource SettingsChoice}" GroupName="LanguageChoices" Tag="system" Content="{DynamicResource Text.FollowSystem}" Click="Language_Changed"/>
+              <RadioButton Style="{StaticResource SettingsChoice}" GroupName="LanguageChoices" Tag="zh-CN" Content="简体中文" Click="Language_Changed"/>
+              <RadioButton Style="{StaticResource SettingsChoice}" GroupName="LanguageChoices" Tag="en" Content="English" Click="Language_Changed"/>
+            </WrapPanel>
             <CheckBox x:Name="DarkBox" Content="{DynamicResource Text.DarkTheme}" Click="Settings_Click"/>
             <CheckBox x:Name="TrayBox" Content="{DynamicResource Text.ExitOnClose}" Click="Settings_Click"/>
             <CheckBox x:Name="StartupBox" Content="{DynamicResource Text.StartWithWindows}" Click="Startup_Click"/>
@@ -362,12 +367,30 @@
             <CheckBox x:Name="RecordSwitch" Content="{DynamicResource Text.RecordActivity}" Click="RecordSwitch_Click"/>
             <TextBlock x:Name="RecordStatus" Style="{StaticResource MutedText}" Margin="0,4,0,10" TextWrapping="Wrap"/>
             <CheckBox x:Name="VisualSampling" Content="{DynamicResource Text.VisualSampling}" Click="LayoutPreference_Click"/>
-            <CheckBox x:Name="ReferenceEnabled" Content="{DynamicResource Text.UseRecordedHabits}" Click="LayoutPreference_Click"/>
             <WrapPanel Margin="0,12,0,0">
               <Button Content="{DynamicResource Text.OpenDataFolder}" Click="OpenData_Click" Margin="0,0,8,0"/>
               <Button Content="{DynamicResource Text.ExportRecords}" Click="ExportData_Click" Margin="0,0,8,0"/>
               <Button Content="{DynamicResource Text.ClearRecordsEllipsis}" Click="ClearData_Click" Style="{StaticResource QuietButton}"/>
             </WrapPanel>
+          </StackPanel>
+        </ScrollViewer>
+        <ScrollViewer x:Name="PlacementSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+          <StackPanel Margin="18,0,10,14">
+            <TextBlock Text="{DynamicResource Text.PlacementLearning}" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
+            <CheckBox x:Name="ReferenceEnabled" Content="{DynamicResource Text.UseRecordedHabits}" Click="LayoutPreference_Click"/>
+            <TextBlock Text="{DynamicResource Text.LocalPlacementHint}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,12"/>
+            <CheckBox x:Name="ImportedPlacementEnabled" Content="{DynamicResource Text.UseImportedPlacement}" Click="LayoutPreference_Click"/>
+            <TextBlock Text="{DynamicResource Text.ImportPlacementHint}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,10"/>
+            <Button Content="{DynamicResource Text.ImportPlacementRules}" HorizontalAlignment="Left" Click="ImportPlacement_Click"/>
+          </StackPanel>
+        </ScrollViewer>
+        <ScrollViewer x:Name="BehaviorSection" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+          <StackPanel Margin="18,0,10,14">
+            <TextBlock Text="{DynamicResource Text.BehaviorLearning}" Style="{StaticResource SectionTitle}" Margin="0,8,0,6"/>
+            <CheckBox x:Name="LearnBehaviorSwitch" Content="{DynamicResource Text.LearnBehaviorTiming}" Click="LearnBehavior_Click"/>
+            <TextBlock Text="{DynamicResource Text.BehaviorLearningHint}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,10"/>
+            <StackPanel x:Name="BehaviorRulesPanel"/>
+            <Button Content="{DynamicResource Text.ImportBehaviorRules}" HorizontalAlignment="Left" Click="ImportBehavior_Click" Margin="0,12,0,0"/>
           </StackPanel>
         </ScrollViewer>
       </Grid>

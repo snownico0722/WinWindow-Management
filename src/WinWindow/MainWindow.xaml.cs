@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
@@ -13,6 +14,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using NeatWin.App;
+using NeatWin.Core;
 
 namespace WinWindow;
 
@@ -20,8 +22,6 @@ public partial class MainWindow : Window
 {
     private const string PinActiveGeometry = "M5.2,2.2 L10.8,2.2 M6,2.2 L6,6.8 L3.6,9.5 L12.4,9.5 L10,6.8 L10,2.2 M8,9.5 L8,14.5";
     private const string PinInactiveGeometry = "M5.2,2.2 L10.8,2.2 M10,2.2 L10,6.8 L12.4,9.5 L9.6,9.5 M6,2.2 L6,4.4 M3.6,9.5 L6.8,9.5 M8,11.2 L8,14.5 M2.5,2.5 L13.5,13.5";
-    private const string CollapseHintGeometry = "M2,7.5 L7.5,2 M7.5,2 L3.5,2 M7.5,2 L7.5,6";
-    private const string ExpandHintGeometry = "M2,2 L7.5,7.5 M7.5,7.5 L3.5,7.5 M7.5,7.5 L7.5,3.5";
 
     private readonly StateStore _store;
     internal WindowManager Manager { get; }
@@ -58,7 +58,8 @@ public partial class MainWindow : Window
         _store = store; _testMode = testMode; Manager = new(store);
         ApplyLanguage(store.Preferences.Language);
         InitializeComponent();
-        LanguageBox.SelectedValue = store.Preferences.Language;
+        foreach (var choice in LanguageChoices.Children.OfType<RadioButton>())
+            choice.IsChecked = (string)choice.Tag == store.Preferences.Language;
         _view = new ListCollectionView(Manager.Items) { Filter = FilterManaged };
         _pickView = new ListCollectionView(Manager.Items) { Filter = FilterAvailable };
         WindowList.ItemsSource = _view; PickList.ItemsSource = _pickView;
@@ -95,7 +96,12 @@ public partial class MainWindow : Window
         _statusTimer.Tick += (_, _) => DismissStatus();
         SourceInitialized += OnSourceInitialized;
         Loaded += async (_, _) => await InitializeAsync();
-        Activated += (_, _) => ApplyOwnPolicy();
+        Activated += (_, _) =>
+        {
+            ApplyOwnPolicy();
+            if (BehaviorSection.IsVisible && BehaviorSection.IsEnabled && _layoutPreferences is not null)
+                _ = ReadBehaviorsAsync();
+        };
         Deactivated += (_, _) => { if (!_picking) _flash?.Hide(); ApplyOwnPolicy(); };
         IsVisibleChanged += (_, _) => { if (!IsVisible) { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); };
         StateChanged += (_, _) => { if (WindowState != WindowState.Minimized) _lastState = WindowState; else { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); };
@@ -475,6 +481,35 @@ public partial class MainWindow : Window
     private void More_Click(object sender, RoutedEventArgs e)
     { var button = (Button)sender; button.ContextMenu.PlacementTarget = button; button.ContextMenu.Placement = PlacementMode.Bottom; button.ContextMenu.IsOpen = true; }
 
+    private void DesktopFooter_SizeChanged(object sender, SizeChangedEventArgs e) =>
+        DesktopScopeLabel.Visibility = e.NewSize.Width < 515 ? Visibility.Collapsed : Visibility.Visible;
+
+    private async void Snapshot_Click(object sender, RoutedEventArgs e)
+    {
+        SnapshotButton.IsEnabled = false;
+        var layout = EnsureLayout();
+        var decisions = new ConcurrentQueue<LayoutRunObservation>();
+        try
+        {
+            ShowStatus(UiText.Get("SnapshotCapturing"));
+            var observeLayout = layout.ObserveSnapshotAsync(decisions.Enqueue);
+            var managed = Manager.Items.Where(item => item.IsManaged && item.Hwnd != 0).Select(item => item.Hwnd).ToHashSet();
+            var mode = FooterModes.Children.OfType<RadioButton>().FirstOrDefault(choice => choice.IsChecked == true)?.Tag as string ?? "Off";
+            var output = await DesktopSnapshot.ExportAsync(managed, _hwnd, _desktop?.LastExternalForeground ?? 0,
+                mode, decisions: decisions);
+            try { await observeLayout; }
+            catch (Exception ex) { System.Diagnostics.Trace.TraceWarning(ex.Message); }
+            ShowStatus(UiText.Format("SnapshotSaved", Path.GetFileName(output)));
+        }
+        catch (Exception ex) { ShowStatus(ex.Message); }
+        finally
+        {
+            try { await layout.ObserveSnapshotAsync(null); }
+            catch (Exception ex) { System.Diagnostics.Trace.TraceWarning(ex.Message); }
+            SnapshotButton.IsEnabled = true;
+        }
+    }
+
     private void ShowSettings(bool show)
     {
         AddPopup.IsOpen = false;
@@ -482,6 +517,7 @@ public partial class MainWindow : Window
         if (show) HideHoverPreview();
         WindowPage.Visibility = show ? Visibility.Collapsed : Visibility.Visible;
         SettingsPage.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        SettingsButton.IsChecked = show;
         if (show) SelectSettingsSection();
     }
 
@@ -578,7 +614,7 @@ public partial class MainWindow : Window
             MinWidth = 240; MinHeight = 46; Width = 240; Height = 46;
             Workspace.Visibility = HeaderActions.Visibility = Visibility.Collapsed;
             CompactActions.Visibility = Visibility.Visible;
-            BrandHintIcon.Data = Geometry.Parse(ExpandHintGeometry);
+            BrandCollapseHint.Visibility = Visibility.Collapsed;
             BrandArea.SetResourceReference(ToolTipProperty, "Text.ExpandHint");
             ShellFrame.CornerRadius = new CornerRadius(14);
             ResizeMode = ResizeMode.NoResize; DismissStatus();
@@ -592,7 +628,7 @@ public partial class MainWindow : Window
             Height = Math.Max(MinHeight, _expandedBounds.Height);
             Workspace.Visibility = HeaderActions.Visibility = Visibility.Visible;
             CompactActions.Visibility = Visibility.Collapsed;
-            BrandHintIcon.Data = Geometry.Parse(CollapseHintGeometry);
+            BrandCollapseHint.Visibility = Visibility.Visible;
             BrandArea.SetResourceReference(ToolTipProperty, "Text.CollapseHint");
             ShellFrame.CornerRadius = new CornerRadius(12);
             WindowState = _expandedState;

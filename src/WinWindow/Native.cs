@@ -39,6 +39,8 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern bool IsWindow(nint hwnd);
     [DllImport("user32.dll")] internal static extern bool IsWindowVisible(nint hwnd);
     [DllImport("user32.dll")] internal static extern bool IsIconic(nint hwnd);
+    [DllImport("user32.dll")] private static extern bool IsZoomed(nint hwnd);
+    [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint hwnd);
     [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
     [DllImport("user32.dll")] internal static extern nint GetActiveWindow();
     [DllImport("user32.dll")] internal static extern nint GetFocus();
@@ -861,6 +863,43 @@ internal static class Native
         }, 0);
         return result;
     }
+    internal static DesktopSnapshot.Window[] CaptureDesktopWindows(IReadOnlySet<nint> managed,
+        nint workbench, nint foreground, Dictionary<uint, string> apps)
+    {
+        var result = new List<DesktopSnapshot.Window>();
+        if (!EnumWindows((hwnd, data) =>
+        {
+            bool isManaged = managed.Contains(hwnd);
+            if (hwnd != workbench && !IsTarget(hwnd)) return true;
+            var title = Title(hwnd).Replace('\r', ' ').Replace('\n', ' ');
+            var visible = IsWindowVisible(hwnd);
+            var style = Style(hwnd);
+            if (!isManaged && hwnd != workbench &&
+                (!visible && string.IsNullOrWhiteSpace(title) ||
+                 (style & (ToolWindow | NoActivateStyle)) != 0 && string.IsNullOrWhiteSpace(title)))
+                return true;
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == 0) return true;
+            if (!apps.TryGetValue(pid, out var app))
+                apps[pid] = app = Path.GetFileName(Identity(hwnd)?.ProcessPath) ?? "";
+            var cloaked = DwmGetWindowAttribute(hwnd, 14, out int cloak, 4) == 0 && cloak != 0;
+            bool minimized = IsIconic(hwnd);
+            var placement = new Placement { Length = (uint)Marshal.SizeOf<Placement>() };
+            DesktopSnapshot.Bounds? normal = GetWindowPlacement(hwnd, ref placement)
+                ? DesktopSnapshot.Bounds.From(placement.NormalPosition) : null;
+            DesktopSnapshot.Bounds? frame = (TryGetFrameBounds(hwnd, out var rect) || GetWindowRect(hwnd, out rect))
+                ? DesktopSnapshot.Bounds.From(rect) : null;
+            uint? dpi = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 14393) ? GetDpiForWindow(hwnd) : null;
+            int opacity = (style & Layered) != 0 && GetLayeredWindowAttributes(hwnd, out _, out byte a, out uint f) &&
+                (f & 2) != 0 ? ToPercent(a) : 100;
+            result.Add(new(DesktopSnapshot.Handle(hwnd), pid, app, ClassName(hwnd), title, result.Count + 1,
+                frame, normal, dpi, visible, minimized, IsZoomed(hwnd), cloaked, (style & TopmostStyle) != 0,
+                (style & Transparent) != 0, opacity, hwnd == foreground, isManaged));
+            return true;
+        }, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return result.ToArray();
+    }
+
     public static WindowSnapshot Capture(WindowIdentity id)
     {
         EnsureIdentity(id);

@@ -18,13 +18,14 @@ public partial class MainWindow
     private bool _displayingMode;
     private long _layoutEdit;
 
-    private void Language_Changed(object sender, SelectionChangedEventArgs e)
+    private void Language_Changed(object sender, RoutedEventArgs e)
     {
-        if (!_ready || LanguageBox.SelectedValue is not string language) return;
+        if (!_ready || sender is not RadioButton { Tag: string language, IsChecked: true }) return;
         _store.Preferences.Language = language;
         ApplyLanguage(language);
         foreach (var item in Manager.Items) item.NotifyLanguage();
         if (_lastRecorderStatus is { } recorder) DisplayRecorder(recorder);
+        if (_behaviorSettings is { } behavior) DisplayBehavior(behavior);
         DismissStatus();
         RefreshView();
         _store.SaveSoon();
@@ -37,11 +38,15 @@ public partial class MainWindow
 
     private void SelectSettingsSection()
     {
-        var pages = new[] { GeneralSection, LayoutSection, KeysSection, DataSection };
-        for (int i = 0; i < pages.Length; i++)
-            pages[i].Visibility = i == SettingsNav.SelectedIndex ? Visibility.Visible : Visibility.Collapsed;
-        if (SettingsNav.SelectedIndex is 1 or 3 && _layoutPreferences is null && _layoutLoad is null)
+        var page = (SettingsNav.SelectedItem as ListBoxItem)?.Tag as string;
+        var pages = new[] { GeneralSection, KeysSection, LayoutSection, DataSection, PlacementSection, BehaviorSection };
+        foreach (var section in pages)
+            section.Visibility = section.Name == page ? Visibility.Visible : Visibility.Collapsed;
+        if (page is nameof(LayoutSection) or nameof(DataSection) or nameof(PlacementSection) or nameof(BehaviorSection) &&
+            _layoutPreferences is null && _layoutLoad is null)
             _ = LoadLayoutSettingsAsync();
+        else if (page == nameof(BehaviorSection) && _layoutLoad is null)
+            _ = ReadBehaviorsAsync();
     }
 
     private async Task LoadLayoutSettingsAsync()
@@ -54,19 +59,20 @@ public partial class MainWindow
 
     private async Task ReadLayoutSettingsAsync()
     {
-        LayoutSection.IsEnabled = DataSection.IsEnabled = FooterModes.IsEnabled = false;
+        LayoutSection.IsEnabled = DataSection.IsEnabled = PlacementSection.IsEnabled = BehaviorSection.IsEnabled = FooterModes.IsEnabled = false;
         try
         {
             var snapshot = await EnsureLayout().ReadSettingsAsync();
             if (_quitting) return;
             DisplayPreferences(snapshot.Preferences);
             DisplayRecorder(snapshot.Recorder);
+            DisplayBehavior(snapshot.Behavior);
         }
         catch (Exception ex) { ShowStatus(ex.Message); }
         finally
         {
             FooterModes.IsEnabled = true;
-            LayoutSection.IsEnabled = DataSection.IsEnabled = _layoutPreferences is not null;
+            LayoutSection.IsEnabled = DataSection.IsEnabled = PlacementSection.IsEnabled = BehaviorSection.IsEnabled = _layoutPreferences is not null;
         }
     }
 
@@ -92,6 +98,7 @@ public partial class MainWindow
         AllowBleed.IsChecked = p.AllowPeripheralBleed;
         ProtectEdges.IsChecked = p.ProtectWindowEdges;
         ReferenceEnabled.IsChecked = value.UseReference;
+        ImportedPlacementEnabled.IsChecked = value.UseImportedPlacement;
         VisualSampling.IsChecked = value.VisualSampling;
         NeighborSnap.Text = o.NeighborSnapDistance.ToString();
         AlignSnap.Text = o.AlignmentSnapDistance.ToString();
@@ -176,6 +183,7 @@ public partial class MainWindow
                 nameof(Calibrate) => v with { Task = task with { Calibration = on ? CalibrateDisplay() : null } },
                 nameof(VisualSampling) => v with { VisualSampling = on },
                 nameof(ReferenceEnabled) => v with { UseReference = on },
+                nameof(ImportedPlacementEnabled) => v with { UseImportedPlacement = on },
                 _ => v
             };
             if (box == Calibrate && on) PhysicalWidth.Text = ViewDistance.Text = "600";
@@ -242,6 +250,126 @@ public partial class MainWindow
         var defaults = v with { Options = new(), Behavior = new(), Task = new(new TaskLayoutProfile()) };
         await SaveLayoutPreferencesAsync(defaults);
         if (_layoutPreferences is { } current) DisplayPreferences(current);
+    }
+
+    private BehaviorSettings? _behaviorSettings;
+
+    private void DisplayBehavior(BehaviorSettings settings)
+    {
+        _behaviorSettings = settings;
+        LearnBehaviorSwitch.IsChecked = settings.Learn;
+        BehaviorRulesPanel.Children.Clear();
+        if (settings.Rules.Length == 0)
+        {
+            var empty = new TextBlock { Text = UiText.Get("BehaviorNoRules"), TextWrapping = TextWrapping.Wrap };
+            empty.SetResourceReference(TextBlock.StyleProperty, "MutedText");
+            BehaviorRulesPanel.Children.Add(empty);
+        }
+        foreach (var item in settings.Rules)
+        {
+            var rule = item.Rule;
+            var title = rule.Name;
+            var action = rule.Action == WindowBehaviorAction.Close ? "BehaviorClose" : "BehaviorMinimize";
+            var target = rule.NextApps is { Length: > 0 } ? string.Join(", ", rule.NextApps) : UiText.Get("BehaviorNextApp");
+            var hint = UiText.Format(rule.RequireNewProcess ? "BehaviorNewProcessHint" : "BehaviorImportedHint",
+                rule.SourceApp, target, UiText.Get(action));
+            var check = new CheckBox
+            {
+                Content = new TextBlock { Text = title, TextWrapping = TextWrapping.Wrap },
+                Tag = rule.Id,
+                IsChecked = item.Enabled,
+            };
+            System.Windows.Automation.AutomationProperties.SetName(check, title);
+            check.Click += BehaviorRule_Click;
+            BehaviorRulesPanel.Children.Add(check);
+            var caption = new TextBlock
+            {
+                Text = hint,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 2, 0, 6),
+            };
+            caption.SetResourceReference(TextBlock.StyleProperty, "MutedText");
+            BehaviorRulesPanel.Children.Add(caption);
+            if (item.Fit.Observations > 0 || item.Fit.Reopens > 0)
+            {
+                var fitText = new TextBlock
+                {
+                    Text = item.Fit.Suppressed ? UiText.Get("BehaviorPausedAfterReopen")
+                        : UiText.Format("BehaviorFit", item.Fit.Observations, item.Fit.DelayFor(rule) / 1000.0),
+                    TextWrapping = TextWrapping.Wrap,
+                    Margin = new Thickness(0, 0, 0, 8),
+                };
+                fitText.SetResourceReference(TextBlock.StyleProperty, "MutedText");
+                BehaviorRulesPanel.Children.Add(fitText);
+            }
+        }
+    }
+
+    private async Task ReadBehaviorsAsync()
+    {
+        try
+        {
+            var snapshot = await EnsureLayout().ReadSettingsAsync();
+            if (!_quitting) DisplayBehavior(snapshot.Behavior);
+        }
+        catch (Exception ex) { ShowStatus(ex.Message); }
+    }
+
+    private async Task ApplyBehaviorAsync(Func<Task> action)
+    {
+        BehaviorSection.IsEnabled = false;
+        try { await action(); }
+        catch (Exception ex) { ShowStatus(ex.Message); }
+        finally
+        {
+            await ReadBehaviorsAsync();
+            BehaviorSection.IsEnabled = true;
+        }
+    }
+
+    private async void LearnBehavior_Click(object sender, RoutedEventArgs e)
+    {
+        var enabled = LearnBehaviorSwitch.IsChecked == true;
+        await ApplyBehaviorAsync(() => EnsureLayout().SetBehaviorLearningAsync(enabled));
+    }
+
+    private async void BehaviorRule_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not CheckBox { Tag: string id } check) return;
+        var enabled = check.IsChecked == true;
+        await ApplyBehaviorAsync(() => EnsureLayout().SetBehaviorEnabledAsync(id, enabled));
+    }
+
+    private string? PickRulesFile()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog { Filter = UiText.Get("JsonFilter"), CheckFileExists = true };
+        return dialog.ShowDialog(this) == true ? dialog.FileName : null;
+    }
+
+    private async void ImportPlacement_Click(object sender, RoutedEventArgs e)
+    {
+        if (PickRulesFile() is not { } path) return;
+        try
+        {
+            await EnsureLayout().ImportPlacementRulesAsync(path);
+            await LoadLayoutSettingsAsync();
+            ShowStatus(UiText.Get("PlacementRulesImported"));
+        }
+        catch (Exception ex) { ShowStatus(UiText.Format("RuleImportFailed", ex.Message)); }
+    }
+
+    private async void ImportBehavior_Click(object sender, RoutedEventArgs e)
+    {
+        if (PickRulesFile() is not { } path) return;
+        await ApplyBehaviorAsync(async () =>
+        {
+            try
+            {
+                await EnsureLayout().ImportBehaviorRulesAsync(path);
+                ShowStatus(UiText.Get("BehaviorRulesImported"));
+            }
+            catch (Exception ex) { ShowStatus(UiText.Format("RuleImportFailed", ex.Message)); }
+        });
     }
 
     private RecorderStatus? _lastRecorderStatus;

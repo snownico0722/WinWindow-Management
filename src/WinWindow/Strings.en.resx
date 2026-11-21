@@ -166,7 +166,7 @@
   <data name="Quit" xml:space="preserve"><value>Quit</value></data>
   <data name="ReadPlacement" xml:space="preserve"><value>Read window position</value></data>
   <data name="RecordActivity" xml:space="preserve"><value>Record window activity</value></data>
-  <data name="RecordPrivacy" xml:space="preserve"><value>Records anonymous windows, visible regions, usage intervals, process resources, audio peak levels and available playback state locally. Optional visual sampling stores change summaries only.</value></data>
+  <data name="RecordPrivacy" xml:space="preserve"><value>Records anonymous windows, visible regions, usage intervals, process resources, audio peak levels and available playback state locally. Behavior sequences include executable names without paths. Optional visual sampling stores change summaries only.</value></data>
   <data name="RecorderCounts" xml:space="preserve"><value>{0} · {1} gestures, {2} window changes</value></data>
   <data name="RecordsCleared" xml:space="preserve"><value>Records cleared.</value></data>
   <data name="RefreshWindows" xml:space="preserve"><value>Refresh windows</value></data>
@@ -240,4 +240,30 @@
   <data name="Working" xml:space="preserve"><value>Working</value></data>
   <data name="ZipFilter" xml:space="preserve"><value>ZIP archive|*.zip</value></data>
   <data name="VisualSampling" xml:space="preserve"><value>Sample visible content changes (change masks only)</value></data>
+  <data name="PlacementLearning" xml:space="preserve"><value>Learn placement</value></data>
+  <data name="BehaviorLearning" xml:space="preserve"><value>Learn behaviors</value></data>
+  <data name="LocalPlacementHint" xml:space="preserve"><value>Learn frequently used positions, sizes, and window pairs from stable moves and resizes.</value></data>
+  <data name="UseImportedPlacement" xml:space="preserve"><value>Use imported placement rules</value></data>
+  <data name="ImportPlacementHint" xml:space="preserve"><value>Give the recording ZIP to your AI, then import the placement rules it returns after analysis and replay.</value></data>
+  <data name="ImportPlacementRules" xml:space="preserve"><value>Import placement rules</value></data>
+  <data name="LearnBehaviorTiming" xml:space="preserve"><value>Learn timing from daily use</value></data>
+  <data name="BehaviorLearningHint" xml:space="preserve"><value>Tune timing as you minimize, close, or reopen windows. Only checked rules run automatically.</value></data>
+  <data name="BehaviorClose" xml:space="preserve"><value>close the window</value></data>
+  <data name="BehaviorMinimize" xml:space="preserve"><value>minimize the window</value></data>
+  <data name="BehaviorNextApp" xml:space="preserve"><value>another app</value></data>
+  <data name="BehaviorImportedHint" xml:space="preserve"><value>After switching from {0} to {1}, {2}.</value></data>
+  <data name="BehaviorPausedAfterReopen" xml:space="preserve"><value>Paused after repeated reopenings. New manual examples can resume this rule.</value></data>
+  <data name="BehaviorFit" xml:space="preserve"><value>{0} samples learned · waits about {1:0.0}s</value></data>
+  <data name="ImportBehaviorRules" xml:space="preserve"><value>Import behavior rules</value></data>
+  <data name="PlacementRulesImported" xml:space="preserve"><value>Placement rules imported and applied.</value></data>
+  <data name="BehaviorRulesImported" xml:space="preserve"><value>Behavior rules imported. Check the rules you want to run automatically.</value></data>
+  <data name="RuleImportFailed" xml:space="preserve"><value>Could not import rules. {0}</value></data>
+  <data name="JsonFilter" xml:space="preserve"><value>JSON rules|*.json</value></data>
+  <data name="CurrentSnapshot" xml:space="preserve"><value>Snapshot</value></data>
+  <data name="CurrentSnapshotHint" xml:space="preserve"><value>Capture the next 10 seconds of window changes to a desktop ZIP. Includes window titles.</value></data>
+  <data name="SnapshotCapturing" xml:space="preserve"><value>Capturing 10 seconds of window activity…</value></data>
+  <data name="SnapshotSaved" xml:space="preserve"><value>Saved to desktop · {0}</value></data>
+  <data name="SnapshotDesktopMissing" xml:space="preserve"><value>The Windows desktop folder is unavailable.</value></data>
+  <data name="BehaviorNoRules" xml:space="preserve"><value>No rules yet. Repeated sequences appear here as suggestions, or you can import rules.</value></data>
+  <data name="BehaviorNewProcessHint" xml:space="preserve"><value>After {0} gives way to a newly started {1}, {2}.</value></data>
 </root>
