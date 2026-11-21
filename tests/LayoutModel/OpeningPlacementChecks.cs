@@ -4,6 +4,7 @@ internal static class OpeningPlacementChecks
 {
     internal static void Run(Action<bool, string> check)
     {
+        CheckCentralSwitches(check);
         foreach (bool left in new[] { true, false })
         {
             var work = new RectI(-1920, 0, 1920, 1040);
@@ -62,4 +63,44 @@ internal static class OpeningPlacementChecks
             check(history.OpeningFor(scene, 7020) == null, "quick round trips do not reopen a placed pair");
         }
     }
+    private static void CheckCentralSwitches(Action<bool, string> check)
+    {
+        var area = new RectI(0, 0, 1920, 1040);
+        var rect = new RectI(400, 80, 1120, 850);
+        WindowSnapshot a = new(1, rect, rect, area, 1, default, true, true, true, 0, 96, 101, SurfaceState: "windowed");
+        var b = a with { Handle = 2, ProcessId = 202, IsForeground = false, ZOrder = 1,
+            VisualRect = rect with { X = rect.X + 7, Y = rect.Y + 14 } };
+        var history = new ForegroundHistory();
+        history.Visit(2, 202, 1000);
+        history.Visit(1, 101, 6800);
+        check(history.OpeningFor([a, b], 6810) == null, "activating an overlapping centered surface does not establish a side from a few pixels");
+        history.Shown(1, 101, 6780);
+        check(history.OpeningFor([a, b], 6810) is { ResidentLeft: true },
+            "a real restore can place a new surface beside that same centered resident");
+        var visit = new Dictionary<nint, LayoutAttention> { [1] = new(1, .2, 0, 0, true), [2] = new(.9, 1, .8, 0, false) };
+        var task = new TaskLayoutContext(Focus: new(1, 0, 0), Attention: visit, UseWorkingPairs: true)
+            { IsWorkspaceObservation = true, AllowGestureAssist = false };
+        IntentLayoutPlan Solve(WindowSnapshot[] ws, TaskLayoutContext context) =>
+            LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(ws, true),
+                new(SmartStrength: SmartTidyStrength.Assertive), null, ws, context);
+        var returned = new[] { b with { IsForeground = true, ZOrder = 0 }, a with { IsForeground = false, ZOrder = 1 } };
+        check(Solve([a, b], task).Moves.Count == 0 && Solve(returned, task with { Focus = new(2, 1, 2) }).Moves.Count == 0,
+            "a passive round trip between centered windows preserves both frames in sequence");
+        var paired = task with { Focus = new(1, 2, 4), Attention = new Dictionary<nint, LayoutAttention>(visit) { [1] = new(1, 1, .9, 1, true) } };
+        check(Solve([a, b], paired).Moves.Count > 0 &&
+            Solve([a, b], task with { Focus = new(1, 2, 0, "opening-resident-left") }).Moves.Count > 0,
+            "independent opening or two engaged surfaces can establish a split from the same geometry");
+        foreach (bool mirror in new[] { true, false })
+        {
+            var side = returned[0] with { VisualRect = new(mirror ? 0 : 1430, 90, 480, 850) };
+            var peer = returned[1] with { VisualRect = new(mirror ? 450 : 0, 60, 1400, 900) };
+            WindowSnapshot[] narrow = [side, peer];
+            var repaired = Solve(narrow, paired with { Focus = new(2, 1, 4) });
+            var placed = TaskLayoutSession.Project(narrow, repaired);
+            check(repaired.Moves.Count > 0 && placed[0].VisualRect.Width > side.VisualRect.Width &&
+                (placed[0].VisualRect.Left < placed[1].VisualRect.Left) == mirror,
+                "automatic repacking can enlarge a cramped reader while preserving established left-right order");
+        }
+    }
+
 }

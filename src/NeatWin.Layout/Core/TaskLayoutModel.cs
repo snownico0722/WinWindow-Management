@@ -215,6 +215,23 @@ internal static partial class IntentLayoutPlanner
         RectI area, TidyOptions options, TaskLayoutContext context, WindowSnapshot[]? obstacles = null,
         OcclusionMetrics.Exposure[]? beforeExposure = null, AttentionTarget[]? goals = null)
     {
+        if (context.IsWorkspaceObservation && !context.ExplicitArrange && context.GestureAnchor == 0 &&
+            context.Focus is { OpeningResidentLeft: null } orderedFocus && goals != null)
+        {
+            // Reading widths may change on a focus switch. A pair that already spans two
+            // distinct sides can share the new budget without crossing paths.
+            int main = Array.FindIndex(windows, v => v.Window.Handle == orderedFocus.Main);
+            for (int j = 0; main >= 0 && j < windows.Length; j++)
+            {
+                if (goals[j].Role != AttentionRole.Reference) continue;
+                var a = original[main]; var b = original[j];
+                double dx = CenterX(a) - CenterX(b), dy = CenterY(a) - CenterY(b);
+                if (Math.Abs(dx) > area.Width * .28 && a.VerticalOverlapRatio(b) >= .45 &&
+                    dx * (CenterX(candidate.Rects[main]) - CenterX(candidate.Rects[j])) < 0) return false;
+                if (Math.Abs(dy) > area.Height * .28 && a.HorizontalOverlapRatio(b) >= .45 &&
+                    dy * (CenterY(candidate.Rects[main]) - CenterY(candidate.Rects[j])) < 0) return false;
+            }
+        }
         var previous = beforeExposure ?? MeasureBeforeExposure(windows, original, area, obstacles);
         var front = new List<RectI>();
         foreach (var i in candidate.Order)

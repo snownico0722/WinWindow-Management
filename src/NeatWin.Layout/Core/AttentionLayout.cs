@@ -157,18 +157,40 @@ internal static class AttentionLayout
     internal static double Floating(TaskWindowHint? hint) => WindowUseRoles.IsFloating(hint?.Role) ? 1 :
         Math.Clamp(hint?.FloatingAffinity ?? 0, 0, 1);
 
+    internal static bool IsCentralStack(RectI first, RectI second, RectI area)
+    {
+        if (first.IsEmpty || second.IsEmpty || area.IsEmpty) return false;
+        double middle = area.Left + area.Width / 2d;
+        return Math.Abs(first.Left + first.Width / 2d - middle) < area.Width * .10 &&
+            Math.Abs(second.Left + second.Width / 2d - middle) < area.Width * .10 &&
+            first.Intersect(second).Area >= .72 * Math.Max(first.Area, second.Area);
+    }
+
     // Once a working set fills the screen with readable surfaces, small changes in
     // attention alone need not move the boundary between them. Re-evaluate actual
     // visibility on every observation so a covered title, a new task or lost space
     // immediately opens the normal search again.
-    internal static bool WorkspaceIsReadable(VisibleWindow[] group, AttentionTarget[]? targets,
+    internal static string? SettledWorkspaceReason(VisibleWindow[] group, AttentionTarget[]? targets,
         OcclusionMetrics.Exposure[] exposed, TaskLayoutContext context)
     {
         if (targets == null || group.Length < 2 || context.ExplicitArrange || !context.IsWorkspaceObservation ||
             context.GestureAnchor != 0 || context.Focus?.OpeningResidentLeft != null || context.VideoHint != null ||
             context.Focus?.Navigation is { Length: > 0 } || context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true ||
-            context.RulePairs?.Length > 0) return false;
+            context.RulePairs?.Length > 0) return null;
         var area = group[0].Window.WorkArea;
+        if (group.Length == 2 && context.Focus is { Evidence: "recent-switch-pair" } focus &&
+            !(focus.Companion != 0 && (group.All(v => context.Attention?.GetValueOrDefault(v.Window.Handle)?.Input >= .35) ||
+                focus.Switches >= 3 && group.All(v => context.Attention?.GetValueOrDefault(v.Window.Handle)?.Dwell >= .6))) &&
+            context.Placement?.Any(p => p.Confidence >= .40 && group.Any(v => v.Window.Handle == p.Window)) != true &&
+            context.WindowHints?.Any(h => h.InitialTextPlacement) != true)
+        {
+            int active = Array.FindIndex(group, v => v.Window.Handle == focus.Main && v.Window.IsForeground);
+            if (active >= 0 && exposed[active].CenterVisible >= .94 && exposed[active].AccessWidth >= targets[active].AccessWidth &&
+                exposed[active].UsefulWidth >= targets[active].Width * .80 && exposed[active].UsefulHeight(group[active].Window.VisualRect) >= targets[active].Height * .80 &&
+                group.All(v => area.Intersect(v.Window.VisualRect) == v.Window.VisualRect) &&
+                IsCentralStack(group[0].Window.VisualRect, group[1].Window.VisualRect, area))
+                return "existing-central-stack";
+        }
         double occupied = 0;
         for (int i = 0; i < group.Length; i++)
         {
@@ -181,10 +203,10 @@ internal static class AttentionLayout
                 seen.AccessWidth < target.AccessWidth || seen.UsefulWidth < target.Width * .84 ||
                 seen.UsefulHeight(frame) < target.Height * .84 ||
                 target.MinimumFrameWidth > frame.Width ||
-                context.Placement?.Any(p => p.Window == window.Handle && p.Confidence >= .40) == true) return false;
+                context.Placement?.Any(p => p.Window == window.Handle && p.Confidence >= .40) == true) return null;
             occupied += seen.Visible * frame.Area;
         }
-        return occupied >= area.Area * .65;
+        return occupied >= area.Area * .65 ? "workspace-already-readable" : null;
     }
 
     internal static bool CanStackReferences(AttentionTarget[] targets, TaskLayoutContext context,

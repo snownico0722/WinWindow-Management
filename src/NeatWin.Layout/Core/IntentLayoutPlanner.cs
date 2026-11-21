@@ -99,11 +99,11 @@ internal static partial class IntentLayoutPlanner
                     TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, goals), options.SmartStrength, task);
                 var viewingModel = groupContext.Calibration?.Matches(area, group[0].Window.Dpi) == true
                     ? "calibrated-flat-screen-angle" : "normalized-distance-not-gaze";
-                if (AttentionLayout.WorkspaceIsReadable(group, goals, beforeExposure, groupContext))
+                if (AttentionLayout.SettledWorkspaceReason(group, goals, beforeExposure, groupContext) is { } reason)
                 {
                     var kept = Breakdown(new("keep", original, order));
                     traces.Add(new(group.Select(v => v.Window.Handle).ToArray(), "keep", stackSignal,
-                        [new("keep", kept.Total, null, kept)], new(task, viewingModel, ["workspace-already-readable"])));
+                        [new("keep", kept.Total, null, kept)], new(task, viewingModel, [reason])));
                     continue;
                 }
                 var generationNotes = new List<LayoutCandidateTrace>();

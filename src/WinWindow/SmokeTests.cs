@@ -837,34 +837,43 @@ internal static class SmokeTests
         RadioButton Mode(AutomaticLayoutMode mode) => modes.Single(b => Equals(b.Tag, mode.ToString()));
         // This runner arranges native fixtures without a user at the keyboard. Give the two
         // fixtures a working-task history before testing the automatic path.
-        void UseBothFixtures()
+        async Task UseBothFixturesAsync()
         {
-            var pair = Pair();
-            var main = pair.FirstOrDefault(w => w.IsForeground) ?? pair[0];
-            var companion = pair.Single(w => w.Handle != main.Handle);
-            var now = Environment.TickCount64;
-            shell.LayoutFocus.Visit(main.Handle, main.ProcessId, now - 1800);
-            shell.LayoutFocus.Visit(companion.Handle, companion.ProcessId, now - 900);
-            shell.LayoutFocus.Visit(main.Handle, main.ProcessId, now);
+            foreach (var handle in new[] { second, first })
+            {
+                Native.SetForegroundWindow(handle);
+                await WaitAsync("fixture owns real foreground", () => Native.GetForegroundWindow() == handle);
+                var window = Pair().Single(w => w.Handle == handle);
+                // Model the missing human input at the current monotonic time. Native focus
+                // events still drive the ordinary workspace scheduler and submission guards.
+                var now = Environment.TickCount64;
+                shell.LayoutFocus.Visit(handle, window.ProcessId, now);
+                shell.LayoutFocus.Interact(handle, window.ProcessId, now);
+                await Task.Delay(180);
+            }
         }
         shell.ShowShell();
         await WaitAsync("workbench owns input before enabling automation", () =>
             Native.GetForegroundWindow() == new WindowInteropHelper(shell).Handle);
         var whileEditingSettings = Pair();
-        UseBothFixtures();
         Mode(AutomaticLayoutMode.AutoFullAssist).IsChecked = true;
         await Task.Delay(1350);
         Assert(Pair().All(w => whileEditingSettings.Any(p => p.Handle == w.Handle && WindowStateRules.Near(p.VisualRect, w.VisualRect))),
             "automatic mode leaves external geometry alone while the workbench owns focus");
-        Native.SetForegroundWindow(first);
-        await WaitAsync("external task owns foreground", () => Native.GetForegroundWindow() == first);
-        UseBothFixtures();
-        await WaitAsync("automatic mode opens up the two covered task windows", Improved, 8000);
+        await UseBothFixturesAsync();
+        try { await WaitAsync("automatic mode opens up the two covered task windows", Improved, 8000); }
+        catch (TimeoutException ex)
+        {
+            var frames = Pair();
+            var focus = shell.LayoutFocus.Resolve(frames, Environment.TickCount64);
+            throw new TimeoutException($"{ex.Message}; foreground={Native.GetForegroundWindow()}, task={focus}, " +
+                $"frames={string.Join(" | ", frames.Select(w => $"{w.Handle} {w.VisualRect}"))}, status={status.Text}", ex);
+        }
         var stable = Pair();
         await Task.Delay(1250);
         Assert(Pair().All(a => stable.Any(w => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))),
             "automatic arrangement settles without reacting to its own native moves");
-        UseBothFixtures();
+        await UseBothFixturesAsync();
         await OverlapAsync();
         await WaitAsync("automatic mode responds to actual external window moves", Improved, 8000);
         Mode(AutomaticLayoutMode.Off).IsChecked = true;

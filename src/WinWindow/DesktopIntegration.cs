@@ -96,10 +96,11 @@ internal sealed class DesktopIntegration : IDisposable
             if (_disposed || hwnd == 0 || (ev >= 0x8000 && (objectId != 0 || childId != 0)) || _window.Dispatcher.HasShutdownStarted) return;
             var now = Environment.TickCount64;
             long tick = now - unchecked((uint)now - eventTime);
-            if (ev == 0x8000 && Native.GetAncestor(hwnd, 2) == hwnd)
+            if (ev is 0x8000 or 0x8002 or 0x17 && Native.GetAncestor(hwnd, 2) == hwnd)
             {
-                Native.GetWindowThreadProcessId(hwnd, out var createdPid);
-                _window.LayoutFocus.Created(hwnd, createdPid, tick);
+                Native.GetWindowThreadProcessId(hwnd, out var surfacePid);
+                if (ev == 0x8000) _window.LayoutFocus.Created(hwnd, surfacePid, tick);
+                else _window.LayoutFocus.Shown(hwnd, surfacePid, tick);
             }
             if (ev == 0x8001) _window.LayoutFocus.Retire(hwnd);
             if (ev == 3)

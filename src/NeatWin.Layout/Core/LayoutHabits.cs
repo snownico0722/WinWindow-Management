@@ -47,6 +47,7 @@ public sealed class ForegroundHistory
     private ((nint Handle, uint Pid, long Time) Visit, PointI Position)? _openingPointer;
     private sealed record WindowBirth(long Time, nint Source = 0, uint SourcePid = 0, string? Evidence = null, bool PlacementSeen = false);
     private readonly Dictionary<(nint Handle, uint Pid), WindowBirth> _created = [];
+    private readonly Dictionary<(nint Handle, uint Pid), long> _shown = [];
     private readonly List<(nint Handle, uint Pid, long Time)> _clicks = [];
 
     // A show/restore/Alt-Tab is not a birth. Bind only the first foreground visit in this HWND lifetime.
@@ -58,6 +59,18 @@ public sealed class ForegroundHistory
             if (_created.ContainsKey((handle, pid))) return;
             if (_created.Count >= 256) _created.Remove(_created.MinBy(entry => entry.Value.Time).Key);
             _created[(handle, pid)] = new(now);
+        }
+    }
+
+    // Show/restore is evidence of a newly visible surface, separate from a new HWND lifetime.
+    public void Shown(nint handle, uint pid, long now)
+    {
+        if (handle == 0 || pid == 0 || pid == Environment.ProcessId) return;
+        lock (_visits)
+        {
+            var key = (handle, pid);
+            if (_shown.Count >= 128 && !_shown.ContainsKey(key)) _shown.Remove(_shown.MinBy(entry => entry.Value).Key);
+            _shown[key] = now;
         }
     }
 
@@ -157,8 +170,18 @@ public sealed class ForegroundHistory
                 if (fragments.Sum(r => r.Area) < .40 * rect.Area) return null;
                 double center = rect.Left + rect.Width / 2d;
                 double middle = other.WorkArea.Left + other.WorkArea.Width / 2d;
-                bool left = Math.Abs(center - middle) > other.WorkArea.Width * .08
-                    ? center < middle : center <= incoming.Left + incoming.Width / 2d;
+                bool centralStack = AttentionLayout.IsCentralStack(rect, incoming, other.WorkArea);
+                if (centralStack)
+                {
+                    var key = (front.Handle, front.ProcessId);
+                    bool recent(long tick) => now >= tick && tick >= visit.Time - 1500;
+                    if (!(_created.TryGetValue(key, out var birth) && recent(birth.Time)) &&
+                        !(_shown.TryGetValue(key, out long shown) && recent(shown))) return null;
+                }
+                // At nearly identical centers, a few pixels of asymmetry do not give the
+                // newly shown surface a claim on the left-hand slot.
+                bool left = centralStack || (Math.Abs(center - middle) > other.WorkArea.Width * .08
+                    ? center < middle : center <= incoming.Left + incoming.Width / 2d);
                 return new(visit.Time, front, other, left);
             }
             return null;
@@ -190,6 +213,7 @@ public sealed class ForegroundHistory
                 if (_visits[i].Handle == handle) _visits[i] = (0, 0, _visits[i].Time);
             foreach (var key in _input.Keys.Where(key => key.Handle == handle).ToArray()) _input.Remove(key);
             foreach (var key in _created.Keys.Where(key => key.Handle == handle).ToArray()) _created.Remove(key);
+            foreach (var key in _shown.Keys.Where(key => key.Handle == handle).ToArray()) _shown.Remove(key);
             _clicks.RemoveAll(click => click.Handle == handle);
             if (_rememberedNavigation?.Path.Hops.Any(hop => hop.Source == handle) == true) _rememberedNavigation = null;
             _manualPlaces.Remove(handle);
