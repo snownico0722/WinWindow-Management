@@ -66,6 +66,20 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     internal void ApplicationRequested(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan) =>
         _scheduler.ApplicationRequested(before, plan, Environment.TickCount64);
 
+    internal void RequestCurrent()
+    {
+        if (_disposed || !AutomaticLayoutPolicy.WatchesWorkspace(Mode)) return;
+        if (!_scheduler.HasPending) _scheduler.RequestCurrent(Environment.TickCount64);
+        _timer.Start();
+    }
+
+    internal bool TaskInput(nint handle, uint pid, long now)
+    {
+        if (_disposed || !_scheduler.TaskInput(handle, pid, now)) return false;
+        _timer.Start();
+        return true;
+    }
+
     private void OnWinEvent(nint hook, uint eventType, nint hwnd, int idObject, int idChild, uint thread, uint time)
     {
         // Destruction can invalidate HWND before delivery, so membership changes are confirmed

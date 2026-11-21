@@ -6,10 +6,11 @@ namespace NeatWin.Core;
 public sealed record LayoutHabit(DateTimeOffset Time, string Display, string App, string? Partner,
     double Center, double Width, int Order, int RevealedCell, bool Corrected, double? InnerOverlap = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? PartnerCenter = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? PartnerWidth = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? PartnerWidth = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? Height = null);
 
 public sealed record PlacementPreference(nint Window, nint Partner, double Center, double Width,
-    double Order, int RevealedCell, double Confidence, double? InnerOverlap = null);
+    double Order, int RevealedCell, double Confidence, double? InnerOverlap = null, double? Height = null);
 
 public sealed record LayoutFocus(nint Main, nint Companion, int Switches, string Evidence = "recent-switch-pair");
 
@@ -21,6 +22,8 @@ public sealed record LayoutAttention(double Recency, double Dwell, double Input,
 public sealed class ForegroundHistory
 {
     internal const double WorkingAttention = .50;
+    internal const int EstablishedTaskMilliseconds = 6_000;
+    internal const int RecentInputMilliseconds = 15_000;
     private const int AttentionHalfLifeMilliseconds = 12_000;
     private readonly List<(nint Handle, uint Pid, long Time)> _visits = [];
     private readonly Dictionary<(nint Handle, uint Pid), long> _input = new();
@@ -34,10 +37,18 @@ public sealed class ForegroundHistory
         {
             if (_visits.Count > 0 && _visits[^1].Handle == handle && _visits[^1].Pid == pid)
                 return;
-            // Collapse transient Alt+Tab pass-throughs (A -> B -> C where B dwelled < 450ms and A != C).
-            if (handle != 0 && _visits.Count >= 2 && _visits[^1].Handle != 0 && _visits[^2].Handle != handle &&
-                now - _visits[^1].Time is >= 0 and < 450)
-                _visits.RemoveAt(_visits.Count - 1);
+            // A brief pass-through or bounce should not establish a reading pair. Keep a
+            // short, intentional visit when a real input landed on that window.
+            if (handle != 0 && _visits.Count >= 2 && _visits[^1].Handle != 0)
+            {
+                var last = _visits[^1];
+                if (now - last.Time is >= 0 and < AutomaticLayoutScheduler.SettleMilliseconds &&
+                    !ReceivedInput(last, now))
+                {
+                    _visits.RemoveAt(_visits.Count - 1);
+                    if (_visits[^1].Handle == handle && _visits[^1].Pid == pid) return;
+                }
+            }
             _visits.Add((handle, pid, now));
             if (_visits.Count > 64) _visits.RemoveAt(0);
         }
@@ -65,6 +76,20 @@ public sealed class ForegroundHistory
         }
     }
 
+    private bool ReceivedInput((nint Handle, uint Pid, long Time) visit, long until) =>
+        _input.TryGetValue((visit.Handle, visit.Pid), out var tick) && tick >= visit.Time && tick <= until;
+
+    internal long LastUse(WindowSnapshot window, long now)
+    {
+        lock (_visits)
+        {
+            long last = _input.GetValueOrDefault((window.Handle, window.ProcessId));
+            int i = _visits.FindLastIndex(v => v.Handle == window.Handle && v.Pid == window.ProcessId);
+            if (i >= 0) last = Math.Max(last, i + 1 < _visits.Count ? _visits[i + 1].Time : now);
+            return last;
+        }
+    }
+
     public LayoutFocus Resolve(IReadOnlyList<WindowSnapshot> windows, long now) => Resolve(windows, now, out _);
 
     internal LayoutFocus Resolve(IReadOnlyList<WindowSnapshot> windows, long now, out Dictionary<nint, LayoutAttention> attention)
@@ -72,8 +97,9 @@ public sealed class ForegroundHistory
         lock (_visits)
         {
             var valid = windows.Where(w => w.IsManageable).ToDictionary(w => w.Handle);
-            bool IsCurrentVisit((nint Handle, uint Pid, long Time) v) => now - v.Time is >= 0 and <= 600_000 &&
+            bool IsLive((nint Handle, uint Pid, long Time) v) =>
                 valid.TryGetValue(v.Handle, out var w) && w.ProcessId == v.Pid;
+            bool IsCurrentVisit((nint Handle, uint Pid, long Time) v) => now - v.Time is >= 0 and <= 600_000 && IsLive(v);
             static double Decay(long elapsed, int halfLife = AttentionHalfLifeMilliseconds) => Math.Pow(.5, elapsed / (double)halfLife);
             attention = new();
             var foreground = windows.FirstOrDefault(w => w.IsForeground);
@@ -81,16 +107,17 @@ public sealed class ForegroundHistory
             int foregroundVisit = hasForeground ? _visits.FindLastIndex(v => v.Handle == foreground!.Handle &&
                 v.Pid == foreground.ProcessId && v.Time <= now) : -1;
             long foregroundSince = foregroundVisit >= 0 ? _visits[foregroundVisit].Time : now;
-            bool establishedTask = hasForeground && now - foregroundSince >= 6_000 &&
+            bool establishedTask = hasForeground && now - foregroundSince >= EstablishedTaskMilliseconds &&
                 _input.TryGetValue((foreground!.Handle, foreground.ProcessId), out long currentInput) &&
                 currentInput >= foregroundSince && now - currentInput is >= 0 and <= 4_000;
             double InputFor(WindowSnapshot w) => _input.TryGetValue((w.Handle, w.ProcessId), out var tick) &&
-                now - tick is >= 0 and <= 15_000 ? Decay(now - tick, 5_000) : 0;
+                now - tick is >= 0 and <= RecentInputMilliseconds ? Decay(now - tick, 5_000) : 0;
             for (var i = _visits.Count - 1; i >= 0; i--)
             {
                 var visit = _visits[i];
-                if (!IsCurrentVisit(visit) || attention.ContainsKey(visit.Handle)) continue;
+                if (!IsLive(visit) || visit.Time > now || attention.ContainsKey(visit.Handle)) continue;
                 var end = i + 1 < _visits.Count ? Math.Clamp(_visits[i + 1].Time, visit.Time, now) : now;
+                if (now - end > 600_000) continue;
                 var dwell = Math.Min(1, (end - visit.Time) / 4000d);
                 double input = InputFor(valid[visit.Handle]);
                 int halfLife = establishedTask && end <= foregroundSince && input < .5 ? 5_000 : AttentionHalfLifeMilliseconds;
@@ -100,7 +127,8 @@ public sealed class ForegroundHistory
                 if (!attention.ContainsKey(w.Handle) && (w.IsForeground || InputFor(w) > 0))
                     attention.Add(w.Handle, new(0, 0, InputFor(w), 0, w.IsForeground));
             // A maximized/full-screen task is still the task even though we cannot move it.
-            if (foreground is { IsManageable: false, SurfaceState: not null }) return new(0, 0, 0);
+            if (foreground is { IsManageable: false } && (foreground.SurfaceState != null || foreground.Owner != 0))
+                return new(0, 0, 0);
             var latest = _visits.LastOrDefault(IsCurrentVisit).Handle;
             var main = hasForeground ? foreground!.Handle :
                 attention.GetValueOrDefault(latest)?.Weight >= WorkingAttention ? latest : 0;
@@ -141,12 +169,33 @@ public sealed class ForegroundHistory
                     Score: p.Association * (.65 + .25 * weights[p.Peer].Weight + .10 * weights[p.Peer].Input)))
                 .OrderByDescending(p => p.Score).ThenByDescending(p => p.Weight)
                 .Take(2).ToArray();
-            if (ranked.Length == 0) return new(main, 0, 0);
-            var best = ranked[0];
-            // A second plausible companion or a few stale switches leave the relationship unresolved.
+            var best = ranked.FirstOrDefault();
             bool clear = best.Count >= 2 && best.Weight >= 1 && best.Association >= .55 &&
                 (ranked.Length == 1 || ranked[1].Score < best.Score * .8);
-            return new(main, clear ? best.Peer : 0, best.Count);
+            if (clear) return new(main, best.Peer, best.Count);
+
+            // A first transition supports access to the source, even before repeated switches
+            // demonstrate joint use. The weak role expires as attention settles on the new task.
+            if (foregroundVisit >= 0 && foregroundVisit == _visits.Count - 1 &&
+                now - foregroundSince <= AttentionHalfLifeMilliseconds &&
+                (now - foregroundSince >= AutomaticLayoutScheduler.SettleMilliseconds ||
+                    ReceivedInput(_visits[foregroundVisit], now)))
+            {
+                if (foreground!.Owner != 0 && valid.TryGetValue(foreground.Owner, out var owner) &&
+                    owner.MonitorHandle == monitor)
+                    return new(main, owner.Handle, partners.GetValueOrDefault(owner.Handle).Count, "handoff");
+                if (foregroundVisit > 0)
+                {
+                    var source = _visits[foregroundVisit - 1];
+                    if (IsLive(source) && source.Handle != main && valid[source.Handle].MonitorHandle == monitor &&
+                        partners.GetValueOrDefault(source.Handle).Count <= 1 &&
+                        weights.GetValueOrDefault(source.Handle)?.Weight >= WorkingAttention &&
+                        (foregroundSince - source.Time >= AutomaticLayoutScheduler.SettleMilliseconds ||
+                            ReceivedInput(source, foregroundSince)))
+                        return new(main, source.Handle, 1, "handoff");
+                }
+            }
+            return new(main, 0, best.Count);
         }
     }
 }
@@ -188,15 +237,20 @@ public static class LayoutHabits
             Math.Clamp(center, 0, 1), Math.Clamp(moved.Rect.Width / (double)o.WorkArea.Width, .05, 1), order, cell,
             o.AfterRequest != null, partner != null && order != 0 && moved.Rect.VerticalOverlapRatio(partner.Rect) >= .5
                 ? moved.Rect.HorizontalOverlapRatio(partner.Rect) : null,
-            partnerCenter, partnerWidth);
+            partnerCenter, partnerWidth, o.Start.Height != o.End.Height
+                ? Math.Clamp(moved.Rect.Height / (double)o.WorkArea.Height, .05, 1) : null);
     }
 
     public static LayoutHabit[] Add(IEnumerable<LayoutHabit> history, LayoutHabit sample)
     {
         long bucket = sample.Time.ToUnixTimeSeconds() / 1800;
-        return history.Where(s => s.Time >= sample.Time.AddDays(-120) &&
-            !(s.Display == sample.Display && s.App == sample.App && s.Partner == sample.Partner &&
-              s.Time.ToUnixTimeSeconds() / 1800 == bucket)).Append(sample).TakeLast(1024).ToArray();
+        var recent = history.Where(s => s.Time >= sample.Time.AddDays(-120)).ToArray();
+        bool SameVote(LayoutHabit s) => s.Display == sample.Display && s.App == sample.App &&
+            s.Partner == sample.Partner && s.Time.ToUnixTimeSeconds() / 1800 == bucket;
+        // Dragging the resized window again in the same burst still contributes one size vote.
+        if (sample.Height == null && recent.LastOrDefault(SameVote) is { Height: not null } previous)
+            sample = sample with { Height = previous.Height };
+        return recent.Where(s => !SameVote(s)).Append(sample).TakeLast(1024).ToArray();
     }
 
     public static PlacementPreference? Resolve(IEnumerable<LayoutHabit> history, WindowSnapshot window,
@@ -250,7 +304,20 @@ public static class LayoutHabits
                 if (accumulated >= overlapWeight / 2) { overlap = sample.Value; break; }
             }
         }
+        // Only vertical resizes of this window teach its height. A stationary partner or
+        // a position-only edit can include geometry previously chosen by the layout engine.
+        var heights = direct.Where(s => s.Height is >= .05 and <= 1).ToArray();
+        var heightVotes = specific ? Independent(heights.Where(s => s.Partner == partner)) : [];
+        if (heightVotes.Length < 3) heightVotes = Independent(heights);
+        double? height = null;
+        double totalHeightWeight = heightVotes.Sum(Weight);
+        if (heightVotes.Length >= 3 && totalHeightWeight >= 1)
+        {
+            double meanHeight = heightVotes.Sum(s => Weight(s) * s.Height!.Value) / totalHeightWeight;
+            double deviation = heightVotes.Sum(s => Weight(s) * Math.Abs(s.Height!.Value - meanHeight)) / totalHeightWeight;
+            if (deviation <= .10) height = meanHeight;
+        }
         return new(window.Handle, specific ? partnerHandle : 0, center, Mean(s => s.Width),
-            specific ? Mean(s => s.Order) : 0, cell, confidence, overlap);
+            specific ? Mean(s => s.Order) : 0, cell, confidence, overlap, height);
     }
 }

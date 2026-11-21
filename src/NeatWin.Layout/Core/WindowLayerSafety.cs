@@ -19,6 +19,16 @@ public static class WindowLayerSafety
             p.w.MonitorHandle == w.MonitorHandle && p.w.WorkArea == w.WorkArea && p.w.IsManageable && !p.w.IsTopmost)))
             return false;
 
+        if (current.Any(w => w.Owner != 0 && (handles.Contains(w.Handle) || handles.Contains(w.Owner))))
+        {
+            var ranks = current.Select((w, i) => (w.Handle, i)).ToDictionary(p => p.Handle, p => p.i);
+            for (int i = 0; i < desired.Count; i++) ranks[desired[i].Handle] = slots[i].i;
+            foreach (var window in current)
+                if (window.Owner != 0 && (handles.Contains(window.Handle) || handles.Contains(window.Owner)) &&
+                    ranks.TryGetValue(window.Owner, out var ownerRank) && ranks[window.Handle] > ownerRank)
+                    return false;
+        }
+
         for (int idx = slots[0].i + 1; idx < slots[^1].i; idx++)
         {
             var interleaved = current[idx];

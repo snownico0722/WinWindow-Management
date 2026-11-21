@@ -29,10 +29,11 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private TidyOptions _tidyOptions;
     private SmartBehaviorOptions _smartBehaviorOptions;
     private readonly IntentReferenceStore _referenceStore;
-    private bool _undoWasSmart;
+    private bool _undoWasSmart, _undoReclaim;
     private IReadOnlyList<TidyMove> _undoPlan = [];
     private IReadOnlyList<WindowLayerOrder> _undoLayers = [];
     private readonly LayoutRunJournal _journal;
+    private bool _placementRetryPending;
     private CompiledLayoutRules? _lastRules;
     private LayoutFocus? _lastFocus;
     private WorkingPairRule[] _lastPairs = [];
@@ -64,7 +65,6 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _smartBehaviorOptions = _settingsStore.LoadSmartBehaviorOptions();
         _verticalFillManager = new ReversibleVerticalFillManager();
         _autoTidyManager = new AutoTidyManager();
-        _autoTidyManager.TaskInput += _focus.Interact;
         _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) { VisualSampling = _settingsStore.VisualSampling };
         _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder, snapshotObserver);
         _behaviorMonitor = new(_windowManager, _referenceStore, _settingsStore, _recorder,
@@ -72,6 +72,11 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _useImportedPlacement = _settingsStore.UseImportedPlacement;
         _workspaceMonitor = new WorkspaceAutoTidyMonitor(() => _windowManager.CaptureCoalesced(),
             () => _tidyRunning || NativeWindowActivity.IsMoving);
+        _autoTidyManager.TaskInput += (target, pid, now) =>
+        {
+            _focus.Interact(target, pid, now);
+            if (_workspaceMonitor.TaskInput(target, pid, now)) _taskSession.Invalidate();
+        };
         _manualArrangeTimer.Tick += (_, _) => RunTidy();
         _autoTidyManager.GestureStarted += handle =>
         {
@@ -95,6 +100,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _workspaceMonitor.Requested += OnAutomaticLayoutRequested;
         _autoTidyManager.TidyRequested += OnFollowHandRequested;
         _journal.Completed += OnLayoutVerified;
+        _journal.ReplanAroundBlockedWindow += () =>
+        {
+            if (!AutomaticLayoutPolicy.WatchesWorkspace(_automaticMode)) return;
+            _placementRetryPending = true;
+            _workspaceMonitor.RequestCurrent();
+        };
         _workspaceMonitor.Failed += ex => _report(LayoutText.Format("ObservationFailed", ex.Message));
         _recorder.StatusChanged += OnRecorderStatusChanged;
 
@@ -170,6 +181,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             if (!ConfigureAutomation(previous)) _automaticMode = AutomaticLayoutMode.Off;
             throw;
         }
+        _behaviorMonitor.ResetIdleHistory();
         _automaticMode = value.Mode;
         _recorder.SetLiveSensing(_automaticMode);
     }
@@ -196,6 +208,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private bool ConfigureAutomation(AutomaticLayoutMode mode, bool arrangeNow = false)
     {
         if (mode is AutomaticLayoutMode.LightAssist or AutomaticLayoutMode.FullAssist && !_autoTidyManager.IsAvailable) return false;
+        _placementRetryPending = false;
         if (!_workspaceMonitor.SetMode(mode, arrangeNow))
         {
             _autoTidyManager.Enabled = false;
@@ -214,7 +227,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         var route = AutomaticLayoutPolicy.Route(request.Mode, request.Trigger);
         if (route != LayoutRoute.Smart) return;
         var trigger = request.Trigger == LayoutTrigger.AfterGesture ? "automatic-gesture" : "automatic-workspace";
-        RunTidy(showActivity: false, route.Value, trigger);
+        bool mayReplan = !_placementRetryPending;
+        _placementRetryPending = false;
+        RunTidy(showActivity: false, route.Value, trigger, mayReplan);
     }
 
     private void OnFollowHandRequested(ManualWindowGesture gesture)
@@ -240,7 +255,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _workspaceMonitor.ApplicationRequested(snapshot, new(assisted, [], []));
             if (_stopping.IsCancellationRequested) return;
             var application = _windowManager.ApplyLayout(new(assisted, [], []));
-            _journal.Record(snapshot, application.Plan, "follow-hand", application.Notes);
+            _journal.Record(snapshot, application, "follow-hand");
         }
         catch { /* Assistance must not interrupt the completed manual action. */ }
         finally { _tidyRunning = false; }
@@ -248,7 +263,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
 
     internal void RunTidy() => RunTidy(showActivity: true, LayoutRoute.ManualAlgorithm);
 
-    private void RunTidy(bool showActivity, LayoutRoute route = LayoutRoute.ManualAlgorithm, string? source = null)
+    private void RunTidy(bool showActivity, LayoutRoute route = LayoutRoute.ManualAlgorithm, string? source = null, bool allowPlacementReplan = false)
     {
         if (_stopping.IsCancellationRequested) return;
         if (_tidyRunning || NativeWindowActivity.IsMoving)
@@ -267,6 +282,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var fullDesktop = explicitSmart || (smart && _automaticMode == AutomaticLayoutMode.AutoFullAssist);
             var trigger = source ?? (showActivity ? tiling ? "explicit-tiling" : smart ? "explicit" : "explicit-classic" : "classic-follow");
             var snapshot = _windowManager.Capture();
+            var foreground = NativeMethods.GetForegroundWindow();
             var visibleWorkingSet = fullDesktop
                 ? _visibilityAnalyzer.SelectForManualArrange(snapshot, effectiveOptions.RescueOffscreenWindows)
                 : _visibilityAnalyzer.SelectVisibleWorkingSet(snapshot, includeStackAccess: smart);
@@ -275,7 +291,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 videoHint = _videoBlackBarDetector.TryDetect(visibleWorkingSet);
             IReadOnlyList<TidyMove> plan;
             IntentLayoutPlan? detailed = null;
-            TaskLayoutContext? recordedContext = null;
+            TaskLayoutContext? recordedContext = null, reclaimContext = null;
             IntentLayoutPlan? baseline = null;
             IntentLayoutPlan? scored = null;
             if (tiling)
@@ -296,6 +312,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     var mediaHint = (existing ?? new TaskWindowHint(videoHint.WindowHandle)) with { PassiveVisual = true, MediaCompanion = true };
                     liveHints = [.. liveHints.Where(w => w.Handle != videoHint.WindowHandle), mediaHint];
                 }
+                liveHints = _journal.Feedback.Bind(snapshot, liveHints, Environment.TickCount64);
                 bool pairSmart = explicitSmart || trigger is "automatic-gesture" or "automatic-workspace";
                 var pairs = pairSmart && _useImportedPlacement ? _recorder.BindRules(rules, snapshot, liveHints, activities) : [];
                 var floors = _recorder.BindSizeFloors(snapshot);
@@ -303,7 +320,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 var slots = pairSmart && _useImportedPlacement ? _recorder.BindSlots(rules, snapshot) : [];
                 var placements = CompiledLayoutRules.ApplySlots(learned, slots);
                 if (!_lastPairs.SequenceEqual(pairs) || !_lastFloors.SequenceEqual(floors) ||
-                    !_lastPlacements.SequenceEqual(placements) || !ReferenceEquals(rules, _lastRules) || focus.Main != _lastFocus?.Main || focus.Companion != _lastFocus?.Companion ||
+                    !_lastPlacements.SequenceEqual(placements) || !ReferenceEquals(rules, _lastRules) ||
+                    focus.Main != _lastFocus?.Main || focus.Companion != _lastFocus?.Companion || focus.Evidence != _lastFocus?.Evidence ||
                     !ActivityHints.Equivalent(_lastLiveHints, liveHints))
                     _taskSession.Invalidate();
                 _lastPairs = pairs; _lastFloors = floors; _lastPlacements = placements;
@@ -335,6 +353,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                             taskContext with { Placement = slots });
                     taskContext = taskContext with { Placement = placements };
                 }
+                reclaimContext = taskContext;
                 detailed = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, reference, snapshot, taskContext);
                 plan = detailed.Moves;
                 scored = detailed;
@@ -366,19 +385,36 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             detailed = application.Plan; plan = detailed.Moves;
             _verticalFillManager.Track(plan, smart && _smartBehaviorOptions.PreferReversibleVerticalFill);
             var layerOrders = detailed.Layers;
-            if (plan.Count > 0 || layerOrders.Count > 0)
+            IReadOnlyList<WindowSnapshot> requestedDesktop = snapshot;
+            nint reclaimed = 0;
+            if (fullDesktop && reclaimContext != null && application.Failures.Count == 0 &&
+                proposed.Moves.Count == plan.Count && proposed.Layers.Count == layerOrders.Count)
+                reclaimed = _behaviorMonitor.TryReclaim(snapshot, detailed, reclaimContext, effectiveOptions.SmartStrength, foreground, _focus);
+            if (reclaimed != 0)
             {
+                application = application with { MinimizeRequested = snapshot.First(w => w.Handle == reclaimed) };
+                requestedDesktop = snapshot.Where(w => w.Handle != reclaimed).OrderBy(w => w.ZOrder)
+                    .Select((w, rank) => w with { ZOrder = rank }).ToArray();
+                _workspaceMonitor.ApplicationRequested(requestedDesktop, detailed);
+            }
+            if (plan.Count > 0 || layerOrders.Count > 0 || reclaimed != 0)
+            {
+                _undoReclaim = reclaimed != 0;
+                if (!_undoReclaim) _behaviorMonitor.ForgetReclaimUndo();
                 _undoPlan = plan; _undoLayers = layerOrders; _undoWasSmart = smart;
                 _undoChanged?.Invoke(true);
             }
             if (smart)
-                _taskSession.Requested(snapshot, detailed, DateTimeOffset.UtcNow, explicitSmart);
-            _journal.Record(snapshot, detailed, trigger, application.Notes, baseline ?? scored ?? proposed, proposed, scored, recordedContext,
-                smart ? effectiveOptions.SmartStrength : null, smart ? fullDesktop : null);
+                _taskSession.Requested(requestedDesktop, detailed, DateTimeOffset.UtcNow, explicitSmart);
+            _journal.Record(snapshot, application, trigger, baseline ?? scored ?? proposed, proposed, scored, recordedContext,
+                smart ? effectiveOptions.SmartStrength : null, smart ? fullDesktop : null, allowPlacementReplan);
             if (showActivity)
             {
                 var kinds = string.Join(TextCatalog.Culture.TwoLetterISOLanguageName == "zh" ? "、" : ", ", detailed.Groups.Select(g => KindName(g.Selected)).Distinct());
-                var notes = string.Join(" ", application.Notes.Where(n => n.Contains("未")).Select(DisplayNote));
+                var notes = string.Join(" ", application.Notes.Where(n => n.Contains("未")).Select(DisplayNote)
+                    .Concat(application.Failures.Select(f => f.Win32Error).Distinct()
+                        .Select(code => LayoutText.Format("PositionRejected", code))));
+                if (reclaimed != 0) notes = (notes + " " + LayoutText.Get("IdleMinimizeRequested")).Trim();
                 if (plan.Count != 0 || layerOrders.Count != 0)
                     _report(LayoutText.Format("LayoutRequested", kinds.Length > 0 ? kinds : LayoutText.Get("DesktopLayout"),
                         plan.Count, layerOrders.Count, notes).TrimEnd());
@@ -404,7 +440,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
 
     internal void UndoTidy()
     {
-        if (_stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.IsMoving || (_undoPlan.Count == 0 && _undoLayers.Count == 0))
+        if (_stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.IsMoving || (_undoPlan.Count == 0 && _undoLayers.Count == 0 && !_undoReclaim))
         { _report(LayoutText.Get("NothingToUndo")); return; }
         try
         {
@@ -417,11 +453,13 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             if (_undoWasSmart)
                 _taskSession.RejectExplicitly(application.Plan.Moves.Select(m => m.Window.Handle)
                     .Concat(application.Plan.Layers.SelectMany(l => l.FrontToBack.Select(w => w.Handle))));
-            _journal.Record(current.Values.ToArray(), application.Plan, "undo", application.Notes);
-            var skipped = _undoPlan.Count - application.Plan.Moves.Count;
+            _journal.Record(current.Values.ToArray(), application, "undo");
+            bool restored = _undoReclaim && _behaviorMonitor.UndoReclaim();
+            var skipped = _undoPlan.Count - application.Plan.Moves.Count + (_undoReclaim && !restored ? 1 : 0);
+            _undoReclaim = false;
             _undoPlan = []; _undoLayers = []; _undoWasSmart = false;
             _undoChanged?.Invoke(false);
-            _report(LayoutText.Format("UndoRequested", application.Plan.Moves.Count, skipped));
+            _report(LayoutText.Format("UndoRequested", application.Plan.Moves.Count + (restored ? 1 : 0), skipped));
         }
         catch (Exception ex) { _report(LayoutText.Format("UndoFailed", ex.Message)); }
     }
@@ -442,6 +480,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         "full-tiling" => LayoutText.Get("Tiled"), "tiling-insufficient-space" => LayoutText.Get("InsufficientSpace"),
         "window-access" or "working-pair-access" => LayoutText.Get("WindowAccess"), "display-reflow" => LayoutText.Get("DisplayReflow"),
         "learned-position" => LayoutText.Get("LearnedPosition"),
+        "attention-layout" => LayoutText.Get("AttentionLayout"),
         "working-overlap" => LayoutText.Get("WorkingOverlap"),
         "working-pair" => LayoutText.Get("WorkingPair"), "working-region" => LayoutText.Get("WatchedRegion"),
         "task-vertical-fill" => LayoutText.Get("ReversibleFill"),
@@ -460,8 +499,22 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             if (observation.Outcome == "observed-match") _taskSession.Verify(_windowManager.Capture());
             else _taskSession.Invalidate();
         }
+        if (observation.SubmissionFailures is { Length: > 0 } refused)
+        {
+            var errors = string.Join(", ", refused.Select(f => f.Win32Error).Distinct());
+            _report(LayoutText.Format("PositionRejected", errors));
+            return;
+        }
         // An empty request has no positions to confirm. Keep its original explanation on screen.
-        if (observation.Targets.Length == 0 && observation.Layers.Length == 0) return;
+        if (observation.MinimizeTarget.HasValue && observation.MinimizeVerified == false)
+        {
+            _report(LayoutText.Get("IdleMinimizeUnconfirmed")); return;
+        }
+        if (observation.Targets.Length == 0 && observation.Layers.Length == 0)
+        {
+            if (observation.MinimizeVerified == true) _report(LayoutText.Get("IdleMinimizeVerified"));
+            return;
+        }
         var actual = observation.Actual.Windows;
         var matched = observation.Targets.Count(t => actual.Any(w => w.Id == t.Id && SameRect(w.Rect, t.Target)));
         var description = string.Join(TextCatalog.Culture.TwoLetterISOLanguageName == "zh" ? "、" : ", ", observation.Groups.Select(g => KindName(g.Selected)).Distinct());

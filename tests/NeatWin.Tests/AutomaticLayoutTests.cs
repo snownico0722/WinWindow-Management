@@ -29,6 +29,25 @@ public sealed class AutomaticLayoutTests
             AutomaticLayoutPolicy.Route((AutomaticLayoutMode)mode, LayoutTrigger.Manual));
 
     [Fact]
+    public void InputOnAReferenceTriggersASettledPassWithoutRepeatedReflowsDuringScroll()
+    {
+        var desktop = new[] { W(1), W(2, 1100) };
+        var s = Scheduler(AutomaticLayoutMode.AutoFullAssist, desktop);
+        Assert.True(s.TaskInput(2, 2, 1000));
+        Assert.False(s.TaskInput(2, 2, 1100));
+        Assert.NotNull(s.Observe(desktop, 1450, false));
+        Assert.False(s.TaskInput(2, 2, 6700));
+        Assert.True(s.TaskInput(2, 2, 7100));
+        Assert.False(s.TaskInput(2, 2, 7200));
+        Assert.NotNull(s.Observe(desktop, 7550, false));
+        Assert.True(s.TaskInput(1, 1, 8300));
+
+        s.Reset(AutomaticLayoutMode.FullAssist, desktop, 9000);
+        Assert.False(s.TaskInput(1, 1, 9100));
+        Assert.False(s.HasPending);
+    }
+
+    [Fact]
     public void FullAssistDoesNotTreatAnUnrelatedProgrammaticMoveAsAUserGesture()
     {
         var a = W(1); var s = Scheduler(AutomaticLayoutMode.FullAssist, a);

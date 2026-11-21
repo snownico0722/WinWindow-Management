@@ -3,7 +3,9 @@ namespace NeatWin.Core;
 // Session-local identifiers only. These DTOs deliberately have no title, process or HWND fields.
 public sealed record ObservedWindow(int Id, RectI Rect, RectI WorkArea, uint Dpi,
     int ZOrder, bool Foreground, bool Topmost, bool Manageable, double VisibleRatio, WindowExposure? Exposure = null,
-    string? AppKey = null, bool? Resizable = null, string? SurfaceState = null);
+    string? AppKey = null, bool? Resizable = null, string? SurfaceState = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    int OwnerId = 0);
 public sealed record WorkspaceFrame(DateTimeOffset Time, ObservedWindow[] Windows, bool Truncated = false,
     RecordedDisplay[]? Displays = null);
 public sealed record WorkspaceTransition(int Version, string Session, string Cause,
@@ -14,10 +16,12 @@ public sealed record PlannedWindow(int Id, RectI Target);
 public sealed record PlannedGroup(int[] Ids, string Selected, double StackEvidence,
     LayoutCandidateTrace[] Candidates, TaskGroupExplanation? Task = null);
 public sealed record ProjectedPlan(PlannedWindow[] Targets, int[][] Layers, string[] Selected);
+public sealed record RejectedWindowMove(int Id, RectI Target, int Win32Error);
 public sealed record LayoutRunObservation(int Version, string Session, string RequestId, string Trigger,
     WorkspaceFrame Before, PlannedWindow[] Targets, int[][] Layers, PlannedGroup[] Groups,
     WorkspaceFrame? Actual, string Outcome, string[] ApplyNotes, ProjectedPlan? BasePlan = null, ProjectedPlan? Proposal = null, ProjectedPlan? ScoredPlan = null,
-    CompiledLayoutRules? Rules = null, RecordedTaskSignals? Signals = null, SmartTidyStrength? Strength = null, bool? FullDesktop = null);
+    CompiledLayoutRules? Rules = null, RecordedTaskSignals? Signals = null, SmartTidyStrength? Strength = null, bool? FullDesktop = null, RejectedWindowMove[]? SubmissionFailures = null,
+    int? MinimizeTarget = null, bool? MinimizeVerified = null);
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
 public sealed class ObservationIdentityTracker
@@ -50,13 +54,15 @@ public sealed class ObservationIdentityTracker
         var ordered = snapshot.OrderBy(w => w.ZOrder).ToArray();
         // Occluders may include unmanageable windows. Never misreport covered area as visible.
         var screens = displays?.Select(d => d.Bounds).ToArray() ?? ordered.Select(w => w.WorkArea).Distinct().ToArray();
-        foreach (var window in ordered.Take(64))
+        var sampled = ordered.Take(64).ToArray();
+        var sampledIds = sampled.ToDictionary(window => window.Handle, Id);
+        foreach (var window in sampled)
         {
             var front = ordered.TakeWhile(w => w.ZOrder < window.ZOrder).Select(w => w.VisualRect);
             var exposure = WindowExposure.Measure(window.VisualRect, screens, front);
-            result.Add(new(Id(window), window.VisualRect, window.WorkArea, window.Dpi, window.ZOrder,
+            result.Add(new(sampledIds[window.Handle], window.VisualRect, window.WorkArea, window.Dpi, window.ZOrder,
                 window.IsForeground, window.IsTopmost, window.IsManageable, exposure.Visible, exposure,
-                window.IsManageable || window.SurfaceState != null ? appKey?.Invoke(window) : null, window.IsResizable, window.SurfaceState));
+                window.IsManageable || window.SurfaceState != null ? appKey?.Invoke(window) : null, window.IsResizable, window.SurfaceState, sampledIds.GetValueOrDefault(window.Owner)));
         }
         return new(DateTimeOffset.UtcNow, result.ToArray(), snapshot.Count > 64, displays);
     }
@@ -68,7 +74,9 @@ public sealed class ObservationIdentityTracker
 
 public sealed record RecordedWindowHint(int Id, bool Passive, bool Media, bool Anchor, TaskContentRegion[]? Regions);
 public sealed record RecordedPlacement(int Id, int Partner, double Center, double Width, double Order,
-    int Cell, double Confidence, double? Overlap);
+    int Cell, double Confidence, double? Overlap,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    double? Height = null);
 public sealed record RecordedSizeFloor(int Id, int MinWidth, int MinHeight);
 public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, string? FocusEvidence,
     RecordedWindowHint[] Hints, RecordedPlacement[] Placements,
@@ -90,7 +98,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
                 .Select(h => new RecordedWindowHint(Id(h.Handle), h.PassiveVisual, h.MediaCompanion, h.Anchor, h.ProtectedRegions)).ToArray(),
             (context.Placement ?? []).Where(p => Id(p.Window) != 0)
                 .Select(p => new RecordedPlacement(Id(p.Window), Id(p.Partner), p.Center, p.Width, p.Order,
-                    p.RevealedCell, p.Confidence, p.InnerOverlap)).ToArray(),
+                    p.RevealedCell, p.Confidence, p.InnerOverlap, p.Height)).ToArray(),
             floors.Length > 0 ? floors : null, context.Activities?.Where(a => Id(a.Key) != 0)
                 .ToDictionary(a => Id(a.Key), a => a.Value), context.Attention?.Where(a => Id(a.Key) != 0)
                 .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor));
@@ -103,7 +111,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         WindowHints = Hints.Select(h => new TaskWindowHint(h.Id, h.Passive, ProtectedRegions: h.Regions,
             Anchor: h.Anchor, MediaCompanion: h.Media)).ToArray(),
         Placement = Placements.Select(p => new PlacementPreference(p.Id, p.Partner, p.Center, p.Width,
-            p.Order, p.Cell, p.Confidence, p.Overlap)).ToArray(),
+            p.Order, p.Cell, p.Confidence, p.Overlap, p.Height)).ToArray(),
         Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),
         Attention = Attention?.ToDictionary(a => (nint)a.Key, a => a.Value),
         GestureAnchor = GestureAnchor,

@@ -757,12 +757,11 @@ internal static class SmokeTests
             var pair = current.Where(IsFixture).ToArray();
             if (pair.Length != 2 || !pair.Any(w => before.Any(old => old.Handle == w.Handle && !WindowStateRules.Near(old.VisualRect, w.VisualRect))))
                 return false;
-            if (!hadOtherWindows && !HasOtherWindows(current))
-                return pair[0].VisualRect.Intersect(pair[1].VisualRect).IsEmpty;
-            // A shared runner desktop may have an unrelated window using part of the screen.
-            // Verify that both fixtures remain usable and their worst exposure actually improves.
+            // A readable reference can share an edge with the foreground window. Check what a
+            // person can actually see and click after the native moves have settled.
+            bool fixturesOnly = !hadOtherWindows && !HasOtherWindows(current);
             var exposure = pair.Select(w => Exposure(w, current)).ToArray();
-            return exposure.Min(e => e.Visible) >= initiallyCovered.Visible + .15 &&
+            return exposure.Min(e => e.Visible) >= Math.Max(fixturesOnly ? .50 : 0, initiallyCovered.Visible + .15) &&
                 exposure.Min(e => e.AccessWidth) >= 80 * pair[1].Dpi / 96.0;
         }
         var arrange = (Button)shell.FindName("ArrangeButton");

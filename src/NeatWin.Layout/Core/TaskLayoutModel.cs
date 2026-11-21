@@ -95,6 +95,7 @@ internal static partial class IntentLayoutPlanner
                 bool configured = focus!.Evidence == "configured-pair";
                 joint = Math.Max(joint, coVisible || configured ? .88 : .78);
                 parked = Math.Min(parked, coVisible || configured ? .18 : .45);
+                if (focus.Evidence == "handoff") { joint = .22; parked = .86; }
                 source = focus.Evidence;
                 uncertainty = configured ? .10 : focus.Switches > 0 ? coVisible ? .24 : .38 : .40;
             }
@@ -169,13 +170,16 @@ internal static partial class IntentLayoutPlanner
 
     private static bool TaskSafe(VisibleWindow[] windows, RectI[] original, Candidate candidate,
         RectI area, TidyOptions options, TaskLayoutContext context, WindowSnapshot[]? obstacles = null,
-        OcclusionMetrics.Exposure[]? beforeExposure = null)
+        OcclusionMetrics.Exposure[]? beforeExposure = null, AttentionTarget[]? goals = null)
     {
         var previous = beforeExposure ?? MeasureBeforeExposure(windows, original, area, obstacles);
         var front = new List<RectI>();
         foreach (var i in candidate.Order)
         {
             var window = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
+            if (goals != null && (!goals[i].Movable && (a != b || Array.IndexOf(candidate.Order, i) != i) ||
+                !goals[i].Resizable && (a.Width != b.Width || a.Height != b.Height) &&
+                !(candidate.Kind == "refined" && context.VideoHint?.WindowHandle == window.Handle))) return false;
             if (window.Handle == context.GestureAnchor && a != b) return false;
             var bleed = BleedBudget(window, context);
             // A fixed/resize-disabled window larger than the work area cannot fit entirely.
@@ -185,7 +189,7 @@ internal static partial class IntentLayoutPlanner
                 (!window.IsResizable || !context.Preferences.AllowUsefulResize) &&
                 (a.Width > area.Width || a.Height > area.Height) &&
                 b == Fit(a, window, options, allowResize: false);
-            if (!IntentEvidence.IsValidRect(b) || ((b != a || options.RescueOffscreenWindows) && !oversizedRescue &&
+            if (!IntentEvidence.IsValidRect(b) || ((b != a || options.RescueOffscreenWindows && goals?[i].Movable != false) && !oversizedRescue &&
                 (b.Left < area.Left - bleed.Left || b.Right > area.Right + bleed.Right ||
                  b.Top < area.Top || b.Bottom > area.Bottom))) return false;
             if (window.IsTopmost && b != a) return false;
@@ -200,10 +204,12 @@ internal static partial class IntentLayoutPlanner
             var scale = window.Dpi / 96.0;
             var widthFloor = Math.Min(a.Width, context.Preferences.ComfortableWidthDip * scale) * .60;
             var heightFloor = Math.Min(a.Height, context.Preferences.ComfortableHeightDip * scale) * .60;
-            if (a.Width <= area.Width && (b.Width < widthFloor || b.Width > a.Width * 1.50)) return false;
-            if (a.Height <= area.Height && (b.Height < heightFloor || b.Height > a.Height * 1.50)) return false;
+            if (goals?[i] is { LearnedWidth: true } learnedWidth) widthFloor = Math.Min(widthFloor, learnedWidth.Width);
+            if (goals?[i] is { LearnedHeight: true } learnedHeight) heightFloor = Math.Min(heightFloor, learnedHeight.Height);
+            if (a.Width <= area.Width && (b.Width < widthFloor || b.Width > Math.Max(a.Width * 1.50, goals?[i].Width ?? 0))) return false;
+            if (a.Height <= area.Height && (b.Height < heightFloor || b.Height > Math.Max(a.Height * 1.50, goals?[i].Height ?? 0))) return false;
             var after = ScreenExposure(b, front.Concat((obstacles ?? []).Where(w => w.ZOrder < windows[Array.IndexOf(candidate.Order, i)].Window.ZOrder).Select(w => w.VisualRect)), area, window.Dpi);
-            if (context.Attention != null && (context.Focus?.Main == window.Handle ||
+            if (goals?[i].Role != AttentionRole.Return && context.Attention != null && (context.Focus?.Main == window.Handle ||
                 context.Focus?.Companion == window.Handle || context.HasRecentInput(window.Handle)))
             {
                 var before = previous[i];
@@ -212,6 +218,13 @@ internal static partial class IntentLayoutPlanner
                     ? hint.UsefulWidthDip.Value : context.Preferences.ComfortableWidthDip) * scale);
                 double usefulHeight = Math.Min(a.Height, (hint?.UsefulHeightDip is > 0 and <= 3000
                     ? hint.UsefulHeightDip.Value : context.Preferences.ComfortableHeightDip) * scale);
+                if (goals?[i] is { LearnedWidth: true } preferredWidth) usefulWidth = Math.Min(usefulWidth, preferredWidth.Width);
+                if (goals?[i] is { LearnedHeight: true } preferredHeight) usefulHeight = Math.Min(usefulHeight, preferredHeight.Height);
+                if (goals?[i] is { Role: AttentionRole.Reference } reference)
+                {
+                    usefulWidth = Math.Min(usefulWidth, reference.Width * .65);
+                    usefulHeight = Math.Min(usefulHeight, reference.Height * .70);
+                }
                 if (context.VideoHint is { Confidence: >= .82, ContentAspectRatio: >= .55 and <= 4.5 } video &&
                     video.WindowHandle == window.Handle && !video.ViewportVisualRect.IsEmpty)
                 {
@@ -226,7 +239,7 @@ internal static partial class IntentLayoutPlanner
                 bool revealsSubstantialContent = before.CenterVisible < .85 && after.CenterVisible >= before.CenterVisible + .15 &&
                     after.Visible * b.Area > before.Visible * a.Area;
                 if ((shrinksReadableArea && !revealsSubstantialContent) ||
-                    after.CenterVisible + .05 < Math.Min(.95, before.CenterVisible)) return false;
+                    after.CenterVisible + .05 < Math.Min(goals?[i].Role == AttentionRole.Reference ? .6 : .95, before.CenterVisible)) return false;
             }
             if (after.Visible < Math.Min(.035, previous[i].Visible) - .001) return false;
             var access = Math.Min(96 * window.Dpi / 96.0, previous[i].AccessWidth);
@@ -265,11 +278,14 @@ internal static partial class IntentLayoutPlanner
 
     private static TaskCostBreakdown TaskCost(VisibleWindow[] windows, RectI[] original, Candidate candidate,
         TaskEvidence[] relations, WindowDemand[] demands, RectI area, TaskLayoutContext context, IntentHint hint,
-        WindowSnapshot[]? obstacles = null, RectI[]? growth = null)
+        WindowSnapshot[]? obstacles = null, AttentionTarget[]? goals = null)
     {
         var profile = context.Preferences;
+        int mainDeficit = 0, accessDeficit = 0, comfortDeficit = 0;
         var information = 0.0; var switching = 0.0; var continuity = 0.0; var reflow = 0.0;
         var peripheral = 0.0; var alignment = 0.0; var uncertainty = 0.0;
+        var handoffSource = context.Focus is { Evidence: "handoff" } handoff
+            ? Array.FindIndex(windows, v => v.Window.Handle == handoff.Companion) : -1;
         var front = new List<RectI>();
         for (var rank = 0; rank < candidate.Order.Length; rank++)
         {
@@ -292,8 +308,29 @@ internal static partial class IntentLayoutPlanner
             }
             if (windowHint?.UsefulWidthDip is double width && double.IsFinite(width) && width > 0) needWidth = Math.Clamp(width, 160, 4000) * scale;
             if (windowHint?.UsefulHeightDip is double height && double.IsFinite(height) && height > 0) needHeight = Math.Clamp(height, 120, 3000) * scale;
-            if (growth is not null && growth[i].Width > a.Width) needWidth = Math.Max(needWidth, growth[i].Width);
-            if (growth is not null && growth[i].Height > a.Height) needHeight = Math.Max(needHeight, growth[i].Height);
+            if (goals?[i] is { } target)
+            {
+                // The working minimum and the comfortable upper bound serve different roles.
+                // Visible content and reachable title area are measured after all projected moves.
+                static int Missing(double fraction) => (int)Math.Round(20 * (1 - Math.Clamp(fraction, 0, 1)));
+                double exposedWidth = Math.Min(exposure.UsefulWidth, b.Width);
+                double exposedHeight = Math.Min(b.Height, b.Area * exposure.Visible / Math.Max(1, exposedWidth));
+                if (target.Role is AttentionRole.Main or AttentionRole.Reference &&
+                    context.VideoHint?.WindowHandle != w.Handle)
+                {
+                    needWidth = target.Width;
+                    needHeight = target.Height;
+                    double readable = Math.Min(exposedWidth / target.Width, exposedHeight / target.Height);
+                    if (target.Role == AttentionRole.Main) mainDeficit += Missing(readable / .72);
+                    else accessDeficit += Missing(readable / .60);
+                    comfortDeficit += (target.Role == AttentionRole.Main ? 2 : 1) *
+                        (Missing(exposedWidth / target.Width) + Missing(exposedHeight / target.Height));
+                }
+                if (target.LearnedHeight) comfortDeficit += Missing(target.Height / (double)b.Height);
+                if (target.LearnedWidth) comfortDeficit += Missing(target.Width / (double)b.Width);
+                if (target.Role is AttentionRole.Return or AttentionRole.Reference)
+                    accessDeficit += Missing(exposure.AccessWidth / (double)target.AccessWidth);
+            }
             var capacity = Math.Pow(Math.Min(1, b.Width / Math.Max(1, needWidth)), .65) *
                 Math.Pow(Math.Min(1, b.Height / Math.Max(1, needHeight)), .35);
             var contentVisibility = (context.Preferences.ProtectWindowEdges || windowHint?.ProtectPeriphery == true) ? exposure.Visible :
@@ -351,7 +388,7 @@ internal static partial class IntentLayoutPlanner
             // Read-together and quick-switch interpretations share the title/access outcome.
             // Ambiguous evidence also charges the worse residual of the two interpretations.
             uncertainty += alternativeDemand * Math.Max(.35 * readingLoss, accessLoss);
-            if (context.PairPlanningEnabled && context.Focus is { Companion: not 0 } working &&
+            if (context.PairPlanningEnabled && context.Focus is { Companion: not 0, Evidence: not "handoff" } working &&
                 w.Handle == working.Companion && context.PairHints?.Any(h => h.Relation == TaskRelation.Alternating &&
                     (h.First == w.Handle || h.Second == w.Handle)) != true &&
                 context.Placement?.Any(p => p.Partner == w.Handle && p.RevealedCell >= 0) != true)
@@ -376,6 +413,14 @@ internal static partial class IntentLayoutPlanner
                 reflow += .45 * (Math.Abs(Math.Log(b.Width / (double)a.Width)) + Math.Abs(Math.Log(b.Height / (double)a.Height)));
             if (context.Focus?.Main == w.Handle)
             {
+                if (handoffSource >= 0)
+                {
+                    var source = original[handoffSource];
+                    double x = CenterX(source), y = CenterY(source);
+                    // Reading can begin near the point where the preceding task was used.
+                    switching += Math.Abs(x - Math.Clamp(x, b.Left, b.Right)) / area.Width +
+                        Math.Abs(y - Math.Clamp(y, b.Top, b.Bottom)) / area.Height;
+                }
                 information += 1.6 * (1 - capacity) + .8 * (1 - contentVisibility);
                 reflow += .9 * Math.Max(0, Math.Log(a.Height / (double)b.Height));
             }
@@ -465,7 +510,8 @@ internal static partial class IntentLayoutPlanner
             }
             personal += preference.Confidence * error;
         }
-        return new(information, switching, continuity, reflow, peripheral, alignment, uncertainty, feedback, personal, pairCost);
+        return new(information, switching, continuity, reflow, peripheral, alignment, uncertainty, feedback, personal, pairCost,
+            new(mainDeficit, accessDeficit, comfortDeficit));
     }
 
     internal static bool TaskRefinementAcceptable(IReadOnlyList<VisibleWindow> visible,
@@ -473,6 +519,7 @@ internal static partial class IntentLayoutPlanner
         TaskLayoutContext context, IReadOnlyList<WindowSnapshot> desktop)
     {
         if (context.VerifiedRepeat && !context.ExplicitArrange) return refined.Count == 0;
+        context = ResolveExplicitFocus(visible, context);
         visible = IncludeWorkingCompanion(visible, desktop, context);
         var known = planned.Groups.SelectMany(g => g.Handles).ToHashSet();
         if (refined.Any(m => !known.Contains(m.Window.Handle))) return false;
@@ -508,17 +555,19 @@ internal static partial class IntentLayoutPlanner
             var previousObstacleRects = beforeObstacles.ToDictionary(w => w.Handle, w => w.VisualRect);
             var c = new Candidate("refined", after, order);
             var groupContext = ResolveWorkingPair(group, context);
-            if (!TaskSafe(group, original, c, area, options, groupContext, afterObstacles)) return false;
+            var goals = AttentionLayout.Targets(group, groupContext, options.SmartStrength);
+            if (!TaskSafe(group, original, c, area, options, groupContext, afterObstacles, goals: goals)) return false;
             for (var i = 0; i < group.Length; i++)
                 foreach (var obstacle in afterObstacles)
                     if (after[i].Intersect(obstacle.VisualRect).Area >
                         before[i].Intersect(previousObstacleRects.GetValueOrDefault(obstacle.Handle)).Area) return false;
             var task = trace.Task?.Relations ?? InferTask(group, original, groupContext);
             var demands = MeasureDemand(group.Length, task);
-            var growth = WorkingPairGrowthTargets(group, original, groupContext, options.SmartStrength);
             var hint = new IntentHint((int)Math.Round(8 * group[0].Window.Dpi / 96.0), 0, 0);
-            if (TaskScore(TaskCost(group, original, c, task, demands, area, groupContext, hint, afterObstacles, growth), options.SmartStrength, task) >
-                TaskScore(TaskCost(group, original, new("planned", before, order), task, demands, area, groupContext, hint, beforeObstacles, growth), options.SmartStrength, task) + .01) return false;
+            var changed = EffectiveBreakdown(TaskCost(group, original, c, task, demands, area, groupContext, hint, afterObstacles, goals), options.SmartStrength, task);
+            var plannedCost = EffectiveBreakdown(TaskCost(group, original, new("planned", before, order), task, demands, area, groupContext, hint, beforeObstacles, goals), options.SmartStrength, task);
+            var priority = changed.Goal.CompareTo(plannedCost.Goal);
+            if (priority > 0 || priority == 0 && changed.Total > plannedCost.Total + .01) return false;
         }
         return true;
     }

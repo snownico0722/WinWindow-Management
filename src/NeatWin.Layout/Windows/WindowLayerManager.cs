@@ -2,7 +2,12 @@ using NeatWin.Core;
 
 namespace NeatWin.Windows;
 
-public sealed record LayoutApplication(IntentLayoutPlan Plan, string[] Notes);
+public sealed record WindowMoveFailure(TidyMove Move, int Win32Error);
+public sealed record LayoutApplication(IntentLayoutPlan Plan, string[] Notes)
+{
+    public WindowSnapshot? MinimizeRequested { get; init; }
+    public IReadOnlyList<WindowMoveFailure> Failures { get; init; } = [];
+}
 
 public sealed partial class WindowManager
 {
@@ -31,8 +36,13 @@ public sealed partial class WindowManager
             accepted = accepted with { Moves = [] };
             notes.Add("检测到新的手动调整，未覆盖窗口位置。");
         }
-        Apply(accepted.Moves);
-        return new(accepted, notes.ToArray());
+        var failures = SubmitMoves(accepted.Moves, notes);
+        if (failures.Count > 0)
+        {
+            var refused = failures.Select(f => f.Move.Window.Handle).ToHashSet();
+            accepted = accepted with { Moves = accepted.Moves.Where(m => !refused.Contains(m.Window.Handle)).ToArray() };
+        }
+        return new(accepted, notes.ToArray()) { Failures = failures };
     }
 
     public string[] ApplyLayers(IReadOnlyList<WindowLayerOrder> orders, IReadOnlyDictionary<nint, RectI>? targetRects = null)
@@ -79,7 +89,7 @@ public sealed partial class WindowManager
     private static bool StillNormal(WindowSnapshot window)
     {
         NativeMethods.GetWindowThreadProcessId(window.Handle, out var pid);
-        return pid == window.ProcessId && NativeMethods.IsWindowVisible(window.Handle) &&
+        return pid == window.ProcessId && NativeMethods.IsWindowVisible(window.Handle) && NativeMethods.IsWindowEnabled(window.Handle) &&
             !NativeMethods.IsIconic(window.Handle) && !NativeMethods.IsHungAppWindow(window.Handle) &&
             (NativeMethods.GetWindowLongPtr(window.Handle, NativeMethods.GwlExStyle).ToInt64() & 8) == 0;
     }

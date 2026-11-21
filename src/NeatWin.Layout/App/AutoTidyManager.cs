@@ -346,6 +346,11 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
             duration,
             EstimateEndSpeed(active.Samples));
         LastGesture = gesture;
+        if (_trackTaskInput && active.StartRect != endRect)
+        {
+            NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
+            TaskInput?.Invoke(hwnd, pid, Environment.TickCount64);
+        }
         TouchManipulation(hwnd, Environment.TickCount64, impulse: 1.0);
         GestureObserved?.Invoke(gesture);
 

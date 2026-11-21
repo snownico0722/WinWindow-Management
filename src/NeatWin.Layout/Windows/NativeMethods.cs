@@ -8,6 +8,11 @@ internal static class NativeMethods
     internal const int GwlStyle = -16;
     internal const int GwlExStyle = -20;
     internal const long WsChild = 0x40000000L;
+    internal const long WsCaption = 0x00C00000L;
+    internal const long WsMinimizeBox = 0x00020000L;
+    internal const long WsMaximizeBox = 0x00010000L;
+    internal const long WsExAppWindow = 0x00040000L;
+    internal const long WsExDlgModalFrame = 0x00000001L;
     internal const long WsThickFrame = 0x00040000L;
     internal const long WsExTopmost = 0x00000008L;
     internal const long WsExTransparent = 0x00000020L;
@@ -71,6 +76,10 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool IsWindowVisible(nint hwnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindowEnabled(nint hwnd);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

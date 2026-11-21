@@ -35,6 +35,7 @@
   <data name="NothingToUndo" xml:space="preserve"><value>没有可撤销的整理。</value></data>
   <data name="ObservationFailed" xml:space="preserve"><value>自动整理观察失败：{0}</value></data>
   <data name="Paused" xml:space="preserve"><value>已暂停</value></data>
+  <data name="PositionRejected" xml:space="preserve"><value>Windows 拒绝了窗口调整请求（Win32 错误 {0}）。</value></data>
   <data name="PositionsPartial" xml:space="preserve"><value>{0}：{1}/{2} 个位置匹配；其余可能被应用限制，诊断已记录。</value></data>
   <data name="PositionsVerified" xml:space="preserve"><value>{0}：已确认 {1} 个窗口的目标位置；层级已核对。</value></data>
   <data name="PreservePlacement" xml:space="preserve"><value>保留当前关系</value></data>
@@ -55,7 +56,11 @@
   <data name="UndoFailed" xml:space="preserve"><value>撤销失败：{0}</value></data>
   <data name="UndoRequested" xml:space="preserve"><value>已请求还原 {0} 个窗口；跳过 {1} 个已再次调整、关闭或状态改变的窗口。</value></data>
   <data name="LearnedPosition" xml:space="preserve"><value>习惯位置</value></data>
+  <data name="AttentionLayout" xml:space="preserve"><value>按当前任务分配空间</value></data>
   <data name="WorkingPair" xml:space="preserve"><value>主副窗口并排</value></data>
   <data name="WatchedRegion" xml:space="preserve"><value>露出常用区域</value></data>
   <data name="WorkingOverlap" xml:space="preserve"><value>主副窗边缘重叠</value></data>
+  <data name="IdleMinimizeRequested" xml:space="preserve"><value>已请求收起一个静置窗口。</value></data>
+  <data name="IdleMinimizeVerified" xml:space="preserve"><value>已收起一个静置窗口。</value></data>
+  <data name="IdleMinimizeUnconfirmed" xml:space="preserve"><value>未观察到静置窗口进入最小化状态。</value></data>
 </root>

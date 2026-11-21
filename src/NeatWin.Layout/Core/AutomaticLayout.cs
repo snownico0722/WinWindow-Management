@@ -63,6 +63,9 @@ public sealed class AutomaticLayoutScheduler
     private bool _pending;
     private LayoutTrigger _trigger;
     private nint _foreground;
+    private (nint Handle, uint Pid) _inputTarget;
+    private long _inputStarted, _lastInput;
+    private bool _sustainedInputReported;
     public AutomaticLayoutMode Mode { get; private set; }
     public bool HasPending => _pending;
 
@@ -70,12 +73,35 @@ public sealed class AutomaticLayoutScheduler
     {
         Mode = AutomaticLayoutPolicy.Read((int)mode, false);
         _own.Clear(); _manual.Clear(); _pending = false; _foreground = 0;
+        _inputTarget = default;
         _observed = Normalize(snapshot); _notBefore = now; _lastChange = now;
     }
 
     public void RequestCurrent(long now)
     {
         if (AutomaticLayoutPolicy.WatchesWorkspace(Mode)) Queue(LayoutTrigger.WorkspaceChange, now);
+    }
+
+    internal bool TaskInput(nint handle, uint pid, long now)
+    {
+        if (!AutomaticLayoutPolicy.WatchesWorkspace(Mode) || handle == 0 || pid == 0) return false;
+        // A scroll can transfer attention to a reference without changing native focus.
+        // One more pass after sustained interaction lets the previous task decay.
+        bool newTarget = (handle, pid) != _inputTarget || now - _lastInput > ForegroundHistory.RecentInputMilliseconds;
+        _lastInput = now;
+        if (newTarget)
+        {
+            _inputTarget = (handle, pid);
+            _inputStarted = now;
+            _sustainedInputReported = false;
+        }
+        else
+        {
+            if (_sustainedInputReported || now - _inputStarted < ForegroundHistory.EstablishedTaskMilliseconds) return false;
+            _sustainedInputReported = true;
+        }
+        if (!_pending) RequestCurrent(now);
+        return true;
     }
 
     public void GestureStarted(nint handle)

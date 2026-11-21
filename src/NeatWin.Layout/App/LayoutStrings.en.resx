@@ -35,6 +35,7 @@
   <data name="NothingToUndo" xml:space="preserve"><value>No arrangement to undo.</value></data>
   <data name="ObservationFailed" xml:space="preserve"><value>Could not monitor desktop changes. {0}</value></data>
   <data name="Paused" xml:space="preserve"><value>Paused</value></data>
+  <data name="PositionRejected" xml:space="preserve"><value>Windows rejected a placement request (Win32 {0}).</value></data>
   <data name="PositionsPartial" xml:space="preserve"><value>{0}: {1} of {2} positions matched. The affected apps may restrict movement. Diagnostics recorded.</value></data>
   <data name="PositionsVerified" xml:space="preserve"><value>{0}: confirmed {1} window positions and verified stacking order.</value></data>
   <data name="PreservePlacement" xml:space="preserve"><value>Preserve current placement</value></data>
@@ -55,7 +56,11 @@
   <data name="UndoFailed" xml:space="preserve"><value>Undo failed. {0}</value></data>
   <data name="UndoRequested" xml:space="preserve"><value>Restoring {0} windows. Skipped {1} windows that were moved, closed, or changed.</value></data>
   <data name="LearnedPosition" xml:space="preserve"><value>Preferred position</value></data>
+  <data name="AttentionLayout" xml:space="preserve"><value>Fit windows to the current task</value></data>
   <data name="WorkingPair" xml:space="preserve"><value>Main and companion side by side</value></data>
   <data name="WatchedRegion" xml:space="preserve"><value>Expose preferred region</value></data>
   <data name="WorkingOverlap" xml:space="preserve"><value>Partially overlapping pair</value></data>
+  <data name="IdleMinimizeRequested" xml:space="preserve"><value>Requested minimization of one idle window.</value></data>
+  <data name="IdleMinimizeVerified" xml:space="preserve"><value>Minimized one idle window.</value></data>
+  <data name="IdleMinimizeUnconfirmed" xml:space="preserve"><value>The idle window was not observed minimized.</value></data>
 </root>
