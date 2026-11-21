@@ -71,13 +71,17 @@ internal static partial class IntentLayoutPlanner
             foreach (var group in wholeDisplay || sharedTask ? [all] : Groups(all, taskContext))
             {
                 var groupContext = ResolveWorkingPair(group, taskContext);
+                var handles = group.Select(v => v.Window.Handle).ToHashSet();
+                // 配对习惯可用于上一步寻找搭档。确定本轮成员后，和缺席窗口一起学到的几何偏好就不该继续改变当前两栏。
+                if (groupContext.IsWorkspaceObservation && groupContext.Placement is { Length: > 0 } preferences)
+                    groupContext = groupContext with { Placement = preferences.Where(p => handles.Contains(p.Window) &&
+                        (p.Partner == 0 || handles.Contains(p.Partner))).ToArray() };
                 var hint = IntentEvidence.Resolve(reference, area, group[0].Window.Dpi, DateTimeOffset.UtcNow);
                 var original = group.Select(v => v.Window.VisualRect).ToArray();
                 var task = InferTask(group, original, groupContext);
                 var demands = MeasureDemand(group.Length, task);
                 var goals = AttentionLayout.Targets(group, groupContext, strength);
                 var order = Enumerable.Range(0, group.Length).ToArray();
-                var handles = group.Select(v => v.Window.Handle).ToHashSet();
                 var obstacles = desktop.Where(w => !handles.Contains(w.Handle)).Select(w => w with
                     { VisualRect = settled.GetValueOrDefault(w.Handle, w.VisualRect),
                       ZOrder = settledRanks.GetValueOrDefault(w.Handle, w.ZOrder) })
@@ -99,7 +103,7 @@ internal static partial class IntentLayoutPlanner
                     TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, goals), options.SmartStrength, task);
                 var viewingModel = groupContext.Calibration?.Matches(area, group[0].Window.Dpi) == true
                     ? "calibrated-flat-screen-angle" : "normalized-distance-not-gaze";
-                if (AttentionLayout.SettledWorkspaceReason(group, goals, beforeExposure, groupContext) is { } reason)
+                if (AttentionLayout.SettledWorkspaceReason(group, goals, beforeExposure, obstacles, groupContext) is { } reason)
                 {
                     var kept = Breakdown(new("keep", original, order));
                     traces.Add(new(group.Select(v => v.Window.Handle).ToArray(), "keep", stackSignal,

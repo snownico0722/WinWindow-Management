@@ -172,13 +172,15 @@ internal static class AttentionLayout
     // visibility on every observation so a covered title, a new task or lost space
     // immediately opens the normal search again.
     internal static string? SettledWorkspaceReason(VisibleWindow[] group, AttentionTarget[]? targets,
-        OcclusionMetrics.Exposure[] exposed, TaskLayoutContext context)
+        OcclusionMetrics.Exposure[] exposed, WindowSnapshot[] obstacles, TaskLayoutContext context)
     {
-        if (targets == null || group.Length < 2 || context.ExplicitArrange || !context.IsWorkspaceObservation ||
+        if (targets == null || context.ExplicitArrange || !context.IsWorkspaceObservation ||
             context.GestureAnchor != 0 || context.Focus?.OpeningResidentLeft != null || context.VideoHint != null ||
             context.Focus?.Navigation is { Length: > 0 } || context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true ||
             context.RulePairs?.Length > 0) return null;
         var area = group[0].Window.WorkArea;
+        if (HasReadableColumns(group, targets, exposed, obstacles, context)) return "existing-readable-columns";
+        if (group.Length < 2) return null;
         // 在两个居中窗之间切回一次，可能只是翻回刚才看的内容。两边都有输入，或多次切换且各自有停留，才有更强的并排使用证据。
         if (group.Length == 2 && context.Focus is { Evidence: "recent-switch-pair" } focus &&
             !(focus.Companion != 0 && (group.All(v => context.Attention?.GetValueOrDefault(v.Window.Handle)?.Input >= .35) ||
@@ -210,6 +212,68 @@ internal static class AttentionLayout
         }
         // 两扇小窗也可能完全可见。再检查实际使用了多少工作区，给空白过多的桌面留下扩容机会。
         return occupied >= area.Area * .65 ? "workspace-already-readable" : null;
+    }
+
+    private static bool HasReadableColumns(VisibleWindow[] group, AttentionTarget[] targets,
+        OcclusionMetrics.Exposure[] exposed, WindowSnapshot[] obstacles, TaskLayoutContext context)
+    {
+        if (group.Length > 2 || context.Focus is not { } focus ||
+            context.WindowHints?.Any(h => h.InitialTextPlacement) == true) return false;
+        int main = Array.FindIndex(group, v => v.Window.Handle == focus.Main && v.Window.IsForeground);
+        if (main < 0) return false;
+        var active = group[main].Window;
+        var area = active.WorkArea;
+        if (!Readable(active, exposed[main])) return false;
+
+        if (group.Length == 2)
+        {
+            int other = 1 - main;
+            var peer = group[other].Window;
+            return targets[other].Role == AttentionRole.Reference && ColumnsFit(peer) && BothReadable(peer, exposed[other]);
+        }
+        // 副窗的输入分数会随时间衰减。即使这一轮只给主窗排位，移向中央仍可能盖住用户正在看的另一栏。
+        if (focus.Companion != 0) return false;
+        foreach (var peer in obstacles)
+        {
+            if (peer.MonitorHandle != active.MonitorHandle || !peer.IsManageable || peer.IsTopmost ||
+                peer.Owner != 0 || peer.ZOrder <= active.ZOrder || !ColumnsFit(peer)) continue;
+            var covers = obstacles.Where(w => w.ZOrder < peer.ZOrder).Select(w => w.VisualRect).Append(active.VisualRect);
+            if (BothReadable(peer, IntentLayoutPlanner.ScreenExposure(peer.VisualRect, covers, area, peer.Dpi))) return true;
+        }
+        return false;
+
+        bool ColumnsFit(WindowSnapshot peer)
+        {
+            var a = active.VisualRect;
+            var b = peer.VisualRect;
+            // 允许左右边缘少量叠放。中心分居工作区两侧且纵向相交，才是用户可以来回看的两栏。
+            double middle = area.Left + area.Width / 2d;
+            return (a.X + a.Width / 2d - middle) * (b.X + b.Width / 2d - middle) < 0 &&
+                a.VerticalOverlapRatio(b) >= .5 && a.HorizontalOverlapRatio(b) <= OcclusionMetrics.HorizontalInsetFraction;
+        }
+
+        bool BothReadable(WindowSnapshot peer, OcclusionMetrics.Exposure seen)
+        {
+            if (exposed[main].Visible * active.VisualRect.Area + seen.Visible * peer.VisualRect.Area < area.Area * .65 ||
+                !Readable(peer, seen)) return false;
+            // 和第三扇窗一起学到的位置只适用于那一对。眼前这两栏仍应服从用户各自的习惯或这对窗口之间的习惯。
+            return context.Placement?.Any(p => p.Confidence >= .40 &&
+                (p.Window == active.Handle && (p.Partner == 0 || p.Partner == peer.Handle) ||
+                 p.Window == peer.Handle && (p.Partner == 0 || p.Partner == active.Handle))) != true;
+        }
+
+        bool Readable(WindowSnapshot window, OcclusionMetrics.Exposure seen)
+        {
+            var rect = window.VisualRect;
+            double scale = (window.Dpi == 0 ? 96 : window.Dpi) / 96d;
+            var hint = context.WindowHints?.FirstOrDefault(h => h.Handle == window.Handle);
+            double width = Math.Min(area.Width / 2d, (hint?.UsefulWidthDip ?? context.Preferences.ComfortableWidthDip) * scale);
+            double height = Math.Min(area.Height, (hint?.UsefulHeightDip ?? context.Preferences.ComfortableHeightDip) * scale);
+            var floor = context.MinimumSize(window.Handle);
+            return rect.Intersect(area) == rect && seen.CenterVisible >= .90 && seen.AccessWidth >= 140 * scale &&
+                seen.UsefulWidth >= .84 * width && seen.UsefulHeight(rect) >= .80 * height &&
+                rect.Width >= floor.Width && rect.Height >= floor.Height;
+        }
     }
 
     internal static bool CanStackReferences(AttentionTarget[] targets, TaskLayoutContext context,

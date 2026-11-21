@@ -54,6 +54,23 @@ internal static class AttentionWorkspaceChecks
         var observed = comparisonContext with { IsWorkspaceObservation = true, AllowGestureAssist = false };
         var ready = new[] { Window(1, 0, 80, 960, 900), Window(2, 960, 60, 960, 950) };
         var popup = Window(3, 940, 875, 120, 30) with { IsTopmost = true, IsManageable = false, ZOrder = -1 };
+        foreach (bool mainOnRight in new[] { true, false })
+        {
+            var columns = new[] { Window(1, mainOnRight ? 900 : 0, 85, 1020, 855),
+                Window(2, mainOnRight ? 0 : 900, 40, 1020, 920) };
+            var unrelatedHabit = new PlacementPreference(2, 99, .67, .52, 0, -1, .8);
+            var quietPeer = context with { IsWorkspaceObservation = true, Placement = [unrelatedHabit] };
+            foreach (var visit in new[] { observed with { Placement = [unrelatedHabit] }, quietPeer })
+            {
+                var plan = Balanced([popup, .. columns], visit);
+                check(plan.Moves.Count == 0 && plan.Layers.Count == 0 &&
+                    plan.Groups.Single().Task?.Limits.Contains("existing-readable-columns") == true,
+                    $"readable columns keep their frames through input and peer expiry (main on right: {mainOnRight}, companion: {visit.Focus?.Companion})");
+            }
+            var alone = Balanced([columns[0]], quietPeer);
+            check(alone.Moves.Any(m => m.Window.Handle == 1 && m.TargetVisualRect.X != columns[0].VisualRect.X),
+                $"removing the visible peer releases the lone window for centering (main on right: {mainOnRight})");
+        }
         foreach (var frame in new[] { ready, new[] { popup, ready[0], ready[1] }, ready })
             check(Balanced(frame, observed).Moves.Count == 0,
                 "a readable pair stays settled as a peripheral surface appears and disappears");

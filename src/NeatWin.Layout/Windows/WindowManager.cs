@@ -30,6 +30,9 @@ public sealed partial class WindowManager
         "WorkerW",
         "Shell_TrayWnd",
         "Shell_SecondaryTrayWnd",
+        // 输入法宿主可能与浏览器同进程。按辅助窗口自己的类名排除，保留承载正文的应用窗口。
+        "IME",
+        "MSCTFIME UI",
     };
 
     public IReadOnlyList<WindowSnapshot> Capture()
