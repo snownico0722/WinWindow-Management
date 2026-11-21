@@ -286,6 +286,130 @@ Check(noPair.Groups.All(g => !g.Handles.Contains((nint)2)) && fullyCovered.Group
 var anchorPlan = Automatic(threeDesktop, new(UseWorkingPairs: true, Focus: new(1, 2, 3), WindowHints: [new(2, Anchor: true)]));
 Check(anchorPlan.Groups.All(g => !g.Handles.Contains((nint)2)), "an anchored companion stays put during automatic layout");
 
+var focusArea = new RectI(0, 0, 2560, 1380);
+WindowSnapshot AttentionWindow(int id, RectI bounds) => Window(id, bounds) with { WorkArea = focusArea, Dpi = 120 };
+var browsingDesktop = new[]
+{
+    AttentionWindow(1, new(160, 452, 663, 340)),
+    AttentionWindow(2, new(160, 0, 1128, 442)) with { ProcessId = 1 },
+    AttentionWindow(3, new(1113, 280, 1472, 928)),
+};
+foreach (int active in new[] { 1, 2 })
+{
+    var other = 3 - active;
+    var visits = new ForegroundHistory();
+    visits.Visit(active, 1, 1_000);
+    visits.Visit(3, 3, 3_000);
+    visits.Visit(active, 1, 5_000);
+    visits.Visit(3, 3, 7_000);
+    visits.Visit(active, 1, 9_000);
+    visits.Visit(other, 1, 11_000);
+    visits.Visit(active, 1, 15_000);
+    var current = browsingDesktop.Select(w => w with { IsForeground = w.Handle == active }).ToArray();
+    var recent = visits.Resolve(current, 15_100, out var recentAttention);
+    Check(recent.Main == active && recentAttention[other].Weight > ForegroundHistory.WorkingAttention,
+        $"focus history distinguishes active window {active} from its same-process sibling");
+    visits.Resolve(current, 21_200, out var quietAttention);
+    visits.Interact(active, 1, 21_100);
+    visits.Resolve(current, 21_200, out var handoffAttention);
+    Check(quietAttention[other].Weight >= ForegroundHistory.WorkingAttention &&
+        handoffAttention[other].Weight < ForegroundHistory.WorkingAttention,
+        $"continued recent input in window {active} accelerates the older task's decay");
+
+    var currentFocus = visits.Resolve(current, 45_000, out var agedAttention);
+    var attentionContext = new TaskLayoutContext(UseWorkingPairs: true, Focus: currentFocus, Attention: agedAttention,
+        RulePairs: [new(active, other, "left", null)], Placement: [new(active, 3, .25, .5, -1, -1, .9)],
+        WindowHints: [new(3, PassiveVisual: true, MediaCompanion: true)]);
+    var arranged = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(current, true),
+        new(SmartStrength: SmartTidyStrength.Assertive), null, current, attentionContext);
+    var original = current.Single(w => w.Handle == active);
+    var target = Placed(arranged, original);
+    Check(currentFocus.Companion == 0 && agedAttention[active].Weight == 1 && agedAttention[other].Weight < ForegroundHistory.WorkingAttention &&
+        agedAttention[3].Weight < ForegroundHistory.WorkingAttention && arranged.Groups is [{ Handles: [var only] }] && only == active &&
+        target.Width >= original.VisualRect.Width && target.Height >= original.VisualRect.Height,
+        $"expired windows do not crowd or join active window {active} during assertive automatic arrangement");
+    var exported = RecordedTaskSignals.From(attentionContext, new Dictionary<nint, int> { [1] = 11, [2] = 12, [3] = 13 });
+    var replayAttention = JsonSerializer.Deserialize<RecordedTaskSignals>(JsonSerializer.Serialize(exported))!
+        .ApplyToReplay(new()).Attention!;
+    Check(replayAttention[active + 10].Weight == 1 && replayAttention[other + 10] == agedAttention[other],
+        $"anonymous replay preserves attention for window {active} and its background sibling");
+
+    visits.Interact(other, 1, 45_010);
+    var paired = visits.Resolve(current, 45_050, out var directInput);
+    var adjacent = attentionContext with { Focus = paired, Attention = directInput, RulePairs = [],
+        Placement = [new(active, other, .15, .35, -1, -1, .8)] };
+    var directPlan = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(current, true),
+        new(SmartStrength: SmartTidyStrength.Assertive), null, current, adjacent);
+    Check(directPlan.Groups.SelectMany(g => g.Handles).ToHashSet().SetEquals([(nint)active, (nint)other]) &&
+        Placed(directPlan, original).Height >= original.VisualRect.Height,
+        $"direct input can bring window {other} back without giving the media surface a layout slot");
+
+    var manualWindow = new ManualWindowGesture(active, original.VisualRect with { X = 0 }, original.VisualRect,
+        focusArea, ManualGestureKind.Move, [], 500, 0);
+    var session = new TaskLayoutSession();
+    session.Gesture(manualWindow, now);
+    var gestureContext = session.Capture(current, new(), [], null, now.AddSeconds(1)) with
+    {
+        UseWorkingPairs = true, Focus = currentFocus, Attention = agedAttention,
+        Placement = [new(active, 0, .35, .45, 0, -1, .95)],
+    };
+    var gesturePlan = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(current, true),
+        new(SmartStrength: SmartTidyStrength.Assertive), null, current, gestureContext);
+    Check(gestureContext.GestureAnchor == active && Placed(gesturePlan, original) == original.VisualRect &&
+        session.Capture(current, new(), [], null, now.AddSeconds(5)).GestureAnchor == 0 &&
+        session.Capture(current, new(), [], null, now.AddSeconds(1), explicitArrange: true).GestureAnchor == 0,
+        $"automatic arrangement preserves the completed gesture for window {active} and releases it afterward");
+}
+
+var coveredTask = new[]
+{
+    Window(1, new(100, 120, 930, 700)),
+    Window(2, new(220, 140, 710, 720)),
+};
+var workingAttention = new Dictionary<nint, LayoutAttention> { [1] = new(1, 1, 1, 0, true), [2] = new(.8, .8, .8, .9, false) };
+var workingContext = new TaskLayoutContext(UseWorkingPairs: true, Focus: new(1, 2, 4), Attention: workingAttention);
+var workingPlan = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(coveredTask, true),
+    new(SmartStrength: SmartTidyStrength.Assertive), null, coveredTask, workingContext);
+Check(workingPlan.Moves.Count > 0 && Placed(workingPlan, coveredTask[0]).Height >= coveredTask[0].VisualRect.Height &&
+    Placed(workingPlan, coveredTask[0]).Intersect(Placed(workingPlan, coveredTask[1])).Area <
+    coveredTask[0].VisualRect.Intersect(coveredTask[1].VisualRect).Area,
+    "automatic arrangement still repairs real occlusion between two task windows");
+var soloContext = workingContext with { Focus = new(1, 0, 0),
+    Attention = new Dictionary<nint, LayoutAttention> { [1] = workingAttention[1] } };
+var soloPlan = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(coveredTask, true),
+    new(SmartStrength: SmartTidyStrength.Assertive), null, coveredTask, soloContext);
+Check(soloPlan.Groups is [{ Handles: [1] }] && soloPlan.Moves.All(m => m.Window.Handle == 1),
+    "a covered background window stays put when only the foreground belongs to the current task");
+
+var observedStack = new[]
+{
+    AttentionWindow(1, new(1656, 156, 904, 1071)),
+    AttentionWindow(2, new(1113, 280, 1472, 928)),
+    AttentionWindow(3, focusArea) with { IsManageable = false, IsResizable = false },
+};
+var stackVisible = new VisibilityAnalyzer().SelectForManualArrange(observedStack, true);
+var gentle = new TidyOptions(SmartStrength: SmartTidyStrength.Gentle);
+var opened = LayoutDispatch.Create(LayoutRoute.Smart, stackVisible, gentle, null, observedStack, workingContext);
+Check(opened.Moves is [{ Window.Handle: 2, TargetVisualRect: var separatedRect }] &&
+    separatedRect.Width == observedStack[1].VisualRect.Width && separatedRect.Height == observedStack[1].VisualRect.Height &&
+    separatedRect.Intersect(observedStack[0].VisualRect).IsEmpty && separatedRect.Intersect(focusArea) == separatedRect,
+    "conservative Smart opens a severely covered active pair at full size over a maximized background");
+var parked = LayoutDispatch.Create(LayoutRoute.Smart, stackVisible, gentle, null, observedStack, soloContext);
+Check(parked.Moves.Count == 0, "the same severe stack stays in place if the rear window is outside the task");
+
+var videoWindow = Window(1, new(100, 100, 1200, 800));
+var videoHint = new VideoBlackBarHint(1, VideoBlackBarOrientation.Horizontal, 2, new(150, 190, 1100, 620), .95);
+var videoContext = workingContext with { Focus = new(1, 0, 0), VideoHint = videoHint };
+var videoDesktop = new[] { videoWindow };
+var videoVisible = new VisibilityAnalyzer().SelectForManualArrange(videoDesktop, true);
+var videoOptions = new TidyOptions();
+var videoBaseline = LayoutDispatch.Create(LayoutRoute.Smart, videoVisible, videoOptions, null, videoDesktop, videoContext);
+var videoPlan = VideoAspectPostProcessor.Refine(videoVisible, videoBaseline.Moves, videoOptions,
+    new(RemoveVideoBlackBars: true, VideoBlackBarTendency: VideoBlackBarTendency.Shrink), videoHint);
+Check(videoPlan.Single().TargetVisualRect.Height == 730 &&
+    IntentLayoutPlanner.TaskRefinementAcceptable(videoVisible, videoBaseline, videoPlan, videoOptions, videoContext, videoDesktop),
+    "attention protection preserves the picture while allowing a confirmed letterbox to be removed");
+
 var sizeTest = new WindowSizeMemory();
 var wide = new RectI(0, 0, 1400, 900); var narrow = wide with { Width = 800 };
 var stopped = wide with { Width = 1160 };

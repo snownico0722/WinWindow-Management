@@ -750,12 +750,26 @@ internal static class SmokeTests
             Pair().Any(a => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))), 8000);
         var modes = ((Panel)shell.FindName("FooterModes")).Children.OfType<RadioButton>().ToArray();
         RadioButton Mode(AutomaticLayoutMode mode) => modes.Single(b => Equals(b.Tag, mode.ToString()));
+        // This runner arranges native fixtures without a user at the keyboard. Give the two
+        // fixtures a working-task history before testing the automatic path.
+        void UseBothFixtures()
+        {
+            var pair = Pair();
+            var main = pair.FirstOrDefault(w => w.IsForeground) ?? pair[0];
+            var companion = pair.Single(w => w.Handle != main.Handle);
+            var now = Environment.TickCount64;
+            shell.LayoutFocus.Visit(main.Handle, main.ProcessId, now - 1800);
+            shell.LayoutFocus.Visit(companion.Handle, companion.ProcessId, now - 900);
+            shell.LayoutFocus.Visit(main.Handle, main.ProcessId, now);
+        }
+        UseBothFixtures();
         Mode(AutomaticLayoutMode.AutoFullAssist).IsChecked = true;
-        await WaitAsync("automatic mode opens up the same covered native windows", Improved, 8000);
+        await WaitAsync("automatic mode opens up the two covered task windows", Improved, 8000);
         var stable = Pair();
         await Task.Delay(1250);
         Assert(Pair().All(a => stable.Any(w => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))),
             "automatic arrangement settles without reacting to its own native moves");
+        UseBothFixtures();
         await OverlapAsync();
         await WaitAsync("automatic mode responds to actual external window moves", Improved, 8000);
         Mode(AutomaticLayoutMode.Off).IsChecked = true;

@@ -62,10 +62,12 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     bool PreferReversibleVerticalFill = false, bool ExplicitArrange = false, LayoutFocus? Focus = null,
     PlacementPreference[]? Placement = null, CompiledLayoutRules? Rules = null, WorkingPairRule[]? RulePairs = null,
     bool UseWorkingPairs = false, WindowSizeFloor[]? SizeFloors = null,
-    IReadOnlyDictionary<nint, string>? Activities = null)
+    IReadOnlyDictionary<nint, string>? Activities = null, IReadOnlyDictionary<nint, LayoutAttention>? Attention = null,
+    nint GestureAnchor = default)
 {
     public TaskLayoutProfile Preferences => (Profile ?? new()).Normalize();
     public bool PairPlanningEnabled => ExplicitArrange || UseWorkingPairs;
+    internal bool HasRecentInput(nint handle) => Attention?.GetValueOrDefault(handle)?.Input >= .65;
     public (int Width, int Height) MinimumSize(nint handle) =>
         SizeFloors?.FirstOrDefault(f => f.Handle == handle) is { } floor ? (floor.MinWidth, floor.MinHeight) : (0, 0);
 }
@@ -172,7 +174,11 @@ public sealed class TaskLayoutSession
         TaskDisplay[] displays, ViewingCalibration? calibration, DateTimeOffset now, bool explicitArrange = false) =>
         new(profile, displays, calibration, RecentGesture: now - _gestureTime <= TimeSpan.FromSeconds(20) ? _gesture : null,
             VerifiedRepeat: (!explicitArrange || _lastRequestWasExplicit) && _verified == Fingerprint(windows) && now - _appliedTime < TimeSpan.FromMinutes(5),
-            RejectedLayouts: _rejected.ToArray(), ExplicitArrange: explicitArrange);
+            RejectedLayouts: _rejected.ToArray(), ExplicitArrange: explicitArrange,
+            GestureAnchor: !explicitArrange && now - _gestureTime <= TimeSpan.FromSeconds(4) &&
+                _gesture is { } gesture && gesture.StartRect != gesture.EndRect && windows.Any(w =>
+                    w.Handle == gesture.WindowHandle && w.IsManageable && w.VisualRect == gesture.EndRect && w.WorkArea == gesture.WorkArea)
+                ? gesture.WindowHandle : 0);
 
     public void Requested(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan, DateTimeOffset now, bool explicitArrange = false)
     {
