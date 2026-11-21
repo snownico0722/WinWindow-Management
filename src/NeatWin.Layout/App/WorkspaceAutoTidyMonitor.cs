@@ -9,7 +9,7 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
 {
     private const int WorkspacePollMilliseconds = 150;
     private const int ChangedMessage = 0x8000 + 79;
-    private readonly Func<IReadOnlyList<WindowSnapshot>> _capture;
+    private readonly Func<bool, IReadOnlyList<WindowSnapshot>> _capture;
     private readonly Func<bool> _busy;
     private readonly ForegroundHistory _focus;
     private readonly AutomaticLayoutScheduler _scheduler = new();
@@ -17,14 +17,14 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     private readonly List<nint> _hooks = [];
     private readonly Dictionary<nint, nint> _observedStamps = new();
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = WorkspacePollMilliseconds };
-    private int _messageQueued;
-    private bool _disposed;
+    private int _messageQueued, _foregroundChanged;
+    private bool _freshCapture, _disposed;
     internal event Action<AutomaticLayoutRequest>? Requested;
     internal event Action<Exception>? Failed;
     internal bool WatchingWorkspace => _hooks.Count != 0;
     internal AutomaticLayoutMode Mode => _scheduler.Mode;
 
-    internal WorkspaceAutoTidyMonitor(Func<IReadOnlyList<WindowSnapshot>> capture, Func<bool> busy, ForegroundHistory focus)
+    internal WorkspaceAutoTidyMonitor(Func<bool, IReadOnlyList<WindowSnapshot>> capture, Func<bool> busy, ForegroundHistory focus)
     {
         _capture = capture; _busy = busy; _focus = focus; _callback = OnWinEvent;
         CreateHandle(new CreateParams { Caption = "NeatWin.AutomaticLayout", Parent = NativeMethods.HwndMessage });
@@ -37,7 +37,7 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     {
         _timer.Stop(); _timer.Interval = WorkspacePollMilliseconds;
         RemoveHooks();
-        var baseline = _capture();
+        var baseline = _capture(true);
         _scheduler.Reset(mode, baseline, Environment.TickCount64);
         _observedStamps.Clear();
         foreach (var window in baseline) _observedStamps[window.Handle] = AutomationGuard.Stamp(window.Handle);
@@ -50,7 +50,7 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
                     NativeMethods.WinEventOutOfContext | NativeMethods.WinEventSkipOwnProcess);
                 if (hook == 0)
                 {
-                    RemoveHooks(); _scheduler.Reset(AutomaticLayoutMode.Off, _capture(), Environment.TickCount64);
+                    RemoveHooks(); _scheduler.Reset(AutomaticLayoutMode.Off, _capture(true), Environment.TickCount64);
                     return false;
                 }
                 _hooks.Add(hook);
@@ -98,6 +98,7 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
         if (AutomationGuard.IsUtility(hwnd)) return;
         NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
         if (pid == Environment.ProcessId) return;
+        if (eventType == 3) Interlocked.Exchange(ref _foregroundChanged, 1);
         Signal();
     }
     private void OnDisplayChanged(object? sender, EventArgs e) => Signal();
@@ -112,7 +113,15 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
         if (m.Msg == ChangedMessage)
         {
             Interlocked.Exchange(ref _messageQueued, 0);
-            if (!_disposed && AutomaticLayoutPolicy.WatchesWorkspace(Mode)) _timer.Start();
+            if (!_disposed && AutomaticLayoutPolicy.WatchesWorkspace(Mode))
+            {
+                if (Interlocked.Exchange(ref _foregroundChanged, 0) != 0)
+                {
+                    _freshCapture = true;
+                    _timer.Interval = AutomaticLayoutScheduler.ReleaseRetryMilliseconds;
+                }
+                _timer.Start();
+            }
             return;
         }
         base.WndProc(ref m);
@@ -140,6 +149,7 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
                 // Leave the UI thread to the live gesture. Workspace membership and geometry
                 // are captured together after release, including independent window changes.
                 _scheduler.DeferWorkspaceWhileBusy(Environment.TickCount64);
+                _timer.Interval = WorkspacePollMilliseconds;
                 return;
             }
             // While Windows still owns the pointer, retry the inexpensive release guard.
@@ -155,7 +165,8 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
                     return;
                 }
             }
-            var snapshot = releasedDesktop ?? _capture();
+            var snapshot = releasedDesktop ?? _capture(_freshCapture);
+            _freshCapture = false;
             // An unexpired property can belong to an earlier layout, including one before a
             // mode switch. Only a NEW stamp attributes an otherwise unknown change to NeatWin;
             // known requested targets are tracked separately by the scheduler through settling.
@@ -177,11 +188,16 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
             if (navigation != null && quiet > 0 && tick <= quiet + 200 && NativeMethods.GetCursorPos(out var pointer) &&
                 snapshot.FirstOrDefault(w => w.Handle == navigation.Main) is { } endpoint)
                 quiet = _focus.PointerQuietUntil(navigation, new(pointer.X, pointer.Y), endpoint, tick);
+            var opening = navigation == null && _scheduler.PendingRelease == null ? _focus.OpeningFor(snapshot, tick) : null;
             var request = _scheduler.Observe(snapshot, tick, _busy() || NativeWindowActivity.PointerBusy, marked,
-                navigationSettleUntil: quiet);
+                navigationSettleUntil: quiet, openingReady: opening != null);
             if (_scheduler.HasPending) ScheduleNextObservation();
             else { _timer.Stop(); _timer.Interval = WorkspacePollMilliseconds; }
-            if (request is not null) Requested?.Invoke(request);
+            if (request is not null)
+            {
+                if (opening != null) _focus.Dispatched(opening);
+                Requested?.Invoke(request with { Opening = opening });
+            }
         }
         catch (Exception ex) { _timer.Stop(); Failed?.Invoke(ex); }
     }

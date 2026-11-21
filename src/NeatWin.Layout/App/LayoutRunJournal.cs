@@ -39,7 +39,7 @@ internal sealed class LayoutRunJournal : IDisposable
     internal string? Record(IReadOnlyList<WindowSnapshot> before, LayoutApplication application, string trigger,
         IntentLayoutPlan? baseline = null, IntentLayoutPlan? proposal = null, IntentLayoutPlan? scored = null,
         TaskLayoutContext? context = null, SmartTidyStrength? strength = null, bool? fullDesktop = null, bool allowReplan = false, string? undoOfRequest = null,
-        ManualWindowGesture? releaseInput = null, bool reusedPreview = false)
+        ManualWindowGesture? releaseInput = null, bool reusedPreview = false, long? openingTick = null)
     {
         try
         {
@@ -68,7 +68,9 @@ internal sealed class LayoutRunJournal : IDisposable
                 frame, targets, layers, groups, null, refused.Length > 0 ? "submission-failed" : "requested-not-yet-verified",
                 application.Notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
                 context == null ? null : RecordedTaskSignals.From(context, ids, before), strength, fullDesktop, refused.Length == 0 ? null : refused,
-                application.MinimizeRequested is { } minimized ? ids[minimized.Handle] : null, UndoOfRequest: undoOfRequest, GestureTiming: timing);
+                application.MinimizeRequested is { } minimized ? ids[minimized.Handle] : null, UndoOfRequest: undoOfRequest, GestureTiming: timing,
+                OpeningToFirstGeometrySubmitMs: openingTick is long activated && application.FirstGeometrySubmittedTick is long submitted && submitted >= activated
+                    ? submitted - activated : null);
             _snapshotObserver?.Invoke(observation);
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);

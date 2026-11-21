@@ -27,7 +27,9 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     string? UndoOfRequest = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    RecordedGestureTiming? GestureTiming = null);
+    RecordedGestureTiming? GestureTiming = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    long? OpeningToFirstGeometrySubmitMs = null);
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
 public sealed class ObservationIdentityTracker

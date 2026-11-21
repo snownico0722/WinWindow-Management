@@ -75,7 +75,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _behaviorMonitor = new(_windowManager, _referenceStore, _settingsStore, _recorder,
             () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.PointerBusy, _focus, keepRunning);
         _useImportedPlacement = _settingsStore.UseImportedPlacement;
-        _workspaceMonitor = new WorkspaceAutoTidyMonitor(() => _windowManager.CaptureCoalesced(),
+        _workspaceMonitor = new WorkspaceAutoTidyMonitor(fresh => fresh ? _windowManager.Capture() : _windowManager.CaptureCoalesced(),
             () => _tidyRunning || _autoTidyManager.IsGestureInProgress, _focus);
         _autoTidyManager.TaskInput += (target, pid, now, click) =>
         {
@@ -256,7 +256,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         var trigger = request.Trigger == LayoutTrigger.AfterGesture ? "automatic-gesture" : "automatic-workspace";
         bool mayReplan = !_placementRetryPending;
         _placementRetryPending = false;
-        RunTidy(showActivity: false, route.Value, trigger, mayReplan);
+        RunTidy(showActivity: false, route.Value, trigger, mayReplan, request.Opening);
     }
 
     private void OnFollowHandRequested(ManualWindowGesture gesture)
@@ -293,7 +293,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
 
     internal void RunTidy() => RunTidy(showActivity: true, LayoutRoute.ManualAlgorithm);
 
-    private void RunTidy(bool showActivity, LayoutRoute route = LayoutRoute.ManualAlgorithm, string? source = null, bool allowPlacementReplan = false)
+    private void RunTidy(bool showActivity, LayoutRoute route = LayoutRoute.ManualAlgorithm, string? source = null, bool allowPlacementReplan = false, ForegroundHistory.Opening? opening = null)
     {
         if (_stopping.IsCancellationRequested) return;
         if (_tidyRunning || _autoTidyManager.IsGestureInProgress || NativeWindowActivity.IsMoving)
@@ -337,7 +337,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 : _visibilityAnalyzer.SelectVisibleWorkingSet(snapshot, includeStackAccess: smart);
             VideoBlackBarHint? videoHint = null;
             if (smart && _smartBehaviorOptions.RemoveVideoBlackBars)
-                videoHint = _videoBlackBarDetector.TryDetect(visibleWorkingSet, cachedOnly: trigger == "automatic-gesture");
+                videoHint = _videoBlackBarDetector.TryDetect(visibleWorkingSet, cachedOnly: opening != null || trigger == "automatic-gesture");
             IReadOnlyList<TidyMove> plan;
             IntentLayoutPlan? detailed = null;
             TaskLayoutContext? recordedContext = null, reclaimContext = null;
@@ -380,8 +380,35 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     _workspaceMonitor.RequestCurrent();
                     return;
                 }
+                if (opening != null)
+                {
+                    var incoming = opening.Incoming;
+                    var resident = opening.Resident;
+                    bool matches = front?.Handle == incoming.Handle && front.ProcessId == incoming.ProcessId &&
+                        front.VisualRect == incoming.VisualRect && front.WorkArea == incoming.WorkArea &&
+                        snapshot.Any(w => w.Handle == resident.Handle && w.ProcessId == resident.ProcessId && w.IsManageable &&
+                            w.VisualRect == resident.VisualRect && w.MonitorHandle == front.MonitorHandle && w.WorkArea == front.WorkArea);
+                    if (!matches || focus.Main != incoming.Handle || focus.Navigation != null ||
+                        focus.Companion != 0 && focus.Companion != resident.Handle)
+                    {
+                        _workspaceMonitor.RequestCurrent();
+                        return;
+                    }
+                    if (frontRole == WindowUseRole.Note || WindowUseRoles.IsFloating(frontRole) ||
+                        attention.GetValueOrDefault(incoming.Handle)?.ManualFloatPreference > 0 ||
+                        liveHints.Any(h => h.Anchor && (h.Handle == incoming.Handle || h.Handle == resident.Handle)))
+                    {
+                        _workspaceMonitor.RequestCurrent();
+                        return;
+                    }
+                    focus = new(incoming.Handle, resident.Handle, focus.Switches,
+                        opening.ResidentLeft ? "opening-resident-left" : "opening-resident-right");
+                }
+                // An interrupted opening may still expose the resident by adjusting it on
+                // its own side. Only an idle input queue authorizes moving the incoming frame.
                 bool firstPlacement = trigger == "automatic-workspace" && front != null && reading.Root == front.Handle && reading.LastInput.HasValue &&
-                    _focus.TakeInitialPlacement(front, focus, Environment.TickCount64, reading.LastInput);
+                    (opening != null ? _focus.OpeningStillIdle(opening, Environment.TickCount64, reading.LastInput) :
+                        _focus.TakeInitialPlacement(front, focus, Environment.TickCount64, reading.LastInput));
                 liveHints = WindowUseRoles.Bind(snapshot, liveHints, focus, attention, placements,
                     window => window.Handle == front?.Handle ? frontRole : _recorder.SemanticRole(window, reading), reading.Caret ? reading.Root : 0, activities,
                     reading.Root, firstPlacement ? front!.Handle : 0, _taskPreferences.Profile);
@@ -491,7 +518,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 catch (Exception ex) { System.Diagnostics.Trace.TraceWarning($"Diagnostic baseline unavailable: {ex.Message}"); }
             }
             var requestId = _journal.Record(snapshot, application, trigger, baseline ?? scored ?? proposed, proposed, scored, recordedContext,
-                smart ? effectiveOptions.SmartStrength : null, smart ? fullDesktop : null, allowPlacementReplan, releaseInput: releaseInput, reusedPreview: reusedPreview);
+                smart ? effectiveOptions.SmartStrength : null, smart ? fullDesktop : null, allowPlacementReplan, releaseInput: releaseInput, reusedPreview: reusedPreview, openingTick: opening?.Visit);
             if (hasUndo) _undoRequest = requestId;
             if (showActivity)
             {

@@ -6,6 +6,7 @@ using NeatWin.Reference;
 var area = new RectI(0, 0, 1920, 1040);
 AttentionWorkspaceChecks.Run(Check);
 ReadingFocusChecks.Run(Check);
+OpeningPlacementChecks.Run(Check);
 TextViewChecks.Run(Check);
 NavigationChecks.Run(Check);
 PlacementPreferenceChecks.Run(Check);

@@ -222,6 +222,19 @@ internal static partial class IntentLayoutPlanner
             var window = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             bool gestureEndpoint = window.Handle == context.GestureAnchor && b == context.GestureTarget;
             bool textView = context.HoldsTextView(window);
+            if (a != b && !context.ExplicitArrange && context.GestureAnchor == 0 && context.Focus is { } focus)
+            {
+                // Across an opening, the resident owns its side. Also protect a prior
+                // side when new typing vetoed the opening and the foreground is now fixed.
+                bool? left = window.Handle == focus.Companion ? focus.OpeningResidentLeft : null;
+                if (!left.HasValue && goals?[i].Role == AttentionRole.Reference &&
+                    windows.Any(v => v.Window.Handle == focus.Main && context.HoldsTextView(v.Window) &&
+                        v.Window.VisualRect.Intersect(a).Area >= .4 * a.Area) &&
+                    Math.Abs(CenterX(a) - CenterX(area)) >= area.Width * .10)
+                    left = CenterX(a) < CenterX(area);
+                if (left.HasValue && (left.Value ? CenterX(b) > CenterX(area) : CenterX(b) < CenterX(area)))
+                    return false;
+            }
             if (textView)
             {
                 int rank = Array.IndexOf(candidate.Order, i);

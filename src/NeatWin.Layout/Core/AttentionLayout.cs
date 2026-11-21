@@ -298,11 +298,32 @@ internal static partial class IntentLayoutPlanner
             .Take(budget).ToArray();
         // Compare complete left/right arrangements directly. An intermediate move toward the
         // outside edge can temporarily worsen overlap and otherwise get pruned from the beam.
-        int reference = Array.FindIndex(targets, t => t.Role == AttentionRole.Reference);
+        int reference = context.Focus is { OpeningResidentLeft: not null } opening
+            ? Array.FindIndex(group, v => v.Window.Handle == opening.Companion)
+            : Array.FindIndex(targets, t => t.Role == AttentionRole.Reference);
         if (reference >= 0 && targets[main].Movable && targets[reference].Movable &&
             strength != SmartTidyStrength.Gentle)
         {
-            var pair = new[] { main, reference }.OrderBy(i => CenterX(original[i])).ToArray();
+            var pair = context.Focus?.OpeningResidentLeft switch
+            {
+                true => new[] { reference, main },
+                false => new[] { main, reference },
+                null => new[] { main, reference }.OrderBy(i => CenterX(original[i])).ToArray()
+            };
+            if (context.Focus?.OpeningResidentLeft is bool residentLeft)
+            {
+                // Compare with a plan that leaves the established surface exactly as found.
+                var resident = original[reference];
+                var incoming = original[main];
+                int free = residentLeft ? area.Right - resident.Right - gap : resident.Left - area.Left - gap;
+                foreach (int width in new[] { incoming.Width, Math.Min(incoming.Width, free) }.Distinct())
+                {
+                    if (width <= 0 || width > area.Width || width != incoming.Width && !targets[main].Resizable) continue;
+                    var stay = original.ToArray();
+                    stay[main] = incoming with { X = residentLeft ? area.Right - width : area.Left, Width = width };
+                    candidates.Add(new("opening-placement", stay, order));
+                }
+            }
             foreach (bool shareEdge in new[] { false, true })
             {
                 var rects = original.ToArray();

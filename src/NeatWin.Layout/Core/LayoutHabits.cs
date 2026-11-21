@@ -22,6 +22,7 @@ public sealed record NavigationHop(nint Source, nint Target, string Evidence, lo
 public sealed record LayoutFocus(nint Main, nint Companion, int Switches, string Evidence = "recent-switch-pair",
     nint[]? NavigationAncestors = null, NavigationHop[]? Navigation = null)
 {
+    internal bool? OpeningResidentLeft => Evidence switch { "opening-resident-left" => true, "opening-resident-right" => false, _ => null };
     public bool IsNavigationAncestor(nint handle) => NavigationAncestors?.Contains(handle) == true;
 }
 
@@ -109,6 +110,75 @@ public sealed class ForegroundHistory
             return visit.Handle == key.Handle && visit.Pid == key.ProcessId && visit.Time >= birth.Time &&
                 !ReceivedInput(visit, now) && (lastInput == null || unchecked((uint)now - lastInput.Value) >= now - visit.Time);
         }
+    }
+
+    // Use the last working surface even when a taskbar or launcher owned focus in between.
+    // A visit token makes the accelerated placement single-use across repeated window events.
+    internal sealed record Opening(long Visit, WindowSnapshot Incoming, WindowSnapshot Resident, bool ResidentLeft);
+    private Opening? _dispatchedOpening;
+
+    internal Opening? OpeningFor(IReadOnlyList<WindowSnapshot> desktop, long now)
+    {
+        lock (_visits)
+        {
+            if (_visits.Count < 2) return null;
+            var visit = _visits[^1];
+            var front = desktop.FirstOrDefault(w => w.IsForeground);
+            if (front == null || visit.Handle != front.Handle || visit.Pid != front.ProcessId ||
+                now - visit.Time is < 0 or > 750 || !WorkingSurface(front) ||
+                _dispatchedOpening is { } sent && sent.Visit == visit.Time && sent.Incoming.Handle == front.Handle) return null;
+
+            // Repeated Alt-Tab within an existing pair should preserve the reading locations.
+            for (int i = _visits.Count - 2; i >= 0 && visit.Time - _visits[i + 1].Time <= 8000; i--)
+                if (_visits[i].Handle == front.Handle && _visits[i].Pid == front.ProcessId) return null;
+
+            for (int i = _visits.Count - 2; i >= 0; i--)
+            {
+                var previous = _visits[i];
+                var other = desktop.FirstOrDefault(w => w.Handle == previous.Handle && w.ProcessId == previous.Pid);
+                if (other == null) continue;
+                var end = _visits[i + 1].Time;
+                bool used = _input.TryGetValue((other.Handle, other.ProcessId), out long input) &&
+                    visit.Time - input is >= 0 and <= 8000;
+                if (!used && (visit.Time - end > 8000 || end - previous.Time < 650) ||
+                    !WorkingSurface(other) || other.Handle == front.Handle || other.MonitorHandle != front.MonitorHandle ||
+                    other.WorkArea != front.WorkArea || other.ZOrder <= front.ZOrder) return null;
+                var rect = other.VisualRect.Intersect(other.WorkArea);
+                var incoming = front.VisualRect.Intersect(front.WorkArea);
+                // Require a collision that takes away a substantial part of the prior task.
+                var overlap = rect.Intersect(incoming);
+                if (overlap.Area < .40 * rect.Area) return null;
+                var fragments = new List<RectI> { overlap };
+                foreach (var cover in desktop.Where(w => w.Handle != front.Handle && w.ZOrder < other.ZOrder))
+                {
+                    if (!overlap.Intersect(cover.VisualRect).IsEmpty)
+                        fragments = RectRegion.Subtract(fragments, cover.VisualRect);
+                }
+                if (fragments.Sum(r => r.Area) < .40 * rect.Area) return null;
+                double center = rect.Left + rect.Width / 2d;
+                double middle = other.WorkArea.Left + other.WorkArea.Width / 2d;
+                bool left = Math.Abs(center - middle) > other.WorkArea.Width * .08
+                    ? center < middle : center <= incoming.Left + incoming.Width / 2d;
+                return new(visit.Time, front, other, left);
+            }
+            return null;
+        }
+
+        static bool WorkingSurface(WindowSnapshot w) => w.IsManageable && w.Owner == 0 && !w.IsTopmost &&
+            w.SurfaceState is null or "windowed" && !w.WorkArea.IsEmpty && w.VisualRect.Intersect(w.WorkArea).Area >= w.WorkArea.Area * .18;
+    }
+
+    internal void Dispatched(Opening opening)
+    {
+        lock (_visits) _dispatchedOpening = opening;
+    }
+
+    internal bool OpeningStillIdle(Opening opening, long now, uint? lastInput)
+    {
+        lock (_visits)
+            return _visits.Count != 0 && _visits[^1] == (opening.Incoming.Handle, opening.Incoming.ProcessId, opening.Visit) &&
+                now - opening.Visit is >= 0 and <= 750 && lastInput.HasValue &&
+                unchecked((uint)now - lastInput.Value) >= now - opening.Visit && !ReceivedInput(_visits[^1], now);
     }
 
     public void Retire(nint handle)

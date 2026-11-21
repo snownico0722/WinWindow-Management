@@ -4,7 +4,10 @@ namespace NeatWin.Core;
 public enum AutomaticLayoutMode { Off, LightAssist, FullAssist, AutoFullAssist }
 public enum LayoutTrigger { Manual, AfterGesture, WorkspaceChange }
 public enum LayoutRoute { ManualAlgorithm, LightAssist, Smart, FullTiling }
-public sealed record AutomaticLayoutRequest(AutomaticLayoutMode Mode, LayoutTrigger Trigger);
+public sealed record AutomaticLayoutRequest(AutomaticLayoutMode Mode, LayoutTrigger Trigger)
+{
+    internal ForegroundHistory.Opening? Opening { get; init; }
+}
 
 internal enum GestureReleaseState { Discard, Wait, Ready }
 
@@ -164,7 +167,7 @@ public sealed class AutomaticLayoutScheduler
     }
 
     public AutomaticLayoutRequest? Observe(IReadOnlyList<WindowSnapshot> snapshot, long now, bool busy,
-        IReadOnlySet<nint>? markedByNeatWin = null, bool desktopFocused = false, long navigationSettleUntil = 0)
+        IReadOnlySet<nint>? markedByNeatWin = null, bool desktopFocused = false, long navigationSettleUntil = 0, bool openingReady = false)
     {
         // The desktop and taskbar are excluded from window capture. Clear the last app and
         // queued plan here, so activating the shell cannot arrange the previous task.
@@ -219,7 +222,7 @@ public sealed class AutomaticLayoutScheduler
         else
         {
             if (busy) { _lastChange = now; return null; }
-            if (now - _lastChange < SettleMilliseconds || now < _notBefore || now < navigationSettleUntil) return null;
+            if (now < navigationSettleUntil || !openingReady && (now - _lastChange < SettleMilliseconds || now < _notBefore)) return null;
         }
         _pending = false; _manual.Clear(); _notBefore = now + MinimumIntervalMilliseconds;
         return new(Mode, _trigger);
@@ -277,7 +280,7 @@ public sealed class AutomaticLayoutScheduler
 internal static class LayoutDispatch
 {
     internal static string ModelVersion(TidyAlgorithmMode mode) =>
-        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v1.0";
+        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v1.1";
 
     internal static IntentLayoutPlan Create(LayoutRoute route, IReadOnlyList<VisibleWindow> visible,
         TidyOptions options, IntentReferenceDocument? reference, IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext? context) =>
