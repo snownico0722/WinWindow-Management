@@ -339,7 +339,7 @@ public sealed class AutomaticLayoutScheduler
 internal static class LayoutDispatch
 {
     internal static string ModelVersion(TidyAlgorithmMode mode) =>
-        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v2.9";
+        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v3.1";
 
     internal static IntentLayoutPlan Create(LayoutRoute route, IReadOnlyList<VisibleWindow> visible,
         TidyOptions options, IntentReferenceDocument? reference, IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext? context)
@@ -352,12 +352,17 @@ internal static class LayoutDispatch
         }
         if (route is LayoutRoute.Smart or LayoutRoute.LocalOpening) options = options with { AlgorithmMode = TidyAlgorithmMode.Smart };
         // 普通布局使用独立的焦点、手势和空间证据。改变黑边观测时，其他窗口可选的位置不随视频权重改变。
-        if (context != null) context = context with { Scene = ActiveLayoutScene.Resolve(desktop, context) };
+        if (context != null)
+        {
+            var scene = ActiveLayoutScene.Resolve(desktop, context);
+            context = (scene?.Interpret(context, desktop.FirstOrDefault(w => w.IsForeground)?.Handle ?? 0) ?? context)
+                with { Scene = scene };
+        }
         if (route == LayoutRoute.Smart && context != null && IntentLayoutPlanner.CoupledDivider(visible, desktop, context, options) is { } divider)
             return divider with { Scene = context.Scene };
         var ordinary = context?.VideoHint == null ? context : context with { VideoHint = null };
         var plan = IntentLayoutPlanner.CreateDetailedPlan(visible, options, reference, desktop, ordinary);
         if (context?.VideoHint != null && (context.GeometryOnlyWindow == 0 || context.GeometryOnlyWindow == context.VideoHint.WindowHandle)) plan = VideoAspectPostProcessor.Select(visible, desktop, plan, options, context);
-        return context?.Scene is { } scene ? plan with { Scene = scene } : plan;
+        return context?.Scene is { } finalScene ? plan with { Scene = finalScene } : plan;
     }
 }

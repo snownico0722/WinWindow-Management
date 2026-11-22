@@ -14,6 +14,32 @@ spec.loader.exec_module(analysis)
 
 
 class RecordingAnalysisTests(unittest.TestCase):
+    def test_semantic_objectives_keep_group_order_and_unknown_legacy_fields(self):
+        recording = analysis.Recording()
+        evidence = {"Relations": [{"First": 0, "Second": 1, "Purpose": "read-together"}],
+                    "Objectives": [{"ReadableContent": 0.9}, {"ReadableContent": 0.6}]}
+        for version, task in [(14, {}), (15, evidence)]:
+            recording.add("plans", {"RequestId": str(version), "Version": version, "Trigger": "explicit",
+                                    "Groups": [{"Ids": [31, 7], "Selected": "keep", "Task": task}]})
+        groups = recording.report()["Plans"]
+        self.assertIsNone(groups["14"]["CandidateGroups"][0]["Objectives"])
+        group = groups["15"]["CandidateGroups"][0]
+        self.assertEqual(group["Relations"], evidence["Relations"])
+        self.assertEqual(dict(zip(group["Ids"], group["Objectives"]))[7], {"ReadableContent": 0.6})
+
+    def test_solver_feedback_is_joined_once_and_orphans_remain_visible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "recording.zip"
+            group = {"Ids": [42], "Selected": "shift", "Portfolio": {"WithoutReputation": 0, "Selected": 1}}
+            with ZipFile(path, "w") as archive:
+                archive.writestr("layout-decisions.jsonl", json.dumps({
+                    "RequestId": "abc", "Version": 16, "Session": "s", "Trigger": "explicit", "Groups": [group]}))
+                archive.writestr("solver-feedback-v1.json", json.dumps([{"RequestId": "abc"}, {"RequestId": "outside"}]))
+            report = analysis.analyze([path, path])
+        comparison = report["Sessions"]["s"]["AlgorithmReputation"]
+        self.assertEqual(comparison, {"ObservedGroups": 1, "ChangedSelections": 1, "Feedback": [{"RequestId": "abc"}]})
+        self.assertEqual(report["UnlinkedSolverFeedback"], [{"RequestId": "outside"}])
+
     def test_axis_evidence_distinguishes_search_ranking_and_unknown(self):
         groups = [{"Ids": [120, 43], "AxisCoverage": [
             {"WindowIndex": 1, "Axis": "Width", "Generated": [900, 1040], "Feasible": [900]}]}]

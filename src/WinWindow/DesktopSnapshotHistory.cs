@@ -19,6 +19,8 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
     internal const int MaxPastSurfaceEvents = 5 * MaxLiveSurfaceEvents;
     private readonly object _gate = new();
     private readonly Queue<DesktopSnapshot.Sample> _windows = new();
+    private readonly Queue<Feedback> _feedback = new();
+    internal sealed record Feedback(long Tick, SolverFeedback Sample);
     private readonly Queue<Decision> _decisions = new();
     private readonly Queue<Gesture> _gestures = new();
     private readonly Queue<SurfaceEvent> _surfaces = new();
@@ -38,6 +40,8 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
         DesktopSnapshot.Sample[] PastWindows, Decision[] PastDecisions, Gesture[] PastGestures,
         SurfaceEvent[] PastSurfaces, long EarliestTick, long? SurfaceDroppedThrough)
     {
+        internal Feedback[] PastFeedback { get; init; } = [];
+        internal ConcurrentQueue<Feedback> LiveFeedback { get; } = new();
         internal DesktopInteraction[] PastInteractions { get; init; } = [];
         internal ConcurrentQueue<DesktopInteraction> LiveInteractions { get; } = new();
         internal long? InteractionDroppedThrough { get; init; }
@@ -107,6 +111,17 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
                 _decisions.Enqueue(decision);
             }
             _capture?.LiveDecisions.Enqueue(decision);
+        }
+    }
+
+    internal void ObserveFeedback(SolverFeedback sample)
+    {
+        lock (_gate)
+        {
+            if (_timer == null && _capture == null) return;
+            var item = new Feedback(Now, sample);
+            if (_timer != null) { Trim(item.Tick); _feedback.Enqueue(item); }
+            _capture?.LiveFeedback.Enqueue(item);
         }
     }
 
@@ -187,6 +202,7 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
                 _surfaces.Where(surface => surface.Tick >= earliest).OrderBy(surface => surface.Tick).ToArray(),
                 earliest, _surfaceDroppedThrough >= earliest ? _surfaceDroppedThrough : null)
             {
+                PastFeedback = _feedback.Where(f => f.Tick >= earliest).ToArray(),
                 PastInteractions = _interactions.Where(e => e.Tick >= earliest).ToArray(),
                 InteractionDroppedThrough = _interactionDroppedThrough >= earliest ? _interactionDroppedThrough : null
             };
@@ -202,6 +218,7 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
     private void Trim(long now)
     {
         var earliest = now - LookbackMilliseconds;
+        while (_feedback.TryPeek(out var vote) && vote.Tick < earliest) _feedback.Dequeue();
         while (_windows.TryPeek(out var sample) && sample.Tick < earliest) _windows.Dequeue();
         while (_interactions.TryPeek(out var input) && input.Tick < earliest) _interactions.Dequeue();
         while (_gestures.TryPeek(out var gesture) && gesture.Event.Tick < earliest) _gestures.Dequeue();
@@ -215,7 +232,7 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
         {
             _clearedAt = Now;
             _windows.Clear();
-            _decisions.Clear();
+            _decisions.Clear(); _feedback.Clear();
             _gestures.Clear();
             _interactions.Clear(); _interactionDroppedThrough = null;
             _surfaces.Clear();

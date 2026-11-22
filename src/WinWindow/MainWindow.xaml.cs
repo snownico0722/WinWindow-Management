@@ -479,7 +479,7 @@ public partial class MainWindow : Window
             _desktop?.SetUndoAvailable(available);
         }));
     }, LayoutFocus, SnapshotHistory.Observe, SnapshotHistory.ObserveGesture, SnapshotHistory.WantsGestures, Manager.KeepsRunning,
-        SnapshotHistory.ObserveSurface, SnapshotHistory.WantsSurfaces, SnapshotHistory.ObserveInteraction);
+        SnapshotHistory.ObserveSurface, SnapshotHistory.WantsSurfaces, SnapshotHistory.ObserveInteraction, SnapshotHistory.ObserveFeedback);
 
     private async void Arrange_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().ArrangeAsync());
     private async void UndoLayout_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().UndoAsync());

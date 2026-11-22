@@ -99,62 +99,6 @@ internal static partial class IntentLayoutPlanner
         return context;
     }
 
-    private static TaskEvidence[] InferTask(VisibleWindow[] windows, RectI[] rects, TaskLayoutContext context)
-    {
-        var evidence = new List<TaskEvidence>();
-        for (var i = 0; i < windows.Length; i++)
-        for (var j = i + 1; j < windows.Length; j++)
-        {
-            var a = rects[i]; var b = rects[j];
-            var affinity = TaskAffinity(windows[i].Window with { VisualRect = a }, windows[j].Window with { VisualRect = b }, context);
-            var hint = context.PairHints?.FirstOrDefault(h =>
-                (h.First == windows[i].Window.Handle && h.Second == windows[j].Window.Handle) ||
-                (h.Second == windows[i].Window.Handle && h.First == windows[j].Window.Handle));
-            var dx = Math.Abs(CenterX(a) - CenterX(b)) / Math.Max(1, Math.Min(a.Width, b.Width));
-            var dy = Math.Abs(CenterY(a) - CenterY(b)) / Math.Max(1, Math.Min(a.Height, b.Height));
-            var topDifference = Math.Abs(a.Top - b.Top) / (windows[i].Window.Dpi / 96.0);
-            var column = dx < .3 && topDifference >= 20 && a.HorizontalOverlapRatio(b) >= .65;
-            var title = b with { Height = Math.Min(b.Height, (int)Math.Round(32 * windows[j].Window.Dpi / 96.0)) };
-            var titleExposed = a.Intersect(title).Area < title.Area * .75;
-            var deep = CoversHalfOfRear(a, b);
-            var offsetDeck = deep && dx < .28 && dy < .28 && titleExposed;
-            var parked = offsetDeck ? .85 : deep && dx < .28 ? .48 : .12;
-            var joint = offsetDeck ? .20 : deep ? .76 :
-                Math.Clamp(.35 + .50 * Math.Min(1, dx) + .12 * a.VerticalOverlapRatio(b), .35, .92);
-            if (column && dy > .55) { joint = .80; parked = .15; }
-            var source = "geometry-hypotheses";
-            var uncertainty = deep ? .55 : .40;
-            var focus = context.Focus;
-            bool activePair = focus is { Companion: not 0 } &&
-                (windows[i].Window.Handle == focus.Main && windows[j].Window.Handle == focus.Companion ||
-                 windows[j].Window.Handle == focus.Main && windows[i].Window.Handle == focus.Companion);
-            if (activePair)
-            {
-                bool coVisible = windows[i].VisibleRatio >= .25 && windows[j].VisibleRatio >= .25;
-                bool configured = focus!.Evidence == "configured-pair";
-                joint = Math.Max(joint, coVisible || configured ? .88 : .78);
-                parked = Math.Min(parked, coVisible || configured ? .18 : .45);
-                if (focus.Evidence == "handoff") { joint = .22; parked = .86; }
-                source = focus.Evidence;
-                uncertainty = configured ? .10 : focus.Switches > 0 ? coVisible ? .24 : .38 : .40;
-            }
-            var passive = context.WindowHints?.Any(h => h.PassiveVisual &&
-                (h.Handle == windows[i].Window.Handle || h.Handle == windows[j].Window.Handle)) == true;
-            if (passive && dx > .3) { joint = Math.Max(joint, .88); source += "+passive-visual"; uncertainty = .25; }
-            var integrated = 0.0;
-            if (hint is { Relation: not TaskRelation.Automatic })
-            {
-                joint = hint.Relation is TaskRelation.JointView or TaskRelation.Integrated ? 1 : 0;
-                parked = hint.Relation == TaskRelation.Alternating ? 1 : 0;
-                integrated = hint.Relation == TaskRelation.Integrated ? 1 : 0;
-                if ((hint.Relation is TaskRelation.JointView or TaskRelation.Integrated) && windows.Length == 2) column = false;
-                uncertainty = 0; source = "explicit-task-hint";
-            }
-            evidence.Add(new(i, j, joint * affinity, parked * affinity, integrated, uncertainty, column, source, affinity));
-        }
-        return evidence.ToArray();
-    }
-
     private static bool CoversHalfOfRear(RectI front, RectI rear) =>
         front.Intersect(rear).Area >= rear.Area * .50;
 
@@ -347,64 +291,8 @@ internal static partial class IntentLayoutPlanner
         return true;
     }
 
-    private readonly record struct WindowDemand(double Joint, double Parked, double Ambiguity);
-
-    private static WindowDemand[] MeasureDemand(int count, TaskEvidence[] relations)
-    {
-        var demand = new WindowDemand[count];
-        foreach (var relation in relations)
-        {
-            Accumulate(relation.First, relation);
-            Accumulate(relation.Second, relation);
-        }
-        return demand;
-
-        void Accumulate(int index, TaskEvidence evidence)
-        {
-            var old = demand[index];
-            demand[index] = new(Math.Max(old.Joint, evidence.Joint), Math.Max(old.Parked, evidence.Parked),
-                Math.Max(old.Ambiguity, evidence.Uncertainty * Math.Min(evidence.Joint, evidence.Parked)));
-        }
-    }
-
-    // 用窗口内原有内容的位移估算打断：拖动标题、改变换行宽度和拉长底边给人的感觉不同。
-    // 可见度和近期输入只影响这次移动的代价。没有新任务时，它们不产生整理请求。
-    internal static double AttentionInterruption(VisibleWindow visible, RectI target, TaskLayoutContext context,
-        TaskWindowHint? hint, double stability = 0, bool directSnap = false)
-    {
-        var w = visible.Window;
-        var frame = w.VisualRect;
-        if (frame == target || frame.IsEmpty || target.IsEmpty) return 0;
-        // 纯几何调用与早期记录没有访问时序，保留既有的移动/重排成本，不臆造本次视觉打断。
-        if (context.Attention == null && !context.IsWorkspaceObservation &&
-            context.GestureAnchor == 0 && context.FirstPlacementWindow == 0) return 0;
-        var signal = context.Attention?.GetValueOrDefault(w.Handle);
-        double dx = Math.Abs(target.Left - (double)frame.Left) / frame.Width;
-        double dy = Math.Abs(target.Top - (double)frame.Top) / frame.Height;
-        double width = Math.Abs(Math.Log(target.Width / (double)frame.Width));
-        double height = Math.Abs(Math.Log(target.Height / (double)frame.Height));
-        bool reading = hint?.Role is WindowUseRole.Chat or WindowUseRole.Editor or WindowUseRole.FloatingEditor or
-            WindowUseRole.Document or WindowUseRole.Note || hint?.TextFocus == true;
-        double change = dx + dy + (reading ? 1.25 : .55) * width + .35 * height;
-        double use = signal == null ? 0 : Math.Max(signal.Input, signal.Dwell * signal.Recency);
-        double attention = .25 + Math.Clamp(visible.VisibleRatio, 0, 1) *
-            ((w.IsForeground ? .55 : .16) + .70 * use + (hint?.PassiveVisual == true ? .3 : 0));
-        // 每扇窗单独计价。刚滚动过的后台文档也可能在阅读；输入只影响候选方案的打断成本。
-        if (context.IsWorkspaceObservation && context.ReadingInput?.GetValueOrDefault(w.Handle) is { } input)
-            attention += visible.VisibleRatio * (.95 * input.Scrolling + .65 * input.CaretMotion);
-        bool release = context.AllowGestureAssist && context.GestureAnchor == w.Handle && (directSnap || context.GestureTarget == target);
-        // 刚恢复到陌生一侧时，回到这个实例原先的位置通常比在错误位置读取正文更符合预期。
-        bool restoring = context.Scene?.Lane is { Restore: { } remembered } lane && lane.Front.Handle == w.Handle &&
-            Math.Abs(CenterX(target) - CenterX(remembered)) < Math.Abs(CenterX(frame) - CenterX(remembered));
-        bool initial = context.FirstPlacementWindow == w.Handle || hint?.InitialTextPlacement == true || restoring;
-        double timing = release ? .18 : initial ? .30 : context.ExplicitArrange ? .45 : 1;
-        // 短时内的再次摆动与意图明确的浮动视图要另外计入。邻窗不会继承松手窗口的低打断代价。
-        double repeat = Math.Clamp(signal?.RecentSystemPlacement ?? 0, 0, 1);
-        return timing * ((attention + 12 * stability + 1.8 * repeat) * change + .08 * repeat * Math.Min(1, 12 * change));
-    }
-
     private static TaskCostBreakdown TaskCost(VisibleWindow[] windows, RectI[] original, Candidate candidate,
-        TaskEvidence[] relations, WindowDemand[] demands, RectI area, TaskLayoutContext context, IntentHint hint,
+        TaskEvidence[] relations, WindowLayoutObjective[] objectives, RectI area, TaskLayoutContext context, IntentHint hint,
         WindowSnapshot[]? obstacles = null, AttentionTarget[]? goals = null)
     {
         var profile = context.Preferences;
@@ -422,14 +310,13 @@ internal static partial class IntentLayoutPlanner
             var i = candidate.Order[rank];
             var w = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             var scale = w.Dpi / 96.0;
-            var intent = demands[i];
+            var intent = objectives[i];
             if (w.Handle == context.GestureAnchor && context.GestureTarget is { } endpoint && b != endpoint)
                 gestureDeficit = 1;
             var blockers = (obstacles ?? []).Where(o => o.ZOrder < windows[rank].Window.ZOrder).Select(o => o.VisualRect);
             var exposure = ScreenExposure(b, front.Concat(blockers), area, w.Dpi);
             var windowHint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
-            interruption += AttentionInterruption(windows[i], b, context, windowHint,
-                Math.Max(overlay, goals?[i].PlacementStability ?? 0));
+            interruption += intent.Motion.Cost(a, b);
             var geometricSmall = a.Area < area.Area * .15;
             // Otherwise use the initial readable size. An established working pair can earn
             // readability from additional space, up to the same targets used to propose growth.
@@ -530,34 +417,15 @@ internal static partial class IntentLayoutPlanner
                     occlusionLoss = Math.Min(occlusionLoss, thirdPartyLoss + .12 * allowedFraction);
                 }
             }
-            var demand = windows.Length == 1 ? 0 : Math.Max(intent.Joint * profile.JointVisibilityWeight,
-                w.IsForeground ? .85 : .18 * intent.Parked);
-            if (context.Attention != null && w.Handle != context.Focus?.Main && w.Handle != context.Focus?.Companion)
-                demand *= .25 + .75 * (context.Attention.GetValueOrDefault(w.Handle)?.Weight ?? 0);
-            var alternativeDemand = intent.Ambiguity;
-            if (context.PairPlanningEnabled && context.Focus is { Companion: not 0 } pair &&
-                w.Handle != pair.Main && w.Handle != pair.Companion && windows[i].VisibleRatio < .08 &&
-                context.PairHints?.Any(h => h.First == w.Handle || h.Second == w.Handle) != true)
-            {
-                demand *= .25;
-                alternativeDemand *= .5;
-                continuity += .6 * (Math.Abs(CenterX(a) - CenterX(b)) / area.Width +
-                    Math.Abs(CenterY(a) - CenterY(b)) / area.Height);
-            }
+            continuity += intent.BackgroundDrift * (Math.Abs(CenterX(a) - CenterX(b)) / area.Width +
+                Math.Abs(CenterY(a) - CenterY(b)) / area.Height);
             var readingLoss = 3.4 * occlusionLoss + 1.8 * (1 - capacity);
             var accessLoss = Math.Max(0, 1 - exposure.AccessWidth / Math.Max(1, Math.Min(140 * scale, b.Width * .30)));
-            information += demand * readingLoss;
+            information += intent.ReadableContent * readingLoss;
             // Read-together and quick-switch interpretations share the title/access outcome.
             // Ambiguous evidence also charges the worse residual of the two interpretations.
-            uncertainty += alternativeDemand * Math.Max(.35 * readingLoss, accessLoss);
-            if (context.PairPlanningEnabled && context.Focus is { Companion: not 0, Evidence: not "handoff" } working &&
-                w.Handle == working.Companion && context.PairHints?.Any(h => h.Relation == TaskRelation.Alternating &&
-                    (h.First == w.Handle || h.Second == w.Handle)) != true &&
-                context.Placement?.Any(p => p.Partner == w.Handle && p.RevealedCell >= 0) != true)
-            {
-                // Background windows should not dilute the visibility of the two working surfaces.
-                information += windows.Length * 1.5 * thirdPartyLoss;
-            }
+            uncertainty += intent.Ambiguity * Math.Max(.35 * readingLoss, accessLoss);
+            information += intent.PeerExposure * thirdPartyLoss;
             if (context.VideoHint is { Confidence: >= .82, ContentAspectRatio: >= .55 and <= 4.5 } video && video.WindowHandle == w.Handle)
             {
                 var chromeX = Math.Max(0, a.Width - video.ViewportVisualRect.Width);
@@ -735,7 +603,7 @@ internal static partial class IntentLayoutPlanner
                     if (after[i].Intersect(obstacle.VisualRect).Area >
                         before[i].Intersect(previousObstacleRects.GetValueOrDefault(obstacle.Handle)).Area) return false;
             var task = trace.Task?.Relations ?? InferTask(group, original, groupContext);
-            var demands = MeasureDemand(group.Length, task);
+            var demands = trace.Task?.Objectives ?? CompileObjectives(group, task, groupContext, goals);
             var hint = new IntentHint((int)Math.Round(8 * group[0].Window.Dpi / 96.0), 0, 0);
             var changed = EffectiveBreakdown(TaskCost(group, original, c, task, demands, area, groupContext, hint, afterObstacles, goals), options.SmartStrength, task);
             var plannedCost = EffectiveBreakdown(TaskCost(group, original, new("planned", before, order), task, demands, area, groupContext, hint, beforeObstacles, goals), options.SmartStrength, task);

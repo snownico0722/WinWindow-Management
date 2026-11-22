@@ -18,7 +18,8 @@ public sealed record RelationReferenceSample(DateTimeOffset Time, string Context
     string Kind, double OverlapRatio);
 public sealed record PlannedWindow(int Id, RectI Target);
 public sealed record PlannedGroup(int[] Ids, string Selected, double StackEvidence,
-    LayoutCandidateTrace[] Candidates, TaskGroupExplanation? Task = null, LayoutAxisCoverage[]? AxisCoverage = null);
+    LayoutCandidateTrace[] Candidates, TaskGroupExplanation? Task = null, LayoutAxisCoverage[]? AxisCoverage = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] SolverPortfolio? Portfolio = null);
 public sealed record ProjectedPlan(PlannedWindow[] Targets, int[][] Layers, string[] Selected);
 public sealed record RejectedWindowMove(int Id, RectI Target, int Win32Error);
 public sealed record RecordedDividerRelease(RectI Start, RectI End, RectI WorkArea);
@@ -44,7 +45,7 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     RecordedShadowFinding[]? ShadowReplay = null)
 {
-    internal const int CurrentVersion = 14;
+    internal const int CurrentVersion = 16;
 }
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
@@ -153,7 +154,8 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     RecordedDividerRelease? DividerRelease = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Dictionary<int, string>? InstanceUses = null)
+    Dictionary<int, string>? InstanceUses = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] SolverRating[]? SolverRatings = null)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids, IReadOnlyList<WindowSnapshot>? snapshot = null)
     {
@@ -209,7 +211,8 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             context.AllowGestureAssist && Id(context.GestureAnchor) != 0 &&
             context.RecentGesture is { Kind: ManualGestureKind.Resize } release && release.WindowHandle == context.GestureAnchor
                 ? new(release.StartRect, release.EndRect, release.WorkArea) : null,
-            context.InstanceUses?.Where(e => Id(e.Key) != 0).ToDictionary(e => Id(e.Key), e => e.Value));
+            context.InstanceUses?.Where(e => Id(e.Key) != 0).ToDictionary(e => Id(e.Key), e => e.Value),
+            context.SolverRatings is { Length: > 0 } ratings ? ratings : null);
     }
 
     private static ShadowAxis? ReadShadowRule(RecordedShadowRule value) =>
@@ -233,7 +236,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         InstanceUses = InstanceUses?.Where(e => e.Key > 0 && CompiledLayoutRules.IsInstanceUse(e.Value)).ToDictionary(e => (nint)e.Key, e => e.Value),
         Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),
         Attention = Attention?.ToDictionary(a => (nint)a.Key, a => a.Value),
-        GestureAnchor = GestureAnchor, GestureTarget = GestureTarget,
+        SolverRatings = SolverRatings, GestureAnchor = GestureAnchor, GestureTarget = GestureTarget,
         ReplayDivider = DividerRelease,
         ShadowAxes = (ShadowRules ?? []).Select(ReadShadowRule).OfType<ShadowAxis>().ToArray(),
         VerifiedTaskRepeat = VerifiedTaskRepeat,

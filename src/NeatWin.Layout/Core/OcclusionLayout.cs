@@ -2,7 +2,7 @@ namespace NeatWin.Core;
 
 internal static partial class IntentLayoutPlanner
 {
-    private sealed record Candidate(string Kind, RectI[] Rects, int[] Order);
+    internal sealed record Candidate(string Kind, RectI[] Rects, int[] Order);
 
     private static void AddOverlapping(List<Candidate> candidates, VisibleWindow[] windows,
         RectI[] original, RectI area, IntentHint hint)

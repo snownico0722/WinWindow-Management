@@ -237,3 +237,15 @@ v13 请求的 `Signals.InstanceUses` 用会话窗口编号记录求解前识别�
 `Signals.Placements[].Bands` 保存有独立手动样本支持的横向中心、宽度和高度范围，单位为工作区比例。对应的单值是请求时从当前几何到区间的最近目标。旧请求只有单值，回放沿用当时的信息。原始手势轨迹、尺寸和每次松手仍完整保留。
 
 分析报告 v2 的 `HorizontalReleaseDistanceDelta` 和 `VerticalReleaseDistanceDelta` 表示候选与基线到历史松手的距离差。负值代表更接近那次松手。`ObservedOnRecordedDesktop` 按会话内请求去重，统计记录到的人工补调和已确认撤销。没有补调计数时为 null。每个回放方案的参考区损失另见 `ReferenceEvaluation`，只在相同决策输入、观察基础和参考窗口上比较。判断是否真正减少手调，需要新版本使用后的记录。
+
+### v15 任务意图及逐窗代价
+
+有求解记录时，查看每个组的 `Task.Relations[].Purpose`、`Source` 和 `Task.Objectives`。关系的 `First`、`Second` 是 `Ids` 数组的从零开始的下标。目标数组与 `Ids` 同序。并读、交替、兼看分别记作 `read-together`、`alternate`、`keep-in-view`；证据不足时可以没有用途。未进入求解组的后台参照仍可在 `SceneEffects` 看到原有区域的损失和上限。旧记录或提前结束的路径可以没有目标数组。
+
+`ReadableContent`、`PeerExposure`、`Ambiguity`、`BackgroundDrift` 和 `Motion` 是整理前冻结的代价参数，候选的实际分项成本见 `Candidates[].Breakdown`。与 `Selected`、提交记录和用户后续动作对照，才能分清场景是否命中、方案是否被采用以及用户是否再次调整。离线回放展示待测版本对相同输入的解释，保留历史记录自身的解释用于比较。
+
+## v16 完整候选和算法信誉
+
+每个参与搜索的组可含 `Portfolio`。`Rectangles` 是本组像素外框表，每行依次为 X、Y、宽、高。`Ballots[].Frames[i]` 指向组内第 i 扇窗的矩形，窗口身份对应同组 `Ids[i]`。`Order` 按前到后保存组内下标。整组几何与顺序相同的提案在 `Sources` 下合并。`Feasible` 表示通过求解约束，`Eligible` 还要求达到主动出手门槛。`Rank` 为加入算法信誉前的排序成本。`Representatives` 按来源给出代表提案下标，`WithoutReputation` 与 `Selected` 便于逐次核对信誉有没有改变选择。`Hypotheses` 给出双窗歧义的解释权重。绕过搜索的请求和旧版本可能缺少该组信息。
+
+`Signals.SolverRatings` 保存决策前实际使用的信誉。决策后的证据单列于导出的 `solver-feedback-v1.json`，用 `RequestId` 连接，`GroupIndex` 指向原请求的组。`Edits` 记录用户改变的组内窗口、轴、起止值和容差，`Votes` 是各算法在这些轴上相对接近松手位置的程度。`Kept` 表示系统在该组没有提交几何或层级变化。长期记录最多保留最近 1024 次可归因纠正。暂停时的新样本仅在本次运行中参与学习，主动导出的当前快照可以包含追溯期内的样本。导出可能只覆盖反馈和请求中的一方。旧记录缺少反馈属于未知，不能解释为满意。

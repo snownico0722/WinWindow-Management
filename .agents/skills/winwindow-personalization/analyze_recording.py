@@ -194,7 +194,9 @@ class Recording:
                                    "ReadingInput": (row.get("Signals") or {}).get("ReadingInput"),
                                    "CandidateGroups": [{"Ids": g.get("Ids"), "Selected": g.get("Selected"),
                                        "Limits": (g.get("Task") or {}).get("Limits"),
-                                       "AxisCoverage": g.get("AxisCoverage"), "HeldAxes": [
+                                       "Relations": (g.get("Task") or {}).get("Relations"),
+                                       "Objectives": (g.get("Task") or {}).get("Objectives"),
+                                       "Portfolio": g.get("Portfolio"), "AxisCoverage": g.get("AxisCoverage"), "HeldAxes": [
                                            {"Held": c["Held"], "Rejection": c.get("Rejection")} for c in g.get("Candidates") or []
                                            if c.get("Held")]} for g in row.get("Groups") or []],
                                    "ProposedTargets": (row.get("Proposal") or {}).get("Targets"),
@@ -806,7 +808,7 @@ def activity_report(record):
             "Switches": [{"From": src, "To": dst, "Count": n} for (src,dst),n in switches.most_common()]}
 
 
-def read_recordings(paths, include_probe_frames=False):
+def read_recordings(paths, include_probe_frames=False, feedback=None):
     sessions = defaultdict(lambda: Recording(include_probe_frames))
     seen = set()
     archives, malformed = [], []
@@ -817,6 +819,19 @@ def read_recordings(paths, include_probe_frames=False):
         with ZipFile(path) as archive:
             snapshots = any(entry.filename == "timeline.jsonl" for entry in archive.infolist())
             for entry in archive.infolist():
+                if feedback is not None and Path(entry.filename).name == "solver-feedback-v1.json":
+                    try:
+                        with archive.open(entry) as reader:
+                            votes = json.load(reader)
+                        if not isinstance(votes, list):
+                            raise ValueError("expected solver feedback array")
+                        for vote in votes:
+                            if not isinstance(vote, dict) or not isinstance(vote.get("RequestId"), str):
+                                raise ValueError("missing feedback request")
+                            feedback.setdefault(vote["RequestId"], vote)
+                    except (ValueError, UnicodeError):
+                        malformed.append({"Archive": Path(path).name, "Entry": entry.filename})
+                    continue
                 stream = stream_of(Path(entry.filename).name)
                 if not stream:
                     continue
@@ -867,8 +882,16 @@ def write_activity_probes(paths, output):
 
 
 def analyze(paths, baseline_paths=(), candidate_paths=()):
-    sessions, archives, malformed, dup = read_recordings(paths)
+    feedback = {}
+    sessions, archives, malformed, dup = read_recordings(paths, feedback=feedback)
     reports = {key: record.report() for key, record in sorted(sessions.items())}
+    for report in reports.values():
+        groups = [group["Portfolio"] for plan in report["Plans"].values()
+                  for group in plan["CandidateGroups"] if group.get("Portfolio")]
+        report["AlgorithmReputation"] = {
+            "ObservedGroups": len(groups),
+            "ChangedSelections": sum(g["Selected"] != g["WithoutReputation"] for g in groups),
+            "Feedback": [feedback.pop(key) for key in report["Plans"] if key in feedback]}
     if baseline_paths or candidate_paths:
         baseline = merge_replays(baseline_paths)
         candidate = merge_replays(candidate_paths)
@@ -880,7 +903,7 @@ def analyze(paths, baseline_paths=(), candidate_paths=()):
             if has_probes:
                 score_missed_replays(key, report, baseline, candidate, probe=True)
     return {"ReportVersion": 2, "Archives": archives, "DuplicateRowsSkipped": dup, "InvalidRows": malformed,
-            "Sessions": reports}
+            "UnlinkedSolverFeedback": list(feedback.values()), "Sessions": reports}
 
 
 def read_replay(path):

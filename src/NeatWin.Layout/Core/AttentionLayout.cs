@@ -91,6 +91,8 @@ internal static class AttentionLayout
             if (role == AttentionRole.Reference && context.PairHints?.Any(h => h.Relation == TaskRelation.Alternating &&
                 (h.First == w.Handle && h.Second == focus.Main || h.Second == w.Handle && h.First == focus.Main)) == true)
                 role = AttentionRole.Return;
+            if (role == AttentionRole.Reference && context.Scene?.PrefersGlance(w.Handle, context) == true)
+                role = AttentionRole.Background;
             var hint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
             double floating = Math.Max(Floating(hint), role == AttentionRole.Main ? transition : 0);
             bool movable = !waiting && context.GestureAnchor != w.Handle && hint?.Anchor != true && !context.HoldsTextView(w);

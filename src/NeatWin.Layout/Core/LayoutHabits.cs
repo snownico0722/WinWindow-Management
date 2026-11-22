@@ -815,8 +815,20 @@ public sealed class ForegroundHistory
             // Normalize direct, recent transitions against both windows' traffic. A window
             // shared across several tasks can have many switches without a dominant peer.
             var weights = attention;
+            // 相同切换次数下，余下访问集中在另一位搭档，和分散到许多中转目标，是不同的配对证据。
+            // 用两个独立抽样落在不同替代目标的概率降权；只有一个搭档或只有一个替代者时保持原分。
+            double total = partners.Values.Sum(p => p.Weight);
+            double squares = partners.Values.Sum(p => p.Weight * p.Weight);
+            static double AlternativeConcentration(double weight, double total, double squares)
+            {
+                double rest = total - weight;
+                if (rest <= 0) return 1;
+                double diverse = Math.Clamp(1 - (squares - weight * weight) / (rest * rest), 0, 1);
+                return 1 / (1 + rest / total * diverse);
+            }
             var associations = partners.Select(p => (Peer: p.Key, p.Value.Count, p.Value.Weight,
-                Association: 2 * p.Value.Weight / (traffic[main] + traffic[p.Key]))).ToArray();
+                Association: 2 * p.Value.Weight / (traffic[main] + traffic[p.Key]) *
+                    AlternativeConcentration(p.Value.Weight, total, squares))).ToArray();
             foreach (var p in associations)
                 weights[p.Peer] = weights[p.Peer] with { Association = p.Association };
             var ranked = associations

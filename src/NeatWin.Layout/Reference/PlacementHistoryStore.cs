@@ -13,6 +13,59 @@ internal sealed class PlacementHistoryStore(string directory)
     private byte[]? _key;
     private LayoutHabit[]? _samples;
 
+    internal const string FeedbackFile = "solver-feedback-v1.json";
+    private string FeedbackPath => Path.Combine(directory, FeedbackFile);
+    private SolverFeedback[]? _durableFeedback;
+    private readonly Queue<SolverFeedback> _sessionFeedback = new();
+    private SolverRating[]? _ratings;
+    private bool _feedbackDirty;
+
+    internal SolverFeedback[] DurableFeedback()
+    {
+        if (_durableFeedback != null) return _durableFeedback;
+        try
+        {
+            using var stream = File.OpenRead(FeedbackPath);
+            _durableFeedback = JsonSerializer.Deserialize<SolverFeedback[]>(stream)?
+                .Where(f => f is { RequestId.Length: > 0, Context.Length: > 0, Edits.Length: > 0, Votes.Count: > 1 })
+                .DistinctBy(f => f.RequestId).TakeLast(1024).ToArray();
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { }
+        return _durableFeedback ??= [];
+    }
+
+    internal SolverRating[] Ratings() => _ratings ??= SolverFeedbackSession.Ratings(DurableFeedback().Concat(_sessionFeedback));
+    internal void LearnFeedback(SolverFeedback sample, bool durable)
+    {
+        if (DurableFeedback().Any(f => f.RequestId == sample.RequestId) || _sessionFeedback.Any(f => f.RequestId == sample.RequestId)) return;
+        if (durable)
+        {
+            _durableFeedback = DurableFeedback().Append(sample).TakeLast(1024).ToArray();
+            _feedbackDirty = true;
+        }
+        else
+        {
+            // 暂停记录时仍可在本次会话适应，恢复记录不会把暂停期的样本补写到磁盘。
+            _sessionFeedback.Enqueue(sample);
+            if (_sessionFeedback.Count > 1024) _sessionFeedback.Dequeue();
+        }
+        _ratings = null;
+    }
+
+    internal void FlushFeedback()
+    {
+        if (!_feedbackDirty) return;
+        try
+        {
+            Directory.CreateDirectory(directory);
+            using (var file = File.Create(FeedbackPath + ".tmp")) JsonSerializer.Serialize(file, _durableFeedback);
+            File.Move(FeedbackPath + ".tmp", FeedbackPath, true);
+            _feedbackDirty = false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { System.Diagnostics.Trace.TraceWarning($"Solver feedback deferred: {ex.Message}"); }
+    }
+
     internal string? Key(string identity, bool create)
     {
         if (_key == null)
@@ -67,7 +120,8 @@ internal sealed class PlacementHistoryStore(string directory)
 
     internal void Clear()
     {
-        _key = null; _samples = null;
-        foreach (var p in new[] { HistoryPath, KeyPath }) { File.Delete(p); File.Delete(p + ".tmp"); }
+        _key = null; _samples = null; _durableFeedback = null; _ratings = null; _feedbackDirty = false; _sessionFeedback.Clear();
+        if (!Directory.Exists(directory)) return;
+        foreach (var p in new[] { HistoryPath, KeyPath, FeedbackPath }) { File.Delete(p); File.Delete(p + ".tmp"); }
     }
 }

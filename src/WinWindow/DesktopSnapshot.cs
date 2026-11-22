@@ -150,6 +150,10 @@ internal static class DesktopSnapshot
                     }
                     using (var writer = Writer(zip, "interactions-snapshot.jsonl"))
                         foreach (var item in interactions) writer.WriteLine(JsonSerializer.Serialize(item));
+                    var feedback = (capture?.PastFeedback ?? []).Concat(capture?.LiveFeedback.ToArray() ?? [])
+                        .Where(f => f.Tick <= endTick).Select(f => f.Sample).DistinctBy(f => f.RequestId);
+                    using (var writer = Writer(zip, "solver-feedback-v1.json"))
+                        writer.Write(JsonSerializer.Serialize(feedback));
                     using (var writer = Writer(zip, "layout-decisions.jsonl"))
                         foreach (var plan in plans) writer.WriteLine(JsonSerializer.Serialize(plan));
                 }

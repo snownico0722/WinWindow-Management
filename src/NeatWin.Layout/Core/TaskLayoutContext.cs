@@ -69,6 +69,7 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     // another placement adjustment. Live and replay callers set this from the event kind.
     internal IReadOnlyDictionary<nint, string>? InstanceUses { get; init; }
     internal IReadOnlyDictionary<nint, string?>? AppKeys { get; init; }
+    internal SolverRating[]? SolverRatings { get; init; }
     internal ActiveLayoutScene? Scene { get; init; }
     internal ShadowAxis[]? ShadowAxes { get; init; }
     internal ShadowReplayProbe? ShadowProbe { get; init; }
