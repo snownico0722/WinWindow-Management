@@ -186,7 +186,7 @@ internal static partial class IntentLayoutPlanner
     {
         foreach (var region in context.Placement ?? [])
         {
-            if (region.RevealedCell is < 0 or >= 16 || region.Confidence <= .25) continue;
+            if (region.RevealedCell is < 0 or >= 16 || region.RegionConfidence <= .25) continue;
             int cover = Array.FindIndex(windows, w => w.Window.Handle == region.Window);
             int watched = Array.FindIndex(windows, w => w.Window.Handle == region.Partner);
             if (cover < 0 || watched < 0) continue;
@@ -210,11 +210,11 @@ internal static partial class IntentLayoutPlanner
         if (main < 0) main = 0;
         var peer = Array.FindIndex(windows, w => w.Window.Handle == context.Focus?.Companion);
         var pref = context.Placement?.FirstOrDefault(p => p.Window == windows[main].Window.Handle);
-        if (peer < 0 && pref?.Partner is not null and not 0)
+        if (peer < 0 && pref is { PreferCenter: true, Partner: not 0 })
             peer = Array.FindIndex(windows, w => w.Window.Handle == pref.Partner);
         if (peer < 0)
         {
-            var mirror = context.Placement?.Where(p => p.Partner == windows[main].Window.Handle && p.Confidence >= .4)
+            var mirror = context.Placement?.Where(p => p.Partner == windows[main].Window.Handle && p.PositionConfidence >= .4)
                 .OrderByDescending(p => p.Confidence).FirstOrDefault();
             if (mirror != null) peer = Array.FindIndex(windows, w => w.Window.Handle == mirror.Window);
         }

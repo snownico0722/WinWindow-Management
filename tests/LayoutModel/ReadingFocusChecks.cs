@@ -7,8 +7,8 @@ internal static class ReadingFocusChecks
     {
         var work = new RectI(0, 0, 1920, 1040);
         var rect = new RectI(180, 150, 850, 650);
-        WindowSnapshot main = new(1, rect, rect, work, 1, default, true, true, true, 0, 96, 100);
-        WindowSnapshot source = main with { Handle = 2, IsForeground = false, ZOrder = 1, ProcessId = 200 };
+        WindowSnapshot main = new(1, rect, rect, work, 1, default, true, true, true, 0, 96, uint.MaxValue - 1);
+        WindowSnapshot source = main with { Handle = 2, IsForeground = false, ZOrder = 1, ProcessId = uint.MaxValue - 2 };
         WindowUseRole Role(string exe, string className, FocusedOfficeSurface surface = 0) => WindowUseRoles.Identify(exe, className, surface);
         check(Role("WeChat.exe", "WeChatMainWndForPC") == WindowUseRole.Chat &&
             Role("Weixin.exe", "Qt51514QWindowIcon") == WindowUseRole.Chat &&

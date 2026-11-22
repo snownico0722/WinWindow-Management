@@ -17,7 +17,7 @@ internal static class FollowHandAssistant
         IReadOnlyList<VisibleWindow> visibleWindows,
         TidyOptions options,
         SmartInteractionContext interaction,
-        SmartPersonalizationState personalization, GesturePreview? preview = null)
+        SmartPersonalizationState personalization, GesturePreview? preview = null, TaskLayoutContext? task = null)
     {
         personalization = personalization.Normalize();
         var moved = visibleWindows.FirstOrDefault(item => item.Window.Handle == gesture.WindowHandle);
@@ -96,6 +96,10 @@ internal static class FollowHandAssistant
                 (1.15 * attentionPenalty) -
                 (0.020 * correction / scale);
 
+            // 一次松手只给手下这扇窗低成本。轻度模式也读取同一场景的打断权重，在候选评分中生效。
+            if (task != null)
+                score -= (task.Scene?.Settings?.Weights?.Interruption ?? 1) * IntentLayoutPlanner.AttentionInterruption(
+                    moved, candidate.Target, task, task.WindowHints?.FirstOrDefault(h => h.Handle == moved.Window.Handle), directSnap: true);
             if (score > bestScore)
             {
                 best = candidate;

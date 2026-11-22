@@ -2,15 +2,31 @@ namespace NeatWin.Core;
 
 internal static class PlacementPreferences
 {
-    internal const string ModelVersion = "v2.2";
+    internal const string ModelVersion = "v2.3";
 
     private const double MinimumConfidence = .40;
     private const double ConfidenceMargin = .08;
     private sealed record Choice(PlacementPreference? Preference, bool Ambiguous, bool FromActivePair);
 
     internal static PlacementPreference[] Bind((WindowSnapshot Window, string? App, string Instance)[] entries,
-        LayoutFocus focus, IReadOnlyList<LayoutHabit> stored, IReadOnlyList<LayoutHabit> session, DateTimeOffset now)
+        LayoutFocus focus, IReadOnlyList<LayoutHabit> stored, IReadOnlyList<LayoutHabit> session, DateTimeOffset now,
+        Func<nint, nint, PlacementUsage?>? use = null)
     {
+        // 后台播放的对象可以明确搭配关系，即使这个窗口不需要接收焦点。
+        var observedPeers = new Dictionary<nint, nint>();
+        if (use != null)
+        {
+            foreach (var group in entries.GroupBy(e => (e.Window.MonitorHandle, e.Window.WorkArea)))
+            {
+                var front = group.FirstOrDefault(e => e.Window.IsForeground).Window;
+                if (front == null) continue;
+                var peers = group.Where(e => e.Window.Handle != front.Handle &&
+                    use(front.Handle, e.Window.Handle) == PlacementUsage.BackgroundPlayback).Take(2).ToArray();
+                if (peers.Length != 1 || focus.Companion != 0) continue;
+                observedPeers[front.Handle] = peers[0].Window.Handle;
+                observedPeers[peers[0].Window.Handle] = front.Handle;
+            }
+        }
         var choices = new Dictionary<nint, Choice>();
         var solo = new Dictionary<nint, PlacementPreference>();
         // Instance votes only describe this particular live window. Apply them after app-wide priors.
@@ -33,7 +49,11 @@ internal static class PlacementPreferences
         return preferred.Select(p => p.Partner == 0 || accepted.GetValueOrDefault(p.Partner) == p.Window
                 ? p : solo.GetValueOrDefault(p.Window)).OfType<PlacementPreference>().ToArray();
 
-        nint ActivePeer(nint window) => window == focus.Main ? focus.Companion : window == focus.Companion ? focus.Main : 0;
+        nint ActivePeer(nint window)
+        {
+            nint active = window == focus.Main ? focus.Companion : window == focus.Companion ? focus.Main : 0;
+            return active != 0 ? active : observedPeers.GetValueOrDefault(window);
+        }
 
         void Add(IReadOnlyList<LayoutHabit> samples, bool instance)
         {
@@ -77,7 +97,8 @@ internal static class PlacementPreferences
                         choices[window.Handle] = new(best ?? solo.GetValueOrDefault(window.Handle), ambiguous, active != 0 && best != null);
 
                     PlacementPreference? Resolve(IEnumerable<LayoutHabit> history, string? peer, nint handle) =>
-                        LayoutHabits.Resolve(history, window, key, peer, handle, now, instance) is { Confidence: >= MinimumConfidence } p ? p : null;
+                        LayoutHabits.Resolve(history, window, key, peer, handle, now, instance,
+                            use?.Invoke(window.Handle, handle)) is { Confidence: >= MinimumConfidence } p ? p : null;
                 }
             }
         }

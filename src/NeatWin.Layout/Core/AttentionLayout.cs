@@ -596,7 +596,7 @@ internal static partial class IntentLayoutPlanner
             }
             if (i != steps[^1])
                 frontier = next.Values.Select(c => (Candidate: c, Score: score(c)))
-                    .OrderBy(x => x.Score.Goal).ThenBy(x => x.Score.Total).Take(4).Select(x => x.Candidate).ToList();
+                    .OrderBy(x => x.Score.Total).Take(4).Select(x => x.Candidate).ToList();
         }
 
         IEnumerable<RectI> Positions(Candidate seed, int i)

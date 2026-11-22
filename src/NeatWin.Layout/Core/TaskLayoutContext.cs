@@ -84,7 +84,7 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
         Attention?.GetValueOrDefault(GestureAnchor)?.RecentReturn?.MatchesRelease(g) == true ? GestureAnchor : 0;
     internal WorkspaceChangeCause WorkspaceCause { get; init; }
 
-    // 这些系数只调节同等可读性下的动作门槛。救回屏外窗口或满足明确手势仍有自己可核对的空间收益。
+    // 这些系数决定相对原位要多少净收益才值得提交，不代替窗口实际几何变化的感知成本。
     internal double InterventionWeight(bool followsGesture) =>
         ExplicitArrange ? 1 : followsGesture ? .85 :
         Focus?.OpeningResidentLeft != null || WorkspaceCause.HasFlag(WorkspaceChangeCause.Membership) ? .55 :
@@ -142,12 +142,14 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
             double position = preference.PositionConfidence * (1 - (correction.X?.Cost(rect.X, x) ?? 0));
             double horizontal = preference.WidthConfidence * (1 - (correction.Width?.Cost(rect.Width, width) ?? 0));
             double vertical = preference.HeightConfidence * (1 - (correction.Height?.Cost(rect.Height, height) ?? 0));
-            double confidence = Math.Max(position, Math.Max(horizontal, vertical));
+            // 老记录的区域置信度继承位置证据。独立验证过的露出区域保留，回拖约束仍决定是否可以移动。
+            double region = preference.RevealedCell < 0 ? 0 : preference.AxisConfidence?.Region ?? position;
+            double confidence = Math.Max(region, Math.Max(position, Math.Max(horizontal, vertical)));
             if (confidence >= .40)
-                revised.Add(preference with { Confidence = confidence, AxisConfidence = new(position, horizontal, vertical),
+                revised.Add(preference with { Confidence = confidence, AxisConfidence = new(position, horizontal, vertical, region),
                     PreferCenter = position >= .40, PreferWidth = horizontal >= .40, Height = vertical >= .40 ? preference.Height : null,
-                    Partner = position >= .40 ? preference.Partner : 0, Order = position >= .40 ? preference.Order : 0,
-                    RevealedCell = position >= .40 ? preference.RevealedCell : -1, InnerOverlap = position >= .40 ? preference.InnerOverlap : null });
+                    Partner = position >= .40 || region >= .40 ? preference.Partner : 0, Order = position >= .40 ? preference.Order : 0,
+                    RevealedCell = region >= .40 ? preference.RevealedCell : -1, InnerOverlap = position >= .40 ? preference.InnerOverlap : null });
         }
         return this with { Placement = revised.ToArray() };
     }

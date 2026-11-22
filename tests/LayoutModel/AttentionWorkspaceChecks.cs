@@ -12,6 +12,63 @@ internal static class AttentionWorkspaceChecks
         var peer = Window(2, 880, 100, 960, 760);
         var attention = new Dictionary<nint, LayoutAttention> { [1] = new(1, 1, .9, 0, true) };
         var context = new TaskLayoutContext(Focus: new(1, 0, 0), Attention: attention, UseWorkingPairs: true);
+        var shown = new VisibleWindow(document, document.VisualRect.Area, document.VisualRect.Area, 1);
+        var wider = document.VisualRect with { Width = document.VisualRect.Width + 30 };
+        var reading = new TaskWindowHint(document.Handle, Role: WindowUseRole.Document);
+        double Perceived(TaskLayoutContext ctx, RectI target) =>
+            IntentLayoutPlanner.AttentionInterruption(shown, target, ctx, reading);
+        var afterRelease = context with { GestureAnchor = document.Handle, GestureTarget = wider };
+        var fresh = context with { FirstPlacementWindow = document.Handle };
+        var movingPeer = context with { GestureAnchor = peer.Handle, GestureTarget = wider };
+        var repeated = context with { Attention = new Dictionary<nint, LayoutAttention>
+            { [document.Handle] = attention[1] with { RecentSystemPlacement = 1 } } };
+        check(Perceived(context, document.VisualRect) == 0 && Perceived(afterRelease, wider) < Perceived(context, wider) &&
+            Perceived(fresh, wider) < Perceived(context, wider) && Perceived(movingPeer, wider) == Perceived(context, wider) &&
+            Perceived(repeated, wider) > Perceived(context, wider), "same 30px correction costs less at release or first placement and more after a prior submit");
+        var firstCost = new TaskCostBreakdown(0, 0, 0, 0, 0, 0, 0, 0, Goal: new(0, 0, 1));
+        var tinyChange = firstCost with { Goal = default, Interruption = .03 };
+        check(tinyChange.Total < firstCost.Total && new SceneWeights(Interruption: 6).Apply(tinyChange).Total > firstCost.Total &&
+            new AttentionDeficit(0, 0, .01).DemandCost < new AttentionDeficit(0, 0, .02).DemandCost,
+            "a small comfort improvement pays for a cheap adjustment and loses when its perceptual cost grows");
+        var nearlyComfortable = document with { VisualRect = new(area.Left + 50, 40, 910, 710) };
+        const string key = "AAAAAAAAAAAAAAAAAAAAAAAA";
+        IntentLayoutPlan PriceMicroAdjustment(double price)
+        {
+            var scene = new LayoutScene("reader", "workspace", [key], Weights: new(Interruption: price), ReconsiderSettled: true);
+            var ctx = context with { Rules = new(Version: 5, Scenes: [scene]), IsWorkspaceObservation = true,
+                AppKeys = new Dictionary<nint, string?> { [document.Handle] = key } };
+            return LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange([nearlyComfortable], true),
+                new(), null, [nearlyComfortable], ctx);
+        }
+        check(PriceMicroAdjustment(1).Moves is [{ TargetVisualRect.Width: > 910 and < 960 }] &&
+            PriceMicroAdjustment(8).Moves.Count == 0, "same readable window can gain a few pixels or stay put under an imported interruption weight");
+        foreach (bool right in new[] { true, false })
+        {
+            var active = Window(1, right ? 40 : 980, 100, 900, 750);
+            var returning = Window(2, right ? 1080 : -60, 100, 900, 750);
+            var handoffWindows = new[] { active, returning };
+            var weakPreference = new PlacementPreference(2, 0, right ? .28 : .72, .5, 0, -1, .44, PreferWidth: false);
+            var handoff = context with { Focus = new(1, 2, 1, "handoff"), IsWorkspaceObservation = true,
+                Attention = new Dictionary<nint, LayoutAttention>(attention) { [2] = new(.95, .55, .80, 1, false) },
+                Placement = [weakPreference] };
+            var result = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(handoffWindows, true),
+                new(SmartStrength: SmartTidyStrength.Assertive), null, handoffWindows, handoff);
+            var repaired = TaskLayoutSession.Project(handoffWindows, result)[1].VisualRect;
+            check(AttentionLayout.HorizontalSide(repaired, area) == (right ? 1 : -1) && repaired.Intersect(area) == repaired,
+                "a usable return window can be brought just inside the screen without following a weak opposite-side prior");
+        }
+        var clock = new ForegroundHistory();
+        clock.Visit(document.Handle, document.ProcessId, 0);
+        clock.Submitted(new([new(document, wider)], [], []), [document], 120);
+        var landed = document with { VisualRect = wider, OuterRect = wider };
+        clock.Resolve([landed], 240, out var recent);
+        clock.Resolve([document], 250, out var refused);
+        clock.Interact(document.Handle, document.ProcessId, 4500);
+        clock.Resolve([landed], 4500, out var expired);
+        var savedRecent = RecordedTaskSignals.From(context with { Attention = recent },
+            new Dictionary<nint, int> { [document.Handle] = 7 }).ApplyToReplay(new());
+        check(savedRecent.Attention![7].RecentSystemPlacement > .9 && refused[document.Handle].RecentSystemPlacement == 0 &&
+            expired[document.Handle].RecentSystemPlacement == 0, "repeat cost survives replay only for a matching recent placement and input never renews it");
         static RectI[] Solve(WindowSnapshot[] windows, TaskLayoutContext context)
         {
             var visible = new VisibilityAnalyzer().SelectForManualArrange(windows, true);
