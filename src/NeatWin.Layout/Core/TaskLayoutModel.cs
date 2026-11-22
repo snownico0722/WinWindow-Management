@@ -291,8 +291,8 @@ internal static partial class IntentLayoutPlanner
             var scale = window.Dpi / 96.0;
             var widthFloor = Math.Min(a.Width, context.Preferences.ComfortableWidthDip * scale) * .60;
             var heightFloor = Math.Min(a.Height, context.Preferences.ComfortableHeightDip * scale) * .60;
-            if (goals?[i] is { LearnedWidth: true } learnedWidth) widthFloor = Math.Min(widthFloor, learnedWidth.Width);
-            if (goals?[i] is { LearnedHeight: true } learnedHeight) heightFloor = Math.Min(heightFloor, learnedHeight.Height);
+            if (goals?[i] is { LearnedWidth: true } learnedWidth) widthFloor = Math.Min(widthFloor, learnedWidth.WidthFor(b.Width, area.Width));
+            if (goals?[i] is { LearnedHeight: true } learnedHeight) heightFloor = Math.Min(heightFloor, learnedHeight.HeightFor(b.Height, area.Height));
             if (goals?[i] is { MinimumFrameWidth: > 0 } budget && !gestureEndpoint)
                 widthFloor = Math.Max(widthFloor, Math.Min(a.Width, budget.MinimumFrameWidth));
             if (a.Width <= area.Width && (b.Width < widthFloor || !gestureEndpoint && b.Width > Math.Max(a.Width * 1.50, Math.Max(goals?[i].FrameWidth ?? 0, goals?[i].Width ?? 0)))) return false;
@@ -307,8 +307,8 @@ internal static partial class IntentLayoutPlanner
                     ? hint.UsefulWidthDip.Value : context.Preferences.ComfortableWidthDip) * scale);
                 double usefulHeight = Math.Min(a.Height, (hint?.UsefulHeightDip is > 0 and <= 3000
                     ? hint.UsefulHeightDip.Value : context.Preferences.ComfortableHeightDip) * scale);
-                if (goals?[i] is { LearnedWidth: true } preferredWidth) usefulWidth = Math.Min(usefulWidth, preferredWidth.Width);
-                if (goals?[i] is { LearnedHeight: true } preferredHeight) usefulHeight = Math.Min(usefulHeight, preferredHeight.Height);
+                if (goals?[i] is { LearnedWidth: true } preferredWidth) usefulWidth = Math.Min(usefulWidth, preferredWidth.WidthFor(b.Width, area.Width));
+                if (goals?[i] is { LearnedHeight: true } preferredHeight) usefulHeight = Math.Min(usefulHeight, preferredHeight.HeightFor(b.Height, area.Height));
                 if (goals?[i] is { Role: AttentionRole.Main, FrameWidth: > 0 } primary)
                     usefulWidth = Math.Min(usefulWidth, primary.Width);
                 if (goals?[i] is { Role: AttentionRole.Reference } reference)
@@ -456,13 +456,13 @@ internal static partial class IntentLayoutPlanner
                 if (target.Role is AttentionRole.Main or AttentionRole.Reference &&
                     context.VideoHint?.WindowHandle != w.Handle)
                 {
-                    needWidth = target.Width;
-                    needHeight = target.Height;
-                    double readable = Math.Min(exposedWidth / target.Width, exposedHeight / target.Height);
+                    needWidth = target.WidthFor(b.Width, area.Width);
+                    needHeight = target.HeightFor(b.Height, area.Height);
+                    double readable = Math.Min(exposedWidth / needWidth, exposedHeight / needHeight);
                     if (target.Role == AttentionRole.Main) mainDeficit += Missing(readable / .72);
                     else accessDeficit += Missing(readable / .60);
                     double comfort = (target.Role == AttentionRole.Main ? 2 : 1) *
-                        (Missing(exposedWidth / target.Width) + Missing(exposedHeight / target.Height));
+                        (Missing(exposedWidth / needWidth) + Missing(exposedHeight / needHeight));
                     comfortDeficit += (1 - stability) * comfort;
                 }
                 if (target.FrameWidth > 0)
@@ -488,8 +488,8 @@ internal static partial class IntentLayoutPlanner
                     double edge = Math.Min(1, b.Width / (double)target.FrameWidth);
                     comfortDeficit += Missing(Math.Min(edge, exposure.CenterVisible));
                 }
-                if (target.LearnedHeight) comfortDeficit += Missing(target.Height / (double)b.Height);
-                if (target.LearnedWidth) comfortDeficit += Missing(target.Width / (double)b.Width);
+                if (target.LearnedHeight) comfortDeficit += Missing(target.HeightFor(b.Height, area.Height) / (double)b.Height);
+                if (target.LearnedWidth) comfortDeficit += Missing(target.WidthFor(b.Width, area.Width) / (double)b.Width);
                 if (target.AccessWidth > 0 && target.Role is AttentionRole.Return or AttentionRole.Reference or AttentionRole.Waiting)
                     accessDeficit += Missing(exposure.AccessWidth / (double)target.AccessWidth);
             }
@@ -663,8 +663,10 @@ internal static partial class IntentLayoutPlanner
             double targetCenter = (CenterX(r) - area.Left) / area.Width;
             // 强且一致的个人位置偏好能承担一次可见的换侧。宽度证据、低置信度试摆不会给横移加分。
             double error = preference.PositionConfidence * preference.PositionConfidence * (1 + 5 * preference.PositionConfidence) *
-                Math.Abs(targetCenter - preference.Center);
-            error += .5 * preference.WidthConfidence * Math.Abs(r.Width / (double)area.Width - preference.Width);
+                Math.Abs(targetCenter - (preference.Bands?.Center?.Nearest(targetCenter, preference.Center) ?? preference.Center));
+            double candidateWidth = r.Width / (double)area.Width;
+            error += .5 * preference.WidthConfidence * Math.Abs(candidateWidth -
+                (preference.Bands?.Width?.Nearest(candidateWidth, preference.Width) ?? preference.Width));
             int peer = Array.FindIndex(windows, w => w.Window.Handle == preference.Partner);
             if (peer >= 0 && Math.Abs(preference.Order) >= .5 &&
                 Math.Sign(CenterX(r) - CenterX(candidate.Rects[peer])) != Math.Sign(preference.Order))

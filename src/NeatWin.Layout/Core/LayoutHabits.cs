@@ -56,10 +56,33 @@ public sealed record PlacementUseObservation(int Foreground, int JointPeer, bool
 public sealed record PlacementConfidence(double Position, double Width, double Height,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? Region = null);
 
+// 比例基于同一显示器工作区。单点和显式槽位沿用原来的精确目标。
+public sealed record PlacementBand(double Low, double High)
+{
+    internal bool IsValid => Low >= 0 && Low < High && High <= 1;
+    internal double Nearest(double value, double fallback) => IsValid ? Math.Clamp(value, Low, High) : fallback;
+
+    // 候选落在惯用区间内时，不会仅因与本次起点大小不同而受到个人尺寸惩罚。
+    internal int SizeTarget(int proposed, int extent, int target)
+    {
+        if (!IsValid) return target;
+        int low = Math.Max(1, (int)Math.Round(Low * extent));
+        int high = Math.Max(low, (int)Math.Round(High * extent));
+        return target >= low && target <= high ? Math.Clamp(proposed, low, high) : target;
+    }
+}
+
+public sealed record PlacementBands(PlacementBand? Center, PlacementBand? Width, PlacementBand? Height)
+{
+    internal static PlacementBands? From(PlacementBand? center, PlacementBand? width, PlacementBand? height) =>
+        center == null && width == null && height == null ? null : new(center, width, height);
+}
+
 public sealed record PlacementPreference(nint Window, nint Partner, double Center, double Width,
     double Order, int RevealedCell, double Confidence, double? InnerOverlap = null, double? Height = null,
     bool PreferWidth = true, bool PreferCenter = true, PlacementConfidence? AxisConfidence = null,
-    PlacementUsage? Usage = null)
+    PlacementUsage? Usage = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementBands? Bands = null)
 {
     // 老快照只有组级置信度，沿用其证据。新样本按实际调整的轴投票，熟悉宽度不会让左右偏好更可信。
     internal double PositionConfidence => PreferCenter ? AxisConfidence?.Position ?? Confidence : 0;
@@ -1015,6 +1038,7 @@ public static class LayoutHabits
             RevealedCell = region.RevealedCell,
             Confidence = Math.Max(region.RegionConfidence, Math.Max(confidence.Position, Math.Max(confidence.Width, confidence.Height))),
             AxisConfidence = confidence, Usage = usage,
+            Bands = PlacementBands.From(position.Bands?.Center, width.Bands?.Width, height.Bands?.Height),
         };
     }
 
@@ -1051,7 +1075,7 @@ public static class LayoutHabits
         if (sum < 1) return null;
         bool HasSupport(LayoutHabit[] votes) => votes.Length >= minimumVotes &&
             (!sessionOnly || (votes.Max(s => s.Time) - votes.Min(s => s.Time)).TotalMinutes >= 2);
-        (double Value, double Confidence) Estimate(LayoutHabit[] votes, Func<LayoutHabit, double> value)
+        (double Value, double Confidence, PlacementBand? Band) Estimate(LayoutHabit[] votes, Func<LayoutHabit, double> value)
         {
             if (!HasSupport(votes)) return default;
             double weight = votes.Sum(Weight);
@@ -1064,11 +1088,22 @@ public static class LayoutHabits
             }
             // Do not invent an intermediate placement between two competing arrangements.
             // A coherent majority within one-twelfth of the work area may inform this axis.
-            var consistent = votes.Where(s => Math.Abs(value(s) - median) <= AxisTolerance).ToArray();
+            var consistent = votes.Where(s => Math.Abs(value(s) - median) <= AxisTolerance).OrderBy(value).ToArray();
             double coherentWeight = consistent.Sum(Weight);
             if (!HasSupport(consistent) || coherentWeight <= .60 * weight) return default;
-            double average = consistent.Sum(s => Weight(s) * value(s)) / coherentWeight;
-            return (average, coherentWeight / (weight + (sessionOnly ? 2 : 4)));
+            // 只从同一簇的独立手势提取中间六成。一次偏远的松手不应扩大可接受区，也不应拉动中心值。
+            double Quantile(double fraction)
+            {
+                double accumulated = 0;
+                foreach (var sample in consistent)
+                {
+                    accumulated += Weight(sample);
+                    if (accumulated >= fraction * coherentWeight) return value(sample);
+                }
+                return value(consistent[^1]);
+            }
+            var band = new PlacementBand(Quantile(.2), Quantile(.8));
+            return (Quantile(.5), coherentWeight / (weight + (sessionOnly ? 2 : 4)), band.IsValid ? band : null);
         }
         var positions = Independent((specific ? directPair.Concat(mirroredPair) : solo)
             .Where(s => (s.Edited ?? HorizontalEdit.Position).HasFlag(HorizontalEdit.Position)));
@@ -1117,10 +1152,18 @@ public static class LayoutHabits
         if (confidence < .40) return null;
         var descriptiveCenter = used.Sum(s => s.Center * Weight(s)) / sum;
         var descriptiveWidth = used.Sum(s => s.Width * Weight(s)) / sum;
+        var rect = window.VisualRect;
+        var area = window.WorkArea;
+        double Nearest((double Value, double Confidence, PlacementBand? Band) axis, double current) =>
+            axis.Band?.Nearest(current, axis.Value) ?? axis.Value;
+        bool preferHeight = height.Confidence >= .40;
+        var bands = PlacementBands.From(preferCenter ? center.Band : null, preferWidth ? width.Band : null,
+            preferHeight ? height.Band : null);
         return new(window.Handle, specific && (preferCenter || cell >= 0) ? partnerHandle : 0,
-            preferCenter ? center.Value : descriptiveCenter, preferWidth ? width.Value : descriptiveWidth,
+            preferCenter ? Nearest(center, (rect.X - area.X + rect.Width / 2d) / Math.Max(1, area.Width)) : descriptiveCenter,
+            preferWidth ? Nearest(width, rect.Width / (double)Math.Max(1, area.Width)) : descriptiveWidth,
             specific && preferCenter ? positions.Sum(s => Weight(s) * s.Order) / positions.Sum(Weight) : 0,
-            cell, confidence, preferCenter ? overlap : null, height.Confidence >= .40 ? height.Value : null,
-            PreferWidth: preferWidth, PreferCenter: preferCenter, AxisConfidence: new(center.Confidence, width.Confidence, height.Confidence, regionConfidence));
+            cell, confidence, preferCenter ? overlap : null, preferHeight ? Nearest(height, rect.Height / (double)Math.Max(1, area.Height)) : null,
+            PreferWidth: preferWidth, PreferCenter: preferCenter, AxisConfidence: new(center.Confidence, width.Confidence, height.Confidence, regionConfidence), Bands: bands);
     }
 }

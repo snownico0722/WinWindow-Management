@@ -1056,8 +1056,8 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
     var seen = new HashSet<(string, string)>();
     var analyzer = new VisibilityAnalyzer();
     int correctedRuns = 0;
-    double totalNormalizedRegret = 0;
-    int regretSamples = 0;
+    double totalReleaseDistance = 0;
+    int distanceSamples = 0;
     foreach (var entry in planEntries)
     {
         using var reader = new StreamReader(entry.Open());
@@ -1112,7 +1112,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                     ActiveLayoutScene.Resolve(desktop, ctx with { Rules = evaluation }, includeDefaults: false);
                 bool? regionsPreserved = !frame.Truncated && ctx.WindowHints?.Any(h => h.ProtectedRegions is { Length: > 0 }) == true
                     ? IntentLayoutPlanner.DesktopRegionsPreserved(desktop, projected, ctx) : null;
-                double? runRegret = null, verticalError = null;
+                double? horizontalDistance = null, verticalDistance = null;
                 if (edits.Linked.TryGetValue((run.Session, run.RequestId), out var followups))
                 {
                     double horizontal = 0, vertical = 0;
@@ -1130,9 +1130,9 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                     }
                     if (matched > 0)
                     {
-                        runRegret = Math.Round(horizontal / matched, 4);
-                        verticalError = Math.Round(vertical / matched, 4);
-                        if (assumeResizable) { correctedRuns++; totalNormalizedRegret += horizontal; regretSamples += matched; }
+                        horizontalDistance = Math.Round(horizontal / matched, 4);
+                        verticalDistance = Math.Round(vertical / matched, 4);
+                        if (assumeResizable) { correctedRuns++; totalReleaseDistance += horizontal; distanceSamples += matched; }
                     }
                 }
                 Console.WriteLine(JsonSerializer.Serialize(new { run.Session, run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
@@ -1145,7 +1145,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                         .OrderBy(g => g.Tick).Select(g => new { g.GestureId, g.WindowId, g.AutomationMarked, ElapsedMs = g.Prior!.ElapsedMs, g.Change }),
                     RecordedManualFollowups = followups?.Count, RecordedUndoOfThisRequest =
                         edits.Undone.Contains((run.Session, run.RequestId)) ? true : (bool?)null,
-                    PostArrangeRegret = runRegret, PostArrangeVerticalError = verticalError, ProtectedRegionsPreserved = regionsPreserved,
+                    HorizontalReleaseDistance = horizontalDistance, VerticalReleaseDistance = verticalDistance, ProtectedRegionsPreserved = regionsPreserved,
                     Layers = plan.Layers.Select(l => l.FrontToBack.Select(w => (int)w.Handle)),
                     SceneEffects = plan.Scene?.Effects(projected, h => (int)h),
                     EvaluationEffects = evaluation == null || frame.Truncated ? null : evaluator?.Effects(projected, h => (int)h) ?? [],
@@ -1163,5 +1163,5 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
         AutomationMarkedReleases = edits.Starts.HasValue ? edits.MarkedReleases : (int?)null,
         DroppedGestureEvents = edits.Starts.HasValue ? edits.DroppedEvents : (int?)null,
         WithoutLinkedRequest = edits.Total.HasValue ? edits.Unlinked : (int?)null, ExplicitUndoRequests = edits.UndoCount, UndoWithKnownSource = edits.Undone.Count }));
-    Console.WriteLine($"Replayed {seen.Count} distinct requests ({correctedRuns} with post-arrange corrections, mean normalized regret={(regretSamples > 0 ? (totalNormalizedRegret / regretSamples).ToString("F4") : "n/a")}).");
+    Console.WriteLine($"Replayed {seen.Count} distinct requests ({correctedRuns} with post-arrange corrections, mean normalized horizontal release distance={(distanceSamples > 0 ? (totalReleaseDistance / distanceSamples).ToString("F4") : "n/a")}).");
 }

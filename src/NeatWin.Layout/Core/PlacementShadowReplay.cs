@@ -10,13 +10,18 @@ internal sealed record ShadowAxis(nint Window, PlacementAxis Axis, int Value, in
         PlacementAxis.X => rect.X, PlacementAxis.Y => rect.Y, PlacementAxis.Width => rect.Width, _ => rect.Height
     };
 
-    internal RectI Apply(RectI rect) => Axis switch
+    internal RectI Apply(RectI rect)
     {
-        PlacementAxis.X => rect with { X = Value },
-        PlacementAxis.Y => rect with { Y = Value },
-        PlacementAxis.Width => rect with { Width = Value },
-        _ => rect with { Height = Value }
-    };
+        // 回拖给出的容差同样适用于生成候选：已在范围内就保持，越界只移动到最近边界。
+        int nearest = (int)Math.Clamp((long)Get(rect, Axis), (long)Value - Tolerance, (long)Value + Tolerance);
+        return Axis switch
+        {
+            PlacementAxis.X => rect with { X = nearest },
+            PlacementAxis.Y => rect with { Y = nearest },
+            PlacementAxis.Width => rect with { Width = nearest },
+            _ => rect with { Height = nearest }
+        };
+    }
 
     internal bool Matches(RectI rect) => Math.Abs((long)Get(rect, Axis) - Value) <= Tolerance;
 }
@@ -59,9 +64,9 @@ internal sealed class PlacementShadowReplay
     }
 
     private sealed record Submission(Frame Frame, TidyMove[] Moves, WindowSnapshot[] Projected, long Tick);
-    internal sealed record Example(Frame Frame, Scope Scope, ShadowAxis[] Axes);
+    internal sealed record Example(Frame Frame, Scope Scope, ShadowAxis[] Axes, long ReleaseTick);
     private sealed record Rule(Scope Scope, ShadowAxis Axis, long Expires);
-    internal sealed record Finding(Scope Scope, ShadowAxis Axis, string Diagnosis, bool Won);
+    internal sealed record Finding(Scope Scope, ShadowAxis Axis, string Diagnosis, bool Won, long ReleaseTick);
     internal sealed record Scope(WindowSnapshot Window, nint Main, nint Companion, RectI Impact, WindowSnapshot[] Neighbors)
     {
         internal static Scope Capture(WindowSnapshot window, LayoutFocus? focus, IReadOnlyList<WindowSnapshot> desktop, RectI before, RectI submitted)
@@ -136,7 +141,7 @@ internal sealed class PlacementShadowReplay
         Add(PlacementAxis.Width, correction.Width); Add(PlacementAxis.Height, correction.Height);
         if (axes.Count == 0) return;
         if (_queued.Count == MaxExamples) _queued.RemoveAt(0);
-        _queued.Add(new(submission.Frame, scope, axes.ToArray()));
+        _queued.Add(new(submission.Frame, scope, axes.ToArray(), gesture.ReleasedTick ?? now));
 
         void Add(PlacementAxis axis, AxisCorrection? evidence)
         {
@@ -174,13 +179,13 @@ internal sealed class PlacementShadowReplay
             RectI Target(IntentLayoutPlan plan) => plan.Moves.FirstOrDefault(m => m.Window.Handle == axis.Window)?.TargetVisualRect ?? old.VisualRect;
             if (axis.Matches(Target(baseline)) || Math.Abs((long)ShadowAxis.Get(Target(baseline), axis.Axis) - axis.Rejected) > 3)
             {
-                findings.Add(new(example.Scope, axis, "baseline-different", false));
+                findings.Add(new(example.Scope, axis, "baseline-different", false, example.ReleaseTick));
                 continue;
             }
             // 有可行候选就试排序。缺候选时另试一轴生成，仍用原有安全检查与收益门槛。
             var alternative = axis with { Change = probe.Feasible ? ShadowChange.Rank : ShadowChange.Generate };
             bool won = axis.Matches(Target(example.Frame.Solve([alternative])));
-            findings.Add(new(example.Scope, alternative, probe.Feasible ? "lost-on-ranking" : probe.Generated ? "candidate-rejected" : "missing-feasible-candidate", won));
+            findings.Add(new(example.Scope, alternative, probe.Feasible ? "lost-on-ranking" : probe.Generated ? "candidate-rejected" : "missing-feasible-candidate", won, example.ReleaseTick));
         }
         return findings.ToArray();
     }
@@ -189,13 +194,16 @@ internal sealed class PlacementShadowReplay
     {
         _lastFindings = findings;
         _recent.RemoveAll(entry => now - entry.Tick >= RuleLifetimeMs);
-        _recent.AddRange(findings.Select(f => (f, now)));
-        if (_recent.Count > 48) _recent.RemoveRange(0, _recent.Count - 48);
         var rules = _rules.Where(r => r.Expires > now).ToList();
         foreach (var finding in findings)
         {
             System.Diagnostics.Trace.TraceInformation($"Placement shadow replay: {finding.Axis.Axis}, {finding.Diagnosis}, alternative selected={finding.Won}");
             var axis = finding.Axis;
+            // 工作线程重试同一份输入不会产生第二次用户选择，也不能延长已发布规则的寿命。
+            if (_recent.Any(e => e.Finding.ReleaseTick == finding.ReleaseTick &&
+                e.Finding.Axis.Window == axis.Window && e.Finding.Axis.Axis == axis.Axis)) continue;
+            _recent.Add((finding, now));
+            if (_recent.Count > 48) _recent.RemoveAt(0);
             // 同一组窗口、同一轴至少两次接近的人工结果才发布。相反结果保留默认判断。
             var peers = _recent.Select(entry => entry.Finding).Where(f => f.Axis.Axis == axis.Axis && finding.Scope.Matches(f.Scope)).ToArray();
             if (peers.Any(f => Math.Abs((long)f.Axis.Value - axis.Value) > axis.Tolerance))

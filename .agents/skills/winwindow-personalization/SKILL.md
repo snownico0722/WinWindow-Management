@@ -55,6 +55,12 @@ Inspect `OriginSide`, `SceneEffects`, `RepeatedReversal`, `ShadowRules` and `Sha
 
 In placement model v2.3, a gesture can carry a pre-start `StartUsage` observation. Compare independently observed joint work, native text focus and playback within the same pair. A missing label leaves usage unknown. A repeatedly revealed cell can support a visibility preference independently of the side and size. Review the eligible region and each eligible axis separately when comparing alternatives.
 
+### Evaluate placement across sessions
+
+Keep original release geometry. Use v14 `Signals.Placements[].Bands` to inspect the supported center, width and height by use. Check an unseen point inside the range, an outside point, a conflicting use, and a task that needs more reference visibility. Older point-only archives cannot show what the live range learner would have learned. For comparing models, freeze the rule and evaluation subjects before replaying a disjoint session. Deduplicate overlapping exports.
+
+Report v2 distinguishes observed manual follow-ups on the recorded desktop, projected visibility loss on jointly observable subjects, and geometric distance to an individual release. Closer and farther are geometric diagnostics. A missing near-release candidate can be entirely acceptable. Evaluate actual user effort on subsequent use; keep it unknown if only counterfactual replays exist.
+
 ### Tune a child surface
 
 Version 4 also supports `SurfaceRules`. Each entry requires `Id`, the host's `HostApp` key, a `MaxAreaRatio` greater than zero and at most 1, measured as child window area divided by host window area, and an `Action` of `local` or `task`. Specify `ChildApp` when the recorded child class has its own identifiable app key. Use `local` for a short, recurring interaction that should stay attached to its host without triggering desktop reflow. Use `task` when the otherwise similar surface should enter normal layout handling. Treat recorded ownership and foreground handoffs as separate evidence about each surface's role.
