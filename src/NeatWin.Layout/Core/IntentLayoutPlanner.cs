@@ -189,7 +189,7 @@ internal static partial class IntentLayoutPlanner
                     AddAttentionLayouts(candidates, group, original, goals, area, obstacles, hint.GapPixels, order, strength, groupContext, Breakdown);
                 candidates = candidates.DistinctBy(CandidateKey).ToList();
                 var best = candidates[0]; var baselineBreakdown = Breakdown(best);
-                var baseline = baselineBreakdown.Total; var bestScore = baseline; var bestGoal = baselineBreakdown.Goal;
+                var baseline = baselineBreakdown.Total; var bestScore = baseline;
                 var baseThreshold = SelectionThreshold(strength, task) * .60;
                 var needsRescue = options.RescueOffscreenWindows && original.Any(r =>
                     r.Intersect(area).Area < r.Area * .90 || r.Top < area.Top || r.Bottom > area.Bottom);
@@ -229,6 +229,27 @@ internal static partial class IntentLayoutPlanner
                     foreach (var proposal in completion)
                         if (seen.Add(CandidateKey(proposal))) Evaluate(proposal, generation);
                     if (ReferenceEquals(seed, best)) break;
+                }
+
+                // 从实际胜出的方案中逐窗试着保留一组原边界。联合解决遮挡仍然可选；没有额外收益的横移或邻窗联动可被删掉。
+                // 最多检查常见小组的每扇窗三次；所有选择沿用本轮证据和提交门槛，不会引发第二次系统摆放。
+                if (best.Kind != "keep" && group.Length <= 8)
+                {
+                    foreach (int i in order.Reverse())
+                    {
+                        var start = original[i];
+                        var target = best.Rects[i];
+                        if (target == start) continue;
+                        foreach (var simpler in new[] { start, target with { X = start.X, Width = start.Width },
+                            target with { Y = start.Y, Height = start.Height } })
+                        {
+                            if (simpler == best.Rects[i]) continue;
+                            var frames = (RectI[])best.Rects.Clone();
+                            frames[i] = simpler;
+                            var proposal = new Candidate("retain-existing-edges", frames, best.Order);
+                            if (seen.Add(CandidateKey(proposal))) Evaluate(proposal, 1);
+                        }
+                    }
                 }
 
                 void Evaluate(Candidate candidate, int generation)
@@ -324,12 +345,11 @@ internal static partial class IntentLayoutPlanner
                     var breakdown = Breakdown(candidate);
                     var score = breakdown.Total;
                     groupContext.ShadowProbe?.Observe(group, candidate.Rects, breakdown.Feedback);
-                    // 先比较主窗能否阅读、副窗能否点到，再用总成本挑摆法。否则少挪几像素就可能压过露出一整扇参考窗的收益。
+                    // 松手位置提供摆放意图。补齐落点的收益依然要和原位比较，不能给整组窗口无条件让位。
                     bool followsGesture = groupContext.AllowGestureAssist && gestureIndex >= 0 &&
                         groupContext.GestureTarget == candidate.Rects[gestureIndex] && candidate.Rects[gestureIndex] != original[gestureIndex];
                     var weight = groupContext.InterventionWeight(followsGesture) * (weights?.Intervention ?? 1);
                     var threshold = baseThreshold / weight;
-                    var priority = breakdown.Goal.CompareTo(bestGoal);
                     // 默认居中仅为已值得执行的候选打破近似平局，不能补齐对原位方案的收益门槛。
                     // 偏好最多影响半个基础门槛。已学习的个人槽位仍有自己的评分项。
                     double? centerTieCost = null;
@@ -340,10 +360,9 @@ internal static partial class IntentLayoutPlanner
                     bool matchesShadowRank = shadowAxes.Any(axis => axis.Change == ShadowChange.Rank &&
                         axis.Matches(candidate.Rects[Array.FindIndex(group, v => v.Window.Handle == axis.Window)]));
                     double rank = score + (centerTieCost ?? 0) - (matchesShadowRank ? baseThreshold * .5 : 0);
-                    if (breakdown.Feedback == 0 && (priority < 0 || priority == 0 && (best.Kind == "keep" || rank < bestScore) &&
-                        (bestGoal.CompareTo(baselineBreakdown.Goal) < 0 || score < baseline - threshold) ||
+                    if (breakdown.Feedback == 0 && (score < baseline - threshold && (best.Kind == "keep" || rank < bestScore) ||
                         best.Kind == "keep" && needsRescue && candidate.Kind == "rescue"))
-                    { best = candidate; bestScore = rank; bestGoal = breakdown.Goal; }
+                    { best = candidate; bestScore = rank; }
                 }
 
                 for (var i = 0; i < group.Length; i++)

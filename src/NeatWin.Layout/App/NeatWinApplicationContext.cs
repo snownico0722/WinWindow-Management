@@ -77,7 +77,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _autoTidyManager = new AutoTidyManager();
         _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) {
             VisualSampling = _settingsStore.VisualSampling, GestureObserver = gestureObserver, SnapshotWantsGestures = snapshotWantsGestures,
-            SurfaceObserver = surfaceObserver, SnapshotWantsSurfaces = snapshotWantsSurfaces
+            SurfaceObserver = surfaceObserver, SnapshotWantsSurfaces = snapshotWantsSurfaces,
+            ReadPlacementFocus = (windows, tick) => _focus.Resolve(windows, tick)
         };
         _recorder.WindowRetired = handle =>
         {
@@ -349,8 +350,16 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var preview = _gesturePreview.Take(gesture, snapshot, interaction.ForegroundWindow, Environment.TickCount64);
             var hint = IntentEvidence.Resolve(_referenceStore.Read(), moved.Window.WorkArea, moved.Window.Dpi, DateTimeOffset.UtcNow);
             var personal = SmartPersonalizationState.Default with { PreferredGapPixels = hint.GapPixels };
+            var focus = _focus.Resolve(snapshot, Environment.TickCount64, out var attention);
+            var snapContext = new TaskLayoutContext(Focus: focus, Attention: attention, GestureAnchor: moved.Window.Handle);
+            if (_useImportedPlacement && _referenceStore.Rules.Read() is { Scenes.Length: > 0 } rules)
+            {
+                snapContext = snapContext with { Rules = rules, AppKeys = snapshot.Where(w => w.IsManageable || w.SurfaceState != null)
+                    .ToDictionary(w => w.Handle, _recorder.TryReadAppKey) };
+                snapContext = snapContext with { Scene = ActiveLayoutScene.Resolve(snapshot, snapContext, includeDefaults: false) };
+            }
             var decision = FollowHandAssistant.Decide(gesture,
-                visible.Where(v => v.Window.MonitorHandle == moved.Window.MonitorHandle).ToArray(), _tidyOptions, interaction, personal, preview);
+                visible.Where(v => v.Window.MonitorHandle == moved.Window.MonitorHandle).ToArray(), _tidyOptions, interaction, personal, preview, snapContext);
             if (!decision.ShouldApply || decision.TargetRect == moved.Window.VisualRect ||
                 (!moved.Window.IsResizable && (decision.TargetRect.Width != moved.Window.VisualRect.Width ||
                     decision.TargetRect.Height != moved.Window.VisualRect.Height))) return;
@@ -470,7 +479,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 liveHints = _journal.Feedback.Bind(snapshot, liveHints, Environment.TickCount64);
                 bool pairSmart = explicitSmart || workspaceObservation || trigger == "automatic-gesture";
                 var floors = _recorder.BindSizeFloors(snapshot);
-                var learned = pairSmart ? _recorder.Preferences(snapshot, focus).Where(p => p.Confidence >= .40).ToArray() : [];
+                var observedFocus = focus;
                 var front = snapshot.FirstOrDefault(w => w.IsForeground);
                 var reading = ForegroundReading.Read(front);
                 if (workspaceObservation && reading.LastInput.HasValue) workspaceReading = reading;
@@ -512,6 +521,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                         opening.ResidentLeft ? "opening-resident-left" : "opening-resident-right");
                 }
                 var observedPair = trigger == "automatic-gesture" && focus.Main != foreground ? null : focus;
+                var learned = pairSmart ? _recorder.Preferences(snapshot, focus, observedFocus) : [];
                 var slots = pairSmart && _useImportedPlacement ? _recorder.BindSlots(rules, snapshot, observedPair) : [];
                 var placements = CompiledLayoutRules.ApplySlots(learned, slots);
                 var pairs = pairSmart && _useImportedPlacement ? _recorder.BindRules(rules, snapshot, liveHints, activities, observedPair) : [];

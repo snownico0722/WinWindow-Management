@@ -50,6 +50,128 @@ class RecordingAnalysisTests(unittest.TestCase):
         self.assertEqual(len(session["Switches"]), 2)
         self.assertEqual(session["Apps"][keys[0]]["CommonLocations"][0]["WorkAreaFraction"], [0.,0.,1.,1.])
 
+    def test_missed_assistance_scores_only_pre_gesture_evidence_and_each_changed_dimension(self):
+        from datetime import datetime, timedelta, timezone
+        record = analysis.Recording()
+        epoch = datetime(2026, 11, 22, tzinfo=timezone.utc)
+        box = lambda x, y, width, height: dict(zip(("X", "Y", "Width", "Height"), (x, y, width, height)))
+        work = box(-1000, 0, 1000, 800)
+        original, manual = box(-850, 100, 400, 400), box(-900, 200, 450, 400)
+
+        def time(tick):
+            return (epoch + timedelta(milliseconds=tick)).isoformat()
+
+        def frame(tick, geometry=original, **window):
+            return {"Time": time(tick), "Truncated": False, "Displays": [{"Bounds": work, "WorkArea": work}],
+                    "Windows": [{**dict(Id=2, Rect=geometry, Manageable=True, Foreground=True, WorkArea=work, Dpi=120), **window}]}
+
+        def focus(a, b, events=()):
+            return {"Status": "observed", "FromTick": a, "ToTick": b, "InitialId": 2,
+                    "ObservedEndId": 2, "Events": list(events), "OmittedEvents": 0}
+
+        def sample(tick, frm, preceding):
+            record.add("activity", {"Time": time(tick), "Version": 7, "Tick": tick, "GeometryTick": tick,
+                                    "FocusCoverage": preceding, "Frame": frm})
+
+        def gesture(number, start, release, release_dpi=120):
+            events = [{"GestureId": number, "WindowId": 2, "Stage": stage, "Tick": tick,
+                       "Frame": geometry, "WorkArea": work, "Dpi": 120 if stage == "start" else release_dpi,
+                       "AutomationMarked": False}
+                      for stage, tick, geometry in (("start", start, original), ("release", release, manual))]
+            record.add("gestures", {"Version": 1, "Events": events})
+            record.add("adjustments", {"Version": 5, "Time": time(release), "WindowId": 2, "GestureId": number,
+                       "Start": original, "End": manual, "StartWorkArea": work, "WorkArea": work, "Dpi": 120,
+                       "Outcome": "stable", "StartContext": frame(start), "EndContext": frame(release, manual)})
+
+        plan = {"Version": 9, "RequestId": "kept", "Trigger": "automatic-workspace", "Outcome": "observed-match",
+                "Before": frame(1100), "Actual": frame(1700), "Targets": [], "Signals": {"Main": 2}}
+        record.add("plans", plan)
+        record.add("plans", {**plan, "RequestId": "later", "Before": frame(2500, manual), "Actual": frame(3000, manual)})
+        sample(2000, frame(2000), focus(1000, 2000))
+        sample(3000, frame(3000, manual), focus(2000, 3000))
+        gesture(1, 2300, 2600)
+
+        # Foreground continuity observes an A->B->A switch even though the endpoints are equal.
+        sample(20000, frame(20000), focus(19300, 20000))
+        sample(22000, frame(22000, manual), focus(20000, 22000, [{"Tick": 20800, "Id": 9}, {"Tick": 21000, "Id": 2}]))
+        gesture(2, 21300, 21600)
+        gesture(3, 40000, 40500)
+
+        sample(50000, frame(50000), focus(49000, 50000))
+        sample(52000, frame(52000, manual), focus(50000, 52000))
+        gesture(4, 51000, 51300)
+
+        # Another recently verified keep within the same per-axis trial should
+        # not count twice, even though it has its own separate request ID.
+        record.add("plans", {**plan, "RequestId": "another-keep", "Before": frame(51800), "Actual": frame(51900)})
+        gesture(5, 52500, 52800)
+        sample(53000, frame(53000, manual), focus(52000, 53000))
+
+        sample(60000, frame(60000), focus(59000, 60000))
+        sample(62000, frame(62000, manual), {**focus(60000, 62000), "OmittedEvents": 1})
+        gesture(6, 61000, 61200)
+        gesture(7, 61500, 61800, release_dpi=96)
+
+        report = record.report()
+        missed = report["MissedAssistance"]
+        self.assertEqual(missed["StatusCounts"], {"no-system-placement": 1, "task-changed": 1,
+                         "unknown-stale-or-absent-activity": 1, "no-recorded-request": 1,
+                         "duplicate-trial-or-small-gesture": 1, "unknown-focus-gap": 1,
+                         "display-changed": 1})
+        self.assertEqual(missed["ScoredDimensions"], {"width": 2, "vertical-position": 2})
+        first = missed["Gestures"][0]
+        self.assertEqual(first["RequestId"], "kept")
+        self.assertLess(first["EvidenceTick"], first["GestureStartTick"])
+
+        def replay(target, timestamp=time(1100), signature="same"):
+            return {"InputFingerprint": signature, "BeforeTime": timestamp, "Truncated": False,
+                    "Trigger": "automatic-workspace", "ProjectedWindows": [{"Id": 2, "Before": original, "Rect": target}]}
+
+        keys = ("session", "kept", False), ("session", "kept", True)
+        analysis.score_missed_replays("session", report,
+                    {key: replay(original) for key in keys},
+                    {keys[0]: replay(manual), keys[1]: replay(manual, timestamp=time(2500))})
+        self.assertEqual(first["Replay"]["fixed"]["Axes"]["width"],
+                         {"Keep": .05, "Baseline": .05, "Candidate": 0, "CandidateImprovesOverKeep": True,
+                          "CandidateImprovesOverBaseline": True})
+        self.assertEqual(first["Replay"]["resizable"]["Status"], "unknown-replay-input")
+        self.assertEqual(missed["Gestures"][3]["Replay"]["fixed"]["Status"], "unknown-no-request")
+        self.assertIsNone(missed["ObservedSavedDrags"])
+
+        probe = missed["Gestures"][3]
+        self.assertEqual(probe["ProbeRequestId"], "offline-activity-50000")
+        probe_key = ("session", probe["ProbeRequestId"], False)
+
+        def probe_replay(target):
+            return {**replay(target, timestamp=time(50000)), "Trigger": analysis.ACTIVITY_PROBE_TRIGGER}
+
+        analysis.score_missed_replays("session", report, {probe_key: probe_replay(original)},
+                                      {probe_key: probe_replay(manual)}, probe=True)
+        self.assertEqual(probe["ProbeReplay"]["fixed"]["Status"], "paired")
+        self.assertEqual(probe["Replay"]["fixed"]["Status"], "unknown-no-request")
+        self.assertNotIn("ProbeReplay", first)
+
+    def test_probe_export_preserves_preexisting_keyframes_without_gesture_data(self):
+        frame = {"Time": "2026-11-22T10:03:00Z", "Truncated": False, "Displays": [{"Bounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080},
+                    "WorkArea": {"X": 0, "Y": 0, "Width": 1920, "Height": 1040}}],
+                 "Windows": [{"Id": 4, "Manageable": True, "Foreground": True}]}
+        activity = {"Session": "test", "Version": 7, "Tick": 100, "GeometryTick": 100, "Frame": frame}
+        with tempfile.TemporaryDirectory() as tmp:
+            source, output = Path(tmp) / "source.zip", Path(tmp) / "probes.zip"
+            with ZipFile(source, "w") as archive:
+                archive.writestr("activity-000.jsonl", json.dumps(activity))
+            analysis.write_activity_probes([source, source], output)
+            with ZipFile(output) as archive:
+                self.assertEqual(archive.namelist(), ["layout-decisions.jsonl"])
+                probe, = map(json.loads, archive.read("layout-decisions.jsonl").splitlines())
+            self.assertEqual(probe["RequestId"], "offline-activity-100")
+            self.assertEqual(probe["Trigger"], "offline-activity-probe")
+            self.assertEqual(probe["Before"], frame)
+            self.assertNotIn("Actual", probe)
+            self.assertNotIn("Signals", probe)
+            self.assertNotIn("Rules", probe)
+            self.assertEqual(probe["Targets"], [])
+
     def test_surfaces_keep_host_geometry_and_release_timing(self):
         record = analysis.Recording()
         child = {"X": 50, "Y": 100, "Width": 50, "Height": 100}

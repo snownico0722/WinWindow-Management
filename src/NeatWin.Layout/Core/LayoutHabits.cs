@@ -11,18 +11,49 @@ public sealed record LayoutHabit(DateTimeOffset Time, string Display, string App
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? PartnerCenter = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? PartnerWidth = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? Height = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] HorizontalEdit? Edited = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] HorizontalEdit? Edited = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementUsage? Usage = null);
 
-public sealed record PlacementConfidence(double Position, double Width, double Height);
+[JsonConverter(typeof(JsonStringEnumConverter<PlacementUsage>))]
+public enum PlacementUsage { Joint, BackgroundPlayback, ForegroundPlayback, TextFocus }
+
+// 匿名 ID 只在当前录制会话内有意义。用途取自手势开始前或布局求解前的观察。
+public sealed record PlacementUseObservation(int Foreground, int JointPeer, bool TextFocus, int[] Playing)
+{
+    internal bool SupportsPair(int window, int peer)
+    {
+        if (Foreground == 0 || window != Foreground && peer != Foreground) return false;
+        int background = window == Foreground ? peer : window;
+        return background != 0 && (background == JointPeer || HasPlaybackPeer(background));
+    }
+
+    internal PlacementUsage? For(int window, int peer = 0)
+    {
+        if (Foreground == 0 || window != Foreground && peer != Foreground) return null;
+        int background = window == Foreground ? peer : window;
+        if (Playing.Contains(Foreground)) return PlacementUsage.ForegroundPlayback;
+        if (background != 0 && HasPlaybackPeer(background)) return PlacementUsage.BackgroundPlayback;
+        if (background != 0 && background == JointPeer) return PlacementUsage.Joint;
+        return TextFocus ? PlacementUsage.TextFocus : null;
+    }
+
+    private bool HasPlaybackPeer(int background) =>
+        Playing.Contains(background) && (background == JointPeer || Playing.Count(id => id != Foreground) == 1);
+}
+
+public sealed record PlacementConfidence(double Position, double Width, double Height,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? Region = null);
 
 public sealed record PlacementPreference(nint Window, nint Partner, double Center, double Width,
     double Order, int RevealedCell, double Confidence, double? InnerOverlap = null, double? Height = null,
-    bool PreferWidth = true, bool PreferCenter = true, PlacementConfidence? AxisConfidence = null)
+    bool PreferWidth = true, bool PreferCenter = true, PlacementConfidence? AxisConfidence = null,
+    PlacementUsage? Usage = null)
 {
     // 老快照只有组级置信度，沿用其证据。新样本按实际调整的轴投票，熟悉宽度不会让左右偏好更可信。
     internal double PositionConfidence => PreferCenter ? AxisConfidence?.Position ?? Confidence : 0;
     internal double WidthConfidence => PreferWidth ? AxisConfidence?.Width ?? Confidence : 0;
     internal double HeightConfidence => Height.HasValue ? AxisConfidence?.Height ?? Confidence : 0;
+    internal double RegionConfidence => RevealedCell >= 0 ? AxisConfidence?.Region ?? PositionConfidence : 0;
 }
 
 public sealed record NavigationHop(nint Source, nint Target, string Evidence, long AgeMilliseconds);
@@ -41,7 +72,8 @@ public sealed record LayoutAttention(double Recency, double Dwell, double Input,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int ManualSide = 0,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementCorrection? RepeatedReversal = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementCorrection? RecentReturn = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] RectI? RestoreFrame = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] RectI? RestoreFrame = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double RecentSystemPlacement = 0)
 {
     public double Weight => Foreground ? 1 : Math.Clamp(Recency * (.70 + .15 * Dwell) + .35 * Input, 0, 1);
 }
@@ -668,6 +700,15 @@ public sealed class ForegroundHistory
             if (foreground is { IsManageable: true } && ReturnFrame(foreground, now) is { } restore &&
                 attention.TryGetValue(foreground.Handle, out var restored))
                 attention[foreground.Handle] = restored with { RestoreFrame = restore };
+            // 已兑现的上一笔移动让紧接着的第二次移动更显眼。只在下一次真实请求采样，衰减不会唤起求解。
+            foreach (var (handle, submission) in _submitted)
+            {
+                long elapsed = now - submission.Tick;
+                if (elapsed is < 0 or >= 4000 || !valid.TryGetValue(handle, out var w) ||
+                    !WindowStateRules.Matches(submission.Move.Window, w, submission.Move.TargetVisualRect)) continue;
+                var signal = attention.GetValueOrDefault(handle) ?? new(0, 0, 0, 0, w.IsForeground);
+                attention[handle] = signal with { RecentSystemPlacement = 1 - elapsed / 4000d };
+            }
             foreach (var (handle, placed) in _manualPlaces)
             {
                 if (now - placed.Tick is < 0 or > 3 * AttentionHalfLifeMilliseconds ||
@@ -797,7 +838,8 @@ public static class LayoutHabits
         if (!eligible || o.Start == o.End || o.WorkArea != o.StartWorkArea ||
             endpoint is not { Truncated: false } frame || o.StartContext is not { Truncated: false } start ||
             o.WorkArea.IsEmpty) return null;
-        var axes = EditedAxes(o) & allowed;
+        var actualAxes = EditedAxes(o);
+        var axes = actualAxes & allowed;
         // 回拖表示用户拒绝上一轮在该轴上的改动。长期偏好只收录能独立归因的轴。
         axes &= ~ReversedAxes(LinkedReversal(o));
         if (axes == HabitAxes.None) return null;
@@ -810,23 +852,27 @@ public static class LayoutHabits
         // observation can tell which document the user actually placed.
         if (!byInstance && frame.Windows.Count(w => w.Manageable && !w.LocalSurface && w.WorkArea == o.WorkArea && w.AppKey == movedKey) > 1)
             return null;
+        var movedBefore = start.Windows.FirstOrDefault(w => w.Id == o.WindowId && w.Manageable && !w.LocalSurface);
         var peers = from w in frame.Windows
                     where w.Id != moved.Id && w.Manageable && !w.LocalSurface && Key(w) != null && w.WorkArea == o.WorkArea && w.VisibleRatio >= .04
                     let before = start.Windows.FirstOrDefault(v => !v.LocalSurface && v.Id == w.Id && v.Rect == w.Rect && v.AppKey == w.AppKey)
                     where before != null
                     let gain = w.VisibleRatio - before.VisibleRatio
-                    orderby gain descending, w.VisibleRatio descending
-                    select (Window: w, Before: before, Gain: gain);
+                    // 优先考虑动手前已经确认的搭档或正在播放的后台窗，防止移完才因偶然露出而选错搭档。
+                    let scopedPeer = movedBefore != null && o.StartUsage?.SupportsPair(moved.Id, w.Id) == true
+                    orderby scopedPeer descending, gain descending, w.VisibleRatio descending
+                    select (Window: w, Before: before, Gain: gain, Scoped: scopedPeer);
         var peersFound = peers.Take(2).ToArray();
         var peer = peersFound.FirstOrDefault();
-        bool paired = peer.Window != null && (peer.Gain >= .04 || peersFound.Length == 1 && peer.Window.VisibleRatio >= .45);
+        bool paired = peer.Window != null && (peer.Scoped || peer.Gain >= .04 || peersFound.Length == 1 && peer.Window.VisibleRatio >= .45);
         double center = (moved.Rect.X + moved.Rect.Width / 2d - o.WorkArea.X) / o.WorkArea.Width;
         var partner = paired ? peer.Window : null;
         if (!byInstance && partner != null && frame.Windows.Count(w => w.Manageable && !w.LocalSurface && w.WorkArea == o.WorkArea && w.AppKey == partner.AppKey) > 1)
             return null;
         int order = partner == null ? 0 : Math.Sign(moved.Rect.X + moved.Rect.Width / 2d - partner.Rect.X - partner.Rect.Width / 2d);
         int cell = -1;
-        if (paired && peer.Gain >= .04 && peer.Window!.VisibleRatio <= .45 &&
+        // 某轴已被撤回或归入另一笔试摆时，无法把这次露出归到任何一笔保留的编辑。
+        if (axes == actualAxes && paired && peer.Gain >= .04 && peer.Window!.VisibleRatio <= .45 &&
             peer.Window.Exposure?.Cells is { Length: 16 } after && peer.Before!.Exposure?.Cells is { Length: 16 } previous)
         {
             cell = Enumerable.Range(0, 16).Where(i => after[i] == 'F' && previous[i] <= '4')
@@ -836,13 +882,14 @@ public static class LayoutHabits
             Math.Clamp((partner.Rect.X + partner.Rect.Width / 2d - o.WorkArea.X) / o.WorkArea.Width, 0, 1);
         double? partnerWidth = partner == null ? null :
             Math.Clamp(partner.Rect.Width / (double)o.WorkArea.Width, .05, 1);
+        var usage = movedBefore == null ? null : o.StartUsage?.For(moved.Id, partner?.Id ?? 0);
         var edited = (HorizontalEdit)(axes & (HabitAxes.Position | HabitAxes.Width));
         return new(o.Time, IntentEvidence.ContextFor(o.WorkArea), movedKey, partner == null ? null : Key(partner),
             Math.Clamp(center, 0, 1), Math.Clamp(moved.Rect.Width / (double)o.WorkArea.Width, .05, 1), order, cell,
             o.AfterRequest != null, partner != null && order != 0 && moved.Rect.VerticalOverlapRatio(partner.Rect) >= .5
                 ? moved.Rect.HorizontalOverlapRatio(partner.Rect) : null,
             partnerCenter, partnerWidth, axes.HasFlag(HabitAxes.Height)
-                ? Math.Clamp(moved.Rect.Height / (double)o.WorkArea.Height, .05, 1) : null, edited);
+                ? Math.Clamp(moved.Rect.Height / (double)o.WorkArea.Height, .05, 1) : null, edited, usage);
     }
 
     internal static bool HasLinkedReversal(WindowAdjustmentObservation o) => LinkedReversal(o) != null;
@@ -911,7 +958,7 @@ public static class LayoutHabits
         var earliest = sessionOnly ? sample.Time.AddHours(-4) : sample.Time.AddDays(-120);
         var recent = history.Where(s => s.Time >= earliest).ToArray();
         bool SameVote(LayoutHabit s) => s.Display == sample.Display && s.App == sample.App &&
-            s.Partner == sample.Partner && s.Time.ToUnixTimeSeconds() / seconds == bucket;
+            s.Partner == sample.Partner && s.Usage == sample.Usage && s.Time.ToUnixTimeSeconds() / seconds == bucket;
         if (recent.LastOrDefault(SameVote) is { } previous)
         {
             var oldEdits = previous.Edited ?? HorizontalEdit.Position;
@@ -925,7 +972,7 @@ public static class LayoutHabits
                 PartnerCenter = keepPosition ? previous.PartnerCenter : sample.PartnerCenter,
                 PartnerWidth = keepPosition ? previous.PartnerWidth : sample.PartnerWidth,
                 InnerOverlap = keepPosition ? previous.InnerOverlap : sample.InnerOverlap,
-                RevealedCell = keepPosition ? previous.RevealedCell : sample.RevealedCell,
+                RevealedCell = sample.RevealedCell >= 0 ? sample.RevealedCell : previous.RevealedCell,
                 Width = !newEdits.HasFlag(HorizontalEdit.Width) && oldEdits.HasFlag(HorizontalEdit.Width) ? previous.Width : sample.Width,
                 Height = sample.Height ?? previous.Height,
             };
@@ -934,7 +981,32 @@ public static class LayoutHabits
     }
 
     public static PlacementPreference? Resolve(IEnumerable<LayoutHabit> history, WindowSnapshot window,
-        string app, string? partner, nint partnerHandle, DateTimeOffset now, bool sessionOnly = false)
+        string app, string? partner, nint partnerHandle, DateTimeOffset now, bool sessionOnly = false,
+        PlacementUsage? usage = null)
+    {
+        var legacy = ResolveScope(history.Where(s => s.Usage == null), window, app, partner, partnerHandle, now, sessionOnly);
+        if (usage == null) return legacy;
+        var scoped = ResolveScope(history.Where(s => s.Usage == usage), window, app, partner, partnerHandle, now, sessionOnly);
+        if (scoped == null) return legacy;
+        // 缺少某一轴的用途样本时保留旧偏好。区域能在左右位置仍不确定时独立生效。
+        var position = scoped.PreferCenter ? scoped : legacy ?? scoped;
+        var width = scoped.PreferWidth ? scoped : legacy ?? scoped;
+        var height = scoped.Height != null ? scoped : legacy ?? scoped;
+        var region = scoped.RegionConfidence >= .40 ? scoped : legacy ?? scoped;
+        var confidence = new PlacementConfidence(position.PositionConfidence, width.WidthConfidence, height.HeightConfidence,
+            region.RegionConfidence);
+        return position with
+        {
+            Width = width.Width, PreferWidth = width.PreferWidth, Height = height.Height,
+            Partner = position.Partner != 0 ? position.Partner : region.Partner,
+            RevealedCell = region.RevealedCell,
+            Confidence = Math.Max(region.RegionConfidence, Math.Max(confidence.Position, Math.Max(confidence.Width, confidence.Height))),
+            AxisConfidence = confidence, Usage = usage,
+        };
+    }
+
+    private static PlacementPreference? ResolveScope(IEnumerable<LayoutHabit> history, WindowSnapshot window,
+        string app, string? partner, nint partnerHandle, DateTimeOffset now, bool sessionOnly)
     {
         string display = IntentEvidence.ContextFor(window.WorkArea);
         var earliest = sessionOnly ? now.AddHours(-4) : now.AddDays(-120);
@@ -985,22 +1057,33 @@ public static class LayoutHabits
             double average = consistent.Sum(s => Weight(s) * value(s)) / coherentWeight;
             return (average, coherentWeight / (weight + (sessionOnly ? 2 : 4)));
         }
-        var positions = used.Where(s => (s.Edited ?? HorizontalEdit.Position).HasFlag(HorizontalEdit.Position)).ToArray();
+        var positions = Independent((specific ? directPair.Concat(mirroredPair) : solo)
+            .Where(s => (s.Edited ?? HorizontalEdit.Position).HasFlag(HorizontalEdit.Position)));
         var center = Estimate(positions, s => s.Center);
         bool preferCenter = center.Confidence >= .40;
         int cell = -1;
+        double positionWeight = positions.Sum(Weight);
+        double regionConfidence = 0;
         if (specific)
         {
-            var region = positions.Where(s => s.RevealedCell >= 0).GroupBy(s => s.RevealedCell)
-                .OrderByDescending(g => g.Sum(Weight)).FirstOrDefault();
-            if (region != null && region.Count() >= 3 && region.Sum(Weight) > sum * .55) cell = region.Key;
+            // 拉宽、缩短或移动都能露出一块内容。只统计直接露出过区域的编辑，不让其他轴的票稀释证据。
+            var regionVotes = Independent(directPair.Where(s => s.RevealedCell is >= 0 and < 16));
+            var region = regionVotes.GroupBy(s => s.RevealedCell).OrderByDescending(g => g.Sum(Weight)).FirstOrDefault();
+            if (region != null && region.Count() >= 3 && HasSupport(region.ToArray()))
+            {
+                var regionWeight = region.Sum(Weight);
+                var total = regionVotes.Sum(Weight);
+                regionConfidence = regionWeight / (total + (sessionOnly ? 2 : 4));
+                if (regionWeight > total * .55 && regionConfidence >= .40) cell = region.Key;
+                else regionConfidence = 0;
+            }
         }
         // Clamp moderate overlap outliers up to .55 instead of dropping samples > .40 and losing the habit.
         var overlaps = positions.Where(s => s.InnerOverlap is >= 0 and <= .55)
             .Select(s => (Habit: s, Value: Math.Min(.40, s.InnerOverlap!.Value))).ToArray();
         double? overlap = null;
         double overlapWeight = overlaps.Sum(o => Weight(o.Habit));
-        if (specific && overlaps.Length >= 3 && overlapWeight >= .6 * sum)
+        if (specific && overlaps.Length >= 3 && overlapWeight >= .6 * positionWeight)
         {
             double accumulated = 0;
             foreach (var sample in overlaps.OrderBy(o => o.Value))
@@ -1017,14 +1100,14 @@ public static class LayoutHabits
         var width = Estimate(widths, s => s.Width);
         var height = Estimate(heights, s => s.Height!.Value);
         bool preferWidth = width.Confidence >= .40;
-        double confidence = Math.Max(center.Confidence, Math.Max(width.Confidence, height.Confidence));
-        if (!preferCenter && !preferWidth && height.Confidence < .40) return null;
+        double confidence = Math.Max(regionConfidence, Math.Max(center.Confidence, Math.Max(width.Confidence, height.Confidence)));
+        if (confidence < .40) return null;
         var descriptiveCenter = used.Sum(s => s.Center * Weight(s)) / sum;
         var descriptiveWidth = used.Sum(s => s.Width * Weight(s)) / sum;
-        return new(window.Handle, specific && preferCenter ? partnerHandle : 0,
+        return new(window.Handle, specific && (preferCenter || cell >= 0) ? partnerHandle : 0,
             preferCenter ? center.Value : descriptiveCenter, preferWidth ? width.Value : descriptiveWidth,
             specific && preferCenter ? positions.Sum(s => Weight(s) * s.Order) / positions.Sum(Weight) : 0,
-            preferCenter ? cell : -1, confidence, preferCenter ? overlap : null, height.Confidence >= .40 ? height.Value : null,
-            PreferWidth: preferWidth, PreferCenter: preferCenter, AxisConfidence: new(center.Confidence, width.Confidence, height.Confidence));
+            cell, confidence, preferCenter ? overlap : null, height.Confidence >= .40 ? height.Value : null,
+            PreferWidth: preferWidth, PreferCenter: preferCenter, AxisConfidence: new(center.Confidence, width.Confidence, height.Confidence, regionConfidence));
     }
 }

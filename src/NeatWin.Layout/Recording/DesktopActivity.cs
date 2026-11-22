@@ -18,7 +18,9 @@ internal sealed record ProcessActivity(string Instance, long? WorkingSetBytes, d
 internal sealed record MediaActivity(string Source, string Playback);
 internal sealed record WindowActivity(int Id, string? Process, int? ComparedCells, int? ChangedCells,
     long? ForegroundMs, long? BackgroundVisibleMs, string ActivityHint, RectI? Fragment = null, double? FragmentChange = null,
-    string? ApplicationRole = null, double? VisibleRatio = null, double? LargestFragmentRatio = null, long? FocusEventMs = null);
+    string? ApplicationRole = null, double? VisibleRatio = null, double? LargestFragmentRatio = null, long? FocusEventMs = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    bool Playing = false);
 internal sealed record ActivitySample(int Version, string Session, long Tick, long ObservedMilliseconds,
     WorkspaceFrame Frame, ProcessActivity[] Processes, WindowActivity[] Windows, MediaActivity[]? Media,
     uint? InputIdleMilliseconds, long? AudioTick = null, bool? DisplayRequired = null, UsageInterval? Usage = null, CoUseSample[]? CoUse = null, FocusCoverage? FocusCoverage = null);
@@ -286,17 +288,21 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
                 known && prior.Foreground == w.Foreground ? (w.Foreground ? interval : 0) : null,
                 known && prior.Foreground == w.Foreground && prior.Visible == visible ? (!w.Foreground && visible ? interval : 0) : null,
                 hint, fragment, fraction, persistKeys ? SemanticRole(native).ToString() : null,
-                w.VisibleRatio, w.Exposure?.LargestFragment.Area / (double)Math.Max(1, w.Rect.Area)));
+                w.VisibleRatio, w.Exposure?.LargestFragment.Area / (double)Math.Max(1, w.Rect.Area),
+                Playing: playing && processWindows.GetValueOrDefault(native.ProcessId) == 1));
             _previous[w.Id] = (w.Foreground, visible, motion);
         }
         foreach (var id in _fragments.Keys.Where(id => !sampledFragments.Contains(id)).ToArray()) _fragments.Remove(id);
         foreach (int id in _previous.Keys.Where(id => !alive.Contains(id)).ToArray()) _previous.Remove(id);
         foreach (int id in _colors.Keys.Where(id => !seenColors.Contains(id)).ToArray()) _colors.Remove(id);
         var present = usage.Values.OfType<ProcessActivity>().ToArray();
+        var sharedSources = present.Where(p => p.MediaSource != null).GroupBy(p => p.MediaSource!)
+            .Where(g => g.Count() > 1).SelectMany(g => g.Select(p => p.Instance)).ToHashSet();
         foreach (var id in _cpu.Where(p => p.Value.Tick != now).Select(p => p.Key).ToArray()) _cpu.Remove(id);
         var last = new LastInput { Size = 8 };
         uint? idle = GetLastInputInfo(ref last) ? unchecked((uint)now - last.Time) : null;
-        return new(7, session, now, interval, frame, present, windows.ToArray(), media, idle, audio?.Tick, displayRequired);
+        return new(7, session, now, interval, frame, present, windows.Select(w => w.Playing && w.Process != null && sharedSources.Contains(w.Process)
+            ? w with { Playing = false } : w).ToArray(), media, idle, audio?.Tick, displayRequired);
     }
 
     private ProcessActivity? ReadUsage(uint pid, long now, AudioSessionMeter.Reading? audio,

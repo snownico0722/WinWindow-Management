@@ -19,14 +19,15 @@ public sealed record LayoutScene(string Id, string Trigger, string[]? Foreground
 }
 
 public sealed record SceneWeights(double Information = 1, double Switching = 1, double Continuity = 1,
-    double Reflow = 1, double Personal = 1, double Intervention = 1)
+    double Reflow = 1, double Personal = 1, double Intervention = 1, double Interruption = 1)
 {
-    internal bool Valid => new[] { Information, Switching, Continuity, Reflow, Personal }.All(v => v is >= 0 and <= 8)
+    internal bool Valid => new[] { Information, Switching, Continuity, Reflow, Personal, Interruption }.All(v => v is >= 0 and <= 8)
         && Intervention is >= .125 and <= 8;
     internal TaskCostBreakdown Apply(TaskCostBreakdown cost) => cost with
     {
         InformationLoss = cost.InformationLoss * Information, Switching = cost.Switching * Switching,
         Continuity = cost.Continuity * Continuity, Reflow = cost.Reflow * Reflow,
+        Interruption = cost.Interruption * Interruption,
         PersonalPlacement = cost.PersonalPlacement * Personal, PairPlacement = cost.PairPlacement * Personal,
     };
 }

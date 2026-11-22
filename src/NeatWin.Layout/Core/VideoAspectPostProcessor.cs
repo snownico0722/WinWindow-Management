@@ -82,7 +82,12 @@ public static class VideoAspectPostProcessor
             (double)Math.Max(1, rect.Height - chromeY) / hint.ContentAspectRatio));
         double baselineError = AspectError(start);
         var best = start;
-        double bestCost = baselineError;
+        var visibleBrowser = visible.First(v => v.Window.Handle == browser.Handle);
+        var browserHint = context.WindowHints?.FirstOrDefault(h => h.Handle == browser.Handle);
+        // 视频拟合与一般布局共用同一感知成本。以本轮原始画面为基准，避免先移动、后拟合时漏算或重复收费。
+        double Interruption(RectI box) => IntentLayoutPlanner.AttentionInterruption(visibleBrowser, box, context, browserHint)
+            * .20 * (scene?.Settings?.Weights?.Interruption ?? 1);
+        double bestCost = baselineError + Interruption(start);
         var audits = new List<LayoutCandidateTrace> { new("video-current", bestCost, null, null) };
         string selected = "video-current";
         foreach (var tendency in Enum.GetValues<VideoBlackBarTendency>())
@@ -114,9 +119,9 @@ public static class VideoAspectPostProcessor
                 context.RejectedLayouts?.Contains(TaskLayoutSession.LayoutKey(after.Where(w =>
                     group?.Handles.Contains(w.Handle) ?? w.Handle == browser.Handle))) == true))
                 rejection = "protected-layout";
-            // 先兑现宽高比改善。画面收益、边框变动和用户的放缩偏好只用于比较可行候选。
+            // 去边与保留原状比较净收益。这里的单位是对数宽高比，感知项按相应尺度换算。
             double change = Math.Abs(rect.Width - start.Width) / (double)area.Width + Math.Abs(rect.Height - start.Height) / (double)area.Height;
-            double cost = AspectError(rect) + .04 * change - .015 * Math.Clamp((pixels - plannedPixels) / Math.Max(1, plannedPixels), 0, 1) +
+            double cost = AspectError(rect) + Interruption(rect) + .04 * change - .015 * Math.Clamp((pixels - plannedPixels) / Math.Max(1, plannedPixels), 0, 1) +
                 (tendency == hint.Tendency ? 0 : .01);
             audits.Add(new(kind, cost, rejection, null));
             if (rejection == null && cost < bestCost) { best = rect; bestCost = cost; selected = kind; }

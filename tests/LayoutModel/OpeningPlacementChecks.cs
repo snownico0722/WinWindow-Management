@@ -310,14 +310,14 @@ internal static class OpeningPlacementChecks
     {
         var area = new RectI(0, 0, 1920, 1040);
         var rect = new RectI(400, 80, 1120, 850);
-        WindowSnapshot a = new(1, rect, rect, area, 1, default, true, true, true, 0, 96, 101, SurfaceState: "windowed");
-        var b = a with { Handle = 2, ProcessId = 202, IsForeground = false, ZOrder = 1,
+        WindowSnapshot a = new(1, rect, rect, area, 1, default, true, true, true, 0, 96, uint.MaxValue - 1, SurfaceState: "windowed");
+        var b = a with { Handle = 2, ProcessId = uint.MaxValue - 2, IsForeground = false, ZOrder = 1,
             VisualRect = rect with { X = rect.X + 7, Y = rect.Y + 14 } };
         var history = new ForegroundHistory();
-        history.Visit(2, 202, 1000);
-        history.Visit(1, 101, 6800);
+        history.Visit(2, b.ProcessId, 1000);
+        history.Visit(1, a.ProcessId, 6800);
         check(history.OpeningFor([a, b], 6810) == null, "activating an overlapping centered surface does not establish a side from a few pixels");
-        history.Shown(1, 101, 6780);
+        history.Shown(1, a.ProcessId, 6780);
         check(history.OpeningFor([a, b], 6810) is { ResidentLeft: true },
             "a real restore can place a new surface beside that same centered resident");
         var visit = new Dictionary<nint, LayoutAttention> { [1] = new(1, .2, 0, 0, true), [2] = new(.9, 1, .8, 0, false) };

@@ -107,7 +107,79 @@ internal static class SceneModelChecks
             LayoutHabits.Observe(adjustment with { StartContext = Frame(origin, true) }) == null &&
             LayoutHabits.Observe(adjustment with { Outcome = "manual-release", EndContext = Frame(end, true) }, byInstance: true) == null,
             "card gestures remain observable without teaching the chat application or instance a placement preference");
+        CheckSituatedHabits(check, host, other, adjustment, chat, game);
         var score = new TaskCostBreakdown(1,1,1,1,1,1,1,1);
         check(rule.Weights!.Apply(score).Total == score.Total + 2, "contextual weights act on the named task cost alone");
+    }
+
+    private static void CheckSituatedHabits(Action<bool, string> check, WindowSnapshot window, WindowSnapshot peer,
+        WindowAdjustmentObservation adjustment, string app, string partner)
+    {
+        var companion = new ObservedWindow(3, peer.VisualRect, peer.WorkArea, 96, 1, false, false, true, .65,
+            AppKey: partner);
+        var start = adjustment.StartContext! with { Windows = [.. adjustment.StartContext.Windows, companion] };
+        var end = adjustment.EndContext! with { Windows = [.. adjustment.EndContext.Windows, companion] };
+        var joint = new PlacementUseObservation(1, 3, false, []);
+        var playback = new PlacementUseObservation(1, 0, false, [3]);
+        var observed = adjustment with { StartContext = start, EndContext = end, SettledContext = end, StartUsage = joint };
+        var vote = LayoutHabits.Observe(observed)!;
+        check(vote is { Usage: PlacementUsage.Joint } && vote.Partner == partner &&
+            LayoutHabits.Observe(observed with { StartUsage = null }) is { Usage: null } &&
+            LayoutHabits.Observe(observed with { StartUsage = playback }) is { Usage: PlacementUsage.BackgroundPlayback } &&
+            playback.For(3, 1) == PlacementUsage.BackgroundPlayback && playback.For(3) == null &&
+            (playback with { Playing = [3, 4] }).For(1, 3) == null &&
+            (new PlacementUseObservation(1, 0, false, [1])).For(1, 3) == PlacementUsage.ForegroundPlayback &&
+            (new PlacementUseObservation(1, 0, true, [])).For(1, 3) == PlacementUsage.TextFocus,
+            "only usage observed before an adjustment labels its context, shared symmetrically by the two windows");
+        LayoutHabit[] history = [];
+        var date = observed.Time;
+        for (int day = 0; day < 8; day++)
+        {
+            var time = date.AddDays(day);
+            history = LayoutHabits.Add(history, vote with { Time = time, Center = .30, RevealedCell = 1, InnerOverlap = .05 });
+            history = LayoutHabits.Add(history, vote with { Time = time, Center = .72, Usage = PlacementUsage.BackgroundPlayback,
+                RevealedCell = 13, InnerOverlap = .25 });
+            history = LayoutHabits.Add(history, vote with { Time = time, Width = .52, Edited = HorizontalEdit.Width, Usage = null });
+        }
+        var historyJson = System.Text.Json.JsonSerializer.Serialize(history);
+        history = System.Text.Json.JsonSerializer.Deserialize<LayoutHabit[]>(historyJson)!;
+        var entries = new[] { (window, (string?)app, "1"), (peer, (string?)partner, "3") };
+        var focus = new LayoutFocus(window.Handle, peer.Handle, 3);
+        PlacementPreference? Select(PlacementUseObservation? use) => PlacementPreferences.Bind(entries, focus, history, [],
+            date.AddDays(8), (w, p) => use?.For((int)w, (int)p)).FirstOrDefault(p => p.Window == window.Handle);
+        var jointPlacement = Select(joint);
+        var backgroundPlacement = Select(playback);
+        var unknown = Select(null);
+        check(history.Length == 24 &&
+            jointPlacement is { Center: < .35, Width: > .50 and < .54, RevealedCell: 1, InnerOverlap: < .1, Usage: PlacementUsage.Joint } &&
+            backgroundPlacement is { Center: > .67, Width: > .50 and < .54, RevealedCell: 13, InnerOverlap: > .20, Usage: PlacementUsage.BackgroundPlayback } &&
+            unknown is { PreferCenter: false, PreferWidth: true, Usage: null } &&
+            Select(new PlacementUseObservation(1, 0, true, [])) == unknown,
+            "the live binder separates opposite outcomes for the same pair and backs off each unsupported axis independently");
+        var regionVotes = Enumerable.Range(0, 8).Select(i => vote with
+        {
+            Time = date.AddDays(i / 2).AddHours(i % 2),
+            Center = i % 2 == 0 ? .25 : .75,
+            Order = i % 2 == 0 ? -1 : 1,
+            RevealedCell = 5,
+        }).ToArray();
+        var region = PlacementPreferences.Bind(entries, focus, regionVotes, [], date.AddDays(5),
+            (w, p) => joint.For((int)w, (int)p)).Single(p => p.Window == window.Handle);
+        check(region is { Partner: 3, PreferCenter: false, PreferWidth: false, RevealedCell: 5, Order: 0 } &&
+            region.PositionConfidence == 0 && region.RegionConfidence >= .40 &&
+            PlacementPreferences.Bind(entries, focus, regionVotes, [], date.AddDays(5)).Length == 0,
+            "repeatably revealing the same region transfers no side preference, and missing cues apply neither contextual vote");
+        var covering = window with { VisualRect = peer.VisualRect with { X = peer.VisualRect.X - 160 }, ZOrder = 0 };
+        WindowSnapshot[] desktop = [covering, peer with { ZOrder = 1 }];
+        var visible = new VisibilityAnalyzer().SelectForManualArrange(desktop, false);
+        var plan = LayoutDispatch.Create(LayoutRoute.Smart, visible, new(SmartStrength: SmartTidyStrength.Assertive), null,
+            desktop, new TaskLayoutContext(ExplicitArrange: true, Focus: focus, Placement: [region]) { UseWorkingPairs = true });
+        check(plan.Groups.SelectMany(g => g.Candidates).Any(c => c.Breakdown?.PersonalPlacement > 0),
+            "the live solver charges for covering an independently learned region");
+        var signals = RecordedTaskSignals.From(new(Placement: [jointPlacement!, region]), new Dictionary<nint, int> { [1] = 1, [3] = 3 });
+        var replay = System.Text.Json.JsonSerializer.Deserialize<RecordedTaskSignals>(System.Text.Json.JsonSerializer.Serialize(signals))!;
+        check(replay.ApplyToReplay(new()).Placement is { Length: 2 } restored &&
+            restored[0].Usage == PlacementUsage.Joint && restored[1].RegionConfidence == region.RegionConfidence,
+            "recorded replay retains the selected usage and the separate region confidence with anonymous window IDs");
     }
 }

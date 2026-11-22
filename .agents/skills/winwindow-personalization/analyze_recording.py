@@ -4,12 +4,12 @@
 import argparse
 from bisect import bisect_left
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 from pathlib import Path
 import sys
-from zipfile import BadZipFile, ZipFile
+from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
 
 def field_counts(rows, field):
@@ -48,6 +48,7 @@ def context(frame):
         exposure = w.get("Exposure") or {}
         windows.append({"Id": w["Id"], "AppKey": w.get("AppKey"), "Foreground": w.get("Foreground"),
                         "Dpi": w.get("Dpi"), "ZOrder": w.get("ZOrder"), "Rect": box, "WorkArea": area,
+                        "Manageable": w.get("Manageable"), "LocalSurface": w.get("LocalSurface"),
                         "WorkAreaFraction": normalized(box, area), "VisibleRatio": ratio(w),
                         "OffscreenRatio": exposure.get("Offscreen"), "VisibleCells": exposure.get("Cells"),
                         "LargestFragment": rect(exposure.get("LargestFragment"))})
@@ -70,7 +71,8 @@ def stamp(value):
 
 
 class Recording:
-    def __init__(self):
+    def __init__(self, include_probe_frames=False):
+        self.probe_frames = {} if include_probe_frames else None
         self.counts = Counter()
         self.versions = defaultdict(set)
         self.times = []
@@ -84,6 +86,7 @@ class Recording:
         self.gestures = {}
         self.dropped = 0
         self.plans = {}
+        self.plan_evidence = {}
         self.frame_counts = Counter()
         self.display_profiles = set()
 
@@ -113,6 +116,8 @@ class Recording:
                 record = context(row["Frame"])
                 self.frame(row["Frame"], stream)
                 self.geometry[row["GeometryTick"]] = record
+                if self.probe_frames is not None:
+                    self.probe_frames[row["GeometryTick"]] = row["Frame"]
             row.pop("Frame", None)
             row.pop("Processes", None)
             previous = self.activity.get(row["Tick"])
@@ -159,10 +164,14 @@ class Recording:
                 before = row.get("Before") or {}
                 active = next((w for w in before.get("Windows", []) if w.get("Foreground")), {})
                 targets = [move["Id"] for move in row.get("Targets") or []]
+                self.plan_evidence[key] = context(before), context(row.get("Actual"))
                 self.plans[key] = {"Version": row["Version"], "Trigger": row["Trigger"],
                                    "Outcome": row.get("Outcome"), "ActualObserved": has_actual,
                                    "FullDesktop": row.get("FullDesktop"), "Truncated": before.get("Truncated"),
                                    "Time": before.get("Time"), "ForegroundId": active.get("Id"),
+                                   "ActualTime": (row.get("Actual") or {}).get("Time"),
+                                   "SubmittedChange": bool(targets or row.get("Layers") or row.get("MinimizeTarget")),
+                                   "MainId": (row.get("Signals") or {}).get("Main"),
                                    "TargetWindowIds": targets, "UndoOfRequest": row.get("UndoOfRequest"),
                                    "SceneEffects": row.get("SceneEffects"),
                                    "OriginSide": (row.get("Signals") or {}).get("OriginSide"),
@@ -181,7 +190,7 @@ class Recording:
                 start, end = rect(row.get("Start")), rect(row.get("End"))
                 self.adjustments[key] = {
                     **{k: row.get(k) for k in ("Version", "Time", "WindowId", "GestureId", "Dpi",
-                       "Outcome", "DurationMilliseconds", "AfterRequest", "PriorPlacement")},
+                       "Outcome", "DurationMilliseconds", "AfterRequest", "PriorPlacement", "TrialFirstGestureId")},
                     "Start": start, "End": end, "StartWorkArea": start_work, "EndWorkArea": work,
                     "StartFraction": normalized(start, start_work), "EndFraction": normalized(end, work),
                     "ChangedAxesPx": dict(zip(("X", "Y", "Width", "Height"), (b-a for a,b in zip(start,end))))
@@ -232,7 +241,7 @@ class Recording:
                 "FrameCounts": [{"Source": k[0], "Truncated": k[1], "Count": v} for k, v in sorted(self.frame_counts.items())],
                 "Identities": {k: {"Identity": self.identity(k), **{f: sorted(vals) for f, vals in attrs.items()}}
                                for k, attrs in sorted(self.ids.items())},
-                **use, "PlanTriggers": field_counts(self.plans.values(), "Trigger"),
+                **use, "MissedAssistance": missed_opportunities(self), "PlanTriggers": field_counts(self.plans.values(), "Trigger"),
                 "Plans": self.plans, "AdjustmentEvidence": field_counts(self.adjustments.values(), "Evidence"),
                 "Adjustments": sorted(self.adjustments.values(), key=lambda row: row["Time"] or ""),
                 "Gestures": sorted(self.gestures.values(), key=lambda row: row["Tick"]), "DroppedGestureEvents": self.dropped,
@@ -254,6 +263,255 @@ def foreground_spans(coverage):
     if end > start:
         yield start, end, active
 
+
+# Observational windows limit attribution. The grace interval avoids treating a snapshot
+# taken by the move/size-start hook (or wall/monotonic clock skew) as prior evidence.
+MISSED_FRESH_MS = 15_000
+MISSED_PRE_START_MS = 250
+MISSED_TRIAL_MS = 2_000
+ACTIVITY_PROBE_TRIGGER = "offline-activity-probe"
+
+
+def activity_probe_id(tick):
+    return f"offline-activity-{tick}"
+
+
+def matching_window(frame, window_id):
+    if not frame or frame.get("Truncated") is not False:
+        return None
+    matches = [w for w in frame["Windows"] if w["Id"] == window_id]
+    return matches[0] if len(matches) == 1 else None
+
+
+def same_display(frame, other, work):
+    def signature(sample):
+        displays = sample["Displays"]
+        if any(not d["Bounds"] or not d["WorkArea"] for d in displays):
+            return []
+        return sorted((tuple(d["Bounds"]), tuple(d["WorkArea"])) for d in displays)
+    first, second = signature(frame), signature(other)
+    return bool(first and first == second and sum(area == tuple(work) for _, area in first) == 1)
+
+
+def focus_continuity(coverages, begin, end, window):
+    spans = []
+    for coverage in coverages:
+        a, b = coverage.get("FromTick"), coverage["ToTick"]
+        if a is None or b <= begin or a >= end or coverage["Status"] != "observed" or coverage.get("OmittedEvents"):
+            continue
+        events = coverage.get("Events") or []
+        if coverage.get("ObservedEndId") != (events[-1]["Id"] if events else coverage.get("InitialId")):
+            continue
+        for start, stop, active in foreground_spans(coverage):
+            if start < end and stop > begin:
+                if active not in (None, 0, window):
+                    return "task-changed"
+                if active == window:
+                    spans.append((start, stop))
+    edge = begin
+    for start, stop in sorted(spans):
+        if start > edge:
+            break
+        edge = max(edge, stop)
+    return None if edge >= end else "unknown-focus-gap"
+
+
+def changed_dimensions(start, end, work):
+    # Moving a left/top edge changes the origin, but is not an independent translation.
+    # If both edges move unequally, the translation component is ambiguous.
+    for location, size, unit, pos_name, size_name in (
+        (0, 2, work[2], "horizontal-position", "width"), (1, 3, work[3], "vertical-position", "height")):
+        threshold = max(4, unit * .01)
+        if abs(end[size] - start[size]) >= threshold:
+            yield size_name
+        elif abs(end[location] + end[size]/2 - start[location] - start[size]/2) >= threshold:
+            yield pos_name
+
+
+def axis_error(predicted, manual, work, axis):
+    index = {"horizontal-position": 0, "vertical-position": 1, "width": 2, "height": 3}[axis]
+    offset = index % 2 + 2
+    value = lambda box: box[index] + box[offset] / 2 if index < 2 else box[index]
+    return round(abs(value(predicted) - value(manual)) / work[offset], 6)
+
+
+def missed_opportunities(record):
+    activity_ticks = sorted(record.activity)
+    geometry_ticks = sorted(record.geometry)
+    coverages = [row["FocusCoverage"] for row in record.activity.values() if row.get("FocusCoverage")]
+    coverages.extend(record.boundaries.values())
+    timed_plans = sorted((stamp(p["Time"]), request) for request, p in record.plans.items() if p["Time"])
+    plan_times = [time for time, _ in timed_plans]
+    events = defaultdict(list)
+    for event in record.gestures.values():
+        events[event["GestureId"], event["WindowId"]].append(event)
+    episodes, seen_axes, seen_request_axes = [], {}, set()
+    valid = {"no-system-placement", "no-recorded-request"}
+
+    def assess(row):
+        window_id = row["WindowId"]
+        if row["Evidence"] not in ("stable", "assisted-release"):
+            return ("automation" if row["Evidence"] == "automation-marked" or row["Outcome"] == "automation"
+                    else "unknown-endpoint"), {}
+        gesture_events = events[row["GestureId"], window_id]
+        starts = [ev for ev in gesture_events if ev["Stage"] == "start"]
+        releases = [ev for ev in gesture_events if ev["Stage"] == "release"]
+        if len(starts) != 1 or len(releases) != 1:
+            return "unknown-gesture-boundary", {}
+        start, release = starts[0], releases[0]
+        tick, release_tick = start["Tick"], release["Tick"]
+        marks = start.get("AutomationMarked"), release.get("AutomationMarked")
+        if True in marks:
+            return "automation", {}
+        if (marks != (False, False) or tick >= release_tick or release.get("StartTick") not in (None, tick)
+                or start["Frame"] != row["Start"] or release["Frame"] != row["End"]):
+            return "unknown-gesture-mismatch", {}
+        work, dpi = start["WorkArea"], start.get("Dpi")
+        if not normalized(row["Start"], work) or not row["End"] or not dpi or not release.get("Dpi"):
+            return "unknown-display", {}
+        if work != release["WorkArea"] or dpi != release["Dpi"]:
+            return "display-changed", {}
+        if work != row["StartWorkArea"] or work != row["EndWorkArea"] or dpi != row["Dpi"]:
+            return "unknown-display", {}
+        before, at_release = row["Before"], row["AtRelease"]
+        begin_window = matching_window(before, window_id)
+        end_window = matching_window(at_release, window_id)
+        if not begin_window or not end_window or not before["Time"] or not at_release["Time"]:
+            return "unknown-gesture-context", {}
+        if begin_window["Foreground"] is not True or end_window["Foreground"] is not True:
+            return "task-changed", {}
+        if not same_display(before, at_release, work):
+            return "unknown-or-changed-display-topology", {}
+
+        # Use a nearby activity sample strictly before the event to establish the
+        # wall clock for request timestamps. Focus continuity stays in monotonic ticks.
+        near = bisect_left(activity_ticks, tick) - 1
+        if near < 0 or tick - activity_ticks[near] > MISSED_FRESH_MS:
+            return "unknown-stale-or-absent-activity", {}
+        anchor = record.activity[activity_ticks[near]]
+        if not anchor.get("Time"):
+            return "unknown-clock", {}
+        start_time = stamp(anchor["Time"]) + timedelta(milliseconds=tick - anchor["Tick"])
+        observed_start_time = stamp(before["Time"])
+        if abs((observed_start_time - start_time).total_seconds()) > MISSED_PRE_START_MS / 1000:
+            return "unknown-clock", {}
+        fresh_from = start_time - timedelta(milliseconds=MISSED_FRESH_MS)
+        strict_before = min(start_time, observed_start_time) - timedelta(milliseconds=MISSED_PRE_START_MS)
+        recent = timed_plans[bisect_left(plan_times, fresh_from):bisect_left(plan_times, max(start_time, observed_start_time))]
+        # A recorded system placement is a separate correction cohort, including
+        # the older-than-30s links absent from AfterRequest.
+        if row.get("PriorPlacement") or row.get("AfterRequest") or start.get("Prior") or release.get("Prior"):
+            return "prior-system-placement", {}
+        end_tick = release_tick + 1
+        left = bisect_left(geometry_ticks, tick - MISSED_PRE_START_MS) - 1
+        source, evidence_tick, request = None, None, None
+        if recent:
+            plan_time, request = recent[-1]
+            plan = record.plans[request]
+            if plan["Trigger"] not in ("automatic-workspace", "automatic-opening"):
+                return "other-request-trigger", {"RequestId": request}
+            if plan["SubmittedChange"]:
+                return "prior-system-placement", {"RequestId": request}
+            actual_time = plan["ActualTime"]
+            if (plan_time >= strict_before
+                    or len(recent) > 1 and recent[-2][0] == plan_time
+                    or not actual_time or not plan_time <= stamp(actual_time) < strict_before):
+                return "unknown-request-verification", {"RequestId": request}
+            if plan["Outcome"] != "observed-match":
+                return "unknown-request-verification", {"RequestId": request}
+            source = record.plan_evidence[request][0]
+            actual = record.plan_evidence[request][1]
+            verified = matching_window(actual, window_id)
+            if (not verified or verified["Rect"] != row["Start"] or verified["Dpi"] != dpi
+                    or not same_display(actual, before, work)):
+                return "unknown-request-verification", {"RequestId": request}
+            evidence_tick = tick + round((plan_time - start_time).total_seconds() * 1000)
+            # The earlier request must itself belong to this foreground task; an
+            # explicit record of a different task main is a negative control.
+            if plan["MainId"] not in (None, 0, window_id):
+                return "task-changed", {"RequestId": request}
+        elif left >= 0 and tick - geometry_ticks[left] <= MISSED_FRESH_MS:
+            evidence_tick = geometry_ticks[left]
+            source = record.geometry[evidence_tick]
+            if not source["Time"] or stamp(source["Time"]) >= strict_before:
+                return "unknown-clock", {}
+            if "plans" not in record.versions:
+                return "unknown-plan-coverage", {}
+        else:
+            return "unknown-stale-or-absent-geometry", {}
+
+        evidence = {"GestureStartTick": tick, "GestureReleaseTick": release_tick,
+                    "EvidenceTick": evidence_tick, "EvidenceTime": source["Time"], "RequestId": request}
+        historical = matching_window(source, window_id)
+        if not historical:
+            return "unknown-prior-window", evidence
+        if historical["Foreground"] is not True:
+            return "task-changed", evidence
+        if (historical["WorkArea"] != work or historical["Dpi"] != dpi
+                or begin_window["WorkArea"] != work or begin_window["Dpi"] != dpi
+                or end_window["WorkArea"] != work or end_window["Dpi"] != dpi
+                or not same_display(source, before, work)):
+            return "unknown-or-changed-display-topology", evidence
+        continuity = focus_continuity(coverages, evidence_tick, end_tick, window_id)
+        if continuity:
+            return continuity, evidence
+        if historical["Rect"] != row["Start"]:
+            return "geometry-changed-before-gesture", evidence
+        if any(evidence_tick < ev["Tick"] <= release_tick and window_id in (ev["WindowId"], ev.get("HostId"))
+               for ev in record.surfaces.values()):
+            return "task-surface-changed", evidence
+        if any(evidence_tick <= ev["Tick"] < tick and ev["WindowId"] == window_id
+               and ev["GestureId"] != row["GestureId"] and ev["Stage"] == "release"
+               and any(begin["Stage"] == "start" and ev["Frame"] != begin["Frame"]
+                       for begin in events[ev["GestureId"], window_id])
+               for ev in record.gestures.values()):
+            return "intervening-gesture", evidence
+        if not request and historical["Manageable"] is True and not historical["LocalSurface"]:
+            evidence["ProbeRequestId"] = activity_probe_id(evidence_tick)
+        return "no-system-placement" if request else "no-recorded-request", evidence
+
+    def gesture_order(row):
+        starts = [ev["Tick"] for ev in events[row["GestureId"], row["WindowId"]] if ev["Stage"] == "start"]
+        return min(starts, default=0), row["Time"] or ""
+
+    for row in sorted(record.adjustments.values(), key=gesture_order):
+        status, evidence = assess(row)
+        entry = {"WindowId": row["WindowId"], "GestureId": row["GestureId"], "Time": row["Time"],
+                 "Status": status, **evidence}
+        if status in valid:
+            tick = evidence["GestureStartTick"]
+            entry["Keep"], entry["ManualRelease"], entry["WorkArea"] = row["Start"], row["End"], row["EndWorkArea"]
+            entry["Axes"] = axes = []
+            for axis in changed_dimensions(entry["Keep"], entry["ManualRelease"], entry["WorkArea"]):
+                key = row["WindowId"], tuple(entry["WorkArea"]), row["Dpi"], axis
+                previous = seen_axes.get(key)
+                trial = row.get("TrialFirstGestureId")
+                seen_axes[key] = (evidence["GestureReleaseTick"], trial)
+                request_key = (entry["RequestId"], *key)
+                repeats_request = entry["RequestId"] and request_key in seen_request_axes
+                repeats_trial = previous and (trial is not None and trial == previous[1]
+                                              or 0 <= tick - previous[0] < MISSED_TRIAL_MS)
+                if repeats_request or repeats_trial:
+                    continue
+                if entry["RequestId"]:
+                    seen_request_axes.add(request_key)
+                axes.append({"Dimension": axis, "KeepError": axis_error(entry["Keep"], entry["ManualRelease"],
+                                                                       entry["WorkArea"], axis)})
+            if not axes:
+                entry["Status"] = "duplicate-trial-or-small-gesture"
+        episodes.append(entry)
+    adjustments = {(row["GestureId"], row["WindowId"]) for row in record.adjustments.values()}
+    raw = Counter()
+    for key, batch in events.items():
+        stages = {event["Stage"] for event in batch}
+        if {"start", "release"} <= stages:
+            raw["with-adjustment" if key in adjustments else "without-adjustment"] += 1
+        else:
+            raw["missing-start-or-release"] += 1
+    return {"StatusCounts": field_counts(episodes, "Status"),
+            "RawGestureCoverage": dict(raw) if "gestures" in record.versions else None,
+            "ScoredDimensions": dict(Counter(axis["Dimension"] for e in episodes for axis in e.get("Axes", []))),
+            "Gestures": episodes, "ObservedSavedDrags": None}
 
 def activity_report(record):
     foreground, pointer, old_foreground, background = (Counter() for _ in range(4))
@@ -452,8 +710,8 @@ def activity_report(record):
             "Switches": [{"From": src, "To": dst, "Count": n} for (src,dst),n in switches.most_common()]}
 
 
-def analyze(paths):
-    sessions = defaultdict(Recording)
+def read_recordings(paths, include_probe_frames=False):
+    sessions = defaultdict(lambda: Recording(include_probe_frames))
     seen = set()
     archives, malformed = [], []
     dup = 0
@@ -488,8 +746,44 @@ def analyze(paths):
                         sessions[row["Session"]].add(stream, row)
         archives.append({"Archive": Path(path).name, "Streams": dict(streams), "Sessions": sorted(archive_sessions),
                          "HasDiagnosticTimeline": snapshots})
+    return sessions, archives, malformed, dup
+
+
+def write_activity_probes(paths, output):
+    # Freeze every usable keyframe, independent of whether the user later made a gesture.
+    # The probe carries original solver geometry only; no future labels enter its inputs.
+    if any(Path(path).resolve() == Path(output).resolve() for path in paths):
+        raise ValueError("The activity probe ZIP must have a different path from all source recordings.")
+    sessions, _, _, _ = read_recordings(paths, include_probe_frames=True)
+    with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
+        with archive.open("layout-decisions.jsonl", "w") as writer:
+            for session, record in sorted(sessions.items()):
+                for tick, frame in sorted(record.probe_frames.items()):
+                    if (frame.get("Truncated") is not False or not frame.get("Displays")
+                            or not frame.get("Time") or not any(
+                                w.get("Manageable") and w.get("Foreground") and not w.get("LocalSurface")
+                                for w in frame.get("Windows") or [])):
+                        continue
+                    observation = {"Version": 9, "Session": session, "RequestId": activity_probe_id(tick),
+                                   "Trigger": ACTIVITY_PROBE_TRIGGER, "Before": frame, "Targets": [], "Layers": [],
+                                   "Groups": [], "Outcome": "offline-probe", "ApplyNotes": [], "FullDesktop": False}
+                    writer.write((json.dumps(observation, separators=(",", ":")) + "\n").encode())
+
+
+def analyze(paths, baseline_paths=(), candidate_paths=()):
+    sessions, archives, malformed, dup = read_recordings(paths)
+    reports = {key: record.report() for key, record in sorted(sessions.items())}
+    if baseline_paths or candidate_paths:
+        baseline = merge_replays(baseline_paths)
+        candidate = merge_replays(candidate_paths)
+        has_probes = any(row["Trigger"] == ACTIVITY_PROBE_TRIGGER
+                         for predictions in (baseline, candidate) for row in predictions.values())
+        for key, report in reports.items():
+            score_missed_replays(key, report, baseline, candidate)
+            if has_probes:
+                score_missed_replays(key, report, baseline, candidate, probe=True)
     return {"ReportVersion": 1, "Archives": archives, "DuplicateRowsSkipped": dup, "InvalidRows": malformed,
-            "Sessions": {key: record.report() for key,record in sorted(sessions.items())}}
+            "Sessions": reports}
 
 
 def read_replay(path):
@@ -514,6 +808,78 @@ def read_replay(path):
         raise ValueError(f"{path}: no layout requests to compare")
     return rows, summaries, duplicates
 
+
+
+def merge_replays(paths):
+    output, ambiguous = {}, set()
+    fields = ("InputFingerprint", "BeforeTime", "Trigger", "Truncated", "ProjectedWindows")
+    for path in paths:
+        rows, _, duplicates = read_replay(path)
+        ambiguous.update(duplicates)
+        for key, row in rows.items():
+            prediction = {field: row.get(field) for field in fields}
+            if key in output and output[key] != prediction:
+                ambiguous.add(key)
+            else:
+                output[key] = prediction
+    return {key: row for key, row in output.items() if key not in ambiguous}
+
+
+def score_missed_replays(session, report, baseline, candidate, probe=False):
+    missed = report["MissedAssistance"]
+    prefix = "ProbeReplay" if probe else "Replay"
+    totals = defaultdict(Counter)
+    pairs = defaultdict(lambda: defaultdict(list))
+    for entry in missed["Gestures"]:
+        if not entry.get("Axes") or probe and not entry.get("ProbeRequestId"):
+            continue
+        request = entry["ProbeRequestId"] if probe else entry["RequestId"]
+        window = entry["WindowId"]
+        entry[prefix] = {}
+        for assume in (False, True):
+            name = "resizable" if assume else "fixed"
+            key = (session, request, assume)
+            old, new = baseline.get(key), candidate.get(key)
+            plan = report["Plans"].get(request)
+            expected_time = stamp(entry["EvidenceTime"]) if probe else stamp(plan["Time"]) if plan else None
+            expected_trigger = ACTIVITY_PROBE_TRIGGER if probe else plan["Trigger"] if plan else None
+            status = ("unknown-no-request" if not request else
+                      "unknown-missing-or-ambiguous-replay" if not old or not new else
+                      "unknown-replay-input" if any(
+                          not row.get("InputFingerprint") or not row.get("BeforeTime")
+                          or row.get("Truncated") is not False or row.get("Trigger") != expected_trigger
+                          or stamp(row["BeforeTime"]) != expected_time for row in (old, new))
+                      or old["InputFingerprint"] != new["InputFingerprint"] else "paired")
+            result = entry[prefix][name] = {"Status": status}
+            if status == "paired":
+                positions = [[w for w in row.get("ProjectedWindows") or [] if w["Id"] == window]
+                             for row in (old, new)]
+                if any(len(matches) != 1 or not rect(matches[0].get("Rect"))
+                       or rect(matches[0].get("Before")) != entry["Keep"] for matches in positions):
+                    result["Status"] = "unknown-replay-window"
+                else:
+                    result["BaselineTarget"], result["CandidateTarget"] = (rect(matches[0]["Rect"]) for matches in positions)
+                    for axis in entry["Axes"]:
+                        dim = axis["Dimension"]
+                        before, after = (axis_error(result[target], entry["ManualRelease"], entry["WorkArea"], dim)
+                                         for target in ("BaselineTarget", "CandidateTarget"))
+                        result.setdefault("Axes", {})[dim] = scores = {"Keep": axis["KeepError"], "Baseline": before,
+                            "Candidate": after, "CandidateImprovesOverKeep": after < axis["KeepError"],
+                            "CandidateImprovesOverBaseline": after < before}
+                        pairs[name][dim].append(scores)
+            totals[name][result["Status"]] += 1
+    missed[prefix + "Coverage"] = {name: dict(counts) for name, counts in totals.items()}
+    missed[prefix + "PairedDimensions"] = {
+        name: {dimension: {"Count": len(scores), "MeanErrors": {key: round(sum(s[key] for s in scores) / len(scores), 6)
+                for key in ("Keep", "Baseline", "Candidate")}, "CandidateVsKeep": comparison_counts(scores, "Keep"),
+                "CandidateVsBaseline": comparison_counts(scores, "Baseline")}
+               for dimension, scores in axes.items()}
+        for name, axes in pairs.items()}
+
+
+def comparison_counts(scores, baseline):
+    return dict(Counter("improved" if s["Candidate"] < s[baseline] else
+                        "regressed" if s["Candidate"] > s[baseline] else "same" for s in scores))
 
 def replay_signature(row):
     return (sorted((move["Id"], rect(move["Before"]), rect(move["After"])) for move in row.get("Moves", [])),
@@ -724,6 +1090,11 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     collect = commands.add_parser("analyze", help="report on one or more recording ZIPs")
     collect.add_argument("archives", nargs="+")
+    collect.add_argument("--baseline-replay", action="append", default=[], help="request-time LayoutModel stdout")
+    collect.add_argument("--candidate-replay", action="append", default=[], help="matching candidate stdout")
+    probes = commands.add_parser("probes", help="freeze complete activity keyframes into an offline solver input ZIP")
+    probes.add_argument("archives", nargs="+")
+    probes.add_argument("-o", "--output", required=True, help="write an offline solver input ZIP to this file")
     check = commands.add_parser("compare", help="pair baseline and candidate LayoutModel replay stdout")
     check.add_argument("baseline")
     check.add_argument("candidate")
@@ -731,7 +1102,11 @@ def main():
         command.add_argument("-o", "--output", help="write JSON to this file instead of stdout")
     args = parser.parse_args()
     try:
-        result = analyze(args.archives) if args.command == "analyze" else compare(args.baseline, args.candidate)
+        if args.command == "probes":
+            write_activity_probes(args.archives, args.output)
+            return 0
+        result = (analyze(args.archives, args.baseline_replay, args.candidate_replay)
+                  if args.command == "analyze" else compare(args.baseline, args.candidate))
         if args.output:
             with open(args.output, "w", encoding="utf-8") as writer:
                 json.dump(result, writer, ensure_ascii=False, indent=2, allow_nan=False)

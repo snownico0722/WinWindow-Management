@@ -70,3 +70,5 @@ dotnet run --no-build -c Release --project src/WinWindow -- --self-test TestResu
 产品决定见 [DECISIONS.md](docs/DECISIONS.md)，维护规则见 [AGENTS.md](AGENTS.md)。布局程序集沿用 NeatWin 源码，不预建插件平台或数据库，尚未选择开源许可证。
 
 Smart v2.0 支持按应用组合和触发方式导入个人模型。它可以改变重排成本、尺寸策略与参照内容的可见范围，并区分应用内临时卡片和独立工作窗口。录制 ZIP 附带可直接运行的分析工具和个性化迭代说明，支持对比默认与个人规则的回放结果。参见[布局记录与回放](docs/LAYOUT_RECORDING.md)。
+
+Smart v2.4 将当前可读空间的收益与窗口跳动、文字换行、刚刚摆过又被挪动的成本一起比较。手摆松手和首次开窗可以顺势微调，同一变化发生在读写期间会更谨慎。摆放学习 v2.3 能在同一应用组合中分别学习对照、文字输入界面和有播放证据时的位置与尺寸。

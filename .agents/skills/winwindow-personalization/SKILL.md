@@ -44,11 +44,13 @@ A version 4 document can include `Scenes` alongside the placement priors. A scen
 }
 ```
 
-Replace the placeholder keys with identities observed together on the applicable display. The reference must uniquely match a background peer on the foreground monitor and meet `MinVisible`. The limits use fractions. `MaxVisibleLoss` bounds loss from the originally exposed region measured against the original reference window's area. `MinWindows` and `MaxWindows` count relevant windows on that monitor. `Trigger` can also be `gesture` or `explicit`; test each intended path independently. `Weights` can override `Information`, `Switching`, `Continuity`, `Reflow`, `Personal`, and `Intervention` (default 1, range 0–8 except intervention 0.125–8). `AllowResize` and `ReconsiderSettled` change the available behavior in the matching context. Make one evidence-backed change at a time. Treat release-specific fields absent from an older export as unknown.
+Replace the placeholder keys with identities observed together on the applicable display. The reference must uniquely match a background peer on the foreground monitor and meet `MinVisible`. The limits use fractions. `MaxVisibleLoss` bounds loss from the originally exposed region measured against the original reference window's area. `MinWindows` and `MaxWindows` count relevant windows on that monitor. `Trigger` can also be `gesture` or `explicit`; test each intended path independently. `Weights` can override `Information`, `Switching`, `Continuity`, `Reflow`, `Personal`, `Interruption` (Smart v2.4+), and `Intervention` (default 1, range 0–8 except intervention 0.125–8). `AllowResize` and `ReconsiderSettled` change the available behavior in the matching context. Make one evidence-backed change at a time. Treat release-specific fields absent from an older export as unknown.
 
 Version 5 adds optional `FirstWidth` and `SecondWidth` in `Pairs` (0.18–0.88 of work-area width). Keep `FirstSide` at `either` when the evidence supports width alone. Compare a real opening or confirmed working pair with two apps that merely coexist, navigation through an app, and duplicate window identities. Freeze a candidate before evaluating an unseen session. A recording used to choose the width can demonstrate fit, but cannot establish generalization.
 
 Inspect `OriginSide`, `SceneEffects`, `RepeatedReversal`, `ShadowRules` and `ShadowReplay` in the originating request. A learned width carries no evidence about the user's intended lane. Include a same-side opening with an empty opposite side, a naturally separate foreground, and an explicit split as controls. Count an actual manual return from its linked gesture. A candidate matching an endpoint in replay demonstrates a geometric prediction.
+
+In placement model v2.3, a gesture can carry a pre-start `StartUsage` observation. Compare independently observed joint work, native text focus and playback within the same pair. A missing label leaves usage unknown. A repeatedly revealed cell can support a visibility preference independently of the side and size. Review the eligible region and each eligible axis separately when comparing alternatives.
 
 ### Tune a child surface
 
@@ -78,6 +80,33 @@ Set `SESSION` to `*` (quote it in a shell) if the whole archive is reserved for 
 The comparison pairs the two regular stdout files by session, request and resizability assumption. Use a model build that emits `Session`, `SceneEffects`, and `EvaluationEffects`. Check `CompletePairing` first. Use `ReferenceEvaluationByAssumption` for the shared reference cohort and the per-session breakdown for context. Joint measurements require the same rule, subject and starting observation in both runs. Each side uses those same denominators for requests and subjects with a loss. A request with several measured references counts once toward the request rate. Null measurements, truncated frames, and missing or changed subjects stay outside that denominator. Zero joint subjects leave the rates and sum unknown. If you omit evaluation for both runs, the comparison still shows active scene traces, which can cover different references and should not be used as a common denominator.
 
 Compare outcome, actual target differences, horizontal and vertical correction error, protected-region retention, scene rule incidence and reference visibility. `LostVisible` measures the original exposure lost even when another part of the window becomes visible. Also look at no-match scenes, quiet controls, same-position switch controls, unlinked edits and undo. Report applicability and sample counts per session and both assumptions. Treat unexplained protected-region regression, exceeded reference loss, or worsened held-out corrections as a reason to narrow or drop the candidate. A replay measures a counterfactual geometry choice. It cannot establish a decrease in real edits or guarantee native placement.
+
+### Evaluate assistance the solver did not provide
+
+Read each session's `MissedAssistance` alongside its ordinary correction and undo counts. `no-system-placement` requires a recorded automatic workspace/opening request with no submitted moves, layer change or minimize and a verified frame before the drag. `no-recorded-request` means a fresh activity keyframe and continuous foreground evidence exist, but the retained log contains no eligible recent request. Authorization, scheduling, and the reason for an absent request may be unknown. A linked prior submission is handled as a correction even if it predates the 30-second `AfterRequest` window.
+
+Compare a single window instance on the same display, work area and DPI. Verify a non-automated start and release, the confirmed manual endpoint, and continuous event-based foreground coverage connecting them with pre-start evidence. The analysis looks back 15 seconds and leaves a 250 ms margin before move/size start for clock alignment and observation latency. It treats focus switches (including switch-away-and-back), local-surface transitions and intervening geometry changes as controls. Older or stale coverage, interrupted verification and untracked focus stay unknown. Same-window continuity is evidence about the foreground task and cannot identify a change of document within that window.
+
+A gesture that resizes an axis contributes evidence for size on that axis. Only a size-preserving translation contributes position evidence there. The endpoint at release labels that episode, including for a later assisted release. The settled frame can incorporate native assistance. Retained exports are deduplicated across files, and the same axis of a short, two-second trial (or a recorder-supplied trial ID) or of an already measured request counts once. The geometric test uses the first eligible end point for each such dimension. Meaningful changes must exceed the larger of four pixels or 1% of the applicable work-area dimension.
+
+To attach replay outputs, keep the same pre-request frames and inputs across the two builds or configurations. Analyze the archives with the corresponding solver stdout files:
+
+```text
+python export/analyze_recording.py analyze Holdout.zip --baseline-replay baseline-replay.txt --candidate-replay candidate-replay.txt -o missed.json
+```
+
+Repeat each replay option when analyzing several exports together. Check `ReplayCoverage` for both resizability assumptions. `ReplayPairedDimensions` compares keep, baseline, and candidate error against the manual release on the eligible axes, normalized by the work-area dimension. The actual pre-request projection includes the geometry even when the solver chooses to stay put. A solver request made during or after the gesture is outside this comparison.
+
+For `no-recorded-request` cases with a complete pre-start activity keyframe, an optional, separate geometry probe can compare hypothetical solver outputs. The probe archive freezes all usable activity keyframes without reading any gesture when choosing a frame to send to the solver. It preserves recorded window geometry, manageability and foreground state. The solver uses its ordinary workspace geometry path with default or supplied rules. Runtime authorization, input state, attention, local intent, and scheduler confidence are unknown. Keep the results in `ProbeReplayCoverage` and `ProbeReplayPairedDimensions`.
+
+```text
+python export/analyze_recording.py probes Holdout.zip -o activity-probes.zip
+dotnet run --project tests/LayoutModel -c Release --no-build -- activity-probes.zip baseline.json '*' > baseline-probes.txt
+dotnet run --project tests/LayoutModel -c Release --no-build -- activity-probes.zip candidate.json '*' > candidate-probes.txt
+python export/analyze_recording.py analyze Holdout.zip --baseline-replay baseline-probes.txt --candidate-replay candidate-probes.txt -o probe-comparison.json
+```
+
+Keep the probe ZIP private alongside the source exports. Report counterexamples and unknown coverage alongside any improvements. If the archive contributed to designing the candidate, these comparisons measure fit. Only subsequent real use can measure saved drags, so `ObservedSavedDrags` stays null in offline results.
 
 ## Draft and replay behavior rules
 

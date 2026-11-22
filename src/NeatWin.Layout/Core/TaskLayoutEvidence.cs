@@ -2,17 +2,18 @@ namespace NeatWin.Core;
 
 public sealed record TaskEvidence(int First, int Second, double Joint, double Parked,
     double Integrated, double Uncertainty, bool SameColumn, string Source, double Affinity = 1);
-// Deficits use five-percent bands so single-pixel changes do not trump continuity.
-public readonly record struct AttentionDeficit(int Main, int Access, int Comfort, int Gesture = 0) : IComparable<AttentionDeficit>
+// 主窗和返回入口不足时收益更陡；达到舒适尺寸前仍连续计分。分数是经验尺度，不代表注视概率。
+public readonly record struct AttentionDeficit(double Main, double Access, double Comfort, int Gesture = 0)
 {
-    public int CompareTo(AttentionDeficit other) => (Gesture, Main, Access, Comfort).CompareTo((other.Gesture, other.Main, other.Access, other.Comfort));
+    public double DemandCost => .48 * Main + .39 * Access + .12 * Comfort + 1.5 * Gesture;
 }
 public sealed record TaskCostBreakdown(double InformationLoss, double Switching,
     double Continuity, double Reflow, double PeripheralLoss, double Alignment,
-    double Uncertainty, double Feedback, double PersonalPlacement = 0, double PairPlacement = 0, AttentionDeficit Goal = default)
+    double Uncertainty, double Feedback, double PersonalPlacement = 0, double PairPlacement = 0,
+    AttentionDeficit Goal = default, double Interruption = 0)
 {
-    public double Total => InformationLoss + Switching + Continuity + Reflow +
-        PeripheralLoss + Alignment + Uncertainty + Feedback + PersonalPlacement + PairPlacement;
+    public double Total => InformationLoss + Switching + Continuity + Reflow + PeripheralLoss +
+        Alignment + Uncertainty + Feedback + PersonalPlacement + PairPlacement + Goal.DemandCost + Interruption;
 }
 public sealed record TaskGroupExplanation(TaskEvidence[] Relations, string ViewingModel,
     string[] Limits);

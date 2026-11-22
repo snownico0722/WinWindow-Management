@@ -24,7 +24,7 @@ internal static partial class IntentLayoutPlanner
             !visible.Any(v => v.Window.Handle == focus.Main) ||
             (focus.Companion != 0 && visible.Any(v => v.Window.Handle == focus.Companion))) return visible;
         if (focus.Companion == 0 && context.RulePairs is not { Length: > 0 } &&
-            context.Placement?.Any(p => p.Partner != 0 && p.Confidence >= .4) != true &&
+            context.Placement?.Any(p => p.Partner != 0 && p.PositionConfidence >= .4) != true &&
             context.WindowHints?.Any(h => h.MediaCompanion && !h.Anchor) != true) return visible;
 
         var monitor = visible.First(v => v.Window.Handle == focus.Main).Window.MonitorHandle;
@@ -49,7 +49,7 @@ internal static partial class IntentLayoutPlanner
         // A persistent placement prior needs fresh evidence to participate in this task.
         bool CanJoin(nint handle) => context.Attention == null ||
             handle == mainHandle || context.HasRecentInput(handle);
-        var learned = context.Placement?.Where(p => p.Confidence >= .4 && p.Partner != 0 &&
+        var learned = context.Placement?.Where(p => p.PositionConfidence >= .4 && p.Partner != 0 &&
             (mainHandle == 0 || p.Window == mainHandle || p.Partner == mainHandle) &&
             CanJoin(p.Window) && CanJoin(p.Partner) &&
             windows.Any(w => w.Window.Handle == p.Window) && windows.Any(w => w.Window.Handle == p.Partner))
@@ -367,12 +367,46 @@ internal static partial class IntentLayoutPlanner
         }
     }
 
+    // 用窗口内原有内容的位移估算打断：拖动标题、改变换行宽度和拉长底边给人的感觉不同。
+    // 可见度和近期输入只影响这次移动的代价。没有新任务时，它们不产生整理请求。
+    internal static double AttentionInterruption(VisibleWindow visible, RectI target, TaskLayoutContext context,
+        TaskWindowHint? hint, double stability = 0, bool directSnap = false)
+    {
+        var w = visible.Window;
+        var frame = w.VisualRect;
+        if (frame == target || frame.IsEmpty || target.IsEmpty) return 0;
+        // 纯几何调用与早期记录没有访问时序，保留既有的移动/重排成本，不臆造本次视觉打断。
+        if (context.Attention == null && !context.IsWorkspaceObservation && !context.ExplicitArrange &&
+            context.GestureAnchor == 0 && context.FirstPlacementWindow == 0) return 0;
+        var signal = context.Attention?.GetValueOrDefault(w.Handle);
+        double dx = Math.Abs(target.Left - (double)frame.Left) / frame.Width;
+        double dy = Math.Abs(target.Top - (double)frame.Top) / frame.Height;
+        double width = Math.Abs(Math.Log(target.Width / (double)frame.Width));
+        double height = Math.Abs(Math.Log(target.Height / (double)frame.Height));
+        bool reading = hint?.Role is WindowUseRole.Chat or WindowUseRole.Editor or WindowUseRole.FloatingEditor or
+            WindowUseRole.Document or WindowUseRole.Note || hint?.TextFocus == true;
+        double change = dx + dy + (reading ? 1.25 : .55) * width + .35 * height;
+        double use = signal == null ? 0 : Math.Max(signal.Input, signal.Dwell * signal.Recency);
+        double attention = .25 + Math.Clamp(visible.VisibleRatio, 0, 1) *
+            ((w.IsForeground ? .55 : .16) + .70 * use + (hint?.PassiveVisual == true ? .3 : 0));
+        bool release = context.AllowGestureAssist && context.GestureAnchor == w.Handle && (directSnap || context.GestureTarget == target);
+        // 刚恢复到陌生一侧时，回到这个实例原先的位置通常比在错误位置读取正文更符合预期。
+        bool restoring = context.Scene?.Lane is { Restore: { } remembered } lane && lane.Front.Handle == w.Handle &&
+            Math.Abs(CenterX(target) - CenterX(remembered)) < Math.Abs(CenterX(frame) - CenterX(remembered));
+        bool initial = context.FirstPlacementWindow == w.Handle || hint?.InitialTextPlacement == true || restoring;
+        double timing = release ? .18 : initial ? .30 : context.ExplicitArrange ? .45 : 1;
+        // 短时内的再次摆动与意图明确的浮动视图要另外计入。邻窗不会继承松手窗口的低打断代价。
+        double repeat = Math.Clamp(signal?.RecentSystemPlacement ?? 0, 0, 1);
+        return timing * ((attention + 12 * stability + 1.8 * repeat) * change + .08 * repeat * Math.Min(1, 12 * change));
+    }
+
     private static TaskCostBreakdown TaskCost(VisibleWindow[] windows, RectI[] original, Candidate candidate,
         TaskEvidence[] relations, WindowDemand[] demands, RectI area, TaskLayoutContext context, IntentHint hint,
         WindowSnapshot[]? obstacles = null, AttentionTarget[]? goals = null)
     {
         var profile = context.Preferences;
-        int mainDeficit = 0, accessDeficit = 0, comfortDeficit = 0, gestureDeficit = 0;
+        double mainDeficit = 0, accessDeficit = 0, comfortDeficit = 0, interruption = 0;
+        int gestureDeficit = 0;
         var information = 0.0; var switching = 0.0; var continuity = 0.0; var reflow = 0.0;
         var peripheral = 0.0; var alignment = 0.0; var uncertainty = 0.0;
         double overlay = goals?.FirstOrDefault(t => t.Role == AttentionRole.Main)?.PlacementStability ?? 0;
@@ -391,6 +425,8 @@ internal static partial class IntentLayoutPlanner
             var blockers = (obstacles ?? []).Where(o => o.ZOrder < windows[rank].Window.ZOrder).Select(o => o.VisualRect);
             var exposure = ScreenExposure(b, front.Concat(blockers), area, w.Dpi);
             var windowHint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
+            interruption += AttentionInterruption(windows[i], b, context, windowHint,
+                Math.Max(overlay, goals?[i].PlacementStability ?? 0));
             var geometricSmall = a.Area < area.Area * .15;
             // Otherwise use the initial readable size. An established working pair can earn
             // readability from additional space, up to the same targets used to propose growth.
@@ -407,25 +443,11 @@ internal static partial class IntentLayoutPlanner
             {
                 // The working minimum and the comfortable upper bound serve different roles.
                 // Visible content and reachable title area are measured after all projected moves.
-                static int Missing(double fraction) => (int)Math.Round(20 * (1 - Math.Clamp(fraction, 0, 1)));
-                if (!target.DefaultCenter && target.RestingCenter is double center)
-                {
-                    var offset = Math.Abs(CenterX(b) - center) / area.Width;
-                    alignment += 3 * Math.Max(0, offset - .04);
-                }
+                static double Missing(double fraction) => 20 * (1 - Math.Clamp(fraction, 0, 1));
+                // 个人槽位是候选来源，不再另算“对齐到槽位”的收益；同一批摆放证据只在个人项里计一次。
                 // Commit to a floating composition in proportion to the evidence. Reaching a
                 // covered foreground, a return title, or a direct gesture has higher priority.
                 double stability = Math.Max(overlay, target.PlacementStability);
-                if (stability > 0)
-                {
-                    // During direct input, movement is salient relative to the surface
-                    // containing the controls, even when it spans a small part of the monitor.
-                    double dx = Math.Abs(CenterX(a) - CenterX(b)), dy = Math.Abs(CenterY(a) - CenterY(b));
-                    double displacement = dx / Math.Min(area.Width, a.Width) + dy / Math.Min(area.Height, a.Height);
-                    double resize = Math.Abs(Math.Log(b.Width / (double)a.Width)) + Math.Abs(Math.Log(b.Height / (double)a.Height));
-                    comfortDeficit += (int)Math.Round(20 * stability * (displacement + resize));
-                    continuity += 8 * stability * (displacement + resize);
-                }
                 double exposedWidth = Math.Min(exposure.UsefulWidth, b.Width);
                 double exposedHeight = exposure.UsefulHeight(b);
                 if (target.Role is AttentionRole.Main or AttentionRole.Reference &&
@@ -438,7 +460,7 @@ internal static partial class IntentLayoutPlanner
                     else accessDeficit += Missing(readable / .60);
                     double comfort = (target.Role == AttentionRole.Main ? 2 : 1) *
                         (Missing(exposedWidth / target.Width) + Missing(exposedHeight / target.Height));
-                    comfortDeficit += (int)Math.Round((1 - stability) * comfort);
+                    comfortDeficit += (1 - stability) * comfort;
                 }
                 if (target.FrameWidth > 0)
                 {
@@ -636,7 +658,9 @@ internal static partial class IntentLayoutPlanner
             if (index < 0) continue;
             var r = candidate.Rects[index];
             double targetCenter = (CenterX(r) - area.Left) / area.Width;
-            double error = preference.PositionConfidence * Math.Abs(targetCenter - preference.Center);
+            // 强且一致的个人位置偏好能承担一次可见的换侧。宽度证据、低置信度试摆不会给横移加分。
+            double error = preference.PositionConfidence * preference.PositionConfidence * (1 + 5 * preference.PositionConfidence) *
+                Math.Abs(targetCenter - preference.Center);
             error += .5 * preference.WidthConfidence * Math.Abs(r.Width / (double)area.Width - preference.Width);
             int peer = Array.FindIndex(windows, w => w.Window.Handle == preference.Partner);
             if (peer >= 0 && Math.Abs(preference.Order) >= .5 &&
@@ -648,12 +672,12 @@ internal static partial class IntentLayoutPlanner
                 var slot = Array.IndexOf(candidate.Order, peer);
                 var covers = candidate.Order.Take(slot).Select(i => candidate.Rects[i])
                     .Concat((obstacles ?? []).Where(w => w.ZOrder < ranks[slot]).Select(w => w.VisualRect));
-                error += 2 * preference.PositionConfidence * (1 - ScreenExposure(cell, covers, area, windows[peer].Window.Dpi).Visible);
+                error += 2 * preference.RegionConfidence * (1 - ScreenExposure(cell, covers, area, windows[peer].Window.Dpi).Visible);
             }
             personal += error;
         }
         return new(information, switching, continuity, reflow, peripheral, alignment, uncertainty, feedback, personal, pairCost,
-            new(mainDeficit, accessDeficit, comfortDeficit, gestureDeficit));
+            new(mainDeficit, accessDeficit, comfortDeficit, gestureDeficit), interruption);
     }
 
     internal static bool TaskRefinementAcceptable(IReadOnlyList<VisibleWindow> visible,
@@ -710,8 +734,12 @@ internal static partial class IntentLayoutPlanner
             var hint = new IntentHint((int)Math.Round(8 * group[0].Window.Dpi / 96.0), 0, 0);
             var changed = EffectiveBreakdown(TaskCost(group, original, c, task, demands, area, groupContext, hint, afterObstacles, goals), options.SmartStrength, task);
             var plannedCost = EffectiveBreakdown(TaskCost(group, original, new("planned", before, order), task, demands, area, groupContext, hint, beforeObstacles, goals), options.SmartStrength, task);
-            var priority = changed.Goal.CompareTo(plannedCost.Goal);
-            if (priority > 0 || priority == 0 && changed.Total > plannedCost.Total + .01) return false;
+            if (groupContext.Scene?.Settings?.Weights is { } weights)
+            {
+                changed = weights.Apply(changed);
+                plannedCost = weights.Apply(plannedCost);
+            }
+            if (changed.Total > plannedCost.Total + .01) return false;
         }
         return true;
     }

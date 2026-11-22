@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text.Json;
 using NeatWin.Core;
 using NeatWin.Reference;
@@ -481,9 +482,10 @@ var threePlan = LayoutDispatch.Create(LayoutRoute.Smart,
     new VisibilityAnalyzer().SelectVisibleWorkingSet(threeDesktop, includeStackAccess: true), new(), null, threeDesktop,
     new(UseWorkingPairs: true, Focus: new(1, 2, 3),
         WindowHints: [new(2, PassiveVisual: true, MediaCompanion: true)], Rules: highOverlapRule, RulePairs: roleBound));
-Check(threePlan.Groups.Any(g => g.Selected is "working-overlap" or "working-pair") &&
-    Placed(threePlan, topPairA).Top >= 40 && Placed(threePlan, auxThird).Top == 0 &&
-    Placed(threePlan, topPairA).HorizontalOverlapRatio(Placed(threePlan, topPairB)) >= .20,
+var auxAccess = OcclusionMetrics.Measure(Placed(threePlan, auxThird),
+    [Placed(threePlan, topPairA), Placed(threePlan, topPairB)], auxThird.Dpi);
+Check(auxAccess.AccessWidth >= 140 * auxThird.Dpi / 96d &&
+    Placed(threePlan, topPairA).HorizontalOverlapRatio(Placed(threePlan, topPairB)) is >= .20 and <= .40,
     "FullAssist (UseWorkingPairs) arranges a 3-window desktop with working-overlap while keeping the 3rd window's title band accessible");
 
 // 5. Small Topmost floating widget (<15% work area) does not trigger fixed-occluder veto.
@@ -1056,9 +1058,13 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
             var run = JsonSerializer.Deserialize<LayoutRunObservation>(line);
             // Only the before-frame and the evidence collected at request time feed the solver.
             // A snapshot may end before the last native request has been verified.
-            if (run is not { Trigger: "explicit" or "automatic-gesture" or "automatic-workspace" or "automatic-opening" } ||
+            if (run is not { Trigger: "explicit" or "automatic-gesture" or "automatic-workspace" or "automatic-opening" or "offline-activity-probe" } ||
                 (sessionFilter is not null && run.Session != sessionFilter) || !seen.Add((run.Session, run.RequestId))) continue;
             var frame = run.Before;
+            // Fingerprint only request-time inputs shared by A/B. Later frames and
+            // gestures label the observation and never enter this prediction.
+            var inputFingerprint = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(
+                new { run.Before, run.Trigger, run.Signals, run.Strength, run.FullDesktop })));
             var areas = frame.Windows.Select(w => w.WorkArea).Distinct().ToArray();
             bool explicitRun = run.Trigger == "explicit";
             bool localOpening = run.Trigger == "automatic-opening";
@@ -1077,7 +1083,8 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                 ctx = (run.Signals?.ApplyToReplay(ctx) ?? ctx) with
                 {
                     AllowGestureAssist = run.Trigger == "automatic-gesture",
-                    IsWorkspaceObservation = run.Trigger is "automatic-workspace" or "automatic-opening",
+                    // 活动快照探针只复用工作区求解，缺少运行时授权、注意力和触发置信度。
+                    IsWorkspaceObservation = run.Trigger is "automatic-workspace" or "automatic-opening" or "offline-activity-probe",
                     LocalPlacementWindow = localOpening ? run.Signals!.FirstPlacementWindow : 0,
                 };
                 var activeRules = overrideRules ?? run.Rules ?? CompiledLayoutRules.Default;
@@ -1121,6 +1128,9 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                     }
                 }
                 Console.WriteLine(JsonSerializer.Serialize(new { run.Session, run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
+                    BeforeTime = frame.Time, InputFingerprint = inputFingerprint,
+                    ProjectedWindows = desktop.Zip(projected, (before, after) =>
+                        new { Id = (int)before.Handle, Before = before.VisualRect, Rect = after.VisualRect }),
                     run.GestureTiming, run.ShadowReplay, ObservedReleaseDetails = edits.Releases.GetValueOrDefault((run.Session, run.RequestId))?
                         .OrderBy(g => g.Tick).Select(g => new { g.GestureId, g.WindowId, g.AutomationMarked, ElapsedMs = g.Prior!.ElapsedMs, g.Change }),
                     RecordedManualFollowups = followups?.Count, RecordedUndoOfThisRequest =

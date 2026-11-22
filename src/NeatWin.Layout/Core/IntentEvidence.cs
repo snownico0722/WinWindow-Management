@@ -7,7 +7,11 @@ public sealed record WindowAdjustmentObservation(
     uint Dpi, long DurationMilliseconds, RectI[] Neighbors, string Outcome,
     int Version = 1, WorkspaceFrame? StartContext = null, WorkspaceFrame? EndContext = null,
     WorkspaceFrame? SettledContext = null, string? AfterRequest = null, int? GestureId = null, RecordedPlacementLink? PriorPlacement = null,
-    int? TrialFirstGestureId = null, string[]? EligiblePlacementAxes = null);
+    int? TrialFirstGestureId = null, string[]? EligiblePlacementAxes = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    PlacementUseObservation? StartUsage = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    int? EligiblePlacementRegion = null);
 
 public sealed record IntentReferenceSample(
     DateTimeOffset Time, string Context, double GapDip, bool Horizontal);

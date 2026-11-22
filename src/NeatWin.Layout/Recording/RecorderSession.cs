@@ -25,6 +25,8 @@ internal sealed class RecorderSession : IDisposable
     private readonly DesktopActivity _activity;
     private readonly RecordedUsage _usage = new();
     private ActivitySample? _latest;
+    private int _sampleTextFocus;
+    internal Func<IReadOnlyList<WindowSnapshot>, long, LayoutFocus>? ReadPlacementFocus { get; init; }
     internal bool PointerCaptureAvailable { get; set; }
     internal void RecordPointer(nint handle, uint pid)
     {
@@ -312,7 +314,9 @@ internal sealed class RecorderSession : IDisposable
                         SettledContext = context,
                     };
                 }
-                _active = new(start, pid, tick, context, AutomationGuard.Stamp(hwnd), ++_gestureSequence, instance, batch, prior);
+                // 用事件发生前的采样，避开鼠标拖动导致的焦点变化和松手后的辅助摆位。
+                var usage = context == null ? null : ObservePlacementUse(snapshot, tick - 1);
+                _active = new(start, pid, tick, context, AutomationGuard.Stamp(hwnd), ++_gestureSequence, instance, batch, prior, usage);
                 if (ObserveGestures)
                     QueueGesture(new(_active.Number, instance, "start", tick, start.VisualRect, start.WorkArea, start.Dpi,
                         AutomationGuard.IsMarked(hwnd), prior));
@@ -343,9 +347,9 @@ internal sealed class RecorderSession : IDisposable
                 var observation = new WindowAdjustmentObservation(DateTimeOffset.UtcNow, _session, id,
                     active.Window.VisualRect, end.VisualRect, active.Window.WorkArea, end.WorkArea,
                     end.Dpi, Math.Max(0, released - active.Tick), neighbors, "unconfirmed",
-                    Version: 5, StartContext: active.Context, EndContext: context,
+                    Version: 6, StartContext: active.Context, EndContext: context,
                     AfterRequest: active.Prior is { ElapsedMs: <= 30_000 } recent ? recent.RequestId : null,
-                    GestureId: active.Number, PriorPlacement: active.Prior, TrialFirstGestureId: active.Batch);
+                    GestureId: active.Number, PriorPlacement: active.Prior, TrialFirstGestureId: active.Batch, StartUsage: active.Usage);
                 _pending.Add(new(hwnd, pid, end.MonitorHandle, observation, released, active.Batch)
                 {
                     Automated = automated, ManualRelease = !automated,
@@ -401,6 +405,7 @@ internal sealed class RecorderSession : IDisposable
                             _store.AppendAdjustment(item.Observation with
                             {
                                 EligiblePlacementAxes = axes.ToArray(),
+                                EligiblePlacementRegion = durable is { RevealedCell: >= 0 } ? durable.RevealedCell : null,
                                 Outcome = item.Superseded && candidate.Outcome != "cross-monitor" ? "superseded" : candidate.Outcome,
                                 SettledContext = settledContext,
                             });
@@ -550,7 +555,7 @@ internal sealed class RecorderSession : IDisposable
     private void ResetActivity()
     {
         ResetSurfaceObservations();
-        _latest = null; _savedGeometry = null; _sampleTick = 0; _lastPlan.Clear(); _activity.Reset(); _usage.Reset();
+        _latest = null; _sampleTextFocus = 0; _savedGeometry = null; _sampleTick = 0; _lastPlan.Clear(); _activity.Reset(); _usage.Reset();
     }
 
     internal Func<WindowSnapshot, bool>? IsLocalSurface { get; set; }
@@ -579,8 +584,14 @@ internal sealed class RecorderSession : IDisposable
             var previous = _latest?.Frame;
             var usage = writeDisk ? _usage.Sample(now, RecordingId(NativeMethods.GetForegroundWindow()), PointerCaptureAvailable,
                 _foregroundHook != 0, out coverage) : null;
+            _sampleTextFocus = 0;
             if (snapshot.FirstOrDefault(w => w.IsForeground && w.IsManageable) is { } active)
-                _activity.SemanticRole(active, ForegroundReading.Read(active));
+            {
+                var reading = ForegroundReading.Read(active);
+                _activity.SemanticRole(active, reading);
+                if (reading.Root == active.Handle && reading.Pid == active.ProcessId && reading.Caret)
+                    _sampleTextFocus = _identity.Id(active);
+            }
             _latest = _activity.Sample(_session, now, frame, snapshot, _identity, VisualSampling, _store.Rules.Read(), persistKeys: writeDisk);
             if (!writeDisk) return;
             _latest = _latest with { FocusCoverage = coverage };
@@ -697,7 +708,26 @@ internal sealed class RecorderSession : IDisposable
 
     internal string? TryReadAppKey(WindowSnapshot window) => _activity.AppKey(window, false);
 
-    internal PlacementPreference[] Preferences(IReadOnlyList<WindowSnapshot> windows, LayoutFocus focus)
+    private PlacementUseObservation? ObservePlacementUse(IReadOnlyList<WindowSnapshot> windows, long tick, LayoutFocus? focus = null)
+    {
+        // 只用八秒内、仍属于同一窗口及前后台状态的测量。未采样到或共享进程的媒体状态保持未知。
+        if (_latest is not { } sample || tick - sample.Tick is < 0 or > 8_000) return null;
+        var current = windows.Where(w => w.IsManageable && IsLocalSurface?.Invoke(w) != true).ToDictionary(w => _identity.Id(w));
+        var front = sample.Frame.Windows.FirstOrDefault(w => w.Foreground && current.TryGetValue(w.Id, out var live) && live.IsForeground);
+        if (front == null) return null;
+        var foreground = current[front.Id];
+        focus ??= ReadPlacementFocus?.Invoke(windows, tick);
+        int joint = focus is { Evidence: "recent-switch-pair", Switches: >= 2 } && focus.Main == foreground.Handle
+            ? current.FirstOrDefault(p => p.Value.Handle == focus.Companion).Key : 0;
+        var playing = sample.Windows.Where(a => a.Playing && current.TryGetValue(a.Id, out var live) &&
+            live.MonitorHandle == foreground.MonitorHandle && live.WorkArea == foreground.WorkArea &&
+            sample.Frame.Windows.Any(w => w.Id == a.Id && w.Foreground == live.IsForeground))
+            .Select(a => a.Id).ToArray();
+        if (joint == 0 && _sampleTextFocus != front.Id && playing.Length == 0) return null;
+        return new(front.Id, joint, _sampleTextFocus == front.Id, playing);
+    }
+
+    internal PlacementPreference[] Preferences(IReadOnlyList<WindowSnapshot> windows, LayoutFocus focus, LayoutFocus observedFocus)
     {
         if (!_store.Enabled) return [];
         var stored = _store.Placement.Read();
@@ -706,7 +736,10 @@ internal sealed class RecorderSession : IDisposable
         var entries = windows.Where(w => w.IsManageable).Select(w =>
             (Window: w, App: stored.Length == 0 ? null : _activity.AppKey(w, false),
              Instance: _instanceHabits.Length == 0 ? string.Empty : _identity.Id(w).ToString(System.Globalization.CultureInfo.InvariantCulture))).ToArray();
-        return PlacementPreferences.Bind(entries, focus, stored, _instanceHabits, now);
+        var usage = ObservePlacementUse(windows, Environment.TickCount64, observedFocus);
+        var ids = usage == null ? null : entries.ToDictionary(e => e.Window.Handle, e => _identity.Id(e.Window));
+        return PlacementPreferences.Bind(entries, focus, stored, _instanceHabits, now,
+            ids == null ? null : (window, peer) => usage!.For(ids.GetValueOrDefault(window), ids.GetValueOrDefault(peer)));
     }
 
     private void PublishStatus() => StatusChanged?.Invoke(Status);
@@ -738,7 +771,7 @@ internal sealed class RecorderSession : IDisposable
     }
 
     private sealed record Active(WindowSnapshot Window, uint ProcessId, long Tick,
-        WorkspaceFrame? Context, nint AutomationStamp, int Number, int Instance, int Batch, RecordedPlacementLink? Prior)
+        WorkspaceFrame? Context, nint AutomationStamp, int Number, int Instance, int Batch, RecordedPlacementLink? Prior, PlacementUseObservation? Usage)
     {
         internal List<GesturePoint> Path { get; } = [];
         internal long? LastSample { get; set; }

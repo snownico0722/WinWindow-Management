@@ -113,11 +113,15 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
             // A rule choosing only one dimension leaves evidence on the other dimensions available.
             var position = prior.PositionConfidence >= slot.PositionConfidence ? prior : slot;
             var size = prior.WidthConfidence >= slot.WidthConfidence ? prior : slot;
+            var region = position.Partner == 0 || position.Partner == prior.Partner ? prior : position;
             result[slot.Window] = position with
             {
                 Width = size.Width, PreferWidth = size.PreferWidth, Height = prior.Height,
-                Confidence = Math.Max(position.PositionConfidence, Math.Max(size.WidthConfidence, prior.HeightConfidence)),
-                AxisConfidence = new(position.PositionConfidence, size.WidthConfidence, prior.HeightConfidence),
+                Partner = position.Partner != 0 || region.RegionConfidence == 0 ? position.Partner : region.Partner,
+                RevealedCell = region.RevealedCell,
+                Confidence = Math.Max(region.RegionConfidence, Math.Max(position.PositionConfidence, Math.Max(size.WidthConfidence, prior.HeightConfidence))),
+                AxisConfidence = new(position.PositionConfidence, size.WidthConfidence, prior.HeightConfidence, region.RegionConfidence),
+                Usage = prior.Usage,
             };
         }
         return result.Values.ToArray();
