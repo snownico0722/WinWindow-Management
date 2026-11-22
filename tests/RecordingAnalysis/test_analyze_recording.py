@@ -14,6 +14,19 @@ spec.loader.exec_module(analysis)
 
 
 class RecordingAnalysisTests(unittest.TestCase):
+    def test_semantic_objectives_keep_group_order_and_unknown_legacy_fields(self):
+        recording = analysis.Recording()
+        evidence = {"Relations": [{"First": 0, "Second": 1, "Purpose": "read-together"}],
+                    "Objectives": [{"ReadableContent": 0.9}, {"ReadableContent": 0.6}]}
+        for version, task in [(14, {}), (15, evidence)]:
+            recording.add("plans", {"RequestId": str(version), "Version": version, "Trigger": "explicit",
+                                    "Groups": [{"Ids": [31, 7], "Selected": "keep", "Task": task}]})
+        groups = recording.report()["Plans"]
+        self.assertIsNone(groups["14"]["CandidateGroups"][0]["Objectives"])
+        group = groups["15"]["CandidateGroups"][0]
+        self.assertEqual(group["Relations"], evidence["Relations"])
+        self.assertEqual(dict(zip(group["Ids"], group["Objectives"]))[7], {"ReadableContent": 0.6})
+
     def test_axis_evidence_distinguishes_search_ranking_and_unknown(self):
         groups = [{"Ids": [120, 43], "AxisCoverage": [
             {"WindowIndex": 1, "Axis": "Width", "Generated": [900, 1040], "Feasible": [900]}]}]

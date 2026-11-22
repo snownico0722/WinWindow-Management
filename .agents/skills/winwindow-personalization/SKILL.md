@@ -51,6 +51,14 @@ Version 5 adds optional `FirstWidth` and `SecondWidth` in `Pairs` (0.18–0.88 o
 
 Version 6 accepts `Use` in an app slot and `FirstUse` / `SecondUse` in a pair. Match `editing`, `reading`, or `playback` from the request's `Signals.InstanceUses`. Two endpoints may use the same app key with distinct, explicit uses. Check that each selector identifies exactly one manageable window on that monitor. A missing signal in an older recording leaves the match unknown. Compare same-use twins as a negative control before shipping a personal rule.
 
+Version 7 scenes accept a task intent for one uniquely visible reference on the foreground display. For example, a personal rule can request joint reading only when a particular editor is editing and a particular browser window is reading.
+
+```json
+{"Version":7,"Scenes":[{"Id":"compare-sources","Trigger":"workspace","ForegroundApps":["111111111111111111111111"],"ReferenceApp":"222222222222222222222222","ForegroundUse":"editing","ReferenceUse":"reading","Intent":"read-together"}]}
+```
+
+Replace the example keys with the installation's keys. Other intents are `alternate` for a returnable peer and `keep-in-view` for a visible reference. The latter defaults to a loss budget of 0.10 of the reference's original area. Evidence about visible content can support a loss bound without establishing a preferred side or width. Check omitted use evidence, duplicate instances, mirrored placement and a different use of the same apps. Audit v15 historical `CandidateGroups[].Relations` and `Objectives` alongside the corresponding replay group. Pair indices and objectives refer to the group's ordered window IDs. Keep unknowns null. Reserve independent sessions for evaluating a learned rule; with sparse observations keep the default.
+
 Inspect `OriginSide`, `SceneEffects`, `RepeatedReversal`, `ShadowRules` and `ShadowReplay` in the originating request. A learned width carries no evidence about the user's intended lane. Include a same-side opening with an empty opposite side, a naturally separate foreground, and an explicit split as controls. Count an actual manual return from its linked gesture. A candidate matching an endpoint in replay demonstrates a geometric prediction.
 
 In placement model v2.3, a gesture can carry a pre-start `StartUsage` observation. Compare independently observed joint work, native text focus and playback within the same pair. A missing label leaves usage unknown. A repeatedly revealed cell can support a visibility preference independently of the side and size. Review the eligible region and each eligible axis separately when comparing alternatives.

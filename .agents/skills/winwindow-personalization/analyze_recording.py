@@ -194,6 +194,8 @@ class Recording:
                                    "ReadingInput": (row.get("Signals") or {}).get("ReadingInput"),
                                    "CandidateGroups": [{"Ids": g.get("Ids"), "Selected": g.get("Selected"),
                                        "Limits": (g.get("Task") or {}).get("Limits"),
+                                       "Relations": (g.get("Task") or {}).get("Relations"),
+                                       "Objectives": (g.get("Task") or {}).get("Objectives"),
                                        "AxisCoverage": g.get("AxisCoverage"), "HeldAxes": [
                                            {"Held": c["Held"], "Rejection": c.get("Rejection")} for c in g.get("Candidates") or []
                                            if c.get("Held")]} for g in row.get("Groups") or []],

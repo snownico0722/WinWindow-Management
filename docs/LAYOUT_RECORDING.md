@@ -237,3 +237,9 @@ v13 请求的 `Signals.InstanceUses` 用会话窗口编号记录求解前识别�
 `Signals.Placements[].Bands` 保存有独立手动样本支持的横向中心、宽度和高度范围，单位为工作区比例。对应的单值是请求时从当前几何到区间的最近目标。旧请求只有单值，回放沿用当时的信息。原始手势轨迹、尺寸和每次松手仍完整保留。
 
 分析报告 v2 的 `HorizontalReleaseDistanceDelta` 和 `VerticalReleaseDistanceDelta` 表示候选与基线到历史松手的距离差。负值代表更接近那次松手。`ObservedOnRecordedDesktop` 按会话内请求去重，统计记录到的人工补调和已确认撤销。没有补调计数时为 null。每个回放方案的参考区损失另见 `ReferenceEvaluation`，只在相同决策输入、观察基础和参考窗口上比较。判断是否真正减少手调，需要新版本使用后的记录。
+
+### v15 任务意图及逐窗代价
+
+有求解记录时，查看每个组的 `Task.Relations[].Purpose`、`Source` 和 `Task.Objectives`。关系的 `First`、`Second` 是 `Ids` 数组的从零开始的下标。目标数组与 `Ids` 同序。并读、交替、兼看分别记作 `read-together`、`alternate`、`keep-in-view`；证据不足时可以没有用途。未进入求解组的后台参照仍可在 `SceneEffects` 看到原有区域的损失和上限。旧记录或提前结束的路径可以没有目标数组。
+
+`ReadableContent`、`PeerExposure`、`Ambiguity`、`BackgroundDrift` 和 `Motion` 是整理前冻结的代价参数，候选的实际分项成本见 `Candidates[].Breakdown`。与 `Selected`、提交记录和用户后续动作对照，才能分清场景是否命中、方案是否被采用以及用户是否再次调整。离线回放展示待测版本对相同输入的解释，保留历史记录自身的解释用于比较。

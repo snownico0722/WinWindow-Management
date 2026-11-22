@@ -44,7 +44,7 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     RecordedShadowFinding[]? ShadowReplay = null)
 {
-    internal const int CurrentVersion = 14;
+    internal const int CurrentVersion = 15;
 }
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>

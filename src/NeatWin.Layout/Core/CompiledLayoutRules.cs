@@ -34,8 +34,8 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
         static bool Key(string? key) => key is { Length: 24 } && key.All(char.IsAsciiHexDigit);
         if (SurfaceRules != null && (Version < 4 || SurfaceRules.Length > 64 || SurfaceRules.Any(r => r == null || !r.IsValid()) ||
             SurfaceRules.Select(r => r.Id).Distinct().Count() != SurfaceRules.Length)) return false;
-        if (Version is not (1 or 2 or 3 or 4 or 5 or 6) || Scenes != null && (Version < 4 || Scenes.Length > 64 ||
-            Scenes.Any(s => s == null || !s.IsValid()) || Scenes.Select(s => s.Id).Distinct().Count() != Scenes.Length) || MediaOverlap is not (>= 0 and <= .40) ||
+        if (Version is not (1 or 2 or 3 or 4 or 5 or 6 or 7) || Scenes != null && (Version < 4 || Scenes.Length > 64 ||
+            Scenes.Any(s => s == null || !s.IsValid() || Version < 7 && s.HasSemanticFields) || Scenes.Select(s => s.Id).Distinct().Count() != Scenes.Length) || MediaOverlap is not (>= 0 and <= .40) ||
             AudioPeakThreshold is not (> 0 and <= 1) || FragmentChangeThreshold is not (> 0 and <= 1) ||
             Pairs?.Length > 64 || RolePairs?.Length > 32 || AppSlots?.Length > 64) return false;
         bool ValidUse(string? use) => use == null || Version >= 6 && IsInstanceUse(use);

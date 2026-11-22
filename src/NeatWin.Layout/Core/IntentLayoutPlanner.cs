@@ -92,8 +92,8 @@ internal static partial class IntentLayoutPlanner
                 var hint = IntentEvidence.Resolve(reference, area, group[0].Window.Dpi, groupContext.ShadowTime ?? DateTimeOffset.UtcNow);
                 var original = group.Select(v => v.Window.VisualRect).ToArray();
                 var task = InferTask(group, original, groupContext);
-                var demands = MeasureDemand(group.Length, task);
                 var goals = AttentionLayout.Targets(group, groupContext, strength);
+                var demands = CompileObjectives(group, task, groupContext, goals);
                 var order = Enumerable.Range(0, group.Length).ToArray();
                 int localPlacement = groupContext.GeometryOnlyWindow == 0 ? -1 :
                     Array.FindIndex(group, v => v.Window.Handle == groupContext.GeometryOnlyWindow);
@@ -124,7 +124,7 @@ internal static partial class IntentLayoutPlanner
                 {
                     var kept = Breakdown(new("keep", original, order));
                     traces.Add(new(group.Select(v => v.Window.Handle).ToArray(), "keep", stackSignal,
-                        [new("keep", kept.Total, null, kept)], new(task, viewingModel, [reason])));
+                        [new("keep", kept.Total, null, kept)], new(task, viewingModel, [reason], demands)));
                     continue;
                 }
                 var generationNotes = new List<LayoutCandidateTrace>();
@@ -194,6 +194,7 @@ internal static partial class IntentLayoutPlanner
                 }
                 if (!localOnly || groupContext.PreferReversibleVerticalFill)
                     AddVerticalFillCandidates(candidates, group, original, groupContext);
+                if (!localOnly) AddPairProjections(candidates, group, original, task, demands, goals, area, groupContext, hint.GapPixels, order);
                 if (goals != null)
                     AddAttentionLayouts(candidates, group, original, goals, area, obstacles, hint.GapPixels, order, strength, groupContext, Breakdown);
                 candidates = candidates.DistinctBy(CandidateKey).ToList();
@@ -420,7 +421,7 @@ internal static partial class IntentLayoutPlanner
                 traces.Add(new(group.Select(v => v.Window.Handle).ToArray(), best.Kind, stackSignal, audits.ToArray(),
                     new(task, viewingModel,
                         ["hypothesis-weights-not-calibrated-probabilities", "content-prior-not-semantic-recognition", "stable-is-not-satisfaction",
-                         .. shadowAxes.Select(axis => $"shadow-placement:{axis.Axis}:{axis.Change}")]), axes?.Export()));
+                         .. shadowAxes.Select(axis => $"shadow-placement:{axis.Axis}:{axis.Change}")], demands), axes?.Export()));
 
                 void AddGroupLayouts(List<Candidate> output, RectI[] seed)
                 {

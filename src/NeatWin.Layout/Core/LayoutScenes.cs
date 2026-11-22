@@ -3,8 +3,12 @@ namespace NeatWin.Core;
 // 相同程序在独立编辑、双窗协作和游戏旁监看时可以采用不同的底层取舍。规则顺序即优先级，每次只覆盖一个场景。
 public sealed record LayoutScene(string Id, string Trigger, string[]? ForegroundApps = null,
     string? ReferenceApp = null, int? MinWindows = null, int? MaxWindows = null, double MinVisible = .10,
-    double? MaxVisibleLoss = null, SceneWeights? Weights = null, bool? AllowResize = null, bool ReconsiderSettled = false)
+    double? MaxVisibleLoss = null, SceneWeights? Weights = null, bool? AllowResize = null, bool ReconsiderSettled = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? Intent = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? ForegroundUse = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? ReferenceUse = null)
 {
+    internal bool HasSemanticFields => Intent != null || ForegroundUse != null || ReferenceUse != null;
     internal bool IsValid()
     {
         static bool Key(string? key) => key is { Length: 24 } && key.All(char.IsAsciiHexDigit);
@@ -14,7 +18,11 @@ public sealed record LayoutScene(string Id, string Trigger, string[]? Foreground
             (ReferenceApp == null || Key(ReferenceApp)) && (MinWindows is null or >= 1 and <= 128) &&
             (MaxWindows is null or >= 1 and <= 128) && !(MinWindows > MaxWindows) &&
             MinVisible is >= 0 and <= 1 && (MaxVisibleLoss == null || ReferenceApp != null && MaxVisibleLoss is >= 0 and <= 1) &&
-            (Weights?.Valid ?? true) && (Weights != null || AllowResize != null || ReconsiderSettled || MaxVisibleLoss != null);
+            (Intent is null or "read-together" or "keep-in-view" or "alternate") &&
+            (Intent == null && ReferenceUse == null || ReferenceApp != null) &&
+            (ForegroundUse == null || CompiledLayoutRules.IsInstanceUse(ForegroundUse)) &&
+            (ReferenceUse == null || CompiledLayoutRules.IsInstanceUse(ReferenceUse)) &&
+            (Weights?.Valid ?? true) && (Intent != null || Weights != null || AllowResize != null || ReconsiderSettled || MaxVisibleLoss != null);
     }
 }
 
@@ -144,7 +152,7 @@ internal sealed record AttentionLane(WindowSnapshot Front, nint Source, int Side
 }
 
 internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, ReferenceExposure[] References, int WorkingSide = 0,
-    AttentionLane? Lane = null)
+    AttentionLane? Lane = null, nint IntentReference = 0)
 {
     internal static ActiveLayoutScene? Resolve(IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext ctx, bool includeDefaults = true)
     {
@@ -158,18 +166,23 @@ internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, Re
         var peers = display.Where(w => w.Handle != front.Handle && !w.IsTopmost && w.ZOrder > front.ZOrder).ToArray();
         var guards = new List<ReferenceExposure>();
         LayoutScene? match = null;
+        nint intentReference = 0;
         foreach (var rule in ctx.Rules?.Scenes ?? [])
         {
+            if (rule.ForegroundUse != null && rule.ForegroundUse != ctx.InstanceUses?.GetValueOrDefault(front.Handle)) continue;
             if (rule.Trigger != trigger || display.Length < rule.MinWindows || display.Length > rule.MaxWindows ||
                 rule.ForegroundApps != null && !rule.ForegroundApps.Contains(ctx.AppKeys?.GetValueOrDefault(front.Handle), StringComparer.OrdinalIgnoreCase))
                 continue;
             if (rule.ReferenceApp != null)
             {
-                var matches = peers.Where(w => rule.ReferenceApp.Equals(ctx.AppKeys?.GetValueOrDefault(w.Handle), StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
-                if (matches.Length != 1) continue;
-                var reference = new ReferenceExposure(matches[0], desktop, rule.Id, rule.MaxVisibleLoss ?? 1);
+                var matches = peers.Where(w => rule.ReferenceApp.Equals(ctx.AppKeys?.GetValueOrDefault(w.Handle), StringComparison.OrdinalIgnoreCase) &&
+                    (rule.ReferenceUse == null || rule.ReferenceUse == ctx.InstanceUses?.GetValueOrDefault(w.Handle))).Take(2).ToArray();
+                if (matches.Length != 1 || rule.Intent is "read-together" or "alternate" &&
+                    (!front.IsManageable || !matches[0].IsManageable)) continue;
+                var reference = new ReferenceExposure(matches[0], desktop, rule.Id, rule.MaxVisibleLoss ?? (rule.Intent == "keep-in-view" ? .10 : 1));
                 if (reference.Before <= 0 || reference.Before < rule.MinVisible) continue;
-                if (rule.MaxVisibleLoss.HasValue) guards.Add(reference);
+                if (rule.MaxVisibleLoss.HasValue || rule.Intent == "keep-in-view") guards.Add(reference);
+                if (rule.Intent != null) intentReference = matches[0].Handle;
             }
             match = rule;
             break;
@@ -177,6 +190,7 @@ internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, Re
 
         // 焦点只说明这一轮在用谁。第三扇窗占着另一栏时，即使很久没点，它露出的正文也是实际使用中的桌面空间。
         // 松手后也按此刻的可见区域起算，否则只保住刚拖过的窗，分栏会把它的搭档推到另一边。
+        var interpreted = ApplyPairInstruction(ctx, match, front.Handle, intentReference);
         int workingSide = 0;
         if (includeDefaults && trigger is "workspace" or "gesture" && ctx.Attention != null && front.IsManageable)
         {
@@ -185,11 +199,11 @@ internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, Re
             {
                 if (w.Handle == ctx.VideoHint?.WindowHandle || w.VisualRect.Intersect(front.WorkArea).Area < front.WorkArea.Area * .18) continue;
                 bool opposite = frontSide != 0 && w.WorkArea == front.WorkArea && w.Owner == 0 && w.IsManageable &&
-                    w.Handle != ctx.Focus?.Companion && AttentionLayout.HorizontalSide(w.VisualRect, front.WorkArea) == -frontSide;
+                    w.Handle != interpreted.Focus?.Companion && AttentionLayout.HorizontalSide(w.VisualRect, front.WorkArea) == -frontSide;
                 var hint = ctx.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
                 var history = ctx.Attention.GetValueOrDefault(w.Handle);
                 bool fixedSurface = !w.IsManageable && w.SurfaceState is "maximized" or "fullscreen";
-                bool recentlyUsed = ctx.Focus?.Companion != w.Handle && history is { Dwell: >= .8, Recency: >= .50, Input: >= .25 };
+                bool recentlyUsed = interpreted.Focus?.Companion != w.Handle && history is { Dwell: >= .8, Recency: >= .50, Input: >= .25 };
                 bool reference = trigger == "workspace" &&
                     (hint?.PassiveVisual == true || hint?.MediaCompanion == true || fixedSurface || recentlyUsed);
                 if (!opposite && !reference) continue;
@@ -203,9 +217,33 @@ internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, Re
                     guards.Add(occupied);
             }
         }
-        var lane = includeDefaults ? AttentionLane.Resolve(front, peers, ctx) : null;
+        var lane = includeDefaults ? AttentionLane.Resolve(front, peers, interpreted) : null;
         return match == null && guards.Count == 0 && lane == null ? null :
-            new(match, front.MonitorHandle, guards.ToArray(), workingSide, lane);
+            new(match, front.MonitorHandle, guards.ToArray(), workingSide, lane, intentReference);
+    }
+
+    internal bool PrefersGlance(nint window, TaskLayoutContext ctx) =>
+        Settings?.Intent == "keep-in-view" && IntentReference == window && ctx.GeometryOnlyWindow == 0 &&
+        ctx.Focus is not { Evidence: "handoff" } && ctx.Focus?.NavigationAncestors is not { Length: > 0 } &&
+        ctx.Focus?.Navigation is not { Length: > 0 } &&
+        ctx.PairHints?.Any(h => h.Relation != TaskRelation.Automatic && (h.First == window || h.Second == window)) != true;
+
+    internal TaskLayoutContext Interpret(TaskLayoutContext context, nint front) =>
+        ApplyPairInstruction(context, Settings, front, IntentReference);
+
+    private static TaskLayoutContext ApplyPairInstruction(TaskLayoutContext ctx, LayoutScene? rule, nint front, nint peer)
+    {
+        // 明确的任务关系只在唯一参照物上生效。兼看只保护已露出的内容；
+        // 导航链、刚摆的窗和当前已有的另一位搭档不能被一条历史场景指令招进新一轮平铺。
+        if (rule?.Intent is not ("read-together" or "alternate") || front == 0 || peer == 0 ||
+            !ctx.PairPlanningEnabled || ctx.GeometryOnlyWindow != 0 || ctx.Focus is { Navigation.Length: > 0 } ||
+            ctx.Focus is { NavigationAncestors.Length: > 0 } || ctx.Focus is { Evidence: "handoff" } ||
+            ctx.Focus is { Main: not 0 } focus && (focus.Main != front || focus.Companion != 0 && focus.Companion != peer) ||
+            ctx.PairHints?.Any(h => h.Relation != TaskRelation.Automatic && (h.First == front || h.Second == front)) == true)
+            return ctx;
+        var relation = rule.Intent == "read-together" ? TaskRelation.JointView : TaskRelation.Alternating;
+        return ctx with { Focus = new(front, peer, ctx.Focus?.Switches ?? 0, "scene-" + rule.Intent),
+            PairHints = [.. ctx.PairHints ?? [], new(front, peer, relation)] };
     }
 
     internal bool Allows(IReadOnlyList<WindowSnapshot> current, IntentLayoutPlan plan)

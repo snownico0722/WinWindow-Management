@@ -17,6 +17,7 @@ OpeningPlacementChecks.Run(Check);
 TextViewChecks.Run(Check);
 NavigationChecks.Run(Check);
 PlacementPreferenceChecks.Run(Check);
+SemanticLayoutChecks.Run(Check);
 GeneralLayoutChecks.Run(Check);
 GesturePreviewChecks.Run(Check);
 var home = new RectI(560, 100, 810, 700);
@@ -1153,6 +1154,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                         .Select(h => new { Id = (int)h.Handle, Role = h.Role.ToString(), h.FloatingAffinity, h.TextFocus }),
                     Moves = plan.Moves.Select(m => new { Id = (int)m.Window.Handle, Before = m.Window.VisualRect, After = m.TargetVisualRect }),
                     CandidateGroups = plan.Groups.Select(g => new { Ids = g.Handles.Select(h => (int)h), g.Selected, g.AxisCoverage, Limits = g.Task?.Limits,
+                        Relations = g.Task?.Relations, Objectives = g.Task?.Objectives,
                         HeldAxes = g.Candidates.Where(c => c.Held != null).Select(c => new { c.Held, c.Rejection }) }),
                     Selected = plan.Groups.Select(g => g.Selected) }));
             }

@@ -365,7 +365,10 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var snapContext = new TaskLayoutContext(Focus: focus, Attention: attention, GestureAnchor: moved.Window.Handle);
             if (_useImportedPlacement && _referenceStore.Rules.Read() is { Scenes.Length: > 0 } rules)
             {
-                snapContext = snapContext with { Rules = rules, AppKeys = snapshot.Where(w => w.IsManageable || w.SurfaceState != null)
+                // 松手已有明确对象。实例用途只用来选择适用的个人场景，轻度辅助仍只调整手下这扇窗。
+                var use = rules.Scenes.Any(r => r.ForegroundUse != null || r.ReferenceUse != null)
+                    ? _recorder.ObservePlacementUse(snapshot, Environment.TickCount64, focus) : null;
+                snapContext = snapContext with { Rules = rules, InstanceUses = _recorder.LiveInstanceUses(snapshot, use), AppKeys = snapshot.Where(w => w.IsManageable || w.SurfaceState != null)
                     .ToDictionary(w => w.Handle, _recorder.TryReadAppKey) };
                 snapContext = snapContext with { Scene = ActiveLayoutScene.Resolve(snapshot, snapContext, includeDefaults: false) };
             }
@@ -376,11 +379,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     decision.TargetRect.Height != moved.Window.VisualRect.Height))) return;
             var target = _focus.LimitLiveReturn(moved.Window, decision.TargetRect, Environment.TickCount64);
             if (target == moved.Window.VisualRect || target != decision.TargetRect && target.Intersect(gesture.WorkArea) != target) return;
+            var assisted = new IntentLayoutPlan([new(moved.Window, target)], [], []) { Scene = snapContext.Scene };
+            if (assisted.Scene?.Allows(snapshot, assisted) == false) return;
             _autoTidyManager.SuppressFor(500);
-            var assisted = new[] { new TidyMove(moved.Window, target) };
-            _workspaceMonitor.ApplicationRequested(snapshot, new(assisted, [], []));
+            _workspaceMonitor.ApplicationRequested(snapshot, assisted);
             if (_stopping.IsCancellationRequested) return;
-            var application = _windowManager.ApplyLayout(new(assisted, [], []), interaction.ForegroundWindow, gestureWindow: gesture.WindowHandle, allowsMove: AllowsCurrentReturn);
+            var application = _windowManager.ApplyLayout(assisted, interaction.ForegroundWindow, gestureWindow: gesture.WindowHandle, allowsMove: AllowsCurrentReturn);
             _focus.Submitted(application.Plan, snapshot, Environment.TickCount64);
             _placementShadow.Submitted(null, application.Plan, Environment.TickCount64);
             _journal.Record(snapshot, application, "follow-hand", releaseInput: gesture, reusedPreview: preview?.Used == true);
