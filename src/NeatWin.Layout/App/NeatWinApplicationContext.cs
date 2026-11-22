@@ -570,6 +570,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     AllowGestureAssist = trigger == "automatic-gesture",
                     IsWorkspaceObservation = workspaceObservation,
                     WorkspaceCause = cause,
+                    TraceCandidateAxes = _recorder.CanWriteDiagnostics || _recorder.SnapshotWantsGestures?.Invoke() == true,
                     ObservedChangeEvents = changeEvents, OmittedChanges = omittedChanges,
                     ReadingInput = _recorder.InputHistory.Read(snapshot, capturedAt),
                     OriginSide = workspaceObservation ? _focus.ObserveWorkingSide(snapshot, capturedAt) : 0,
@@ -655,7 +656,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             IReadOnlyList<WindowSnapshot> requestedDesktop = snapshot;
             nint reclaimed = 0;
             if ((explicitSmart || AutomaticLayoutPolicy.AllowsAutomaticDismissal(_automaticMode)) &&
-                onlyWindow == 0 && !throughCapture && reclaimContext != null && !application.Interrupted && application.Failures.Count == 0 &&
+                onlyWindow == 0 && !proposed.IsDividerGesture && !throughCapture && reclaimContext != null && !application.Interrupted && application.Failures.Count == 0 &&
                 proposed.Moves.Count == plan.Count && proposed.Layers.Count == layerOrders.Count)
                 reclaimed = _behaviorMonitor.TryReclaim(snapshot, detailed, reclaimContext, effectiveOptions.SmartStrength, foreground, _focus);
             if (reclaimed != 0)

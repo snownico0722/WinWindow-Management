@@ -124,3 +124,5 @@ Report predicted actions, matching dismissals, rapid returns, actions that would
 ## Deliver and import
 
 Return the rule JSON with an evidence summary, holdout results and any unknowns. If replay could not run, label the candidate as unvalidated and give the commands used or needed. Compare to the current release and use the same installation's app keys. Import `compiled-rules.json` under **Settings → Learn placement** and enable imported placement rules there. Import `behavior-rules.json` under **Settings → Learn behaviors** and enable each reviewed behavior rule individually. Use a WinWindow release supporting the rule file's version.
+
+For v12 records inspect InterventionAssessment alongside MissedAssistance. Compare the same instance and axis in generated and feasible values, the chosen proposal, submitted target and observed receipt. Treat missing coverage and intervening task changes as unknown. Held reports marginal model cost, not measured time saved. Replay CandidateGroups shows the search of the model under test, independently of the historical log.

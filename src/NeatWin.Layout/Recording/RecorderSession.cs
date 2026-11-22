@@ -761,7 +761,8 @@ internal sealed partial class RecorderSession : IDisposable
         var usage = ObservePlacementUse(windows, Environment.TickCount64, observedFocus);
         var ids = usage == null ? null : entries.ToDictionary(e => e.Window.Handle, e => _identity.Id(e.Window));
         return PlacementPreferences.Bind(entries, focus, stored, _instanceHabits, now,
-            ids == null ? null : (window, peer) => usage!.For(ids.GetValueOrDefault(window), ids.GetValueOrDefault(peer)));
+            ids == null ? null : (window, peer) => usage!.For(ids.GetValueOrDefault(window), ids.GetValueOrDefault(peer)),
+            ids == null ? null : window => usage!.UseOf(ids.GetValueOrDefault(window)));
     }
 
     private void PublishStatus() => StatusChanged?.Invoke(Status);

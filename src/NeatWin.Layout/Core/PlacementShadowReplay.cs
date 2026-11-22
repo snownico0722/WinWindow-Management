@@ -23,12 +23,17 @@ internal sealed record ShadowAxis(nint Window, PlacementAxis Axis, int Value, in
 
 internal sealed class ShadowReplayProbe(ShadowAxis axis)
 {
+    internal bool Generated { get; private set; }
     internal bool Feasible { get; private set; }
     internal void Observe(IReadOnlyList<VisibleWindow> group, RectI[] rects, double feedback)
     {
-        if (feedback != 0 || Feasible) return;
+        if (Feasible) return;
         for (int i = 0; i < group.Count; i++)
-            if (group[i].Window.Handle == axis.Window && axis.Matches(rects[i])) Feasible = true;
+            if (group[i].Window.Handle == axis.Window && axis.Matches(rects[i]))
+            {
+                Generated = true;
+                if (feedback == 0) Feasible = true;
+            }
     }
 }
 
@@ -57,30 +62,42 @@ internal sealed class PlacementShadowReplay
     internal sealed record Example(Frame Frame, Scope Scope, ShadowAxis[] Axes);
     private sealed record Rule(Scope Scope, ShadowAxis Axis, long Expires);
     internal sealed record Finding(Scope Scope, ShadowAxis Axis, string Diagnosis, bool Won);
-    internal sealed record Scope(WindowSnapshot Window, nint Main, nint Companion, WindowSnapshot[] Neighbors)
+    internal sealed record Scope(WindowSnapshot Window, nint Main, nint Companion, RectI Impact, WindowSnapshot[] Neighbors)
     {
-        internal static Scope Capture(WindowSnapshot window, LayoutFocus? focus, IReadOnlyList<WindowSnapshot> desktop) =>
-            new(window, focus?.Main ?? 0, focus?.Companion ?? 0, Related(window, desktop));
+        internal static Scope Capture(WindowSnapshot window, LayoutFocus? focus, IReadOnlyList<WindowSnapshot> desktop, RectI before, RectI submitted)
+        {
+            var end = window.VisualRect;
+            var impact = RectI.FromEdges(Math.Min(end.Left, Math.Min(before.Left, submitted.Left)),
+                Math.Min(end.Top, Math.Min(before.Top, submitted.Top)), Math.Max(end.Right, Math.Max(before.Right, submitted.Right)),
+                Math.Max(end.Bottom, Math.Max(before.Bottom, submitted.Bottom)));
+            var scope = new Scope(window, focus?.Main ?? 0, focus?.Companion ?? 0, impact, []);
+            return scope with { Neighbors = scope.Related(desktop) };
+        }
 
         internal bool Matches(IReadOnlyList<WindowSnapshot> desktop, LayoutFocus? focus)
         {
             if (Main != (focus?.Main ?? 0) || Companion != (focus?.Companion ?? 0) ||
                 desktop.FirstOrDefault(w => w.Handle == Window.Handle) is not { } current ||
                 !SameWindow(Window, current)) return false;
-            return SameNeighbors(Related(current, desktop));
+            var relevant = Related(desktop);
+            return SameNeighbors(relevant, current);
         }
 
         internal bool Includes(nint handle) => Window.Handle == handle || Neighbors.Any(w => w.Handle == handle);
 
         internal bool Matches(Scope other) => Main == other.Main && Companion == other.Companion &&
-            SameWindow(Window, other.Window) && SameNeighbors(other.Neighbors);
+            SameWindow(Window, other.Window) && SameNeighbors(other.Neighbors, other.Window);
 
-        private bool SameNeighbors(WindowSnapshot[] neighbors) =>
-            Neighbors.Length == neighbors.Length && Neighbors.Zip(neighbors).All(pair => SameWindow(pair.First, pair.Second));
+        private bool SameNeighbors(WindowSnapshot[] neighbors, WindowSnapshot target) =>
+            Neighbors.Length == neighbors.Length && Neighbors.Zip(neighbors).All(p => SameWindow(p.First, p.Second) &&
+                (p.First.ZOrder < Window.ZOrder) == (p.Second.ZOrder < target.ZOrder) &&
+                (p.First.Handle == Main || p.First.Handle == Companion || WindowStateRules.Near(p.First.VisualRect, p.Second.VisualRect)));
 
-        private static WindowSnapshot[] Related(WindowSnapshot window, IReadOnlyList<WindowSnapshot> desktop) =>
-            desktop.Where(w => w.Handle != window.Handle && w.MonitorHandle == window.MonitorHandle &&
-                (w.IsManageable || w.SurfaceState is "fullscreen" or "maximized")).OrderBy(w => w.Handle).ToArray();
+        // 远处打开文件夹不会改变这个回拖的意义；任务搭档和会占用这块空间的前后窗仍参与核对。
+        private WindowSnapshot[] Related(IReadOnlyList<WindowSnapshot> desktop) =>
+            desktop.Where(w => w.Handle != Window.Handle && w.MonitorHandle == Window.MonitorHandle &&
+                (w.Handle == Main || w.Handle == Companion || !Impact.Intersect(w.VisualRect).IsEmpty))
+                .OrderBy(w => w.Handle).ToArray();
 
         private static bool SameWindow(WindowSnapshot old, WindowSnapshot current) =>
             old.SurfaceState == current.SurfaceState && WindowStateRules.Matches(old, current, current.VisualRect);
@@ -108,7 +125,7 @@ internal sealed class PlacementShadowReplay
         long started = (gesture.ReleasedTick ?? now) - gesture.DurationMilliseconds;
         if (started < submission.Tick || !WindowStateRules.Matches(move.Window, moved, gesture.EndRect) ||
             !WindowStateRules.Near(gesture.StartRect, move.TargetVisualRect)) return;
-        var scope = Scope.Capture(moved, submission.Frame.Context.Focus, submission.Projected);
+        var scope = Scope.Capture(moved, submission.Frame.Context.Focus, submission.Projected, move.Window.VisualRect, move.TargetVisualRect);
         if (!scope.Matches(desktop, submission.Frame.Context.Focus) ||
             scope.Neighbors.Any(old => !WindowStateRules.Near(old.VisualRect, desktop.First(w => w.Handle == old.Handle).VisualRect))) return;
         var correction = PlacementCorrection.Observe(gesture.StartRect, gesture.EndRect, move.Window.VisualRect, move.TargetVisualRect, moved.Dpi);
@@ -163,7 +180,7 @@ internal sealed class PlacementShadowReplay
             // 有可行候选就试排序。缺候选时另试一轴生成，仍用原有安全检查与收益门槛。
             var alternative = axis with { Change = probe.Feasible ? ShadowChange.Rank : ShadowChange.Generate };
             bool won = axis.Matches(Target(example.Frame.Solve([alternative])));
-            findings.Add(new(example.Scope, alternative, probe.Feasible ? "lost-on-ranking" : "missing-feasible-candidate", won));
+            findings.Add(new(example.Scope, alternative, probe.Feasible ? "lost-on-ranking" : probe.Generated ? "candidate-rejected" : "missing-feasible-candidate", won));
         }
         return findings.ToArray();
     }
@@ -205,7 +222,9 @@ internal sealed class PlacementShadowReplay
 
     internal void Retire(nint handle)
     {
-        if (_submission?.Projected.Any(w => w.Handle == handle) == true) _submission = null;
+        if (_submission is { } s && (s.Frame.Context.Focus?.Main == handle || s.Frame.Context.Focus?.Companion == handle ||
+            s.Moves.Any(m => m.Window.Handle == handle))) _submission = null;
+        // 原有遮挡物若在松手前消失，Scope.Matches 会从投影与现场发现；远处无关窗的销毁无需丢弃本次提交。
         _queued.RemoveAll(example => example.Scope.Includes(handle));
         _recent.RemoveAll(entry => entry.Finding.Scope.Includes(handle));
         _rules = _rules.Where(r => !r.Scope.Includes(handle)).ToArray();

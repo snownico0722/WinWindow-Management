@@ -135,6 +135,14 @@ internal static class SmokeTests
         Assert(undo is { Failures.Count: 0, Plan.Moves.Count: 2 }, "native batch geometry can be undone");
         await WaitAsync("batch undo restores both fixtures", () => sources.All(w => Reached(new(w, w.VisualRect))));
 
+        // 主窗不在提交列表里。用真实 HWND 验证过期接缝不能漏过原生提交前的最后一次检查。
+        var stale = new ManualWindowGesture(first, sources[0].VisualRect, Shift(sources[0]), sources[0].WorkArea,
+            ManualGestureKind.Resize, [], 100, 0) { ProcessId = sources[0].ProcessId };
+        var divider = new IntentLayoutPlan([moves[1]], [], []) { IsDividerGesture = true };
+        var skipped = windows.ApplyLayout(divider, null, new TaskLayoutContext(RecentGesture: stale));
+        Assert(skipped.Interrupted && skipped.Plan.Moves.Count == 0 && Reached(new(sources[1], sources[1].VisualRect)),
+            "stale divider release cannot move the untouched native peer");
+
         string gate = "WinWindow-layout-stall-" + Guid.NewGuid().ToString("N");
         using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".entered");
         using var release = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".release");

@@ -191,6 +191,13 @@ class Recording:
                                    "ObservedChangeEvents": (row.get("Signals") or {}).get("ObservedChangeEvents"),
                                    "OmittedChanges": (row.get("Signals") or {}).get("OmittedChanges"),
                                    "ReadingInput": (row.get("Signals") or {}).get("ReadingInput"),
+                                   "CandidateGroups": [{"Ids": g.get("Ids"), "Selected": g.get("Selected"),
+                                       "Limits": (g.get("Task") or {}).get("Limits"),
+                                       "AxisCoverage": g.get("AxisCoverage"), "HeldAxes": [
+                                           {"Held": c["Held"], "Rejection": c.get("Rejection")} for c in g.get("Candidates") or []
+                                           if c.get("Held")]} for g in row.get("Groups") or []],
+                                   "ProposedTargets": (row.get("Proposal") or {}).get("Targets"),
+                                   "SubmittedTargets": row.get("Targets"), "Failures": row.get("SubmissionFailures"),
                                    "TargetWindowIds": targets, "UndoOfRequest": row.get("UndoOfRequest"),
                                    "SceneEffects": row.get("SceneEffects"),
                                    "OriginSide": (row.get("Signals") or {}).get("OriginSide"),
@@ -254,13 +261,15 @@ class Recording:
             if event["Action"] == "release":
                 started = local_since.pop(key, None)
                 event["MillisecondsSinceObservedSuppression"] = event["Tick"] - started if started is not None else None
+        missed = missed_opportunities(self)
+        interventions = intervention_assessment(self, missed)
         return {"Streams": dict(self.counts), "Versions": {k: sorted(v) for k, v in self.versions.items()},
                 "FirstTime": min(self.times, key=stamp, default=None), "LastTime": max(self.times, key=stamp, default=None),
                 "Displays": self.display_profiles_report(),
                 "FrameCounts": [{"Source": k[0], "Truncated": k[1], "Count": v} for k, v in sorted(self.frame_counts.items())],
                 "Identities": {k: {"Identity": self.identity(k), **{f: sorted(vals) for f, vals in attrs.items()}}
                                for k, attrs in sorted(self.ids.items())},
-                **use, "MissedAssistance": missed_opportunities(self), "PlanTriggers": field_counts(self.plans.values(), "Trigger"),
+                **use, "MissedAssistance": missed, "InterventionAssessment": interventions, "PlanTriggers": field_counts(self.plans.values(), "Trigger"),
                 "Plans": self.plans, "AdjustmentEvidence": field_counts(self.adjustments.values(), "Evidence"),
                 "Adjustments": sorted(self.adjustments.values(), key=lambda row: row["Time"] or ""),
                 "Gestures": sorted(self.gestures.values(), key=lambda row: row["Tick"]), "DroppedGestureEvents": self.dropped,
@@ -355,6 +364,64 @@ def axis_error(predicted, manual, work, axis):
     offset = index % 2 + 2
     value = lambda box: box[index] + box[offset] / 2 if index < 2 else box[index]
     return round(abs(value(predicted) - value(manual)) / work[offset], 6)
+
+
+def axis_diagnosis(groups, window, axis, value, tolerance):
+    sets = [a for group in groups or [] for i, member in enumerate(group.get("Ids") or []) if member == window
+            for a in group.get("AxisCoverage") or [] if a["WindowIndex"] == i and a["Axis"] == axis]
+    if not sets:
+        reasons = [limit for g in groups or [] if window in (g.get("Ids") or []) and g.get("Selected") == "keep"
+                   for limit in (g.get("Limits") or []) if limit.startswith(("verified-", "settled-"))]
+        return "held-before-search:" + reasons[0] if reasons else "unknown-candidate-coverage"
+    for field, verdict in (("Feasible", "feasible-not-selected"), ("Generated", "generated-but-rejected")):
+        if any(abs(v - value) <= tolerance for a in sets for v in a[field]):
+            return verdict
+    return "axis-not-generated"
+
+
+def intervention_assessment(record, missed):
+    # 分母包括保持原状的请求。没有松手或缺少回执时，无法判定满意，也无法推算真实省下的拖动。
+    corrections = []
+    for a in record.adjustments.values():
+        req = a.get("AfterRequest")
+        if not req or a.get("Evidence") not in ("stable", "assisted-release"):
+            continue
+        plan = record.plans.get(req)
+        if not plan or not a["Start"] or not a["End"] or not a["EndWorkArea"]:
+            continue
+        window = a["WindowId"]
+        proposed = {t["Id"]: rect(t["Target"]) for t in plan.get("ProposedTargets") or []}.get(window)
+        submitted = {t["Id"]: rect(t["Target"]) for t in plan.get("SubmittedTargets") or []}.get(window)
+        failures = {t["Id"] for t in plan.get("Failures") or []}
+        actual = matching_window(record.plan_evidence[req][1], window) if record.plan_evidence[req][1] else None
+        tol = max(3, round(4 * (a.get("Dpi") or 96) / 96))
+        for dim in changed_dimensions(a["Start"], a["End"], a["EndWorkArea"]):
+            axis, idx = axis_field(dim)
+            if window in failures:
+                diagnosis = "submission-failed"
+            elif plan["Outcome"] == "intervened" or (actual and actual.get("Rect") and
+                    any(abs(x - y) > tol for x, y in zip(actual["Rect"], a["Start"]))):
+                diagnosis = "intervening-change"
+            elif proposed and (not submitted or proposed[idx] != submitted[idx]):
+                diagnosis = "changed-before-submission"
+            elif submitted and actual and actual.get("Rect") and abs(submitted[idx] - actual["Rect"][idx]) > tol:
+                diagnosis = "submitted-axis-not-realized"
+            elif plan["Truncated"] or not actual or not submitted:
+                diagnosis = "unknown-verification"
+            else:
+                diagnosis = axis_diagnosis(plan["CandidateGroups"], window, axis, a["End"][idx], tol)
+                if abs(submitted[idx] - a["End"][idx]) <= tol:
+                    diagnosis = "matches-submitted-axis"
+            corrections.append({"RequestId": req, "GestureId": a["GestureId"], "WindowId": window,
+                                "Axis": axis, "ReleasedValue": a["End"][idx], "Tolerance": tol, "Diagnosis": diagnosis})
+    return {"Requests": len(record.plans), "RequestsWithSubmittedChanges": sum(p["SubmittedChange"] for p in record.plans.values()),
+            "ReceiptOutcomes": field_counts(record.plans.values(), "Outcome"), "LinkedCorrectionAxes": corrections,
+            "CorrectionDiagnoses": field_counts(corrections, "Diagnosis"), "MissedGestureStatuses": missed["StatusCounts"]}
+
+
+def axis_field(dimension):
+    return {"horizontal-position": ("X", 0), "vertical-position": ("Y", 1),
+            "width": ("Width", 2), "height": ("Height", 3)}[dimension]
 
 
 def missed_opportunities(record):
@@ -519,6 +586,12 @@ def missed_opportunities(record):
                     seen_request_axes.add(request_key)
                 axes.append({"Dimension": axis, "KeepError": axis_error(entry["Keep"], entry["ManualRelease"],
                                                                        entry["WorkArea"], axis)})
+            if entry["RequestId"]:
+                plan = record.plans[entry["RequestId"]]
+                for item in axes:
+                    name, idx = axis_field(item["Dimension"])
+                    item["HistoricalSearch"] = axis_diagnosis(plan.get("CandidateGroups"), row["WindowId"], name,
+                        row["End"][idx], max(3, round(4 * (row.get("Dpi") or 96) / 96)))
             if not axes:
                 entry["Status"] = "duplicate-trial-or-small-gesture"
         episodes.append(entry)
@@ -801,6 +874,7 @@ def analyze(paths, baseline_paths=(), candidate_paths=()):
         has_probes = any(row["Trigger"] == ACTIVITY_PROBE_TRIGGER
                          for predictions in (baseline, candidate) for row in predictions.values())
         for key, report in reports.items():
+            score_correction_replays(key, report, baseline, candidate)
             score_missed_replays(key, report, baseline, candidate)
             if has_probes:
                 score_missed_replays(key, report, baseline, candidate, probe=True)
@@ -847,6 +921,25 @@ def merge_replays(paths):
     return {key: row for key, row in output.items() if key not in ambiguous}
 
 
+def score_correction_replays(session, report, baseline, candidate):
+    for entry in report["InterventionAssessment"]["LinkedCorrectionAxes"]:
+        request, window = entry["RequestId"], entry["WindowId"]
+        plan = report["Plans"][request]
+        value, tol, axis = entry["ReleasedValue"], entry["Tolerance"], entry["Axis"]
+        for assume in (False, True):
+            key = (session, request, assume)
+            old, new = baseline.get(key), candidate.get(key)
+            diagnosis = "unknown-replay-input"
+            if (old and new and old.get("InputFingerprint") and old["InputFingerprint"] == new.get("InputFingerprint")
+                    and plan["Time"] and all(r.get("BeforeTime") and stamp(r["BeforeTime"]) == stamp(plan["Time"])
+                    and r.get("Truncated") is False and r["Trigger"] == plan["Trigger"] for r in (old, new))):
+                target = next((w["Rect"] for w in new.get("ProjectedWindows") or [] if w["Id"] == window), None)
+                if target:
+                    diagnosis = ("selected-near-release" if abs(target[axis] - value) <= tol else
+                                 axis_diagnosis(new.get("CandidateGroups"), window, axis, value, tol))
+            entry.setdefault("ReplaySearch", {})["resizable" if assume else "fixed"] = diagnosis
+
+
 def score_missed_replays(session, report, baseline, candidate, probe=False):
     missed = report["MissedAssistance"]
     prefix = "ProbeReplay" if probe else "Replay"
@@ -888,6 +981,10 @@ def score_missed_replays(session, report, baseline, candidate, probe=False):
                         result.setdefault("Axes", {})[dim] = scores = {"Keep": axis["KeepError"], "Baseline": before,
                             "Candidate": after, "CandidateImprovesOverKeep": after < axis["KeepError"],
                             "CandidateImprovesOverBaseline": after < before}
+                        field, idx = axis_field(dim)
+                        result.setdefault("CandidateSearch", {})[dim] = ("selected-near-release" if abs(result["CandidateTarget"][idx] -
+                            entry["ManualRelease"][idx]) <= 4 else axis_diagnosis(new.get("CandidateGroups"), window, field,
+                            entry["ManualRelease"][idx], 4))
                         pairs[name][dim].append(scores)
             totals[name][result["Status"]] += 1
     missed[prefix + "Coverage"] = {name: dict(counts) for name, counts in totals.items()}

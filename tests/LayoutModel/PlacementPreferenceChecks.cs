@@ -37,6 +37,22 @@ internal static class PlacementPreferenceChecks
             "legacy one-direction records cannot recruit the same main window for two equally likely tasks");
 
         var widthVotes = recent.Select(s => s with { Edited = HorizontalEdit.Width, Width = .72 }).ToArray();
+        var sameApp = live.Take(2).Select(e => (e.Window, App: (string?)"browser", e.Instance)).ToArray();
+        var scoped = solo.Select(s => s with { App = "browser/reading", Usage = PlacementUsage.ScrollReading }).ToArray();
+        var knownRole = PlacementPreferences.Bind(sameApp, new(1, 0, 0), scoped, [], now,
+            (_, _) => PlacementUsage.ScrollReading, h => h == 1 ? "reading" : "playback");
+        check(knownRole is [{ Window: 1 }] && PlacementPreferences.Bind(sameApp, new(1, 0, 0), scoped, [], now,
+            (_, _) => PlacementUsage.ScrollReading, _ => "reading").Length == 0,
+            "cross-session same-app placement binds only to a uniquely evidenced use");
+        ObservedWindow Observed(int id, RectI r) => new(id, r, area, 96, id-1, id == 1, false, true, 1, AppKey: "browser");
+        var origin = rect with { X = 130 };
+        var start = new WorkspaceFrame(now, [Observed(1, origin), Observed(2, rect with { X = 1000 })]);
+        var end = new WorkspaceFrame(now, [Observed(1, rect), start.Windows[1]]);
+        var edit = new WindowAdjustmentObservation(now, "task", 1, origin, rect, area, area, 96, 350, [], "stable",
+            StartContext: start, EndContext: end, SettledContext: end, StartUsage: new(1, 2, false, [2], [1]));
+        check(LayoutHabits.Observe(edit) is { App: "browser/reading", Partner: "browser/playback" } &&
+            LayoutHabits.Observe(edit with { StartUsage = new(1, 2, false, [], [1, 2]) }) == null,
+            "two reopened browser surfaces can teach durable distinct uses, while indistinguishable readers cannot");
         var knownWidth = PlacementPreferences.Bind(live, new(1, 3, 1), widthVotes, [], now);
         check(knownWidth.Single(p => p.Window == 1) is { Partner: 0, PreferWidth: true, PreferCenter: false } width &&
             Math.Abs(width.Width - .72) < .001 && PlacementPreferences.Bind(live, new(1, 0, 0), widthVotes, [], now).Length == 0,
