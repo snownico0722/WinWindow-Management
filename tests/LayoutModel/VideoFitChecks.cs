@@ -4,6 +4,7 @@ internal static class VideoFitChecks
 {
     internal static void Run(Action<bool, string> check)
     {
+        BrowserVideoEvidenceChecks.Run(check);
         var area = new RectI(-1920, 0, 1920, 1040);
         var frame = new RectI(-1920, 45, 1280, 900);
         var window = new WindowSnapshot(2, frame, frame, area, 1, default, true, false, true, 1, 96, 20, SurfaceState: "windowed");
@@ -35,16 +36,42 @@ internal static class VideoFitChecks
         check(session.Read([repositioned], _ => page with { Caption = "video B" }) == null,
             "a changed page invalidates the prior content even at identical outer dimensions");
         Submit();
-        check(!session.Repeat(atTarget, page, fit with { Aspect = 1.5 }, 120) && session.Read([atTarget], _ => page) == null,
-            "a reliable new content aspect overrides the repeat guard even on the same page");
+        var reflow = fit with { Aspect = 1.5, Insets = fit.Insets with { Top = 20 } };
+        check(session.Repeat(atTarget, page, reflow, 120) && session.Repeat(atTarget, page, reflow, 25_000) &&
+            session.Read([atTarget], _ => page)?.GetValueOrDefault(window.Handle) == fit,
+            "remeasuring a settled viewport at the app's resized geometry cannot authorize an endless resize");
+        var changed = reflow with { Aspect = 1.8 };
+        check(session.Repeat(atTarget, page, changed, 25_300) &&
+            session.Repeat(atTarget, page, reflow, 25_600) &&
+            session.Repeat(atTarget, page, changed, 25_900) &&
+            !session.Repeat(atTarget, page, changed, 26_200) && session.Read([atTarget], _ => page) == null,
+            "a repeatable independently moving picture change at the same geometry supersedes the fit; a transient does not");
         Submit();
-        check(!session.Repeat(atTarget, page, fit with { Insets = fit.Insets with { Top = 20 } }, 120),
-            "a changed player viewport overrides the repeat guard at an unchanged content aspect");
+        check(!session.Repeat(atTarget, page with { Caption = "video B" }, changed, 120),
+            "a new page with independently verified picture motion can immediately establish a new fit");
         Submit();
         check(session.Read([atTarget with { VisualRect = target with { Width = 1100 } }], _ => page) == null,
             "an external resize withdraws the fit without asking the user to undo");
         Submit();
         check(session.Read([atTarget], _ => page with { Started = 456 }) == null, "a new browser lifetime cannot inherit a fit");
+        Submit();
+        check(session.SettledViewport(atTarget, page, 120) == null &&
+            session.SettledViewport(atTarget, page, 950) is { Height: 620, Width: 1240 } &&
+            session.SettledViewport(window, page, 950) == null,
+            "only settled native target geometry can establish the no-bars baseline");
+        session.ObserveUnbarred(atTarget, page, 950);
+        check(session.Read([atTarget], _ => page)?.GetValueOrDefault(window.Handle) == fit,
+            "a paused picture at the verified unbarred fit keeps its current fit without new playback evidence");
+        check(!session.Repeat(atTarget, page, changed, 1_950),
+            "after confirmed bar removal, one new three-frame moving barred picture on the same page may resize");
+        var clamped = window with { VisualRect = frame with { Height = 800 } };
+        Submit();
+        check(session.Read([clamped], _ => page) == null && session.Repeat(clamped, page, fit, 950) &&
+            session.Repeat(clamped, page, fit, 1_950) && session.Read([clamped], _ => page) == null,
+            "a native minimum-size clamp never establishes a fit and never repeats the unreachable request");
+        Submit();
+        check(session.Read([window], _ => page) == null && session.Repeat(window, page, fit, 950),
+            "an unchanged native window refuses the same previously submitted resize without teaching a fit");
         var context = new TaskLayoutContext { VideoFits = fits };
         var signals = RecordedTaskSignals.From(context, new Dictionary<nint, int> { [window.Handle] = 7 }, [atTarget]);
         check(signals.Video == null && signals.ApplyToReplay(new()).VideoFits?.GetValueOrDefault(7) == fit,

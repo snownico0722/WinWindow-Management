@@ -15,6 +15,8 @@ internal sealed class IdleWindowReclaim
         var main = context.Focus?.Main ?? 0;
         var peer = context.Focus?.Companion ?? 0;
         var protectedHandles = new HashSet<nint> { main, peer, context.GestureAnchor, context.VideoHint?.WindowHandle ?? 0 };
+        var verifiedMembers = context.VerifiedTaskMembers ?? [];
+        protectedHandles.UnionWith(verifiedMembers);
         if (plan.Scene != null) protectedHandles.UnionWith(plan.Scene.References.Select(g => g.Window.Handle));
         if (context.Focus?.NavigationAncestors is { } ancestors) protectedHandles.UnionWith(ancestors);
         foreach (var hint in context.WindowHints ?? [])
@@ -59,8 +61,8 @@ internal sealed class IdleWindowReclaim
         WindowSnapshot? best = null;
         double bestGain = .12;
         var monitor = projected.FirstOrDefault(w => w.Handle == main)?.MonitorHandle;
-        foreach (var task in projected.Where(w => w.MonitorHandle == monitor &&
-            (w.Handle == main || w.Handle == peer || context.HasRecentInput(w.Handle))))
+        bool IsTask(WindowSnapshot w) => w.Handle == main || w.Handle == peer || verifiedMembers.Contains(w.Handle) || context.HasRecentInput(w.Handle);
+        foreach (var task in projected.Where(w => w.MonitorHandle == monitor && IsTask(w)))
         {
             var front = projected.Where(w => w.ZOrder < task.ZOrder && !task.VisualRect.Intersect(w.VisualRect).IsEmpty).ToArray();
             var candidates = front.Where(w => w.MonitorHandle == monitor && idle.Contains(w.Handle)).ToArray();
@@ -96,7 +98,7 @@ internal sealed class IdleWindowReclaim
         // that actually return to the desktop; hiding one strip to reveal another gains nothing.
         var local = projected.Where(w => w.MonitorHandle == monitor).ToArray();
         if (local.Count(w => w.IsManageable) < 4) return null;
-        var taskOrder = local.Where(w => w.Handle == main || w.Handle == peer || context.HasRecentInput(w.Handle)).Max(w => w.ZOrder);
+        var taskOrder = local.Where(IsTask).Max(w => w.ZOrder);
         long idleLimit = Math.Max((long)TimeSpan.FromMinutes(15).TotalMilliseconds, (long)age.TotalMilliseconds * 3);
         double bestCleared = 0;
         foreach (var w in local.Where(w => w.ZOrder > taskOrder && idle.Contains(w.Handle)))

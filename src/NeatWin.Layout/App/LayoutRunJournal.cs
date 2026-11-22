@@ -16,7 +16,7 @@ internal sealed class LayoutRunJournal : IDisposable
     private readonly Action<LayoutRunObservation>? _snapshotObserver;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 600 };
     private readonly List<Pending> _pending = [];
-    internal event Action<LayoutRunObservation>? Completed;
+    internal event Action<LayoutRunObservation, IReadOnlyList<WindowSnapshot>>? Completed;
     internal event Action? ReplanAroundBlockedWindow;
     internal WindowPlacementFeedback Feedback { get; } = new();
     internal LayoutRunJournal(WindowManager manager, IntentReferenceStore store, RecorderSession? recorder = null,
@@ -65,7 +65,7 @@ internal sealed class LayoutRunJournal : IDisposable
                 timing = new(windowId, reusedPreview, Elapsed(application.FirstGeometrySubmittedTick), Elapsed(application.GestureWindowSubmittedTick));
             }
             var scene = scored?.Scene ?? proposal?.Scene;
-            var observation = new LayoutRunObservation(9, _session, Guid.NewGuid().ToString("N"), trigger,
+            var observation = new LayoutRunObservation(LayoutRunObservation.CurrentVersion, _session, Guid.NewGuid().ToString("N"), trigger,
                 frame, targets, layers, groups, null, refused.Length > 0 ? "submission-failed" : "requested-not-yet-verified",
                 application.Notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
                 context == null ? null : RecordedTaskSignals.From(context, ids, before), strength, fullDesktop, refused.Length == 0 ? null : refused,
@@ -79,7 +79,8 @@ internal sealed class LayoutRunJournal : IDisposable
             if ((recorded || _recorder?.SnapshotWantsGestures?.Invoke() == true) && (plan.Moves.Count > 0 || trigger == "undo"))
                 _recorder?.Applied(observation.RequestId, trigger, application, submissionRecordedAt);
             if (_pending.Count >= 8) _pending.RemoveAt(0);
-            foreach (var old in _pending) old.Intervened = true;
+            if (targets.Length > 0 || layers.Length > 0 || application.MinimizeRequested != null)
+                foreach (var old in _pending) old.Intervened = true;
             _pending.Add(new(observation, before.Select(w => w.Handle).ToHashSet(), Environment.TickCount64, epoch,
                 recorded, plan.Moves, application.Failures, allowReplan, application.MinimizeRequested) { Intervened = application.Interrupted, Scene = scene });
             _timer.Start();
@@ -161,7 +162,7 @@ internal sealed class LayoutRunJournal : IDisposable
                 // completion must not resurrect cleared data or become a new recording session.
                 if (pending.Recorded) TryAppend(actual, pending.Epoch);
                 _snapshotObserver?.Invoke(actual);
-                Completed?.Invoke(actual);
+                Completed?.Invoke(actual, snapshot);
                 if (blocked && pending.AllowReplan) ReplanAroundBlockedWindow?.Invoke();
             }
             catch { }

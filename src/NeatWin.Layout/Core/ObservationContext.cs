@@ -39,7 +39,10 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     SceneEffect[]? ActualSceneEffects = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    RecordedShadowFinding[]? ShadowReplay = null);
+    RecordedShadowFinding[]? ShadowReplay = null)
+{
+    internal const int CurrentVersion = 10;
+}
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
 public sealed class ObservationIdentityTracker
@@ -109,6 +112,8 @@ public sealed record RecordedPlacement(int Id, int Partner, double Center, doubl
     PlacementConfidence? AxisConfidence = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     PlacementUsage? Usage = null);
+// 只记录证据和匿名窗口 ID，像素、浏览器标题和句柄不随录像导出。
+public sealed record BrowserBarObservation(string Decision, double Aspect, double BarConfidence, int WindowId = 0);
 public sealed record RecordedVideo(int Id, VideoBlackBarOrientation Orientation, double ContentAspectRatio,
     RectI Viewport, double Confidence, WindowExposure? Exposure, VideoBlackBarTendency Tendency = VideoBlackBarTendency.Shrink);
 public sealed record RecordedSizeFloor(int Id, int MinWidth, int MinHeight);
@@ -133,7 +138,11 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     int OriginSide = 0,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    RecordedShadowRule[]? ShadowRules = null)
+    RecordedShadowRule[]? ShadowRules = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    BrowserBarObservation? BrowserBars = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    bool VerifiedTaskRepeat = false)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids, IReadOnlyList<WindowSnapshot>? snapshot = null)
     {
@@ -182,7 +191,9 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             floors.Length > 0 ? floors : null, context.Activities?.Where(a => Id(a.Key) != 0)
                 .ToDictionary(a => Id(a.Key), a => a.Value), context.Attention?.Where(a => Id(a.Key) != 0)
                 .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor), video, context.GestureTarget, navigation, context.WorkspaceCause == WorkspaceChangeCause.None ? null : context.WorkspaceCause.ToString(),
-            fits?.Count > 0 ? fits : null, Id(context.FirstPlacementWindow), context.OriginSide, shadow is { Length: > 0 } ? shadow : null);
+            fits?.Count > 0 ? fits : null, Id(context.FirstPlacementWindow), context.OriginSide, shadow is { Length: > 0 } ? shadow : null,
+            context.BrowserBarSample is { } sample ? sample.Detail with { WindowId = Id(sample.Window) } : null,
+            context.VerifiedTaskRepeat);
     }
 
     private static ShadowAxis? ReadShadowRule(RecordedShadowRule value) =>
@@ -192,7 +203,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             new(value.WindowId, axis, value.Value, 0, value.Tolerance, change) : null;
 
     // During offline replay the session-local ids are the simulated handles.
-    internal TaskLayoutContext ApplyToReplay(TaskLayoutContext context) => context with
+    internal TaskLayoutContext ApplyToReplay(TaskLayoutContext context, int recordVersion = LayoutRunObservation.CurrentVersion) => context with
     {
         Focus = new(Main, Companion, Switches, FocusEvidence ?? "recent-switch-pair",
             Navigation?.Hops.Where(h => h.SourceRole is "waiting" or "return").Select(h => (nint)h.Source).ToArray(),
@@ -207,9 +218,13 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         Attention = Attention?.ToDictionary(a => (nint)a.Key, a => a.Value),
         GestureAnchor = GestureAnchor, GestureTarget = GestureTarget,
         ShadowAxes = (ShadowRules ?? []).Select(ReadShadowRule).OfType<ShadowAxis>().ToArray(),
-        VideoFits = VideoFits?.Where(pair => pair.Key > 0 && pair.Value is { IsValid: true })
+        VerifiedTaskRepeat = VerifiedTaskRepeat,
+        // 旧档只保存暗带和算出的比例。可以审查历史决定，但没有足够证据给新引擎重新授权缩窗。
+        VideoFits = recordVersion < 10 ? null : VideoFits?.Where(pair => pair.Key > 0 && pair.Value is { IsValid: true })
             .ToDictionary(pair => (nint)pair.Key, pair => pair.Value),
-        VideoHint = Video is { } v ? new(v.Id, v.Orientation, v.ContentAspectRatio, v.Viewport, v.Confidence, v.Tendency) : context.VideoHint,
+        VideoHint = Video is { Id: > 0 } v && BrowserBars is { Decision: "confirmed-picture" } proof &&
+            proof.WindowId == v.Id && proof.Aspect == v.ContentAspectRatio && recordVersion >= 10
+            ? new(v.Id, v.Orientation, v.ContentAspectRatio, v.Viewport, v.Confidence, v.Tendency) : null,
         SizeFloors = SizeFloors?.Select(f => new WindowSizeFloor(f.Id, f.MinWidth, f.MinHeight)).ToArray()
     };
 }

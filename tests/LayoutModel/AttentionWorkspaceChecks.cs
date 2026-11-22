@@ -4,6 +4,7 @@ internal static class AttentionWorkspaceChecks
 {
     internal static void Run(Action<bool, string> check)
     {
+        VerifiedTaskChecks(check);
         var area = new RectI(1920, 0, 1920, 1040);
         WindowSnapshot Window(int id, int x, int y, int width, int height) =>
             new(id, new(area.Left + x, y, width, height), new(area.Left + x, y, width, height),
@@ -32,16 +33,18 @@ internal static class AttentionWorkspaceChecks
             "a small comfort improvement pays for a cheap adjustment and loses when its perceptual cost grows");
         var nearlyComfortable = document with { VisualRect = new(area.Left + 50, 40, 910, 710) };
         const string key = "AAAAAAAAAAAAAAAAAAAAAAAA";
-        IntentLayoutPlan PriceMicroAdjustment(double price)
+        IntentLayoutPlan PriceMicroAdjustment(double price, bool verified = false)
         {
             var scene = new LayoutScene("reader", "workspace", [key], Weights: new(Interruption: price), ReconsiderSettled: true);
-            var ctx = context with { Rules = new(Version: 5, Scenes: [scene]), IsWorkspaceObservation = true,
+            var ctx = context with { Rules = new(Version: 5, Scenes: [scene]), IsWorkspaceObservation = true, VerifiedTaskRepeat = verified,
                 AppKeys = new Dictionary<nint, string?> { [document.Handle] = key } };
             return LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange([nearlyComfortable], true),
                 new(), null, [nearlyComfortable], ctx);
         }
         check(PriceMicroAdjustment(1).Moves is [{ TargetVisualRect.Width: > 910 and < 960 }] &&
             PriceMicroAdjustment(8).Moves.Count == 0, "same readable window can gain a few pixels or stay put under an imported interruption weight");
+        check(PriceMicroAdjustment(1, verified: true).Moves is [{ TargetVisualRect.Width: > 910 and < 960 }],
+            "an explicitly opted-in personal scene can reconsider a previously verified working layout");
         foreach (bool right in new[] { true, false })
         {
             var active = Window(1, right ? 40 : 980, 100, 900, 750);
@@ -360,5 +363,135 @@ internal static class AttentionWorkspaceChecks
             OcclusionMetrics.Measure(scarce[1], [scarce[0]], 96).AccessWidth >= 96,
             "when three reading surfaces cannot fit, preserve usable app frames and a reachable reference");
 
+    }
+
+    private static void VerifiedTaskChecks(Action<bool, string> check)
+    {
+        var area = new RectI(0, 0, 1920, 1040);
+        var otherArea = new RectI(1920, 0, 1920, 1040);
+        WindowSnapshot Window(int id, RectI rect, RectI workArea, int monitor, int order, bool foreground = false) =>
+            new(id, rect, rect, workArea, monitor, default, true, foreground, true, order, 96, (uint)id);
+        var left = Window(1, new(20, 80, 920, 880), area, 1, 0, true);
+        var right = Window(2, new(900, 55, 970, 900), area, 1, 1);
+        var other = Window(3, new(2040, 30, 1200, 900), otherArea, 2, 2);
+        var obstruction = Window(4, new(1150, 100, 560, 750), area, 1, 3) with { IsManageable = false };
+        WindowSnapshot[] before = [left, right, other, obstruction];
+        var target = new RectI(955, 55, 915, 900);
+        var submitted = new IntentLayoutPlan([new(right, target)], [], []);
+        var requested = new TaskLayoutContext(Displays: [new(1, area, area), new(2, otherArea, otherArea)], Focus: new(1, 2, 3));
+        var session = new TaskLayoutSession();
+        var start = DateTimeOffset.UnixEpoch;
+        var repeat = requested with { IsWorkspaceObservation = true, AllowGestureAssist = false,
+            WorkspaceCause = WorkspaceChangeCause.Focus | WorkspaceChangeCause.Order };
+        TaskLayoutContext Capture(WindowSnapshot[] desktop, TaskLayoutContext? context = null) =>
+            session.PreserveVerifiedTask(desktop, context ?? repeat);
+        session.Requested(before, submitted, start, context: requested);
+        session.BindRequest("old");
+        session.Requested(before, submitted, start, context: requested);
+        session.BindRequest("accepted");
+        var actual = TaskLayoutSession.Project(before, submitted);
+        session.VerifyRequest("old", actual);
+        check(!Capture(actual).VerifiedTaskRepeat, "a request or another journal receipt cannot settle a working pair");
+        session.VerifyRequest("accepted", actual);
+        var flipped = actual.Select(w => w with { IsForeground = w.Handle == 2,
+            ZOrder = w.Handle == 1 ? 1 : w.Handle == 2 ? 0 : w.ZOrder }).ToArray();
+        var reverse = repeat with { Focus = new(2, 1, 4), WindowHints = [new(2, TextFocus: true)] };
+        var decayed = session.Capture(flipped, new(), requested.Displays!, null, start.AddHours(2)) with
+        {
+            Focus = new(2, 0, 0), IsWorkspaceObservation = true, AllowGestureAssist = false,
+            WorkspaceCause = WorkspaceChangeCause.Focus | WorkspaceChangeCause.Order,
+        };
+        var firstRepeat = Capture(flipped, reverse);
+        var laterRepeat = Capture(flipped, decayed);
+        var restoredRepeat = Capture(actual);
+        IntentLayoutPlan Run(WindowSnapshot[] windows, TaskLayoutContext context) => LayoutDispatch.Create(LayoutRoute.Smart,
+            new VisibilityAnalyzer().SelectVisibleWorkingSet(windows, includeStackAccess: true), new(), null, windows, context);
+        check(!laterRepeat.VerifiedRepeat && firstRepeat.VerifiedTaskRepeat && laterRepeat.VerifiedTaskRepeat && restoredRepeat.VerifiedTaskRepeat &&
+            new[] { Run(flipped, firstRepeat), Run(flipped, laterRepeat), Run(actual, restoredRepeat) }.All(p => p.Moves.Count == 0 && p.Layers.Count == 0),
+            "verified readable windows stay in both places after consecutive focus flips and attention decay");
+
+        var newOther = other with { Handle = 5, ProcessId = 5, ZOrder = 4 };
+        check(!Capture([left with { IsForeground = false }, actual[1], other with { IsForeground = true }, obstruction],
+                repeat with { Focus = new(3, 0, 0) }).VerifiedTaskRepeat &&
+            Capture([actual[0], actual[1], other with { VisualRect = new(2100, 90, 1100, 850) }, obstruction, newOther],
+                repeat with { WorkspaceCause = WorkspaceChangeCause.Geometry | WorkspaceChangeCause.Membership }).VerifiedTaskRepeat,
+            "an unrelated task is independent and its other-monitor windows do not disturb the returning pair");
+
+        var obscured = new[] { actual[0], actual[1], other, obstruction with { ZOrder = 0 } };
+        check(!Capture(obscured, repeat with { WorkspaceCause = WorkspaceChangeCause.Order }).VerifiedTaskRepeat &&
+            Capture(actual).VerifiedTaskRepeat, "a large new obstruction releases the guard on an order-only event");
+        var coveredEdge = new[] { actual[0], actual[1], other,
+            obstruction with { VisualRect = new(955, 80, 30, 850), ZOrder = 0 } };
+        check(Capture(coveredEdge).VerifiedTaskRepeat && !Capture(coveredEdge,
+            repeat with { WindowHints = [new(2, ProtectedRegions: [new(0, 0, .04, 1)])] }).VerifiedTaskRepeat,
+            "even a narrow newly covered strip can release a verified layout when it holds protected content");
+        check(!Capture(actual, repeat with { ExplicitArrange = true }).VerifiedTaskRepeat &&
+            !Capture(actual, repeat with { AllowGestureAssist = true }).VerifiedTaskRepeat &&
+            !Capture(actual, repeat with { Focus = new(1, 4, 3) }).VerifiedTaskRepeat,
+            "explicit arrange, release assistance and a different companion remain eligible for placement");
+        check(!Capture([.. actual, Window(5, new(40, 40, 680, 600), area, 1, 6)]).VerifiedTaskRepeat,
+            "a new independent window on the working display releases the guard");
+
+        session.Requested(before, submitted, start, context: requested);
+        session.Verify(actual);
+        check(!Capture(actual, repeat with { Displays = [new(1, area, area with { Height = 1080 })] }).VerifiedTaskRepeat,
+            "changed display bounds release the guard even when the work area is unchanged");
+        session.Requested(before, submitted, start, context: requested);
+        session.Verify(actual);
+        check(!Capture([actual[0], actual[1] with { SurfaceState = "fullscreen" }, other, obstruction]).VerifiedTaskRepeat,
+            "a changed member surface releases the guard");
+        session.Requested(before, submitted, start, context: requested);
+        session.Verify(actual);
+        session.Gesture(new(left.Handle, left.VisualRect, left.VisualRect with { X = 35 }, area,
+            ManualGestureKind.Move, [], 350, 0), start);
+        check(!Capture(actual).VerifiedTaskRepeat, "a manual drag invalidates the pair even if both frames return to their previous coordinates");
+
+        WindowSnapshot[] three = [left with { VisualRect = new(15, 40, 600, 930) },
+            right with { VisualRect = new(590, 45, 620, 910) },
+            Window(6, new(1275, 50, 620, 890), area, 1, 2)];
+        var triplePlan = new IntentLayoutPlan([new(three[0], new(15, 40, 570, 930)),
+            new(three[1], new(625, 45, 620, 910))], [], [new([1, 2, 6], "columns", 0, [])]);
+        session.Requested(three, triplePlan, start, context: requested);
+        var arrangedThree = TaskLayoutSession.Project(three, triplePlan).Select(w => w with
+        {
+            IsForeground = w.Handle == 6, ZOrder = w.Handle == 6 ? 0 : w.ZOrder + 1,
+        }).ToArray();
+        session.Verify(arrangedThree);
+        check(Capture(arrangedThree, repeat with { Focus = new(6, 2, 3) }).VerifiedTaskRepeat,
+            "a verified three-window group holds when a third member takes focus before its receipt");
+
+        WindowSnapshot[] solo = [left];
+        var soloPlan = new IntentLayoutPlan([new(left, left.VisualRect with { Width = 1050 })], [], []);
+        var soloContext = repeat with { Focus = new(1, 0, 0) };
+        session.Requested(solo, soloPlan, start, context: soloContext);
+        var placedSolo = TaskLayoutSession.Project(solo, soloPlan);
+        session.Verify(placedSolo);
+        check(Capture(placedSolo, soloContext).VerifiedTaskRepeat && !Capture(placedSolo,
+            soloContext with { Focus = new(1, 2, 1) }).VerifiedTaskRepeat,
+            "a verified single-window task holds independently and releases when evidence identifies another member");
+
+        var keep = new IntentLayoutPlan([], [], [new([1, 2], "keep", 0, [])]);
+        session.Invalidate();
+        check(session.Requested(actual, keep, start, context: repeat) && !Capture(actual).VerifiedTaskRepeat,
+            "a selected keep is eligible for observation and cannot settle until the receipt arrives");
+        session.Verify([actual[0], actual[1] with { VisualRect = target with { Width = target.Width - 1 } }, other, obstruction]);
+        check(!Capture(actual).VerifiedTaskRepeat && session.Requested(actual, keep, start, context: repeat),
+            "a no-move keep requires the actual geometry to be unchanged");
+        session.Verify(actual);
+        check(Capture(flipped, reverse).VerifiedTaskRepeat && Capture(actual).VerifiedTaskRepeat,
+            "a readable desktop that the planner elected to keep holds through later focus flips once observed");
+
+        WindowSnapshot[] reclaimWorkspace = [actual[0], actual[1] with { ZOrder = 2 },
+            obstruction with { IsManageable = true, ZOrder = 1 }];
+        var history = new ForegroundHistory();
+        WindowSnapshot? Reclaim(params nint[] verifiedMembers)
+        {
+            var idle = new IdleWindowReclaim();
+            var stable = repeat with { VerifiedTaskRepeat = true, VerifiedTaskMembers = verifiedMembers };
+            idle.Choose(reclaimWorkspace, keep, stable, SmartTidyStrength.Balanced, 0, w => (int)w.Handle, history);
+            return idle.Choose(reclaimWorkspace, keep, stable, SmartTidyStrength.Balanced, 360_000, w => (int)w.Handle, history);
+        }
+        check(Reclaim(1, 2)?.Handle == obstruction.Handle && Reclaim(1, 2, 4) == null,
+            "idle reclaim remains available for bystanders and protects verified task members");
     }
 }

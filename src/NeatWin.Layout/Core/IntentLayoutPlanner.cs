@@ -16,7 +16,9 @@ internal static partial class IntentLayoutPlanner
         if (options.AlgorithmMode == TidyAlgorithmMode.Classic)
             return new(new TidyEngine().CreatePlan(visible, options), [], []);
         taskContext ??= new TaskLayoutContext();
-        if (taskContext.VerifiedRepeat && !taskContext.ExplicitArrange) return new([], [], []);
+        // 已匹配的个人场景可以明确要求重新比较已就绪的布局；其余单纯切换沿用实际验证过的摆法。
+        if (!taskContext.ExplicitArrange && (taskContext.VerifiedRepeat ||
+            (taskContext.VerifiedTaskRepeat && taskContext.Scene?.Settings?.ReconsiderSettled != true))) return new([], [], []);
         // Anchored monitors keep their original location and remain in the desktop occlusion checks.
         desktop ??= visible.Select(v => v.Window).ToArray();
         if (taskContext is { ExplicitArrange: false, IsWorkspaceObservation: true, Attention: not null } &&

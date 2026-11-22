@@ -935,9 +935,14 @@ Check(RoutineTick(22_000, [reopenedHelper with { Foreground = false }, nextTask]
         "missing foreground events, sampling gaps, and unavailable input keep unknown evidence distinct from zero");
     var targets = new[] { Window(1, new(0, 0, 400, 400)), Window(2, new(0, 0, 800, 400)) };
     var video = new VideoBlackBarHint(2, VideoBlackBarOrientation.Horizontal, 2, new(0, 0, 800, 400), .95, VideoBlackBarTendency.Expand);
-    var data = RecordedTaskSignals.From(new(VideoHint: video), targets.ToDictionary(w => w.Handle, w => (int)w.Handle), targets);
+    var data = RecordedTaskSignals.From(new(VideoHint: video) { BrowserBarSample = (2, new("confirmed-picture", 2, .95)) }, targets.ToDictionary(w => w.Handle, w => (int)w.Handle), targets);
     Check(data.Video?.Exposure?.Visible == .5 && data.ApplyToReplay(new()).VideoHint == video,
         "record and replay the detected video viewport independently of full-window exposure");
+    Check(data.ApplyToReplay(new(), 9).VideoHint == null &&
+        (data with { BrowserBars = null }).ApplyToReplay(new()).VideoHint == null &&
+        (data with { BrowserBars = data.BrowserBars! with { WindowId = 1 } }).ApplyToReplay(new()).VideoHint == null &&
+        (data with { BrowserBars = data.BrowserBars! with { Decision = "unconfirmed-picture" } }).ApplyToReplay(new()).VideoHint == null,
+        "legacy bars, rejected picture evidence and a different window cannot authorize a replayed resize");
 }
 
 // A dormant window lies above a still-relevant reference, while the main window stays active.
@@ -1080,7 +1085,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                 var focus = desktop.FirstOrDefault(w => w.IsForeground);
                 var ctx = new TaskLayoutContext(Displays: displays, ExplicitArrange: explicitRun, UseWorkingPairs: true,
                     PreferReversibleVerticalFill: true, Focus: new(focus?.Handle ?? 0, 0, 0));
-                ctx = (run.Signals?.ApplyToReplay(ctx) ?? ctx) with
+                ctx = (run.Signals?.ApplyToReplay(ctx, run.Version) ?? ctx) with
                 {
                     AllowGestureAssist = run.Trigger == "automatic-gesture",
                     // 活动快照探针只复用工作区求解，缺少运行时授权、注意力和触发置信度。
@@ -1129,6 +1134,8 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                 }
                 Console.WriteLine(JsonSerializer.Serialize(new { run.Session, run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
                     BeforeTime = frame.Time, InputFingerprint = inputFingerprint,
+                    BarEvidence = run.Signals?.BrowserBars?.Decision ?? (run.Signals?.Video != null ? "legacy-bars-only" : null),
+                    VerifiedTaskRepeat = run.Signals?.VerifiedTaskRepeat == true,
                     ProjectedWindows = desktop.Zip(projected, (before, after) =>
                         new { Id = (int)before.Handle, Before = before.VisualRect, Rect = after.VisualRect }),
                     run.GestureTiming, run.ShadowReplay, ObservedReleaseDetails = edits.Releases.GetValueOrDefault((run.Session, run.RequestId))?
