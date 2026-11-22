@@ -59,10 +59,10 @@ internal static partial class IntentLayoutPlanner
 {
     private static void AddPairProjections(List<Candidate> candidates, VisibleWindow[] group, RectI[] original,
         TaskEvidence[] relations, WindowLayoutObjective[] objectives, AttentionTarget[]? goals,
-        RectI area, TaskLayoutContext context, int gap, int[] order)
+        RectI area, TaskLayoutContext context, int gap, int[] order, bool compareReading = false)
     {
         // 位置相近只能说明两窗有几何关系。共同阅读、学习到的搭档或个人任务指令才提供分宽的理由。
-        if (group.Length != 2 || goals == null || relations is not [{ Purpose: "read-together", SameColumn: false }] ||
+        if (group.Length != 2 || goals == null || (relations is not [{ SameColumn: false }] || !compareReading && relations[0].Purpose != "read-together") ||
             context.GeometryOnlyWindow != 0 || context.Focus?.NavigationAncestors is { Length: > 0 } ||
             goals.Any(g => g.Role is not (AttentionRole.Main or AttentionRole.Reference)) ||
             original[0].Top >= original[1].Bottom || original[1].Top >= original[0].Bottom) return;

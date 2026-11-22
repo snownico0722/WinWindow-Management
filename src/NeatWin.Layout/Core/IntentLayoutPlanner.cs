@@ -93,6 +93,7 @@ internal static partial class IntentLayoutPlanner
                 var original = group.Select(v => v.Window.VisualRect).ToArray();
                 var task = InferTask(group, original, groupContext);
                 var goals = AttentionLayout.Targets(group, groupContext, strength);
+                var alternative = AmbiguousPair.Create(group, task, goals, groupContext);
                 var demands = CompileObjectives(group, task, groupContext, goals);
                 var order = Enumerable.Range(0, group.Length).ToArray();
                 int localPlacement = groupContext.GeometryOnlyWindow == 0 ? -1 :
@@ -117,7 +118,17 @@ internal static partial class IntentLayoutPlanner
                 var stackSignal = StackSignal(group, original);
                 TaskCostBreakdown StandardCost(Candidate c) => EffectiveBreakdown(
                     TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, goals), options.SmartStrength, task);
-                TaskCostBreakdown Breakdown(Candidate c) => weights?.Apply(StandardCost(c)) ?? StandardCost(c);
+                TaskCostBreakdown Breakdown(Candidate c)
+                {
+                    var cost = StandardCost(c);
+                    if (alternative != null)
+                    {
+                        // 歧义代价同时考虑一起读和轮流看；所有算法按同一组事前解释比价。
+                        cost = cost with { Uncertainty = .5 * cost.Uncertainty + .5 * task[0].Uncertainty *
+                            alternative.ExpectedLoss(c, goals!, area) };
+                    }
+                    return weights?.Apply(cost) ?? cost;
+                }
                 var viewingModel = groupContext.Calibration?.Matches(area, group[0].Window.Dpi) == true
                     ? "calibrated-flat-screen-angle" : "normalized-distance-not-gaze";
                 if (scene?.Settings?.ReconsiderSettled != true && AttentionLayout.SettledWorkspaceReason(group, goals, beforeExposure, obstacles, groupContext) is { } reason)
@@ -194,17 +205,24 @@ internal static partial class IntentLayoutPlanner
                 }
                 if (!localOnly || groupContext.PreferReversibleVerticalFill)
                     AddVerticalFillCandidates(candidates, group, original, groupContext);
-                if (!localOnly) AddPairProjections(candidates, group, original, task, demands, goals, area, groupContext, hint.GapPixels, order);
+                if (!localOnly)
+                {
+                    alternative?.Propose(candidates, original, goals!, area, order);
+                    AddPairProjections(candidates, group, original, task, demands, goals, area, groupContext, hint.GapPixels, order, alternative != null);
+                    AddOrderedChain(candidates, group, original, goals, demands, groupContext, area, hint.GapPixels, order);
+                }
                 if (goals != null)
                     AddAttentionLayouts(candidates, group, original, goals, area, obstacles, hint.GapPixels, order, strength, groupContext, Breakdown);
-                candidates = candidates.DistinctBy(CandidateKey).ToList();
+                var portfolio = new PortfolioBuilder();
+                candidates = candidates.Where(portfolio.Offer).ToList();
                 var best = candidates[0]; var baselineBreakdown = Breakdown(best);
                 var baseline = baselineBreakdown.Total; var bestScore = baseline;
                 var baseThreshold = SelectionThreshold(strength, task) * .60;
                 var needsRescue = options.RescueOffscreenWindows && original.Any(r =>
                     r.Intersect(area).Area < r.Area * .90 || r.Top < area.Top || r.Bottom > area.Bottom);
                 var audits = new List<LayoutCandidateTrace>(generationNotes) { new("keep", baseline, null, baselineBreakdown) };
-                var seen = candidates.Select(CandidateKey).ToHashSet();
+                portfolio.Scored(best, baseline, false);
+                double minimumThreshold = baseThreshold / (groupContext.InterventionWeight(false) * (weights?.Intervention ?? 1));
                 HashSet<RectI>? localTargets = localPlacement >= 0 ? [original[localPlacement]] : null;
                 int gestureIndex = Array.FindIndex(group, v => v.Window.Handle == groupContext.GestureAnchor);
                 var shadowAxes = (groupContext.ShadowAxes ?? []).Where(axis => handles.Contains(axis.Window)).ToArray();
@@ -224,7 +242,7 @@ internal static partial class IntentLayoutPlanner
                         var rects = (RectI[])seed.Rects.Clone();
                         rects[index] = axis.Apply(rects[index]);
                         var candidate = new Candidate("shadow-placement", rects, seed.Order);
-                        if (seen.Add(CandidateKey(candidate))) Evaluate(candidate, 0);
+                        if (portfolio.Offer(candidate)) Evaluate(candidate, 0);
                     }
                 }
                 // Finish useful geometry in this call, but freeze task evidence, content demand,
@@ -241,7 +259,7 @@ internal static partial class IntentLayoutPlanner
                     AddTaskCandidates(completion, group, seed.Rects, area, task, groupContext, hint.GapPixels);
                     AddOverlapping(completion, group, seed.Rects, area, hint);
                     foreach (var proposal in completion)
-                        if (seen.Add(CandidateKey(proposal))) Evaluate(proposal, generation);
+                        if (portfolio.Offer(proposal)) Evaluate(proposal, generation);
                     if (ReferenceEquals(seed, best)) break;
                 }
 
@@ -272,10 +290,11 @@ internal static partial class IntentLayoutPlanner
                             hold = new(i, mask, withCost, null);
                             if (order.Any(j => j != i && simpler.Intersect(best.Rects[j]).Area > target.Intersect(best.Rects[j]).Area))
                             {
+                                var blocked = (RectI[])best.Rects.Clone();
+                                blocked[i] = simpler;
+                                portfolio.Offer(new("retain-existing-edges", blocked, best.Order));
                                 if (axes != null)
                                 {
-                                    var blocked = (RectI[])best.Rects.Clone();
-                                    blocked[i] = simpler;
                                     axes.Observe(blocked, false);
                                     audits.Add(new("retain-existing-edges", null, "new-peer-overlap", Held: hold));
                                 }
@@ -295,11 +314,13 @@ internal static partial class IntentLayoutPlanner
                     {
                         // 只让这次获准操作的窗口试用候选位置；按其他窗口保持原位与原层级的真实桌面重算收益。
                         var target = candidate.Rects[localPlacement];
-                        if (!localTargets!.Add(target)) return;
                         var frames = (RectI[])original.Clone();
                         frames[localPlacement] = target;
                         candidate = candidate with { Rects = frames, Order = order };
+                        portfolio.Offer(candidate);
+                        if (!localTargets!.Add(target)) return;
                     }
+                    else portfolio.Offer(candidate);
                     axes?.Observe(candidate.Rects, false);
                     groupContext.ShadowProbe?.Observe(group, candidate.Rects, double.PositiveInfinity);
                     RectI[]? fitted = null, held = null;
@@ -323,7 +344,7 @@ internal static partial class IntentLayoutPlanner
                         foreach (var rects in new[] { fitted, held! })
                         {
                             var adjusted = candidate with { Rects = rects };
-                            if (seen.Add(CandidateKey(adjusted))) EvaluateFeasible(adjusted, generation);
+                            if (portfolio.Offer(adjusted)) EvaluateFeasible(adjusted, generation);
                         }
                         return;
                     }
@@ -341,7 +362,7 @@ internal static partial class IntentLayoutPlanner
                         bool repeated = Array.Exists(order, i => groupContext.RepeatsReversal(group[i].Window, candidate.Rects[i]));
                         audits.Add(new(candidate.Kind, null, repeated ? "repeated-manual-reversal" : "manual-return-amplitude", Generation: generation));
                         var smaller = candidate with { Rects = bounded };
-                        if (seen.Add(CandidateKey(smaller))) Evaluate(smaller, generation);
+                        if (portfolio.Offer(smaller)) Evaluate(smaller, generation);
                         return;
                     }
                     var rejection = scene?.Lane is { } lane && Array.Exists(order, i => !lane.Allows(group[i].Window, candidate.Rects[i]))
@@ -376,7 +397,7 @@ internal static partial class IntentLayoutPlanner
                                 var slots = candidate.Rects.Select((r, i) => horizontal ?
                                     original[i] with { X = r.X, Width = r.Width } : original[i] with { Y = r.Y, Height = r.Height }).ToArray();
                                 var split = new Candidate(horizontal ? "reference-fit-x" : "reference-fit-y", slots, order);
-                                if (seen.Add(CandidateKey(split))) Evaluate(split, generation);
+                                if (portfolio.Offer(split)) Evaluate(split, generation);
                             }
                         }
                         return;
@@ -401,6 +422,8 @@ internal static partial class IntentLayoutPlanner
                     bool matchesShadowRank = shadowAxes.Any(axis => axis.Change == ShadowChange.Rank &&
                         axis.Matches(candidate.Rects[Array.FindIndex(group, v => v.Window.Handle == axis.Window)]));
                     double rank = score + (centerTieCost ?? 0) - (matchesShadowRank ? baseThreshold * .5 : 0);
+                    minimumThreshold = Math.Min(minimumThreshold, threshold);
+                    if (breakdown.Feedback == 0) portfolio.Scored(candidate, rank, score < baseline - threshold);
                     // 对未经手势点名的附带位移，若省下该轴仍有几乎相同的净收益，保留原边界。
                     // 所有删减共同使用完整方案的一份余量，避免逐轴放宽后把本来要解决的问题丢掉。
                     bool sameBenefit = hold != null && candidate.Kind == "retain-existing-edges" &&
@@ -411,6 +434,12 @@ internal static partial class IntentLayoutPlanner
                     { best = candidate; bestScore = rank; }
                 }
 
+                string reputationContext = alternative != null ? "ambiguous-pair" : task.Select(r => r.Purpose)
+                    .FirstOrDefault(p => p != null) ?? (group.Length == 1 ? "single" : "workspace");
+                if (group.Length >= 3) reputationContext = "multi-window";
+                var decision = portfolio.Finish(best, bestScore, reputationContext, .10 * minimumThreshold,
+                    groupContext.SolverRatings, groupContext.ShadowTime ?? DateTimeOffset.UtcNow, alternative?.Alternatives);
+                best = decision.Chosen;
                 for (var i = 0; i < group.Length; i++)
                 {
                     settled[group[i].Window.Handle] = best.Rects[i];
@@ -421,7 +450,7 @@ internal static partial class IntentLayoutPlanner
                 traces.Add(new(group.Select(v => v.Window.Handle).ToArray(), best.Kind, stackSignal, audits.ToArray(),
                     new(task, viewingModel,
                         ["hypothesis-weights-not-calibrated-probabilities", "content-prior-not-semantic-recognition", "stable-is-not-satisfaction",
-                         .. shadowAxes.Select(axis => $"shadow-placement:{axis.Axis}:{axis.Change}")], demands), axes?.Export()));
+                         .. shadowAxes.Select(axis => $"shadow-placement:{axis.Axis}:{axis.Change}")], demands), axes?.Export(), decision.Portfolio));
 
                 void AddGroupLayouts(List<Candidate> output, RectI[] seed)
                 {

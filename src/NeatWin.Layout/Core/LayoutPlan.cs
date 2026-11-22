@@ -8,7 +8,8 @@ public sealed record LayoutCandidateTrace(string Kind, double? Cost, string? Rej
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     HeldLayoutAxes? Held = null);
 public sealed record LayoutGroupTrace(nint[] Handles, string Selected, double StackEvidence,
-    LayoutCandidateTrace[] Candidates, TaskGroupExplanation? Task = null, LayoutAxisCoverage[]? AxisCoverage = null);
+    LayoutCandidateTrace[] Candidates, TaskGroupExplanation? Task = null, LayoutAxisCoverage[]? AxisCoverage = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] SolverPortfolio? Portfolio = null);
 public sealed record IntentLayoutPlan(IReadOnlyList<TidyMove> Moves,
     IReadOnlyList<WindowLayerOrder> Layers, IReadOnlyList<LayoutGroupTrace> Groups)
 {

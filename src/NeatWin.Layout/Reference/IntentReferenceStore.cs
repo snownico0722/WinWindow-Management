@@ -156,9 +156,9 @@ public sealed class IntentReferenceStore
 
     public void Clear()
     {
+        Placement.Clear();
         if (!Directory.Exists(_directory)) return;
         foreach (var path in LogFiles()) File.Delete(path);
-        Placement.Clear();
         File.Delete(ProfilePath);
         File.Delete(ProfilePath + ".tmp");
         File.Delete(BehaviorFitsPath);
@@ -193,6 +193,8 @@ public sealed class IntentReferenceStore
             script.CopyTo(output);
         using (var preferences = archive.CreateEntry("placement-v1.json").Open())
             JsonSerializer.Serialize(preferences, Placement.Read());
+        using (var feedback = archive.CreateEntry(PlacementHistoryStore.FeedbackFile).Open())
+            JsonSerializer.Serialize(feedback, Placement.DurableFeedback());
         using var writer = new StreamWriter(archive.CreateEntry("intent-reference.json").Open());
         writer.Write(JsonSerializer.Serialize(Read(respectEnabled: false)));
     }

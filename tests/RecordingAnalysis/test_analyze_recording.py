@@ -27,6 +27,19 @@ class RecordingAnalysisTests(unittest.TestCase):
         self.assertEqual(group["Relations"], evidence["Relations"])
         self.assertEqual(dict(zip(group["Ids"], group["Objectives"]))[7], {"ReadableContent": 0.6})
 
+    def test_solver_feedback_is_joined_once_and_orphans_remain_visible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "recording.zip"
+            group = {"Ids": [42], "Selected": "shift", "Portfolio": {"WithoutReputation": 0, "Selected": 1}}
+            with ZipFile(path, "w") as archive:
+                archive.writestr("layout-decisions.jsonl", json.dumps({
+                    "RequestId": "abc", "Version": 16, "Session": "s", "Trigger": "explicit", "Groups": [group]}))
+                archive.writestr("solver-feedback-v1.json", json.dumps([{"RequestId": "abc"}, {"RequestId": "outside"}]))
+            report = analysis.analyze([path, path])
+        comparison = report["Sessions"]["s"]["AlgorithmReputation"]
+        self.assertEqual(comparison, {"ObservedGroups": 1, "ChangedSelections": 1, "Feedback": [{"RequestId": "abc"}]})
+        self.assertEqual(report["UnlinkedSolverFeedback"], [{"RequestId": "outside"}])
+
     def test_axis_evidence_distinguishes_search_ranking_and_unknown(self):
         groups = [{"Ids": [120, 43], "AxisCoverage": [
             {"WindowIndex": 1, "Axis": "Width", "Generated": [900, 1040], "Feasible": [900]}]}]
