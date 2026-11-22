@@ -371,7 +371,7 @@ def axis_diagnosis(groups, window, axis, value, tolerance):
             for a in group.get("AxisCoverage") or [] if a["WindowIndex"] == i and a["Axis"] == axis]
     if not sets:
         reasons = [limit for g in groups or [] if window in (g.get("Ids") or []) and g.get("Selected") == "keep"
-                   for limit in (g.get("Limits") or []) if limit.startswith(("verified-", "settled-"))]
+                   for limit in (g.get("Limits") or []) if limit.startswith(("verified-", "settled-", "existing-"))]
         return "held-before-search:" + reasons[0] if reasons else "unknown-candidate-coverage"
     for field, verdict in (("Feasible", "feasible-not-selected"), ("Generated", "generated-but-rejected")):
         if any(abs(v - value) <= tolerance for a in sets for v in a[field]):
@@ -908,7 +908,7 @@ def read_replay(path):
 
 def merge_replays(paths):
     output, ambiguous = {}, set()
-    fields = ("InputFingerprint", "BeforeTime", "Trigger", "Truncated", "ProjectedWindows")
+    fields = ("InputFingerprint", "BeforeTime", "Trigger", "Truncated", "ProjectedWindows", "CandidateGroups")
     for path in paths:
         rows, _, duplicates = read_replay(path)
         ambiguous.update(duplicates)

@@ -17,6 +17,11 @@ class RecordingAnalysisTests(unittest.TestCase):
     def test_axis_evidence_distinguishes_search_ranking_and_unknown(self):
         groups = [{"Ids": [120, 43], "AxisCoverage": [
             {"WindowIndex": 1, "Axis": "Width", "Generated": [900, 1040], "Feasible": [900]}]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "replay.txt"
+            row = {"Session": "s", "RequestId": "r", "assumeResizable": True, "CandidateGroups": groups}
+            path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            groups = analysis.merge_replays([path])[("s", "r", True)]["CandidateGroups"]
         reason = lambda handle, width: analysis.axis_diagnosis(groups, handle, "Width", width, 4)
         self.assertEqual(reason(43, 902), "feasible-not-selected")
         self.assertEqual(reason(43, 1042), "generated-but-rejected")
