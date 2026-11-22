@@ -49,7 +49,11 @@ internal sealed class PlacementHistoryStore(string directory)
 
     internal void Learn(WindowAdjustmentObservation observation)
     {
-        if (LayoutHabits.Observe(observation) is not { } edit) return;
+        if (LayoutHabits.Observe(observation) is { } edit) Learn(edit);
+    }
+
+    internal void Learn(LayoutHabit edit)
+    {
         var next = LayoutHabits.Add(Read(), edit);
         Directory.CreateDirectory(directory);
         File.WriteAllText(HistoryPath + ".tmp", JsonSerializer.Serialize(next));

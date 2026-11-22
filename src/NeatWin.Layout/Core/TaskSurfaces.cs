@@ -11,11 +11,14 @@ public sealed record SurfaceRule(string Id, string HostApp, double MaxAreaRatio,
 
 internal sealed record SurfaceMatch(WindowSnapshot Child, WindowSnapshot Host, string Rule, double MaxArea,
     string? ReleaseReason = null, RectI? ReleasedChildRect = null, RectI? ReleasedHostRect = null);
-internal enum SurfacePurpose { Unknown, LocalDetail, IndependentTask }
+internal enum SurfacePurpose { Unknown, LocalDetail, IndependentTask, CaptureTool }
 
 internal sealed class TaskSurfaces
 {
     private readonly Dictionary<nint, SurfaceMatch> _local = [];
+    private readonly Dictionary<nint, (WindowSnapshot Child, WindowSnapshot? Source)> _capture = [];
+    internal Func<WindowSnapshot, bool>? CaptureOverlay { get; init; }
+    internal Action<WindowSnapshot>? IgnoreVisit { get; init; }
     internal Func<WindowSnapshot, WindowUseRole>? Role { get; init; }
     internal Func<WindowSnapshot, SurfacePurpose>? ChatPurpose { get; init; }
     internal Func<WindowSnapshot, string?>? AppKey { get; init; }
@@ -23,15 +26,34 @@ internal sealed class TaskSurfaces
     internal Func<WindowSnapshot, bool>? JustClicked { get; init; }
     internal Action<SurfaceMatch, string>? Changed { get; init; }
     internal IEnumerable<WindowSnapshot> Hosts => _local.Values.Select(m => m.Host);
-    internal bool IsLocal(WindowSnapshot w) => _local.TryGetValue(w.Handle, out var match) && match.Child.ProcessId == w.ProcessId;
+    internal bool IsLocal(WindowSnapshot w) => _local.TryGetValue(w.Handle, out var match) && match.Child.ProcessId == w.ProcessId ||
+        IsCaptureOverlay(w);
+    internal bool IsCaptureOverlay(WindowSnapshot w) => _capture.TryGetValue(w.Handle, out var tool) && tool.Child.ProcessId == w.ProcessId;
     private HashSet<(nint Handle, uint Pid)> _previous = [];
     internal Action? ResetObserved { get; init; }
-    internal void Reset() { _local.Clear(); _previous.Clear(); ResetObserved?.Invoke(); }
+    internal void Reset() { _local.Clear(); _capture.Clear(); _previous.Clear(); ResetObserved?.Invoke(); }
 
     internal void Update(IReadOnlyList<WindowSnapshot> desktop, WindowSnapshot? previous)
     {
         if (desktop.Count == 0) { Reset(); return; }
         var byHandle = desktop.ToDictionary(w => w.Handle);
+        // 全屏选区可以比原窗口大，翻译结果也可能没有 Owner。用工具窗口自身的证据判断，
+        // 来源只用于记录。这样在浏览器或游戏上调用 QQ 热键也不会凭空新增一个桌面任务。
+        foreach (var entry in _capture.Values.ToArray())
+        {
+            if (byHandle.TryGetValue(entry.Child.Handle, out var live) && live.ProcessId == entry.Child.ProcessId &&
+                CaptureOverlay?.Invoke(live) == true) continue;
+            _capture.Remove(entry.Child.Handle);
+            if (entry.Source != null) Changed?.Invoke(new(entry.Child, entry.Source, "capture-overlay", 1, "tool-left"), "release");
+        }
+        foreach (var w in desktop)
+        {
+            if (_capture.ContainsKey(w.Handle) || CaptureOverlay?.Invoke(w) != true) continue;
+            var source = byHandle.GetValueOrDefault(w.Owner) ?? previous;
+            if (source?.Handle == w.Handle) source = null;
+            _capture[w.Handle] = (w, source);
+            if (source != null) Changed?.Invoke(new(w, source, "capture-overlay", 1), "suppress");
+        }
         // 升级成独立窗口或宿主关闭时解除归属。不能因为这个句柄曾显示过卡片就永久屏蔽它。
         foreach (var m in _local.Values.ToArray())
         {
@@ -50,7 +72,7 @@ internal sealed class TaskSurfaces
         bool rulesRead = false;
         foreach (var w in desktop)
         {
-            if (_local.ContainsKey(w.Handle) || w.Handle == previous?.Handle || w.VisualRect.IsEmpty) continue;
+            if (IsLocal(w) || w.Handle == previous?.Handle || w.VisualRect.IsEmpty) continue;
             var host = byHandle.GetValueOrDefault(w.Owner);
             if (host == null && previous != null && previous.ProcessId != 0 && previous.ProcessId == w.ProcessId &&
                 (w.IsForeground || JustClicked?.Invoke(previous) == true) && !_previous.Contains((w.Handle, w.ProcessId)) && byHandle.TryGetValue(previous.Handle, out var live) && live.ProcessId == previous.ProcessId)
@@ -89,12 +111,28 @@ internal sealed class TaskSurfaces
             var match = new SurfaceMatch(w, host, custom?.Id ?? (chat ? "chat-detail" : "owned-tool"), limit);
             _local[w.Handle] = match; Changed?.Invoke(match, "suppress");
         }
+        if (desktop.FirstOrDefault(w => w.IsForeground) is { } foreground && IsLocal(foreground))
+            IgnoreVisit?.Invoke(foreground);
         _previous = desktop.Select(w => (w.Handle, w.ProcessId)).ToHashSet();
+    }
+
+    internal static bool CanBeCaptureTool(WindowSnapshot w) => !w.IndependentFrame &&
+        (w.NativeUtility || w.IsTopmost || w.Owner != 0);
+
+    internal static bool IsCaptureTool(WindowSnapshot w, SurfacePurpose purpose)
+    {
+        if (!CanBeCaptureTool(w) || purpose is SurfacePurpose.IndependentTask or SurfacePurpose.LocalDetail) return false;
+        // 已确认是聊天应用的工具框。无标题时再要求置顶、工具样式与全屏选区同时成立，
+        // 否则一个普通的置顶聊天或独立视频也可能被误认成截图。
+        return purpose == SurfacePurpose.CaptureTool || w.IsTopmost && w.NativeUtility && !w.WorkArea.IsEmpty &&
+            w.VisualRect.Intersect(w.WorkArea).Area >= w.WorkArea.Area * .95;
     }
 
     internal static SurfacePurpose ChatCaption(string caption) => caption.Trim() switch
     {
         "微信音视频通话" or "语音通话" or "视频通话" or "WeChat Call" or "Voice Call" or "Video Call" => SurfacePurpose.IndependentTask,
+        "QQ截图" or "QQ截屏" or "微信截图" or "微信截屏" or "截图翻译" or "截屏翻译" or "屏幕翻译" or
+            "截图" or "截屏" or "贴图" or "Screen Capture" or "Screenshot Translation" => SurfacePurpose.CaptureTool,
         "个人资料" or "详细资料" or "联系人资料" or "群成员资料" or "Contact Info" or "Profile Card" => SurfacePurpose.LocalDetail,
         _ => SurfacePurpose.Unknown
     };

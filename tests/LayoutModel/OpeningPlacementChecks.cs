@@ -7,6 +7,7 @@ internal static class OpeningPlacementChecks
         CheckCentralSwitches(check);
         CheckOccupiedSide(check);
         CheckOpeningMemory(check);
+        CheckRestoreAndPartialReturn(check);
         CheckPairWidth(check);
         CheckRepeatedReturn(check);
         foreach (bool left in new[] { true, false })
@@ -162,6 +163,83 @@ internal static class OpeningPlacementChecks
         check(ActiveLayoutScene.Resolve([child with { VisualRect = center with { X = area.Left } }], ctx)?.Lane == null &&
             history.ObserveWorkingSide([child with { MonitorHandle = 2 }], 4500) == 0,
             "native placement in the opposite lane and a display switch keep the application's own landing point");
+    }
+
+    private static void CheckRestoreAndPartialReturn(Action<bool, string> check)
+    {
+        foreach (int side in new[] { -1, 1 })
+        {
+            var work = new RectI(-1920, 0, 1920, 1040);
+            var old = new RectI(side > 0 ? -900 : -1860, 80, 820, 760);
+            var a = new WindowSnapshot(71, old, old, work, 1, default, true, true, true, 0, 96, 111);
+            var otherRect = old with { X = side < 0 ? -900 : -1860 };
+            var b = a with { Handle = 72, ProcessId = 112, VisualRect = otherRect, OuterRect = otherRect };
+            var h = new ForegroundHistory();
+            h.Visit(a.Handle, a.ProcessId, 1000);
+            h.ObserveWorkingSide([a], 1600);
+            h.MinimizeChanged(a.Handle, a.ProcessId, 2000, false);
+            h.Visit(b.Handle, b.ProcessId, 2020);
+            h.ObserveWorkingSide([b], 3400);
+            h.MinimizeChanged(a.Handle, a.ProcessId, 8020, true);
+            h.Shown(a.Handle, a.ProcessId, 8020);
+            h.Visit(a.Handle, a.ProcessId, 8050);
+            var desktop = new[] { a, b with { IsForeground = false, ZOrder = 1 } };
+            int source = h.ObserveWorkingSide(desktop, 8100);
+            var focus = h.Resolve(desktop, 8100, out var evidence);
+            var ctx = new TaskLayoutContext(Focus: focus, Attention: evidence, UseWorkingPairs: true)
+                { IsWorkspaceObservation = true, AllowGestureAssist = false, OriginSide = source };
+            var lane = ActiveLayoutScene.Resolve(desktop, ctx)?.Lane;
+            var plan = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(desktop, true),
+                new(SmartStrength: SmartTidyStrength.Assertive), null, desktop, ctx);
+            check(source == -side && lane?.Restore == old && !lane.Allows(a, otherRect) &&
+                plan.Moves.All(m => m.Window.Handle != a.Handle || AttentionLayout.HorizontalSide(m.TargetVisualRect, work) == side) &&
+                h.OpeningFor(desktop, 8110) == null, "restore owns the last working side even after using the opposite side");
+            var misplaced = a with { VisualRect = otherRect, OuterRect = otherRect };
+            var obstructed = new[] { misplaced, desktop[1] };
+            var repaired = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(obstructed, true),
+                new(SmartStrength: SmartTidyStrength.Balanced), null, obstructed, ctx);
+            check(repaired.Moves.Any(m => m.Window.Handle == a.Handle &&
+                AttentionLayout.HorizontalSide(m.TargetVisualRect, work) == side),
+                "restoring on top of the opposite task can recover the old empty side in the global solver");
+            var saved = RecordedTaskSignals.From(ctx, new Dictionary<nint,int> { [71] = 4, [72] = 5 }).ApplyToReplay(new());
+            h.Resolve([a with { MonitorHandle = 3 }], 8150, out var changed);
+            check(saved.Attention?[4].RestoreFrame == old && changed[a.Handle].RestoreFrame == null,
+                "restore frame replays but never crosses a changed display");
+            var moved = a with { VisualRect = otherRect };
+            h.Placed(moved, new(a.Handle, old, otherRect, work, ManualGestureKind.Move, [], 200, 0), 8200);
+            h.Resolve([moved], 8250, out var revised);
+            check(revised[a.Handle].RestoreFrame == null, "a newer manual gesture immediately replaces the restore expectation");
+            h.Retire(a.Handle);
+            h.MinimizeChanged(a.Handle, a.ProcessId, 8300, true);
+            h.Visit(a.Handle, a.ProcessId, 8310);
+            h.Resolve([a], 8350, out var reused);
+            check(reused[a.Handle].RestoreFrame == null, "a reused handle cannot inherit the retired instance location");
+
+            var initial = old with { X = old.X - side * 200 };
+            var release = old with { X = old.X - side * 60 };
+            var atRelease = a with { VisualRect = release };
+            h.Submitted(new([new(a with { VisualRect = initial }, old)], [], []), [a], 9000);
+            h.Placed(atRelease, new(a.Handle, old, release, work, ManualGestureKind.Move, [], 200, 0), 9250, [atRelease]);
+            h.Resolve([atRelease], 9300, out var votes);
+            var context = new TaskLayoutContext(Attention: votes);
+            var target = old with { Height = old.Height + 15 };
+            var limited = context.LimitReturn(atRelease, target);
+            check(side * (limited.X - release.X) is > 0 and < 30 && limited.Height == target.Height &&
+                h.LimitLiveReturn(atRelease, target, 9350) == limited &&
+                context.LimitReturn(atRelease with { VisualRect = limited }, target) == limited &&
+                (context with { ExplicitArrange = true }).LimitReturn(atRelease, target) == target,
+                "first partial return limits cumulative automatic travel only on the corrected axis");
+            var correctionGesture = new ManualWindowGesture(a.Handle, old, release, work, ManualGestureKind.Move, [], 200, 0);
+            var gestureContext = context with { GestureAnchor = a.Handle, GestureTarget = target, RecentGesture = correctionGesture,
+                UseWorkingPairs = true, Focus = new(a.Handle, b.Handle, 3) };
+            WindowSnapshot[] withNeighbor = [atRelease, desktop[1]];
+            var assisted = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(withNeighbor, true),
+                new(SmartStrength: SmartTidyStrength.Assertive), null, withNeighbor, gestureContext);
+            check(gestureContext.GeometryOnlyWindow == a.Handle && assisted.Layers.Count == 0 &&
+                assisted.Moves.All(m => m.Window.Handle == a.Handle && context.LimitReturn(m.Window, m.TargetVisualRect) == m.TargetVisualRect),
+                "a corrective release cannot use its preview to undo the correction or make another window pay for it");
+            check(h.LimitLiveReturn(atRelease, target, 40000) == target, "first return expires without creating a new layout event");
+        }
     }
 
     private static void CheckPairWidth(Action<bool, string> check)

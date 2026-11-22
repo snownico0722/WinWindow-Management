@@ -48,6 +48,13 @@ public sealed class IntentReferenceStore
     // Recorder is the only profile writer. The main application is strictly a reader.
     public void Append(WindowAdjustmentObservation observation)
     {
+        AppendAdjustment(observation);
+        Placement.Learn(observation);
+        LearnGeometry(observation);
+    }
+
+    internal void AppendAdjustment(WindowAdjustmentObservation observation)
+    {
         Directory.CreateDirectory(_directory);
         Prune();
         var prefix = $"adjustments-{DateTime.UtcNow:yyyyMMdd}";
@@ -57,7 +64,11 @@ public sealed class IntentReferenceStore
         while (File.Exists(log) && new FileInfo(log).Length > 2 * 1024 * 1024 && index < 1000);
         using (var writer = new StreamWriter(new FileStream(log, FileMode.Append, FileAccess.Write, FileShare.Read)))
             writer.WriteLine(JsonSerializer.Serialize(observation));
-        Placement.Learn(observation);
+    }
+
+    internal void LearnGeometry(WindowAdjustmentObservation observation)
+    {
+        if (LayoutHabits.HasLinkedReversal(observation)) return;
         var sample = IntentEvidence.Extract(observation);
         var relation = IntentEvidence.ExtractRelation(observation);
         if (sample is not null || relation is not null)

@@ -212,6 +212,35 @@ var gesture = new WindowAdjustmentObservation(now, "session", 1, home, left, are
             now.AddSeconds(30), sessionOnly: true) == null,
         "assisted frames, rapid tweaks, absent partners and stale sessions cannot recreate a paired placement");
 }
+{
+    var resized = left with { Width = left.Width + 60 };
+    var final = resized with { X = home.X + 45 };
+    var width = gesture with { Start = left, End = resized, StartContext = moved,
+        EndContext = Frame([windows[0] with { VisualRect = resized }, windows[1]]) };
+    var position = gesture with { Start = resized, End = final, Outcome = "assisted-release",
+        StartContext = width.EndContext, EndContext = Frame([windows[0] with { VisualRect = final }, windows[1]]) };
+    var axes = LayoutHabits.Coalesce([gesture, width, position]);
+    Check(axes.SequenceEqual([HabitAxes.None, HabitAxes.Width, HabitAxes.Position]) &&
+        LayoutHabits.Observe(position, false, axes[2]) is { Edited: HorizontalEdit.Position } vote &&
+        Math.Abs(vote.Center - (final.Left + final.Width / 2d - area.Left) / area.Width) < .001,
+        "rapid same-window edits retain the final deliberate position and independent width");
+    var restoredPosition = left with { X = home.X };
+    var returnToStart = gesture with { Start = left, End = restoredPosition };
+    Check(LayoutHabits.Coalesce([gesture, returnToStart]).All(a => a == HabitAxes.None),
+        "an exploratory move returning to its starting position contributes no session or persistent vote");
+
+    var reversal = gesture with { PriorPlacement = new("verified", 950, left, home) };
+    var unrelatedResize = left with { Height = left.Height - 90 };
+    var mixed = reversal with { End = unrelatedResize,
+        SettledContext = Frame([windows[0] with { VisualRect = unrelatedResize }, windows[1]]) };
+    var afterReversal = position with { Start = left, End = left with { X = 24 } };
+    Check(LayoutHabits.Coalesce([reversal, afterReversal]).All(a => a == HabitAxes.None) &&
+        LayoutHabits.Observe(reversal) == null &&
+        LayoutHabits.Observe(reversal with { Outcome = "manual-release" }, byInstance: true) == null &&
+        LayoutHabits.Observe(mixed) is { Edited: HorizontalEdit.None, Height: not null } &&
+        LayoutHabits.Observe(reversal with { PriorPlacement = reversal.PriorPlacement! with { ElapsedMs = 31_000 } }) != null,
+        "a linked reversal rejects automatic placement without teaching an endpoint, while deliberate independent axes can still learn");
+}
 var edit = LayoutHabits.Observe(gesture);
 Check(edit is { Partner: "app-2", Order: -1, Corrected: true }, "a stable manual correction learns the left/right pair");
 Check(LayoutHabits.Observe(gesture with { Outcome = "automation" }) == null &&
@@ -1027,11 +1056,13 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
             var run = JsonSerializer.Deserialize<LayoutRunObservation>(line);
             // Only the before-frame and the evidence collected at request time feed the solver.
             // A snapshot may end before the last native request has been verified.
-            if (run is not { Trigger: "explicit" or "automatic-gesture" or "automatic-workspace" } ||
+            if (run is not { Trigger: "explicit" or "automatic-gesture" or "automatic-workspace" or "automatic-opening" } ||
                 (sessionFilter is not null && run.Session != sessionFilter) || !seen.Add((run.Session, run.RequestId))) continue;
             var frame = run.Before;
             var areas = frame.Windows.Select(w => w.WorkArea).Distinct().ToArray();
             bool explicitRun = run.Trigger == "explicit";
+            bool localOpening = run.Trigger == "automatic-opening";
+            if (localOpening && run.Signals is not { FirstPlacementWindow: > 0 }) continue;
             foreach (bool assumeResizable in new[] { true, false })
             {
                 var desktop = frame.Windows.OrderBy(w => w.ZOrder).Select(w => new WindowSnapshot(w.Id, w.Rect, w.Rect,
@@ -1043,7 +1074,12 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                 var focus = desktop.FirstOrDefault(w => w.IsForeground);
                 var ctx = new TaskLayoutContext(Displays: displays, ExplicitArrange: explicitRun, UseWorkingPairs: true,
                     PreferReversibleVerticalFill: true, Focus: new(focus?.Handle ?? 0, 0, 0));
-                ctx = (run.Signals?.ApplyToReplay(ctx) ?? ctx) with { AllowGestureAssist = run.Trigger == "automatic-gesture", IsWorkspaceObservation = run.Trigger == "automatic-workspace" };
+                ctx = (run.Signals?.ApplyToReplay(ctx) ?? ctx) with
+                {
+                    AllowGestureAssist = run.Trigger == "automatic-gesture",
+                    IsWorkspaceObservation = run.Trigger is "automatic-workspace" or "automatic-opening",
+                    LocalPlacementWindow = localOpening ? run.Signals!.FirstPlacementWindow : 0,
+                };
                 var activeRules = overrideRules ?? run.Rules ?? CompiledLayoutRules.Default;
                 var keyed = desktop.Zip(frame.Windows.OrderBy(w => w.ZOrder), (window, observed) => (window, observed.AppKey)).ToArray();
                 var observedPair = ctx.GestureAnchor != 0 && ctx.AllowGestureAssist && ctx.GestureAnchor != ctx.Focus?.Main ? null : ctx.Focus;
@@ -1053,7 +1089,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                 ctx = ctx with { WindowHints = snapshotRoles.Enrich(run.Session, run.RequestId, frame.Time, desktop, ctx) };
                 var fullDesktop = run.FullDesktop ?? explicitRun;
                 var workingSet = fullDesktop ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);
-                var plan = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : LayoutRoute.Smart,
+                var plan = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : localOpening ? LayoutRoute.LocalOpening : LayoutRoute.Smart,
                     workingSet, new(SmartStrength: run.Strength ?? SmartTidyStrength.Balanced), null, desktop, ctx);
                 var projected = TaskLayoutSession.Project(desktop, plan);
                 // 衡量 A/B 两个方案时使用完全相同的观察人群。评估规则只看决策前的状态，不参与生成任何候选。

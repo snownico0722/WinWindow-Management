@@ -23,9 +23,6 @@
   <data name="ArrangeHint" xml:space="preserve"><value>Arrange visible windows using the current layout preferences</value></data>
   <data name="ArrangeMode" xml:space="preserve"><value>Arrangement mode</value></data>
   <data name="Assertive" xml:space="preserve"><value>Assertive</value></data>
-  <data name="Auto" xml:space="preserve"><value>Auto</value></data>
-  <data name="AutoArrange" xml:space="preserve"><value>Automatic arrangement</value></data>
-  <data name="AutoHint" xml:space="preserve"><value>Arrange when windows open, close, move, or change focus</value></data>
   <data name="AwaitLaunch" xml:space="preserve"><value>Waiting</value></data>
   <data name="Back" xml:space="preserve"><value>Back</value></data>
   <data name="BackToList" xml:space="preserve"><value>Back to windows</value></data>
@@ -93,7 +90,7 @@
   <data name="ForceMinimize" xml:space="preserve"><value>Force minimize</value></data>
   <data name="Full" xml:space="preserve"><value>Full</value></data>
   <data name="FullAssist" xml:space="preserve"><value>Full assist</value></data>
-  <data name="FullHint" xml:space="preserve"><value>Arrange the group after you move or resize a window</value></data>
+  <data name="FullHint" xml:space="preserve"><value>Arrange the workspace on window or focus changes and apply eligible, authorized dismissal rules</value></data>
   <data name="General" xml:space="preserve"><value>General</value></data>
   <data name="Gentle" xml:space="preserve"><value>Gentle</value></data>
   <data name="GlobalShortcuts" xml:space="preserve"><value>Global shortcuts</value></data>
@@ -113,14 +110,14 @@
   <data name="LayoutStrength" xml:space="preserve"><value>Arrangement strength</value></data>
   <data name="Light" xml:space="preserve"><value>Light</value></data>
   <data name="LightAssist" xml:space="preserve"><value>Light assist</value></data>
-  <data name="LightHint" xml:space="preserve"><value>Adjust the window you just moved or resized</value></data>
+  <data name="LightHint" xml:space="preserve"><value>Adjust only the window you just moved or resized, or a newly opened task window</value></data>
   <data name="Managed" xml:space="preserve"><value>Managed</value></data>
   <data name="ManagedAndPinned" xml:space="preserve"><value>{0} managed · {1} pinned</value></data>
   <data name="ManagedCount" xml:space="preserve"><value>{0} managed</value></data>
   <data name="ManagedWindows" xml:space="preserve"><value>Managed windows</value></data>
   <data name="ManagerZOrder" xml:space="preserve"><value>Manager window</value></data>
-  <data name="Manual" xml:space="preserve"><value>Manual</value></data>
-  <data name="ManualArrange" xml:space="preserve"><value>Manual arrangement</value></data>
+  <data name="Manual" xml:space="preserve"><value>Off</value></data>
+  <data name="ManualArrange" xml:space="preserve"><value>Turn off automatic arrangement</value></data>
   <data name="ManualHint" xml:space="preserve"><value>Arrange only when you click Arrange or use its shortcut</value></data>
   <data name="MaxBleed" xml:space="preserve"><value>Maximum overflow (DIP)</value></data>
   <data name="MaximizeOrRestore" xml:space="preserve"><value>Maximize / restore</value></data>
@@ -251,7 +248,7 @@
   <data name="ImportPlacementHint" xml:space="preserve"><value>Give the recording ZIP to your AI, then import the placement rules it returns after analysis and replay.</value></data>
   <data name="ImportPlacementRules" xml:space="preserve"><value>Import placement rules</value></data>
   <data name="LearnBehaviorTiming" xml:space="preserve"><value>Learn timing from daily use</value></data>
-  <data name="BehaviorLearningHint" xml:space="preserve"><value>Tune timing as you minimize, close, or reopen windows. Only checked rules run automatically.</value></data>
+  <data name="BehaviorLearningHint" xml:space="preserve"><value>Tune timing as you minimize, close, or reopen windows. Checked rules can run automatically in Full mode.</value></data>
   <data name="BehaviorClose" xml:space="preserve"><value>close the window</value></data>
   <data name="BehaviorMinimize" xml:space="preserve"><value>minimize the window</value></data>
   <data name="BehaviorNextApp" xml:space="preserve"><value>another app</value></data>
@@ -274,4 +271,7 @@
   <data name="BehaviorNewProcessHint" xml:space="preserve"><value>After {0} gives way to a newly started {1}, {2}.</value></data>
   <data name="LayoutModelVersion" xml:space="preserve"><value>Layout model</value></data>
   <data name="LearningModelVersion" xml:space="preserve"><value>Learning model</value></data>
+  <data name="LayoutStrengthHint" xml:space="preserve"><value>Controls how much the layout can change within the selected mode</value></data>
+  <data name="LegacyLightHint" xml:space="preserve"><value>Uses your previous gesture assistance. Select Light again to also assist when a new task window opens.</value></data>
+  <data name="LegacyFullHint" xml:space="preserve"><value>Uses your previous group arrangement after gestures. Select Light again for single-window assistance.</value></data>
 </root>

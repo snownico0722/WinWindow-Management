@@ -82,13 +82,15 @@ internal sealed class ReferenceExposure
 }
 
 // 焦点换到新 HWND 不等于视线想换栏。这里描述本次进入工作面的证据，只约束横向，纵向和同侧尺寸仍参与求解。
-internal sealed record AttentionLane(WindowSnapshot Front, nint Source, int Side)
+internal sealed record AttentionLane(WindowSnapshot Front, nint Source, int Side, RectI? Restore = null)
 {
     internal static AttentionLane? Resolve(WindowSnapshot front, WindowSnapshot[] peers, TaskLayoutContext ctx)
     {
         if (!ctx.IsWorkspaceObservation || ctx.ExplicitArrange || !front.IsManageable || front.IsTopmost ||
             ctx.Focus is not { } focus || focus.Main != front.Handle || front.VisualRect.IsEmpty) return null;
         var source = peers.FirstOrDefault(w => w.Handle == focus.Companion && w.WorkArea == front.WorkArea);
+        if (ctx.Attention?.GetValueOrDefault(front.Handle)?.RestoreFrame is { IsEmpty: false } restore)
+            return new(front, 0, AttentionLayout.HorizontalSide(restore, front.WorkArea), restore);
         int side = ctx.OriginSide;
         if (side == 0 && source != null)
             side = AttentionLayout.HorizontalSide(source.VisualRect, front.WorkArea);
@@ -127,6 +129,14 @@ internal sealed record AttentionLane(WindowSnapshot Front, nint Source, int Side
         // 屏外救回必须可达。原来已在中线附近的窗可以留在中线；靠侧的窗则应继续留在同侧阅读。
         if (frame.Intersect(area).Area < frame.Area * .65 || frame.Top < area.Top || frame.Top >= area.Bottom) return true;
         int old = AttentionLayout.HorizontalSide(frame, area), next = AttentionLayout.HorizontalSide(target, area);
+        if (Restore != null)
+        {
+            // 应用可能在另一栏恢复。允许原位，也允许向记忆里的位置靠近；禁止再次横跨到更远的方向。
+            if (old == Side) return next == Side;
+            if (next == Side) return true;
+            static double Center(RectI r) => r.X + r.Width / 2d;
+            return Math.Abs(Center(target) - Center(Restore.Value)) <= Math.Abs(Center(frame) - Center(Restore.Value));
+        }
         if (window.Handle == Source && old != Side) return true;
         return old == Side ? next == Side : next != -Side;
     }
@@ -218,7 +228,7 @@ internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, Re
     internal SceneEffect[] Effects(IReadOnlyList<WindowSnapshot> after, Func<nint, int> id)
     {
         var result = new List<SceneEffect>();
-        if (Lane != null) result.Add(new(Lane.Side < 0 ? "attention-origin-left" : "attention-origin-right", id(Lane.Front.Handle), null, null, null, null));
+        if (Lane != null) result.Add(new(Lane.Restore != null ? "restore-working-frame" : Lane.Side < 0 ? "attention-origin-left" : "attention-origin-right", id(Lane.Front.Handle), null, null, null, null));
         if (Settings != null && References.All(g => g.Rule != Settings.Id))
             result.Add(new(Settings.Id, null, null, null, null, null));
         foreach (var g in References)

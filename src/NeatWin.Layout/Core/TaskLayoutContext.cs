@@ -77,6 +77,11 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     internal int OriginSide { get; init; }
     internal bool IsWorkspaceObservation { get; init; }
     internal nint FirstPlacementWindow { get; init; }
+    internal nint LocalPlacementWindow { get; init; }
+    // 这次松手直接推翻了系统刚做的动作。辅助最多再动用户接手的窗，免得一次试摆牵动整组。
+    internal nint GeometryOnlyWindow => LocalPlacementWindow != 0 ? LocalPlacementWindow :
+        !ExplicitArrange && AllowGestureAssist && RecentGesture is { } g && GestureAnchor == g.WindowHandle &&
+        Attention?.GetValueOrDefault(GestureAnchor)?.RecentReturn?.MatchesRelease(g) == true ? GestureAnchor : 0;
     internal WorkspaceChangeCause WorkspaceCause { get; init; }
 
     // 这些系数只调节同等可读性下的动作门槛。救回屏外窗口或满足明确手势仍有自己可核对的空间收益。
@@ -90,6 +95,18 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     public bool PairPlanningEnabled => ExplicitArrange || UseWorkingPairs;
     internal bool HoldsTextView(WindowSnapshot window) => !ExplicitArrange && window.IsForeground &&
         WindowHints?.Any(h => h.Handle == window.Handle && h.TextFocus) == true;
+
+    internal static RectI LimitReturn(RectI frame, RectI target, PlacementCorrection? recent, PlacementCorrection? repeated)
+    {
+        var limited = recent?.Limit(frame, target, false) ?? target;
+        return repeated?.Limit(frame, limited, true) ?? limited;
+    }
+
+    internal RectI LimitReturn(WindowSnapshot window, RectI target)
+    {
+        var a = Attention?.GetValueOrDefault(window.Handle);
+        return ExplicitArrange ? target : LimitReturn(window.VisualRect, target, a?.RecentReturn, a?.RepeatedReversal);
+    }
 
     internal bool RepeatsReversal(WindowSnapshot window, RectI target) => !ExplicitArrange &&
         Attention?.GetValueOrDefault(window.Handle)?.RepeatedReversal?.RepeatsRejectedAxis(window.VisualRect, target) == true;

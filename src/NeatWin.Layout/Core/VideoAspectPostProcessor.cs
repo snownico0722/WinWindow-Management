@@ -97,6 +97,7 @@ public static class VideoAspectPostProcessor
             // 减少黑边可以缩小外框，但画面要保住。逐窗比较新增遮挡，避免一边腾出的面积抵消另一边刚被挡住的内容。
             double pixels = PicturePixels(rect, front);
             string? rejection = context.RepeatsReversal(browser, rect) ? "repeated-manual-reversal" :
+                    context.LimitReturn(browser, rect) != rect ? "manual-return-amplitude" :
                 scene?.Lane?.Allows(browser, rect) == false ? "attention-side-transfer" :
                 !context.PreservesReleasedSide(browser, rect) ? "recent-manual-side" :
                 neighbors.Any(r => rect.Intersect(r).Area > start.Intersect(r).Area) ? "increased-overlap" :

@@ -48,6 +48,31 @@ internal static class SceneModelChecks
         scheduler.Observe(inspecting, 5400, false);
         scheduler.Observe([host,other], 6000, false);
         check(!scheduler.HasPending, "show-before-focus popup event order cannot leave a delayed workspace request");
+        var selection = W(31, area, 0, 210, true) with { IsManageable = false, NativeUtility = true, IsTopmost = true };
+        var translation = selection with { Handle = 32, VisualRect = new(530, 210, 450, 300), IsResizable = false };
+        var popup = new TaskSurfaces { CaptureOverlay = w => w.ProcessId == 210 &&
+            TaskSurfaces.IsCaptureTool(w, w.Handle == 32 ? TaskSurfaces.ChatCaption("截图翻译") : SurfacePurpose.Unknown) };
+        var capture = new AutomaticLayoutScheduler { Surfaces = popup };
+        capture.Reset(AutomaticLayoutMode.AutoFullAssist, [host, other], 0);
+        var background = host with { IsForeground = false };
+        foreach (var (sequence, tick) in new (WindowSnapshot[], int)[]
+        {
+            ([selection with { IsForeground = false }, host, other], 50), ([selection, background, other], 70),
+            ([translation, background, other], 110), ([translation with { VisualRect = translation.VisualRect with { X = 750 } }, background, other], 160)
+        })
+            check(capture.Observe(sequence, tick, false) == null && !capture.HasPending, "capture and translation events do not enqueue work or add a quiet interval");
+        check(capture.Observe([host, other], 190, false) == null && !capture.HasPending &&
+            capture.Observe([article, background, other], 200, false, openingReady: true) != null,
+            "closing translation preserves attention and a real opening can dispatch immediately");
+        capture.Reset(AutomaticLayoutMode.AutoFullAssist, [host, other], 1000);
+        var changedOther = other with { VisualRect = other.VisualRect with { Width = 720 } };
+        capture.Observe([selection, background, changedOther], 1050, false);
+        check(capture.Observe([selection, background, changedOther], 1500, false) is { Cause: var cause } &&
+            cause.HasFlag(WorkspaceChangeCause.Geometry) && capture.WorkingForeground == host.Handle,
+            "an independent geometry event can dispatch on time while a screenshot surface owns native focus");
+        check(!TaskSurfaces.IsCaptureTool(selection with { IndependentFrame = true }, TaskSurfaces.ChatCaption("截图")) &&
+            !TaskSurfaces.IsCaptureTool(translation, SurfacePurpose.IndependentTask),
+            "a pinned independent window or call stays a real reference");
         var rule = new LayoutScene("watch", "workspace", [chat], game, MaxVisibleLoss: .03, Weights: new(Continuity: 3));
         var rules = new CompiledLayoutRules(Version: 4, Scenes: [rule], SurfaceRules: [new("peek", chat, .4)]);
         check(rules.IsValid() && !(rules with { Version = 3 }).IsValid() &&

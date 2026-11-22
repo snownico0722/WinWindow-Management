@@ -1006,12 +1006,12 @@ internal static class SmokeTests
         var undo = (Button)shell.FindName("UndoArrangeButton");
         Rect Bounds(FrameworkElement element) => element.TransformToAncestor(footer).TransformBounds(new Rect(element.RenderSize));
         var snapshot = (Button)shell.FindName("SnapshotButton");
-        Assert(buttons.Length == 4 && buttons.All(b => b.IsVisible) && Bounds(group).Right <= Bounds(snapshot).Left &&
+        Assert(buttons.Length == 3 && buttons.All(b => b.IsVisible) && Bounds(group).Right <= Bounds(snapshot).Left &&
             Bounds(snapshot).Right <= Bounds(undo).Left,
-            "all four mode choices fit to the left of the desktop commands at minimum width");
+            "all three mode choices fit to the left of the desktop commands at minimum width");
         Assert(buttons[0].IsChecked == true && shell.Icon is not null, "the workbench starts in manual mode with its application icon");
         var settingsPath = Path.Combine(store.DirectoryPath, "Layout", "settings.json");
-        foreach (var mode in new[] { AutomaticLayoutMode.LightAssist, AutomaticLayoutMode.FullAssist, AutomaticLayoutMode.AutoFullAssist, AutomaticLayoutMode.Off })
+        foreach (var mode in new[] { AutomaticLayoutMode.Light, AutomaticLayoutMode.AutoFullAssist, AutomaticLayoutMode.Off })
         {
             var option = buttons.Single(b => (string)b.Tag == mode.ToString());
             var selection = (ISelectionItemProvider)new RadioButtonAutomationPeer(option).GetPattern(PatternInterface.SelectionItem)!;
@@ -1019,7 +1019,7 @@ internal static class SmokeTests
             await WaitAsync("footer applies and saves " + mode, () => option.IsChecked == true &&
                 new NeatWin.App.SettingsStore(settingsPath).LoadAutomaticLayoutMode() == mode);
             Assert(buttons.Count(b => b.IsChecked == true) == 1, "only " + mode + " is selected in the footer");
-            if (mode == AutomaticLayoutMode.LightAssist)
+            if (mode == AutomaticLayoutMode.Light)
             {
                 shell.UpdateLayout();
                 Capture(shell, Path.Combine(output, "footer-light-assist.png"));

@@ -88,6 +88,9 @@ internal static partial class IntentLayoutPlanner
                 var demands = MeasureDemand(group.Length, task);
                 var goals = AttentionLayout.Targets(group, groupContext, strength);
                 var order = Enumerable.Range(0, group.Length).ToArray();
+                int localPlacement = groupContext.GeometryOnlyWindow == 0 ? -1 :
+                    Array.FindIndex(group, v => v.Window.Handle == groupContext.GeometryOnlyWindow);
+                if (groupContext.GeometryOnlyWindow != 0 && localPlacement < 0) continue;
                 var obstacles = desktop.Where(w => !handles.Contains(w.Handle)).Select(w => w with
                     { VisualRect = settled.GetValueOrDefault(w.Handle, w.VisualRect),
                       ZOrder = settledRanks.GetValueOrDefault(w.Handle, w.ZOrder) })
@@ -125,13 +128,20 @@ internal static partial class IntentLayoutPlanner
                 if (scene?.Lane is { } inherited && goals != null)
                 {
                     int active = Array.FindIndex(group, v => v.Window.Handle == inherited.Front.Handle);
+                    if (active >= 0 && goals[active].Movable && inherited.Restore is { } old)
+                    {
+                        // 先比较用当前尺寸回到熟悉的位置；缩放仍取决于可读性和邻窗。
+                        var frames = (RectI[])original.Clone();
+                        frames[active] = Fit(frames[active] with { X = old.X, Y = old.Y }, group[active].Window, options, false);
+                        candidates.Add(new("restore-working-frame", frames, order));
+                    }
                     if (active >= 0 && goals[active] is { Movable: true, Resizable: true } target)
                     {
                         var window = group[active].Window;
                         var frame = window.VisualRect;
                         var grown = AttentionLayout.WorkingArea(window, target);
                         int width = target.LearnedWidth ? target.Width : grown.Width;
-                        int x = (int)Math.Round(CenterX(frame) - width / 2d);
+                        int x = (int)Math.Round(CenterX(inherited.Restore ?? frame) - width / 2d);
                         var fitted = grown with { X = Math.Clamp(x, area.Left, area.Right - width), Width = width };
                         // 只放大一轴也可能足以改善正文，且能留下来源窗的标题或正文。
                         foreach (var rect in new[] { fitted, frame with { X = fitted.X, Width = fitted.Width },
@@ -185,6 +195,7 @@ internal static partial class IntentLayoutPlanner
                     r.Intersect(area).Area < r.Area * .90 || r.Top < area.Top || r.Bottom > area.Bottom);
                 var audits = new List<LayoutCandidateTrace>(generationNotes) { new("keep", baseline, null, baselineBreakdown) };
                 var seen = candidates.Select(CandidateKey).ToHashSet();
+                HashSet<RectI>? localTargets = localPlacement >= 0 ? [original[localPlacement]] : null;
                 int gestureIndex = Array.FindIndex(group, v => v.Window.Handle == groupContext.GestureAnchor);
                 var shadowAxes = (groupContext.ShadowAxes ?? []).Where(axis => handles.Contains(axis.Window)).ToArray();
                 foreach (var candidate in candidates.Skip(1)) Evaluate(candidate, 0);
@@ -222,6 +233,15 @@ internal static partial class IntentLayoutPlanner
 
                 void Evaluate(Candidate candidate, int generation)
                 {
+                    if (localPlacement >= 0)
+                    {
+                        // 只让这次获准操作的窗口试用候选位置；按其他窗口保持原位与原层级的真实桌面重算收益。
+                        var target = candidate.Rects[localPlacement];
+                        if (!localTargets!.Add(target)) return;
+                        var frames = (RectI[])original.Clone();
+                        frames[localPlacement] = target;
+                        candidate = candidate with { Rects = frames, Order = order };
+                    }
                     RectI[]? fitted = null, held = null;
                     if (groupContext.VideoFits is { Count: > 0 } fits)
                     for (int i = 0; i < group.Length; i++)
@@ -254,9 +274,17 @@ internal static partial class IntentLayoutPlanner
                 {
                     var targetLookup = candidate.Order.SequenceEqual(order) ? null :
                         Enumerable.Range(0, group.Length).ToDictionary(i => group[i].Window.Handle, i => candidate.Rects[i]);
-                    var rejection = Array.Exists(order, i => !(groupContext.AllowGestureAssist && group[i].Window.Handle == groupContext.GestureAnchor &&
-                        candidate.Rects[i] == groupContext.GestureTarget) && groupContext.RepeatsReversal(group[i].Window, candidate.Rects[i]))
-                        ? "repeated-manual-reversal" : scene?.Lane is { } lane && Array.Exists(order, i => !lane.Allows(group[i].Window, candidate.Rects[i]))
+                    if (groupContext.Attention != null && Array.Exists(order, i =>
+                        groupContext.LimitReturn(group[i].Window, candidate.Rects[i]) != candidate.Rects[i]))
+                    {
+                        var bounded = order.Select(i => groupContext.LimitReturn(group[i].Window, candidate.Rects[i])).ToArray();
+                        bool repeated = Array.Exists(order, i => groupContext.RepeatsReversal(group[i].Window, candidate.Rects[i]));
+                        audits.Add(new(candidate.Kind, null, repeated ? "repeated-manual-reversal" : "manual-return-amplitude", Generation: generation));
+                        var smaller = candidate with { Rects = bounded };
+                        if (seen.Add(CandidateKey(smaller))) Evaluate(smaller, generation);
+                        return;
+                    }
+                    var rejection = scene?.Lane is { } lane && Array.Exists(order, i => !lane.Allows(group[i].Window, candidate.Rects[i]))
                         ? "attention-side-transfer" : !candidate.Order.SequenceEqual(order) &&
                         !LayerOrderSafe(group, candidate, order)
                         ? "layer-preserve-foreground-or-occluded" : !candidate.Order.SequenceEqual(order) &&

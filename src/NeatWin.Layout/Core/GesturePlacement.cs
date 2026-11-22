@@ -94,6 +94,8 @@ internal static class GesturePlacement
         }
         if (gesture.Kind == ManualGestureKind.Move && context.VideoFits?.GetValueOrDefault(window.Handle) is { } fit && !fit.Preserves(a, target))
             target = fit.Inside(target, a);
+        // 预计算只猜对齐目标；松手才知道用户是否在修正刚才的自动摆幅。
+        target = context.LimitReturn(window, target);
         if (target == a || target.Intersect(area) != target) return context;
         return context with { GestureTarget = target };
     }

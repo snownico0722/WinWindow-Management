@@ -289,7 +289,6 @@ internal sealed class RecorderSession : IDisposable
         {
             if (eventType == NativeMethods.EventSystemMoveSizeStart)
             {
-                foreach (var pending in _pending) pending.Superseded = true;
                 EndUnobservedGesture("superseded-start", EventTick(time));
                 _active = null;
                 var snapshot = _manager.Capture();
@@ -299,7 +298,21 @@ internal sealed class RecorderSession : IDisposable
                 var tick = EventTick(time);
                 int instance = _identity.Id(start);
                 var prior = _lastPlan.GetValueOrDefault(hwnd)?.At(instance, tick);
-                _active = new(start, pid, tick, CanWriteDiagnostics || LiveSensing && _store.Enabled ? Capture(snapshot) : null, AutomationGuard.Stamp(hwnd), ++_gestureSequence, instance, prior);
+                var context = CanWriteDiagnostics || LiveSensing && _store.Enabled ? Capture(snapshot) : null;
+                var previous = _pending.LastOrDefault(p => p.Observation.WindowId == instance && !p.Superseded);
+                int batch = _gestureSequence + 1;
+                if (previous != null && tick - previous.Tick is >= 0 and < AdjustmentSettleMilliseconds)
+                {
+                    batch = previous.Batch;
+                    previous.Superseded = true;
+                    // 新手势开始前核实上次松手。后续如果改了另一轴，这个端点仍能提供原轴的证据。
+                    previous.Continuation = previous.Observation with
+                    {
+                        Outcome = AdjustmentOutcome(previous, start),
+                        SettledContext = context,
+                    };
+                }
+                _active = new(start, pid, tick, context, AutomationGuard.Stamp(hwnd), ++_gestureSequence, instance, batch, prior);
                 if (ObserveGestures)
                     QueueGesture(new(_active.Number, instance, "start", tick, start.VisualRect, start.WorkArea, start.Dpi,
                         AutomationGuard.IsMarked(hwnd), prior));
@@ -330,18 +343,10 @@ internal sealed class RecorderSession : IDisposable
                 var observation = new WindowAdjustmentObservation(DateTimeOffset.UtcNow, _session, id,
                     active.Window.VisualRect, end.VisualRect, active.Window.WorkArea, end.WorkArea,
                     end.Dpi, Math.Max(0, released - active.Tick), neighbors, "unconfirmed",
-                    Version: 4, StartContext: active.Context, EndContext: context,
+                    Version: 5, StartContext: active.Context, EndContext: context,
                     AfterRequest: active.Prior is { ElapsedMs: <= 30_000 } recent ? recent.RequestId : null,
-                    GestureId: active.Number, PriorPlacement: active.Prior);
-                // The release is the user's choice. Follow-hand may refine it before the two-second check.
-                if (!automated && _store.Enabled &&
-                    LayoutHabits.Observe(observation with { Outcome = "manual-release" }, byInstance: true) is { } vote)
-                {
-                    _instanceHabits = LayoutHabits.Add(_instanceHabits, vote, sessionOnly: true);
-                }
-                if (_paused) return;
-                if (_pending.Count >= 32) { _pending.RemoveAt(0); _excluded++; }
-                _pending.Add(new(hwnd, pid, end.MonitorHandle, observation, Environment.TickCount64)
+                    GestureId: active.Number, PriorPlacement: active.Prior, TrialFirstGestureId: active.Batch);
+                _pending.Add(new(hwnd, pid, end.MonitorHandle, observation, released, active.Batch)
                 {
                     Automated = automated, ManualRelease = !automated,
                     AutomationStamp = AutomationGuard.Stamp(hwnd),
@@ -353,45 +358,80 @@ internal sealed class RecorderSession : IDisposable
         finally { _handlingEvent = false; }
     }
 
+    private const int AdjustmentSettleMilliseconds = 2000;
+
     private void FlushPending()
     {
-        if (_disposed || _paused || _pending.Count == 0) return;
+        if (_disposed || _pending.Count == 0) return;
         try
         {
-            foreach (var item in _pending)
-                item.Automated |= item.AutomationStamp != AutomationGuard.Stamp(item.Handle);
-            var due = _pending.Where(p => Environment.TickCount64 - p.Tick >= 2000).ToArray();
+            long now = Environment.TickCount64;
+            var due = _pending.GroupBy(p => p.Batch).Where(g =>
+                _active?.Batch != g.Key &&
+                now - g.Last().Tick >= AdjustmentSettleMilliseconds).ToArray();
             if (due.Length == 0) return;
             var snapshot = _manager.Capture();
             var current = snapshot.ToDictionary(w => w.Handle);
             var settledContext = Capture(snapshot);
-            foreach (var pending in due)
+            foreach (var sequence in due)
             {
-                _pending.Remove(pending);
-                var outcome = "stable";
-                NativeMethods.GetWindowThreadProcessId(pending.Handle, out var pid);
-                if (pending.Superseded) outcome = "superseded";
-                else if (pid != pending.ProcessId || !current.TryGetValue(pending.Handle, out var window) || !window.IsManageable)
-                    outcome = "unavailable";
-                else if (_identity.Id(window) != pending.Observation.WindowId) outcome = "identity-changed";
-                else if (window.MonitorHandle != pending.Monitor || window.WorkArea != pending.Observation.WorkArea)
-                    outcome = "monitor-changed";
-                else if (pending.ManualRelease && pending.AssistedTarget is { } target && Near(window.VisualRect, target, 3))
-                    outcome = "assisted-release";
-                else if (pending.Automated) outcome = "automation";
-                else if (!Near(window.VisualRect, pending.Observation.End, 3)) outcome = "changed-after-release";
-                if (pending.Observation.StartWorkArea != pending.Observation.WorkArea) outcome = "cross-monitor";
-                try
+                var pending = sequence.ToArray();
+                var candidates = pending.Select(item => item.Continuation ?? item.Observation with
                 {
-                    _store.Append(pending.Observation with { Outcome = outcome, SettledContext = settledContext });
-                    _recorded++;
-                    _error = null;
+                    Outcome = AdjustmentOutcome(item, current.GetValueOrDefault(item.Handle)),
+                    SettledContext = settledContext,
+                }).ToArray();
+                var selected = LayoutHabits.Coalesce(candidates);
+                for (int i = 0; i < pending.Length; i++)
+                {
+                    var item = pending[i];
+                    _pending.Remove(item);
+                    var candidate = candidates[i];
+                    try
+                    {
+                        var eligible = selected[i] != HabitAxes.None;
+                        var durable = CanWriteDiagnostics && eligible ? LayoutHabits.Observe(candidate, false, selected[i]) : null;
+                        if (CanWriteDiagnostics)
+                        {
+                            // 原始手势照录；允许成为长期证据的轴另记，供离线模型复核试摆链的归因。
+                            var axes = new List<string>(3);
+                            if (durable?.Edited?.HasFlag(HorizontalEdit.Position) == true) axes.Add("position");
+                            if (durable?.Edited?.HasFlag(HorizontalEdit.Width) == true) axes.Add("width");
+                            if (durable?.Height != null) axes.Add("height");
+                            _store.AppendAdjustment(item.Observation with
+                            {
+                                EligiblePlacementAxes = axes.ToArray(),
+                                Outcome = item.Superseded && candidate.Outcome != "cross-monitor" ? "superseded" : candidate.Outcome,
+                                SettledContext = settledContext,
+                            });
+                            _recorded++;
+                        }
+                        if (_store.Enabled && eligible && LayoutHabits.Observe(candidate with { Outcome = "manual-release" }, byInstance: true, selected[i]) is { } live)
+                            _instanceHabits = LayoutHabits.Add(_instanceHabits, live, sessionOnly: true);
+                        if (durable != null) _store.Placement.Learn(durable);
+                        // 整体间隙和搭档关系无法按轴拆开。只从单次稳定且没有布局回拖的选择学习。
+                        if (CanWriteDiagnostics && pending.Length == 1 && !item.Superseded)
+                            _store.LearnGeometry(candidate);
+                        _error = null;
+                    }
+                    catch (Exception ex) { _error = LayoutText.Format("RecordWriteFailed", ex.Message); }
                 }
-                catch (Exception ex) { _error = LayoutText.Format("RecordWriteFailed", ex.Message); }
             }
         }
         catch (Exception ex) { _error = LayoutText.Format("ConfirmationFailed", ex.Message); }
         PublishStatus();
+    }
+
+    private string AdjustmentOutcome(Pending item, WindowSnapshot? window)
+    {
+        if (item.Observation.StartWorkArea != item.Observation.WorkArea) return "cross-monitor";
+        if (window == null || window.ProcessId != item.ProcessId || !window.IsManageable) return "unavailable";
+        if (_identity.Id(window) != item.Observation.WindowId) return "identity-changed";
+        if (window.MonitorHandle != item.Monitor || window.WorkArea != item.Observation.WorkArea) return "monitor-changed";
+        if (item.ManualRelease && item.AssistedTarget is { } target && Near(window.VisualRect, target, 3))
+            return "assisted-release";
+        if (item.Automated || item.AutomationStamp != AutomationGuard.Stamp(item.Handle)) return "automation";
+        return Near(window.VisualRect, item.Observation.End, 3) ? "stable" : "changed-after-release";
     }
 
     private void OnContextEvent(nint hook, uint type, nint hwnd, int objectId, int childId, uint thread, uint time)
@@ -578,7 +618,7 @@ internal sealed class RecorderSession : IDisposable
 
     internal void Applied(string request, string trigger, LayoutApplication application, long tick)
     {
-        if (!ObserveGestures) return;
+        if (!ObserveGestures && !(LiveSensing && _store.Enabled)) return;
         if (trigger == "undo")
         {
             _lastPlan.Clear();
@@ -650,6 +690,7 @@ internal sealed class RecorderSession : IDisposable
     internal WindowSizeFloor[] BindSizeFloors(IReadOnlyList<WindowSnapshot> windows) =>
         SizeMemory.Bind(windows.Where(w => w.IsManageable).Select(w => (w, _activity.AppKey(w, false))));
 
+    internal bool CaptureOverlay(WindowSnapshot window) => _activity.CaptureOverlay(window);
     internal bool AwaitingOfficeSurface(nint handle) => _activity.AwaitingOfficeSurface(handle);
 
     internal WindowUseRole SemanticRole(WindowSnapshot window, ForegroundReading reading) => _activity.SemanticRole(window, reading);
@@ -697,22 +738,24 @@ internal sealed class RecorderSession : IDisposable
     }
 
     private sealed record Active(WindowSnapshot Window, uint ProcessId, long Tick,
-        WorkspaceFrame? Context, nint AutomationStamp, int Number, int Instance, RecordedPlacementLink? Prior)
+        WorkspaceFrame? Context, nint AutomationStamp, int Number, int Instance, int Batch, RecordedPlacementLink? Prior)
     {
         internal List<GesturePoint> Path { get; } = [];
         internal long? LastSample { get; set; }
         internal int Omitted { get; set; }
     }
 
-    private sealed class Pending(nint handle, uint processId, nint monitor, WindowAdjustmentObservation observation, long tick)
+    private sealed class Pending(nint handle, uint processId, nint monitor, WindowAdjustmentObservation observation, long tick, int batch)
     {
         internal nint Handle { get; } = handle;
         internal uint ProcessId { get; } = processId;
         internal nint Monitor { get; } = monitor;
         internal WindowAdjustmentObservation Observation { get; } = observation;
         internal long Tick { get; } = tick;
+        internal int Batch { get; } = batch;
         internal bool Superseded { get; set; }
-        internal bool Automated { get; set; }
+        internal WindowAdjustmentObservation? Continuation { get; set; }
+        internal bool Automated { get; init; }
         internal bool ManualRelease { get; init; }
         internal RectI? AssistedTarget { get; set; }
         internal nint AutomationStamp { get; init; }

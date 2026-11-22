@@ -5,7 +5,7 @@ namespace NeatWin.Windows;
 
 internal static class NativeWindowActivity
 {
-    // 微信多个独立功能共用同一 Qt 窗口类。仅在已匹配的聊天宿主旁读取系统窗标题，返回用途，标题不进入长期记录。
+    // 微信多个独立功能共用同一 Qt 窗口类。仅为已匹配的聊天宿主或截图工具框读取系统窗标题，返回用途，标题不进入长期记录。
     internal static SurfacePurpose ChatSurface(WindowSnapshot w)
     {
         var text = new System.Text.StringBuilder(128);

@@ -208,6 +208,8 @@ internal static class AttentionLayout
             context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true ||
             context.RulePairs?.Any(p => !p.OnlyWhenPaired) == true) return null;
         var area = group[0].Window.WorkArea;
+        if (context.Scene?.Lane is { Restore: { } remembered } restoring &&
+            HorizontalSide(restoring.Front.VisualRect, area) != HorizontalSide(remembered, area)) return null;
         // 同侧打开的正文可以沿用原位叠放。开窗碰撞、最近来回切换，都不能单独证明另一栏空闲。
         int side = context.Scene?.WorkingSide is int occupiedSide && occupiedSide != 0 ? occupiedSide : context.Scene?.Lane?.Side ?? 0;
         if (group.Length == 2 && side != 0 && group.All(v => HorizontalSide(v.Window.VisualRect, area) == side))

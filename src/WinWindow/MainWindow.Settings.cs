@@ -132,8 +132,24 @@ public partial class MainWindow
     private void DisplayMode(AutomaticLayoutMode mode)
     {
         _displayingMode = true;
-        try { Choose(FooterModes, mode); }
+        try
+        {
+            Choose(FooterModes, AutomaticLayoutPolicy.VisibleChoice(mode));
+            FooterLight.SetResourceReference(ToolTipProperty, mode switch
+            {
+                AutomaticLayoutMode.LightAssist => "Text.LegacyLightHint",
+                AutomaticLayoutMode.FullAssist => "Text.LegacyFullHint",
+                _ => "Text.LightHint",
+            });
+        }
         finally { _displayingMode = false; }
+    }
+
+    private async void FooterLight_Click(object sender, RoutedEventArgs e)
+    {
+        if (_ready && !_quitting && _layoutPreferences is
+            { Mode: AutomaticLayoutMode.LightAssist or AutomaticLayoutMode.FullAssist } legacy)
+            await SaveLayoutPreferencesAsync(legacy with { Mode = AutomaticLayoutMode.Light });
     }
 
     private async void FooterMode_Checked(object sender, RoutedEventArgs e)

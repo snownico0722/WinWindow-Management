@@ -19,12 +19,13 @@ public sealed partial class WindowManager
 
     public LayoutApplication ApplyLayout(IntentLayoutPlan plan) => ApplyLayout(plan, null);
 
-    internal LayoutApplication ApplyLayout(IntentLayoutPlan plan, nint? automaticForeground, TaskLayoutContext? context = null, nint gestureWindow = default, ForegroundReading? initialReading = null, ForegroundReading? workspaceReading = null)
+    internal LayoutApplication ApplyLayout(IntentLayoutPlan plan, nint? automaticForeground, TaskLayoutContext? context = null, nint gestureWindow = default, ForegroundReading? initialReading = null, ForegroundReading? workspaceReading = null, Func<TidyMove, bool>? allowsMove = null)
     {
         var current = Capture();
         var needed = plan.Moves.Select(m => m.Window).Concat(plan.Layers.SelectMany(l => l.FrontToBack))
             .GroupBy(w => w.Handle).Select(g => g.First()).ToArray();
-        if (InteractionChanged(automaticForeground))
+        // 求解和松手预览可以早于最近一次回拖。提交整组前再核对，避免只执行旧方案的一半。
+        if (InteractionChanged(automaticForeground) || allowsMove != null && plan.Moves.Any(m => !allowsMove(m)))
             return new(plan with { Moves = [], Layers = [] }, ["检测到新的手动调整，未覆盖窗口位置。"]) { Interrupted = true };
         if (needed.Any(w => !current.Any(c => c.Handle == w.Handle &&
             c.IsManageable && WindowStateRules.Matches(w, c, w.VisualRect))))
@@ -78,7 +79,8 @@ public sealed partial class WindowManager
             notes.Add("层级未完全实现，已保留后台参照窗的可见区域。");
         }
         bool deferMoves = CanDeferMoves(accepted.Moves);
-        bool interrupted = InteractionChanged(automaticForeground);
+        bool interrupted = InteractionChanged(automaticForeground) ||
+            allowsMove != null && accepted.Moves.Any(m => !allowsMove(m));
         if (interrupted)
         {
             accepted = accepted with { Moves = [] };

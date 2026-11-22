@@ -542,6 +542,9 @@ internal static partial class IntentLayoutPlanner
             }
             switching += .8 * accessLoss;
             peripheral += 1.4 * (1 - b.Intersect(area).Area / (double)b.Area);
+            if (context.Scene?.Lane is { Restore: { } restored } returning && returning.Front.Handle == windows[i].Window.Handle)
+                continuity += 3 * profile.SpatialContinuityWeight * (Math.Abs(CenterX(b) - CenterX(restored)) / area.Width +
+                    Math.Abs(CenterY(b) - CenterY(restored)) / area.Height);
             var distance = Math.Sqrt(Math.Pow(CenterX(a) - CenterX(b), 2) + Math.Pow(CenterY(a) - CenterY(b), 2));
             continuity += .35 * profile.SpatialContinuityWeight * distance / Math.Max(300 * scale, Math.Min(area.Width, area.Height));
             reflow += .18 * (Math.Abs(Math.Log(b.Width / (double)a.Width)) + Math.Abs(Math.Log(b.Height / (double)a.Height)));
