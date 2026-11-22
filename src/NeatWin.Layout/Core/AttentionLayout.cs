@@ -2,7 +2,7 @@ namespace NeatWin.Core;
 
 internal enum AttentionRole { Main, Reference, Return, Waiting, Background }
 
-internal sealed record AttentionTarget(AttentionRole Role, int Width, int Height, int AccessWidth, bool Movable, bool Resizable, bool LearnedHeight = false, bool LearnedWidth = false, int FrameWidth = 0, double? RestingCenter = null, double PlacementStability = 0, int MinimumFrameWidth = 0);
+internal sealed record AttentionTarget(AttentionRole Role, int Width, int Height, int AccessWidth, bool Movable, bool Resizable, bool LearnedHeight = false, bool LearnedWidth = false, int FrameWidth = 0, double? RestingCenter = null, double PlacementStability = 0, int MinimumFrameWidth = 0, bool DefaultCenter = false);
 
 // Frozen at the beginning of a solve. Dimensions are pixels in the window's current work area.
 internal static class AttentionLayout
@@ -22,8 +22,13 @@ internal static class AttentionLayout
     {
         if (targets is not [{ Role: AttentionRole.Main, Movable: true } target] || context.GestureAnchor != 0) return;
         var window = group[0].Window;
-        if (context.VideoHint?.WindowHandle == window.Handle || context.RecentGesture?.WindowHandle == window.Handle ||
+        if (context.Focus?.OpeningResidentLeft != null || context.Focus?.Navigation is { Length: > 0 } ||
+            context.VideoHint?.WindowHandle == window.Handle || context.RecentGesture?.WindowHandle == window.Handle ||
             target.RestingCenter.HasValue) return;
+        // 同伴退出、普通切换或只剩一扇可管理窗口，都不能说明用户要换观看位置。
+        // 明确整理与真实首次落位可以选中央作为落点。人工学到的位置已在 Targets 中独立绑定。
+        if (!context.ExplicitArrange && context.FirstPlacementWindow != window.Handle &&
+            context.WindowHints?.Any(h => h.Handle == window.Handle && h.InitialTextPlacement) != true) return;
         var area = window.WorkArea;
         var rect = WorkingArea(window, target);
         var centered = rect with { X = area.Left + (area.Width - rect.Width) / 2 };
@@ -52,7 +57,7 @@ internal static class AttentionLayout
         }
         double currentCenter = window.VisualRect.Left + window.VisualRect.Width / 2d;
         targets[0] = target with { RestingCenter = currentCenter * target.PlacementStability +
-            (area.Left + area.Width / 2d) * (1 - target.PlacementStability) };
+            (area.Left + area.Width / 2d) * (1 - target.PlacementStability), DefaultCenter = true };
     }
 
     private static double ScreenArea(RectI rect, IEnumerable<RectI> covers, RectI area, uint dpi) =>
@@ -190,7 +195,7 @@ internal static class AttentionLayout
         if (targets == null || context.ExplicitArrange || !context.IsWorkspaceObservation ||
             context.GestureAnchor != 0 || context.Focus?.OpeningResidentLeft != null ||
             context.Focus?.Navigation is { Length: > 0 } || context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true ||
-            context.RulePairs?.Length > 0) return null;
+            context.RulePairs?.Any(p => !p.OnlyWhenPaired) == true) return null;
         var area = group[0].Window.WorkArea;
         if (HasReadableColumns(group, targets, exposed, obstacles, context)) return "existing-readable-columns";
         // 黑边属于特定视频窗口。已有可读分栏时由后续视频步骤校正比例，其他窗口无需仅因这次测量重新摆位。

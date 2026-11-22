@@ -22,7 +22,7 @@ internal static class AttentionWorkspaceChecks
             { [2] = new(1, 1, 1, 1, false), [3] = new(1, 1, 1, 1, false) } };
         IntentLayoutPlan Balanced(WindowSnapshot[] windows, TaskLayoutContext task) => LayoutDispatch.Create(LayoutRoute.Smart,
             new VisibilityAnalyzer().SelectForManualArrange(windows, true), new(SmartStrength: SmartTidyStrength.Balanced), null, windows, task);
-        // 用陌生窗口、镜像及不同原点回放第六版的因果链。同时验证参考消失时可以重新居中。
+        // 用陌生窗口、镜像及不同原点回放第六版的因果链。参考离开后，原位可读的窗口仍无需横移。
         foreach (bool right in new[] { false, true })
         foreach (string surface in new[] { "maximized", "fullscreen" })
         {
@@ -30,8 +30,8 @@ internal static class AttentionWorkspaceChecks
             var rear = Window(2, 0, 0, area.Width, area.Height) with { IsManageable = false, SurfaceState = surface };
             var workspace = context with { IsWorkspaceObservation = true, AllowGestureAssist = false };
             check(Balanced([side, rear], workspace).Moves.Count == 0 &&
-                Balanced([side], workspace).Moves.Any(m => m.TargetVisualRect.X != side.VisualRect.X),
-                $"a single eligible window preserves a visible {surface} reference until it leaves (right: {right})");
+                Balanced([side], workspace).Moves.All(m => m.TargetVisualRect.X == side.VisualRect.X),
+                $"a single eligible window preserves a visible {surface} reference and retains its place after it leaves (right: {right})");
         }
         var left = Window(1, 0, 30, 1100, 990);
         var center = left.VisualRect with { X = area.X + 410 };
@@ -106,8 +106,8 @@ internal static class AttentionWorkspaceChecks
                     $"readable columns keep their frames through input and peer expiry (main on right: {mainOnRight}, companion: {visit.Focus?.Companion})");
             }
             var alone = Balanced([columns[0]], quietPeer);
-            check(alone.Moves.Any(m => m.Window.Handle == 1 && m.TargetVisualRect.X != columns[0].VisualRect.X),
-                $"removing the visible peer releases the lone window for centering (main on right: {mainOnRight})");
+            check(alone.Moves.All(m => m.Window.Handle != 1 || m.TargetVisualRect.X == columns[0].VisualRect.X),
+                $"removing the visible peer preserves the usable remaining column (main on right: {mainOnRight})");
         }
         foreach (var frame in new[] { ready, new[] { popup, ready[0], ready[1] }, ready })
             check(Balanced(frame, observed).Moves.Count == 0,
@@ -175,13 +175,27 @@ internal static class AttentionWorkspaceChecks
         check(!Balanced(trio, navigationTask).Groups.SelectMany(g => g.Candidates).Any(c => c.Kind == "attention-side-stack"),
             "a three-hop navigation task never becomes a main window with two tiled references");
 
-        double Distance(RectI r) => Math.Abs((r.Left + r.Width / 2d) - (area.Left + area.Width / 2d));
-        var centered = Solve([document], context)[0];
-        check(Distance(centered) <= area.Width * .05 && centered.Width >= document.VisualRect.Width,
-            "a lone reading window occupies the display's central viewing area");
+        var grown = Solve([document], context with { IsWorkspaceObservation = true })[0];
+        check(grown.X == document.VisualRect.X && grown.Width > document.VisualRect.Width,
+            "a narrow side window can gain readable width into the empty space in place");
+        foreach (var request in new[] { context with { ExplicitArrange = true }, context with { FirstPlacementWindow = 1, IsWorkspaceObservation = true } })
+        {
+            var adequate = Window(1, 0, 80, 1200, 900);
+            check(Solve([adequate], request)[0] == adequate.VisualRect,
+                "geometric centering alone cannot pay for moving an already readable window");
+            var goals = AttentionLayout.Targets([new(document, document.VisualRect.Area, document.VisualRect.Area, 1)], request, SmartTidyStrength.Assertive);
+            AttentionLayout.SetRestingCenter([new(document, document.VisualRect.Area, document.VisualRect.Area, 1)], goals, [], request);
+            check(goals is [{ DefaultCenter: true }], "a fresh or explicitly arranged window may compare a central landing");
+        }
         var parked = Solve([document, peer], context);
         check(parked[0].Intersect(peer.VisualRect).Area < peer.VisualRect.Area * .35,
             "solo centering respects another visible surface on the destination side");
+        var keyed = new[] { (document, (string?)new string('A', 24)), (peer, (string?)new string('B', 24)) };
+        var scoped = new CompiledLayoutRules(Version: 3, Pairs: [new(keyed[0].Item2!, keyed[1].Item2!, "left", OnlyWhenPaired: true)]);
+        check(scoped.IsValid() && scoped.Bind(keyed, focus: new(1, 0, 0)).Length == 0 &&
+            scoped.Bind(keyed, focus: new(2, 1, 1, "handoff")).Length == 0 &&
+            scoped.Bind(keyed, focus: new(2, 1, 3)) is [{ First: 1, Second: 2, FirstSide: "left" }],
+            "a learned side order binds in either focus direction only for an observed working pair");
         var pairContext = context with { Focus = new(1, 0, 1),
             Attention = new Dictionary<nint, LayoutAttention>(attention) { [2] = new(.95, .4, .2, .95, false) } };
         var pair = Solve([document, peer], pairContext);

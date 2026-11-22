@@ -405,7 +405,7 @@ internal static partial class IntentLayoutPlanner
                 // The working minimum and the comfortable upper bound serve different roles.
                 // Visible content and reachable title area are measured after all projected moves.
                 static int Missing(double fraction) => (int)Math.Round(20 * (1 - Math.Clamp(fraction, 0, 1)));
-                if (target.RestingCenter is double center)
+                if (!target.DefaultCenter && target.RestingCenter is double center)
                 {
                     var offset = Math.Abs(CenterX(b) - center) / area.Width;
                     alignment += 3 * Math.Max(0, offset - .04);

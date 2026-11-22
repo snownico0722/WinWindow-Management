@@ -226,12 +226,18 @@ internal static partial class IntentLayoutPlanner
                         groupContext.GestureTarget == candidate.Rects[gestureIndex] && candidate.Rects[gestureIndex] != original[gestureIndex];
                     var weight = groupContext.InterventionWeight(followsGesture);
                     var threshold = baseThreshold / weight;
-                    audits.Add(new(candidate.Kind, score, null, breakdown, generation, weight, threshold));
                     var priority = breakdown.Goal.CompareTo(bestGoal);
-                    if (breakdown.Feedback == 0 && (priority < 0 || priority == 0 && score < bestScore &&
+                    // 默认居中仅为已值得执行的候选打破近似平局，不能补齐对原位方案的收益门槛。
+                    // 偏好最多影响半个基础门槛。已学习的个人槽位仍有自己的评分项。
+                    double? centerTieCost = null;
+                    if (goals is [{ DefaultCenter: true, RestingCenter: double middle }])
+                        centerTieCost = baseThreshold * Math.Abs(CenterX(candidate.Rects[0]) - middle) / area.Width;
+                    audits.Add(new(candidate.Kind, score, null, breakdown, generation, weight, threshold, centerTieCost));
+                    double rank = score + (centerTieCost ?? 0);
+                    if (breakdown.Feedback == 0 && (priority < 0 || priority == 0 && (best.Kind == "keep" || rank < bestScore) &&
                         (bestGoal.CompareTo(baselineBreakdown.Goal) < 0 || score < baseline - threshold) ||
                         best.Kind == "keep" && needsRescue && candidate.Kind == "rescue"))
-                    { best = candidate; bestScore = score; bestGoal = breakdown.Goal; }
+                    { best = candidate; bestScore = rank; bestGoal = breakdown.Goal; }
                 }
 
                 for (var i = 0; i < group.Length; i++)

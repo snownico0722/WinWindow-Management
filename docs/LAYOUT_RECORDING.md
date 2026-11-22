@@ -85,7 +85,7 @@
 ```
 
 - `FirstSide` 可选 `left`、`right`、`either`。`Overlap` 的范围为 0～0.4，以较窄窗口的宽度为分母。两窗横向拥挤时，对比并排与保留高度的局部重叠方案。`MediaOverlap` 是有媒体证据时的默认候选；可靠的手动配对习惯优先。屏幕足够宽时无需为了重叠而移动两窗。
-- `Version` 兼容 `1` 与 `2`。除精确 `AppKey` 配对（`Pairs`）外，`RolePairs` 支持按实时行为角色（`game`、`media`、`passive`、`foreground`、`companion`、`any`）对新安装的游戏或播放器做通用主副排版；`AppSlots` 为单个应用提供缺省侧边（`left`、`right`、`center`）与相对宽度先验，并在手动整理与自动辅助（`FullAssist` / `AutoFullAssist`）中共享。
+- `Version` 兼容 `1`、`2` 与 `3`。除精确 `AppKey` 配对（`Pairs`）外，`RolePairs` 支持按实时行为角色（`game`、`media`、`passive`、`foreground`、`companion`、`any`）对新安装的游戏或播放器做通用主副排版；`AppSlots` 为单个应用提供缺省侧边（`left`、`right`、`center`）与相对宽度先验，并在手动整理与自动辅助（`FullAssist` / `AutoFullAssist`）中共享。
 - 音频与资源采样通过进程父子快照自动向上归集浏览器或启动器子进程的音量峰值（兼容 `AUDCLNT_S_NO_SINGLE_PROCESS`）、CPU 与工作集内存。跨进程共享音频峰值单列为 `SharedAudioPeak`，系统保持显示器开启的请求记为 `DisplayRequired`，两者都不能定位某个窗口。同进程多窗有播放信号时，还需要窗口自身的画面变化才会据此判断媒体角色。暂停记录后，完整辅助与自动完整辅助仅在内存中采样；手动 Smart 整理后最多再采样 20 秒。
 - 开启画面变化采样后，如果副窗可见比例低于 25%，从最大可见矩形内取一块最多 160×160 像素的区域，在 16×16 网格上比较。`FragmentChangeThreshold` 指发生变化的网格点比例。连续两个可比较时段达到阈值后，整理保留副窗位置与这块区域。一次采样即使只有十六分之一的窗口可见也能提供证据。锁屏、中断、移动和鼠标落在采样块内会打断比较。每个时段都进入活动日志，即使几何位置不变。
 - 新版 `plans` 记录包含该次的规则和匿名决策输入，包括主副窗口、用于匹配角色的活动标签、被保护的区域、已验证的尺寸下限及应用槽位规则之前的个人偏好。缺失标签保持未知。用 `dotnet run --project tests/LayoutModel -c Release -- Recorder.zip candidate.json` 比较候选规则。旧日志缺失的行为线索保持未知；离线回放不包含原生窗口约束及后续视频尺寸修正。
@@ -163,3 +163,9 @@
 ## Smart v1.6 的视频比例
 
 整理请求的第 8 版可选字段 `Signals.VideoFits` 按会话内窗口编号记录沿用的内容宽高比和视口距外框的左、上、右、下像素数。`Signals.Video` 仍代表本轮可用的黑边测量。两者应分别解读。窗口被遮挡、开窗时跳过采样或成功去边后均可出现只有 `VideoFits` 的记录。旧记录不带此字段，独立重放时不能假设之前已验证去边。录入依据的页面标题不会写入这一字段。候选被现有无边比例排除时可见 `video-viewport-aspect`。外框是否兑现仍要核对实际回执。
+
+## Smart v1.7 的首次落位与条件配对
+
+`Signals.FirstPlacementWindow` 是本轮确认首次独立落位的会话内窗口编号。普通成员增减和焦点切换不能代替该证据。缺省时旧记录仍可用原有的 `InitialTextPlacement` 解释小文字窗。候选的可选 `CenterTieCost` 只影响已经具备独立几何收益的方案间排序；`Cost` 和 `GainThreshold` 可以单独解释是否值得调整。
+
+在 v3 摆放规则的 `Pairs` 条目加上 `"OnlyWhenPaired": true`，只在已经观察到这两扇窗参与当前工作配对时采用左右偏好。后台共存、第三扇窗接手任务、应用内导航不会启动配对。旧规则和省略这个字段的规则仍可主动建议搭档。导入个人规则前分别留出完整会话核对；没有后续人工修正时，对实际减少的摆放次数保留未知。

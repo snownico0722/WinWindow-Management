@@ -70,6 +70,7 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     internal bool AllowGestureAssist { get; init; } = true;
     internal IReadOnlyDictionary<nint, VideoViewportFit>? VideoFits { get; init; }
     internal bool IsWorkspaceObservation { get; init; }
+    internal nint FirstPlacementWindow { get; init; }
     internal WorkspaceChangeCause WorkspaceCause { get; init; }
 
     // 这些系数只调节同等可读性下的动作门槛。救回屏外窗口或满足明确手势仍有自己可核对的空间收益。

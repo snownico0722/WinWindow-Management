@@ -588,10 +588,10 @@ internal sealed class RecorderSession : IDisposable
     }
 
     internal WorkingPairRule[] BindRules(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows,
-        IReadOnlyList<TaskWindowHint> hints, IReadOnlyDictionary<nint, string> activities) =>
+        IReadOnlyList<TaskWindowHint> hints, IReadOnlyDictionary<nint, string> activities, LayoutFocus? focus) =>
         (rules.Pairs is { Length: > 0 } || rules.RolePairs is { Length: > 0 })
             ? rules.Bind(windows.Where(w => w.IsManageable).Select(w => (w, _activity.AppKey(w, false))),
-                hints, activities)
+                hints, activities, focus)
             : [];
 
     internal PlacementPreference[] BindSlots(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows) =>

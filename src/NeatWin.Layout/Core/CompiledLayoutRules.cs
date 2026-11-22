@@ -4,7 +4,8 @@ namespace NeatWin.Core;
 
 // Only anonymous keys from the recorder export or generic behavioral roles may participate in rules.
 public sealed record AppPairRule(string FirstApp, string SecondApp, string FirstSide = "either",
-    double? Overlap = null);
+    double? Overlap = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool OnlyWhenPaired = false);
 
 public sealed record RolePairRule(string FirstRole, string SecondRole, string FirstSide = "left",
     double? Overlap = null);
@@ -24,13 +25,13 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
     internal bool IsValid()
     {
         static bool Key(string? key) => key is { Length: 24 } && key.All(char.IsAsciiHexDigit);
-        if (Version is not (1 or 2) || MediaOverlap is not (>= 0 and <= .40) ||
+        if (Version is not (1 or 2 or 3) || MediaOverlap is not (>= 0 and <= .40) ||
             AudioPeakThreshold is not (> 0 and <= 1) || FragmentChangeThreshold is not (> 0 and <= 1) ||
             Pairs?.Length > 64 || RolePairs?.Length > 32 || AppSlots?.Length > 64) return false;
         var seen = new HashSet<(string, string)>();
         foreach (var pair in Pairs ?? [])
         {
-            if (pair is null || !Key(pair.FirstApp) || !Key(pair.SecondApp) ||
+            if (pair is null || pair.OnlyWhenPaired && Version < 3 || !Key(pair.FirstApp) || !Key(pair.SecondApp) ||
                 pair.FirstSide is not ("left" or "right" or "either") ||
                 pair.Overlap is not (null or (>= 0 and <= .40))) return false;
             string a = pair.FirstApp.ToUpperInvariant(), b = pair.SecondApp.ToUpperInvariant();
@@ -53,7 +54,7 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
     }
 
     internal WorkingPairRule[] Bind(IEnumerable<(WindowSnapshot Window, string? Key)> entries,
-        IReadOnlyList<TaskWindowHint>? hints = null, IReadOnlyDictionary<nint, string>? activities = null)
+        IReadOnlyList<TaskWindowHint>? hints = null, IReadOnlyDictionary<nint, string>? activities = null, LayoutFocus? focus = null)
     {
         var matches = new List<WorkingPairRule>();
         var hintByHandle = (hints ?? []).ToDictionary(h => h.Handle);
@@ -64,8 +65,13 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
                 .Where(g => g.Count() == 1)
                 .ToDictionary(g => g.Key, g => g.Single().Window.Handle, StringComparer.OrdinalIgnoreCase);
             foreach (var pair in Pairs ?? [])
-                if (unique.TryGetValue(pair.FirstApp, out var first) && unique.TryGetValue(pair.SecondApp, out var second))
-                    matches.Add(new(first, second, pair.FirstSide, pair.Overlap));
+            {
+                if (!unique.TryGetValue(pair.FirstApp, out var first) || !unique.TryGetValue(pair.SecondApp, out var second)) continue;
+                var bound = new WorkingPairRule(first, second, pair.FirstSide, pair.Overlap, pair.OnlyWhenPaired);
+                // 两个应用同时存在只能识别窗口。条件规则只描述已被观察到的搭配，不从后台拉出搭档，也不拆开导航链。
+                if (!pair.OnlyWhenPaired || focus is { Evidence: "recent-switch-pair", Navigation: not { Length: > 0 } } &&
+                    bound.Matches(focus.Main, focus.Companion)) matches.Add(bound);
+            }
 
             if (RolePairs is not { Length: > 0 }) continue;
             foreach (var roleRule in RolePairs)
@@ -135,7 +141,7 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
     }
 }
 
-public sealed record WorkingPairRule(nint First, nint Second, string FirstSide, double? Overlap)
+public sealed record WorkingPairRule(nint First, nint Second, string FirstSide, double? Overlap, bool OnlyWhenPaired = false)
 {
     internal bool Matches(nint a, nint b) => First == a && Second == b || First == b && Second == a;
 }

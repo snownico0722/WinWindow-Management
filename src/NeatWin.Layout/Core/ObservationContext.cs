@@ -115,7 +115,9 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     string? WorkspaceCause = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Dictionary<int, VideoViewportFit>? VideoFits = null)
+    Dictionary<int, VideoViewportFit>? VideoFits = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    int FirstPlacementWindow = 0)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids, IReadOnlyList<WindowSnapshot>? snapshot = null)
     {
@@ -162,7 +164,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             floors.Length > 0 ? floors : null, context.Activities?.Where(a => Id(a.Key) != 0)
                 .ToDictionary(a => Id(a.Key), a => a.Value), context.Attention?.Where(a => Id(a.Key) != 0)
                 .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor), video, context.GestureTarget, navigation, context.WorkspaceCause == WorkspaceChangeCause.None ? null : context.WorkspaceCause.ToString(),
-            fits?.Count > 0 ? fits : null);
+            fits?.Count > 0 ? fits : null, Id(context.FirstPlacementWindow));
     }
 
     // During offline replay the session-local ids are the simulated handles.
@@ -171,7 +173,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         Focus = new(Main, Companion, Switches, FocusEvidence ?? "recent-switch-pair",
             Navigation?.Hops.Where(h => h.SourceRole is "waiting" or "return").Select(h => (nint)h.Source).ToArray(),
             Navigation?.Hops.Select(h => new NavigationHop(h.Source, h.Target, h.Evidence, h.AgeMilliseconds)).ToArray()),
-        NavigationObservedAt = Navigation?.ObservedAt,
+        NavigationObservedAt = Navigation?.ObservedAt, FirstPlacementWindow = FirstPlacementWindow,
         WorkspaceCause = Enum.TryParse<WorkspaceChangeCause>(WorkspaceCause, out var cause) ? cause : WorkspaceChangeCause.None,
         WindowHints = Hints.Select(h => new TaskWindowHint(h.Id, h.Passive, ProtectedRegions: h.Regions,
             Anchor: h.Anchor, MediaCompanion: h.Media, Role: h.Role, FloatingAffinity: h.FloatingAffinity, TextFocus: h.TextFocus, InitialTextPlacement: h.InitialTextPlacement)).ToArray(),

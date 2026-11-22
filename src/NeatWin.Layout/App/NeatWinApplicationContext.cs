@@ -372,7 +372,6 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 var liveHints = _recorder.LiveHints(snapshot);
                 liveHints = _journal.Feedback.Bind(snapshot, liveHints, Environment.TickCount64);
                 bool pairSmart = explicitSmart || trigger is "automatic-gesture" or "automatic-workspace";
-                var pairs = pairSmart && _useImportedPlacement ? _recorder.BindRules(rules, snapshot, liveHints, activities) : [];
                 var floors = _recorder.BindSizeFloors(snapshot);
                 var learned = pairSmart ? _recorder.Preferences(snapshot, focus).Where(p => p.Confidence >= .40).ToArray() : [];
                 var slots = pairSmart && _useImportedPlacement ? _recorder.BindSlots(rules, snapshot) : [];
@@ -410,6 +409,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     focus = new(incoming.Handle, resident.Handle, focus.Switches,
                         opening.ResidentLeft ? "opening-resident-left" : "opening-resident-right");
                 }
+                var observedPair = trigger == "automatic-gesture" && focus.Main != foreground ? null : focus;
+                var pairs = pairSmart && _useImportedPlacement ? _recorder.BindRules(rules, snapshot, liveHints, activities, observedPair) : [];
                 // An interrupted opening may still expose the resident by adjusting it on
                 // its own side. Only an idle input queue authorizes moving the incoming frame.
                 bool firstPlacement = trigger == "automatic-workspace" && front != null && reading.Root == front.Handle && reading.LastInput.HasValue &&
@@ -437,6 +438,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     AllowGestureAssist = trigger == "automatic-gesture",
                     IsWorkspaceObservation = trigger == "automatic-workspace",
                     WorkspaceCause = cause,
+                    FirstPlacementWindow = firstPlacement && opening == null ? front!.Handle : 0,
                     NavigationObservedAt = focus.Navigation is { Length: > 0 } ? focusObservedAt : null,
                     Attention = attention,
                     WindowHints = liveHints,
