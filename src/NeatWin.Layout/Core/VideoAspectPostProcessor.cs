@@ -96,7 +96,8 @@ public static class VideoAspectPostProcessor
             if (!HasMeaningfulChange(start, rect) || AspectError(rect) >= baselineError) continue;
             // 减少黑边可以缩小外框，但画面要保住。逐窗比较新增遮挡，避免一边腾出的面积抵消另一边刚被挡住的内容。
             double pixels = PicturePixels(rect, front);
-            string? rejection = neighbors.Any(r => rect.Intersect(r).Area > start.Intersect(r).Area) ? "increased-overlap" :
+            string? rejection = !context.PreservesReleasedSide(browser, rect) ? "recent-manual-side" :
+                neighbors.Any(r => rect.Intersect(r).Area > start.Intersect(r).Area) ? "increased-overlap" :
                 pixels + Math.Max(view.Width, view.Height) < referencePixels ? "lost-video-picture" : null;
             var moves = plan.Moves.Where(m => m.Window.Handle != browser.Handle).ToList();
             if (rect != frame) moves.Add(new(browser, rect));

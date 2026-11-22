@@ -81,7 +81,7 @@ internal sealed class ReferenceExposure
     }
 }
 
-internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, ReferenceExposure[] References)
+internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, ReferenceExposure[] References, int WorkingSide = 0)
 {
     internal static ActiveLayoutScene? Resolve(IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext ctx, bool includeDefaults = true)
     {
@@ -112,23 +112,35 @@ internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, Re
             break;
         }
 
-        // 常驻后台不能独自证明需要监看。默认仅保留有媒体/持续变化证据，或刚作为工作搭档的较大窗口。
-        // 保护从用户现有布局开始，自动观察不应吞掉大块参照；主动拖动、显式整理则有自己的意图。
-        if (includeDefaults && trigger == "workspace" && ctx.Attention != null && front.IsManageable)
-        foreach (var w in peers)
+        // 焦点只说明这一轮在用谁。第三扇窗占着另一栏时，即使很久没点，它露出的正文也是实际使用中的桌面空间。
+        // 松手后也按此刻的可见区域起算，否则只保住刚拖过的窗，分栏会把它的搭档推到另一边。
+        int workingSide = 0;
+        if (includeDefaults && trigger is "workspace" or "gesture" && ctx.Attention != null && front.IsManageable)
         {
-            if (w.Handle == ctx.VideoHint?.WindowHandle || guards.Any(g => g.Window.Handle == w.Handle) || w.VisualRect.Intersect(front.WorkArea).Area < front.WorkArea.Area * .18)
-                continue;
-            var hint = ctx.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
-            var history = ctx.Attention.GetValueOrDefault(w.Handle);
-            // 大面积、仍露出的全屏/最大化窗无法靠移动自己恢复视野；近期认真操作过的第三扇窗也可能承担参照任务。
-            bool fixedSurface = !w.IsManageable && w.SurfaceState is "maximized" or "fullscreen";
-            bool recentlyUsed = ctx.Focus?.Companion != w.Handle && history is { Dwell: >= .8, Recency: >= .50, Input: >= .25 };
-            if (!(hint?.PassiveVisual == true || hint?.MediaCompanion == true || fixedSurface || recentlyUsed)) continue;
-            var reference = new ReferenceExposure(w, desktop, "default-visible-reference", .10);
-            if (reference.Before >= .15) guards.Add(reference);
+            int frontSide = AttentionLayout.HorizontalSide(front.VisualRect, front.WorkArea);
+            foreach (var w in peers)
+            {
+                if (w.Handle == ctx.VideoHint?.WindowHandle || w.VisualRect.Intersect(front.WorkArea).Area < front.WorkArea.Area * .18) continue;
+                bool opposite = frontSide != 0 && w.WorkArea == front.WorkArea && w.Owner == 0 && w.IsManageable &&
+                    w.Handle != ctx.Focus?.Companion && AttentionLayout.HorizontalSide(w.VisualRect, front.WorkArea) == -frontSide;
+                var hint = ctx.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
+                var history = ctx.Attention.GetValueOrDefault(w.Handle);
+                bool fixedSurface = !w.IsManageable && w.SurfaceState is "maximized" or "fullscreen";
+                bool recentlyUsed = ctx.Focus?.Companion != w.Handle && history is { Dwell: >= .8, Recency: >= .50, Input: >= .25 };
+                bool reference = trigger == "workspace" &&
+                    (hint?.PassiveVisual == true || hint?.MediaCompanion == true || fixedSurface || recentlyUsed);
+                if (!opposite && !reference) continue;
+                var occupied = guards.FirstOrDefault(g => g.Window.Handle == w.Handle) ??
+                    new ReferenceExposure(w, desktop, opposite && !reference ? "default-occupied-side" : "default-visible-reference", .10);
+                // 过滤只露一条边的旧窗。独立可见的面积也得足以构成一块工作面，侧别在线性工作区内镜像计算。
+                bool readableSide = opposite && occupied.Before >= .40 &&
+                    occupied.Before * w.VisualRect.Area >= front.WorkArea.Area * .10;
+                if (readableSide) workingSide = frontSide;
+                if ((readableSide || reference && occupied.Before >= .15) && !guards.Contains(occupied))
+                    guards.Add(occupied);
+            }
         }
-        return match == null && guards.Count == 0 ? null : new(match, front.MonitorHandle, guards.ToArray());
+        return match == null && guards.Count == 0 ? null : new(match, front.MonitorHandle, guards.ToArray(), workingSide);
     }
 
     internal bool Allows(IReadOnlyList<WindowSnapshot> current, IntentLayoutPlan plan)

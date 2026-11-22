@@ -10,11 +10,13 @@ using NeatWin.Core;
 
 namespace WinWindow;
 
-internal sealed class DesktopSnapshotHistory : IDisposable
+internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDisposable
 {
-    internal const int LookbackMilliseconds = 60_000;
+    internal const int LookbackMilliseconds = 300_000;
     internal const int SampleIntervalMilliseconds = 1000;
-    private const int MaxSurfaceEvents = 512;
+    private const int MaxLiveSurfaceEvents = 512;
+    // 追溯期延长五倍，同时给表面分类突发保留原来的每分钟容量。
+    internal const int MaxPastSurfaceEvents = 5 * MaxLiveSurfaceEvents;
     private readonly object _gate = new();
     private readonly Queue<DesktopSnapshot.Sample> _windows = new();
     private readonly Queue<Decision> _decisions = new();
@@ -23,12 +25,15 @@ internal sealed class DesktopSnapshotHistory : IDisposable
     private PeriodicTimer? _timer;
     private Capture? _capture;
     private long _clearedAt;
+    private long? _surfaceDroppedThrough;
+
+    private long Now => clock?.Invoke() ?? Environment.TickCount64;
 
     internal sealed record Gesture(string Session, GestureEvent Event);
     internal sealed record Decision(long Tick, LayoutRunObservation Observation);
     internal sealed record Capture(DateTimeOffset Time, long Tick, bool LookbackEnabled,
         DesktopSnapshot.Sample[] PastWindows, Decision[] PastDecisions, Gesture[] PastGestures,
-        SurfaceEvent[] PastSurfaces, long EarliestTick)
+        SurfaceEvent[] PastSurfaces, long EarliestTick, long? SurfaceDroppedThrough)
     {
         internal ConcurrentQueue<Gesture> LiveGestures { get; } = new();
         internal ConcurrentQueue<Decision> LiveDecisions { get; } = new();
@@ -37,7 +42,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
         internal int DroppedSurfaces => Volatile.Read(ref _droppedSurfaces);
         internal void ObserveSurface(SurfaceEvent observation)
         {
-            if (LiveSurfaces.Count < MaxSurfaceEvents) LiveSurfaces.Enqueue(observation);
+            if (LiveSurfaces.Count < MaxLiveSurfaceEvents) LiveSurfaces.Enqueue(observation);
             else Interlocked.Increment(ref _droppedSurfaces);
         }
     }
@@ -48,7 +53,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
         {
             if (enabled && _timer is null)
             {
-                _clearedAt = Environment.TickCount64;
+                _clearedAt = Now;
                 var timer = _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(SampleIntervalMilliseconds));
                 _ = Task.Run(() => SampleAsync(timer, workbench, getManaged));
             }
@@ -76,7 +81,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
                 {
                     if (_timer != timer) return;
                     if (sample.Tick >= _clearedAt) _windows.Enqueue(sample);
-                    Trim(Environment.TickCount64);
+                    Trim(Now);
                 }
             }
             catch (Win32Exception ex) { Trace.TraceWarning(ex.Message); }
@@ -88,7 +93,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
         lock (_gate)
         {
             if (_timer is null && _capture is null) return;
-            var decision = new Decision(Environment.TickCount64, observation);
+            var decision = new Decision(Now, observation);
             if (_timer is not null)
             {
                 Trim(decision.Tick);
@@ -108,7 +113,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
             var gesture = new Gesture(session, item);
             if (_timer != null)
             {
-                Trim(Environment.TickCount64);
+                Trim(Now);
                 _gestures.Enqueue(gesture);
             }
             _capture?.LiveGestures.Enqueue(gesture);
@@ -124,11 +129,16 @@ internal sealed class DesktopSnapshotHistory : IDisposable
             if (observation.Tick < _clearedAt) return;
             if (_timer != null)
             {
-                Trim(Environment.TickCount64);
-                if (_surfaces.Count >= MaxSurfaceEvents) _surfaces.Dequeue();
+                Trim(Now);
+                if (_surfaces.Count >= MaxPastSurfaceEvents)
+                {
+                    long dropped = _surfaces.Dequeue().Tick;
+                    _surfaceDroppedThrough = Math.Max(_surfaceDroppedThrough ?? dropped, dropped);
+                }
                 _surfaces.Enqueue(observation);
             }
-            if (_capture is { } capture && observation.Tick >= capture.Tick)
+            // 表面判定的时刻可能早于点击，但回调稍后才拿到锁；按事件时刻归入快照仍可保留这条证据。
+            if (_capture is { } capture && observation.Tick >= capture.EarliestTick)
                 capture.ObserveSurface(observation);
         }
     }
@@ -137,11 +147,15 @@ internal sealed class DesktopSnapshotHistory : IDisposable
     {
         lock (_gate)
         {
-            var tick = Environment.TickCount64;
+            var tick = Now;
             Trim(tick);
             // 复制点击前的记录和接收后续事件共用同一把锁，恰逢点击发生的排布或手势就不会落在两段记录之间。
-            return _capture = new(DateTimeOffset.Now, tick, _timer is not null, _windows.ToArray(), _decisions.ToArray(),
-                _gestures.ToArray(), _surfaces.ToArray(), _timer == null ? tick : Math.Max(_clearedAt, tick - LookbackMilliseconds));
+            bool enabled = _timer is not null;
+            long earliest = enabled ? Math.Max(_clearedAt, tick - LookbackMilliseconds) : tick;
+            return _capture = new(DateTimeOffset.Now, tick, enabled, _windows.ToArray(), _decisions.ToArray(),
+                _gestures.Where(gesture => gesture.Event.Tick >= earliest).ToArray(),
+                _surfaces.Where(surface => surface.Tick >= earliest).OrderBy(surface => surface.Tick).ToArray(),
+                earliest, _surfaceDroppedThrough >= earliest ? _surfaceDroppedThrough : null);
         }
     }
 
@@ -164,11 +178,12 @@ internal sealed class DesktopSnapshotHistory : IDisposable
     {
         lock (_gate)
         {
-            _clearedAt = Environment.TickCount64;
+            _clearedAt = Now;
             _windows.Clear();
             _decisions.Clear();
             _gestures.Clear();
             _surfaces.Clear();
+            _surfaceDroppedThrough = null;
         }
     }
 

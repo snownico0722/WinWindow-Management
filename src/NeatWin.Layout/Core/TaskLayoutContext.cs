@@ -87,6 +87,15 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     internal bool HoldsTextView(WindowSnapshot window) => !ExplicitArrange && window.IsForeground &&
         WindowHints?.Any(h => h.Handle == window.Handle && h.TextFocus) == true;
 
+    internal bool PreservesReleasedSide(WindowSnapshot window, RectI target)
+    {
+        // 只保护刚选的半屏；在同侧改变大小、贴边和回收屏外部分仍由各自的空间收益决定。
+        int side = Attention?.GetValueOrDefault(window.Handle)?.ManualSide ?? 0;
+        if (ExplicitArrange || window.VisualRect == target || side is not (-1 or 1)) return true;
+        return AttentionLayout.HorizontalSide(window.VisualRect, window.WorkArea) != side ||
+            AttentionLayout.HorizontalSide(target, window.WorkArea) == side;
+    }
+
     internal TaskLayoutContext WithCurrentCorrections(IReadOnlyList<WindowSnapshot> desktop)
     {
         if (ExplicitArrange || Placement is not { Length: > 0 } || Attention == null ||

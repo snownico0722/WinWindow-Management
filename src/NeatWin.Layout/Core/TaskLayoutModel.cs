@@ -237,6 +237,8 @@ internal static partial class IntentLayoutPlanner
         {
             var window = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             bool gestureEndpoint = window.Handle == context.GestureAnchor && b == context.GestureTarget;
+            // 只保护用户刚选的半屏。另一扇窗获得焦点或也被拖回同一侧，不能授权把前一扇当成分栏的牺牲品。
+            if (!gestureEndpoint && !context.PreservesReleasedSide(window, b)) return false;
             if (!gestureEndpoint && (a.Width != b.Width || a.Height != b.Height) &&
                 context.VideoFits?.GetValueOrDefault(window.Handle) is { } fit && !fit.Preserves(a, b)) return false;
             bool textView = context.HoldsTextView(window);

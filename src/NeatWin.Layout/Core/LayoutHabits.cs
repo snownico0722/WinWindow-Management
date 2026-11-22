@@ -37,7 +37,8 @@ public sealed record LayoutFocus(nint Main, nint Companion, int Switches, string
 public sealed record LayoutAttention(double Recency, double Dwell, double Input, double Association, bool Foreground,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double SustainedForeground = 0,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double ManualFloatPreference = 0,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementCorrection? Correction = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementCorrection? Correction = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int ManualSide = 0)
 {
     public double Weight => Foreground ? 1 : Math.Clamp(Recency * (.70 + .15 * Dwell) + .35 * Input, 0, 1);
 }
@@ -50,7 +51,8 @@ public sealed class ForegroundHistory
     private const int AttentionHalfLifeMilliseconds = 12_000;
     private readonly List<(nint Handle, uint Pid, long Time)> _visits = [];
     private readonly Dictionary<(nint Handle, uint Pid), long> _input = new();
-    private readonly Dictionary<nint, (uint Pid, RectI WorkArea, RectI End, double Strength, long Tick)> _manualPlaces = [];
+    private sealed record ManualPlace(uint Pid, RectI WorkArea, RectI End, double Strength, long Tick, int Side, long SideTick);
+    private readonly Dictionary<nint, ManualPlace> _manualPlaces = [];
     private readonly Dictionary<nint, (TidyMove Move, WindowSnapshot[] Neighbors)> _submitted = [];
     private readonly Dictionary<nint, (WindowSnapshot Window, WindowSnapshot[] Neighbors, PlacementCorrection Evidence)> _corrections = [];
     private sealed record RememberedNavigation((nint Handle, uint Pid, long Time) Visit, NavigationState Path, long Sampled);
@@ -284,7 +286,21 @@ public sealed class ForegroundHistory
             }
             if (_manualPlaces.Count >= 64 && !_manualPlaces.ContainsKey(window.Handle))
                 _manualPlaces.Remove(_manualPlaces.MinBy(entry => entry.Value.Tick).Key);
-            _manualPlaces[window.Handle] = (window.ProcessId, work, end, intent * Math.Min(1, travel / distance), now);
+            // 大幅横拖到一侧是当下的直接意图。另一扇窗开关、换层或随后贴边几个像素，均不能抹掉这次选择。
+            // 单独保留侧别的原始时间，随后调高度或微调不会无限续期，也不会改变永久习惯。
+            int side = AttentionLayout.HorizontalSide(end, work);
+            long sideTick = now;
+            int dx = end.X - start.X;
+            bool choseSide = gesture.Kind == ManualGestureKind.Move && side != 0 && Math.Sign(dx) == side &&
+                Math.Abs((double)dx) >= work.Width * .16 && Math.Abs((double)dx) >= Math.Abs((double)end.Y - start.Y);
+            if (!choseSide)
+            {
+                var previous = _manualPlaces.GetValueOrDefault(window.Handle);
+                if (previous != null && previous.Pid == window.ProcessId && previous.WorkArea == work && previous.Side == side)
+                    sideTick = previous.SideTick;
+                else side = 0;
+            }
+            _manualPlaces[window.Handle] = new(window.ProcessId, work, end, intent * Math.Min(1, travel / distance), now, side, sideTick);
         }
     }
 
@@ -490,10 +506,15 @@ public sealed class ForegroundHistory
             {
                 if (now - placed.Tick is < 0 or > 3 * AttentionHalfLifeMilliseconds ||
                     !valid.TryGetValue(handle, out var target) || target.ProcessId != placed.Pid ||
-                    target.WorkArea != placed.WorkArea || !WindowStateRules.Near(target.VisualRect, placed.End)) continue;
+                    target.WorkArea != placed.WorkArea) continue;
                 var signal = attention.GetValueOrDefault(target.Handle) ?? new(0, 0, 0, 0, target.IsForeground);
                 double strength = 1 - Math.Clamp(((now - placed.Tick) / (double)AttentionHalfLifeMilliseconds - 1) / 2, 0, 1);
-                attention[target.Handle] = signal with { ManualFloatPreference = placed.Strength * strength };
+                bool sameFrame = WindowStateRules.Near(target.VisualRect, placed.End);
+                bool sameSide = now - placed.SideTick is >= 0 and <= 3 * AttentionHalfLifeMilliseconds &&
+                    AttentionLayout.HorizontalSide(target.VisualRect, placed.WorkArea) == placed.Side && placed.Side != 0;
+                if (sameFrame || sameSide)
+                    attention[target.Handle] = signal with { ManualFloatPreference = sameFrame ? placed.Strength * strength : 0,
+                        ManualSide = sameSide ? placed.Side : 0 };
             }
             foreach (var (handle, item) in _corrections.ToArray())
             {

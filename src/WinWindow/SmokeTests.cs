@@ -73,6 +73,43 @@ internal static class SmokeTests
     {
         try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { }
     }
+    private static void CheckSnapshotHistoryWindow(NeatWin.Core.LayoutRunObservation decision, NeatWin.Core.SurfaceEvent surface)
+    {
+        long tick = Environment.TickCount64;
+        using var history = new DesktopSnapshotHistory(() => Volatile.Read(ref tick));
+        history.SetEnabled(true, 0, () => new HashSet<nint>());
+        var gesture = new NeatWin.Core.GestureEvent(1, 7, "start", tick, null, null, 96, false);
+        void Observe()
+        {
+            history.Observe(decision with { RequestId = tick.ToString() });
+            history.ObserveGesture("lookback-boundary", gesture with { Tick = tick });
+            history.ObserveSurface(surface with { Tick = tick });
+        }
+
+        Observe();
+        var startup = history.BeginCapture();
+        history.EndCapture(startup);
+        Assert(startup.EarliestTick == startup.Tick, "recently enabled history reports only the available interval");
+        Interlocked.Increment(ref tick);
+        Observe();
+        Interlocked.Add(ref tick, 300_000);
+        var full = history.BeginCapture();
+        history.EndCapture(full);
+        Assert(full.EarliestTick == full.Tick - 300_000 &&
+            full.PastDecisions is [var plan] && plan.Tick == full.EarliestTick &&
+            full.PastGestures is [var drag] && drag.Event.Tick == full.EarliestTick &&
+            full.PastSurfaces is [var card] && card.Tick == full.EarliestTick,
+            "snapshot retains decisions, drag gestures and local surface changes at five minutes and expires older events");
+
+        for (int i = 0; i < DesktopSnapshotHistory.MaxPastSurfaceEvents; i++)
+            history.ObserveSurface(surface with { Tick = tick });
+        var crowded = history.BeginCapture();
+        history.EndCapture(crowded);
+        Assert(crowded.SurfaceDroppedThrough == full.EarliestTick &&
+            crowded.PastSurfaces.Length == DesktopSnapshotHistory.MaxPastSurfaceEvents,
+            "snapshot reports the missing part of surface history when the rolling buffer fills");
+    }
+
     public static async Task<int> RunAsync(string output)
     {
         output = Path.GetFullPath(output); Directory.CreateDirectory(output);
@@ -458,6 +495,7 @@ internal static class SmokeTests
                 true, true, false, false);
             shell.SnapshotHistory.ObserveSurface(card);
             var snapshot = shell.SnapshotHistory.BeginCapture();
+            CheckSnapshotHistoryWindow(snapshot.PastDecisions.First().Observation, card);
             shell.SnapshotHistory.ObserveSurface(card with { Tick = Environment.TickCount64, Action = "release",
                 ReleaseReason = "geometry-changed", ReleasedChildRect = new(10, 20, 640, 480) });
             var snapshotDir = Directory.CreateDirectory(Path.Combine(output, Guid.NewGuid().ToString("N"))).FullName;
@@ -473,6 +511,11 @@ internal static class SmokeTests
             using (var surfaces = new StreamReader(archive.GetEntry("surfaces-snapshot.jsonl")!.Open()))
             {
                 var samples = (await timeline.ReadToEndAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                using var header = JsonDocument.Parse(samples[0]);
+                Assert(header.RootElement.GetProperty("LookbackMilliseconds").GetInt32() == 300_000 &&
+                    header.RootElement.GetProperty("LookbackCollectionMilliseconds").GetInt64() == snapshot.Tick - snapshot.EarliestTick &&
+                    header.RootElement.GetProperty("WindowHistorySpanMilliseconds").GetInt64() == snapshot.Tick - snapshot.PastWindows[0].Tick,
+                    "snapshot records configured lookback, time since collection began, and sampled window span");
                 var times = samples.Skip(1).Select(line =>
                 {
                     using var frame = JsonDocument.Parse(line);
