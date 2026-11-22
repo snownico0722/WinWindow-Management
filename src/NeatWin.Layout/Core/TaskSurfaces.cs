@@ -1,6 +1,6 @@
 namespace NeatWin.Core;
 
-// HostApp 和 ChildApp 取匿名应用/窗口类键。局部卡片仍在桌面里遮挡像素，只退出任务变化、工作组和摆放习惯的输入。
+// HostApp 和 ChildApp 使用安装内的应用和窗口类匹配键，沿用已导入的规则。局部卡片仍在桌面里遮挡像素，只退出任务变化、工作组和摆放习惯的输入。
 public sealed record SurfaceRule(string Id, string HostApp, double MaxAreaRatio, string Action = "local", string? ChildApp = null)
 {
     internal bool IsValid() => Id is { Length: > 0 and <= 64 } && Id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_') &&

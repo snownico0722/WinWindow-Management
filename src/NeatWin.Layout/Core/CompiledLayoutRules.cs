@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace NeatWin.Core;
 
-// Only anonymous keys from the recorder export or generic behavioral roles may participate in rules.
+// Match installed rule keys or behavioral roles so title changes do not break an existing preference.
 public sealed record AppPairRule(string FirstApp, string SecondApp, string FirstSide = "either",
     double? Overlap = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool OnlyWhenPaired = false,

@@ -115,7 +115,7 @@ public sealed record RecordedPlacement(int Id, int Partner, double Center, doubl
     PlacementConfidence? AxisConfidence = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     PlacementUsage? Usage = null);
-// 只记录证据和匿名窗口 ID，像素、浏览器标题和句柄不随录像导出。
+// 画面测量用会话窗口编号关联原始标题和句柄。此结构保存测量结果；解读时可联查同一窗口的身份记录。
 public sealed record BrowserBarObservation(string Decision, double Aspect, double BarConfidence, int WindowId = 0);
 public sealed record RecordedVideo(int Id, VideoBlackBarOrientation Orientation, double ContentAspectRatio,
     RectI Viewport, double Confidence, WindowExposure? Exposure, VideoBlackBarTendency Tendency = VideoBlackBarTendency.Shrink);

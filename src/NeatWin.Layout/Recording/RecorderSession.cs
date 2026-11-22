@@ -18,7 +18,7 @@ internal sealed record RecorderStatus(
 
 /// <summary>
 /// Shared recorder engine used by the main application and the legacy standalone recorder UI.
-/// It records geometry, anonymous activity and optional change masks.
+/// It records window geometry, input observations, original window identities and optional change masks.
 /// </summary>
 internal sealed partial class RecorderSession : IDisposable
 {
@@ -111,7 +111,7 @@ internal sealed partial class RecorderSession : IDisposable
         var time = DateTimeOffset.UtcNow;
         bool starting = action != "release";
         // 打开时记录本次选择（局部或独立）及身份。解除可能由销毁或句柄重用触发，不能重新查询系统去猜测原窗口。
-        // 即使启用了快照，暂停长期记录时也只读取已有的匿名键。
+        // 暂停长期记录时仍可为快照读取身份；兼容旧规则只需读取已有的匹配键。
         var item = suppression is { } prior && !starting
             ? prior with { Action = action, Tick = tick, Time = time, ReleaseReason = match.ReleaseReason,
                 ReleasedChildRect = match.ReleasedChildRect, ReleasedHostRect = match.ReleasedHostRect }

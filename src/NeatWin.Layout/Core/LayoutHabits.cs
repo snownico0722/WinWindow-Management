@@ -5,7 +5,7 @@ namespace NeatWin.Core;
 [Flags]
 public enum HorizontalEdit { None = 0, Position = 1, Width = 2 }
 
-// A sample describes a stable manual edit. Application keys are anonymous and installation-local.
+// A stable manual edit keeps the installation-local rule keys and the observed identities of both windows.
 public sealed record LayoutHabit(DateTimeOffset Time, string Display, string App, string? Partner,
     double Center, double Width, int Order, int RevealedCell, bool Corrected, double? InnerOverlap = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? PartnerCenter = null,
@@ -18,7 +18,7 @@ public sealed record LayoutHabit(DateTimeOffset Time, string Display, string App
 [JsonConverter(typeof(JsonStringEnumConverter<PlacementUsage>))]
 public enum PlacementUsage { Joint, BackgroundPlayback, ForegroundPlayback, TextFocus, ScrollReading, BackgroundReading }
 
-// 匿名 ID 只在当前录制会话内有意义。用途取自手势开始前或布局求解前的观察。
+// 窗口编号只在当前录制会话内有意义。用途取自手势开始前或布局求解前的观察。
 public sealed record PlacementUseObservation(int Foreground, int JointPeer, bool TextFocus, int[] Playing, int[]? Scrolling = null)
 {
     internal bool SupportsPair(int window, int peer)
