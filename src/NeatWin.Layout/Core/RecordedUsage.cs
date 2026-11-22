@@ -81,6 +81,7 @@ internal sealed class RecordedUsage
 
     internal static CoUseSample[]? CoUse(UsageInterval interval, WorkspaceFrame? previous, WorkspaceFrame current)
     {
+        // 共现时长来自相邻两帧都可见的窗口。截断帧可能漏掉其中一扇，此时应保留缺测，避免把它计作从未同用。
         if (previous == null || previous.Truncated || current.Truncated) return null;
         var stable = previous.Windows.Where(w => w.VisibleRatio > 0 && (w.Manageable || w.SurfaceState != null)).ToDictionary(w => w.Id);
         var peers = current.Windows.Where(w => w.VisibleRatio > 0 && stable.TryGetValue(w.Id, out var before) &&

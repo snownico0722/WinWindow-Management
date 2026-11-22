@@ -75,6 +75,7 @@ public partial class App : Application
                     await Task.Run(() => RelaunchAsAdministrator(e.Args, directory));
                     Shutdown(); return;
                 }
+                // 用户取消权限提示后仍可管理普通窗口。这里继续当前实例的启动流程，让本次选择生效。
                 catch (Win32Exception ex) when (ex.NativeErrorCode == ElevationCancelled) { }
                 catch (Exception ex) when (ex is Win32Exception or InvalidOperationException) { elevationError = ex.Message; }
             }
@@ -204,6 +205,8 @@ public partial class App : Application
         }
     }
 
+    internal const uint StallFixtureMessage = 0x8015;
+
     // Block a real cross-thread native operation for the regression test.
     private sealed class StalledTarget : Forms.Form
     {
@@ -217,6 +220,10 @@ public partial class App : Application
         protected override void WndProc(ref Forms.Message m)
         {
             if (m.Msg == 0x8014) { _armed = true; m.Result = 0; return; }
+            if (m.Msg == StallFixtureMessage)
+            {
+                _entered.Set(); _release.WaitOne(); m.Result = 0; return;
+            }
             if (_armed && m.Msg == 0x0046 && (Native.InSendMessageEx(0) & 9) == 1)
             {
                 _armed = false;

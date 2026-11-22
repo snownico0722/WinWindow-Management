@@ -63,4 +63,5 @@
   <data name="IdleMinimizeRequested" xml:space="preserve"><value>Requested minimization of one idle window.</value></data>
   <data name="IdleMinimizeVerified" xml:space="preserve"><value>Minimized one idle window.</value></data>
   <data name="IdleMinimizeUnconfirmed" xml:space="preserve"><value>The idle window was not observed minimized.</value></data>
+  <data name="VideoAspectLayout" xml:space="preserve"><value>Adjust video aspect ratio</value></data>
 </root>

@@ -22,6 +22,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
     private readonly SettingsStore _settings;
     private readonly RecorderSession _recorder;
     private readonly Func<bool> _busy;
+    private readonly Func<bool> _automaticDismissalAllowed;
     private readonly Func<nint, uint, long, string, bool>? _keepRunning;
     private readonly ForegroundHistory _focus;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 550 };
@@ -42,13 +43,15 @@ internal sealed class WindowBehaviorMonitor : IDisposable
     private Entry[] _entries;
 
     internal WindowBehaviorMonitor(WindowManager windows, IntentReferenceStore store, SettingsStore settings,
-        RecorderSession recorder, Func<bool> busy, ForegroundHistory focus, Func<nint, uint, long, string, bool>? keepRunning = null)
+        RecorderSession recorder, Func<bool> busy, ForegroundHistory focus, Func<nint, uint, long, string, bool>? keepRunning,
+        Func<bool> automaticDismissalAllowed)
     {
         _windows = windows;
         _store = store;
         _settings = settings;
         _recorder = recorder;
         _busy = busy;
+        _automaticDismissalAllowed = automaticDismissalAllowed;
         _keepRunning = keepRunning;
         _focus = focus;
         _restoreCallback = (hook, _, hwnd, _, _, _, _) =>
@@ -288,7 +291,8 @@ internal sealed class WindowBehaviorMonitor : IDisposable
             BehaviorWindow[] observations = current.Values.Select(w => w.Behavior).ToArray();
             bool changed = _configuration.Learn &&
                 Learn(_discovery.Observe(tick, now.UtcTicks, observations, departures, automaticDepartures));
-            bool canAct = !_busy();
+            // 单条规则授权某种动作。只有完整模式授权这轮自动执行，观察和学习始终按自身开关运行。
+            bool canAct = _automaticDismissalAllowed() && !_busy();
             var navigation = trace != null || canAct && _entries.Any(e => IsEnabled(e.Rule))
                 ? _focus.NavigationFor(current.Values.Select(w => w.Window).ToArray(), tick) : null;
             HashSet<int> preserved = navigation == null ? [] : current.Values
@@ -345,7 +349,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
 
     private Dictionary<int, Observed> Capture()
     {
-        var windows = _windows.CaptureCoalesced().Where(w => w.SurfaceState is not null).ToArray();
+        var windows = _windows.CaptureCoalesced().Where(w => w.SurfaceState is not null && _recorder.IsLocalSurface?.Invoke(w) != true).ToArray();
         var active = windows.Select(window => window.ProcessId).ToHashSet();
         foreach (var pid in _processes.Keys.Where(pid => !active.Contains(pid)).ToArray())
             _processes.Remove(pid);
@@ -367,6 +371,7 @@ internal sealed class WindowBehaviorMonitor : IDisposable
         return observed;
     }
 
+    // 用户给某一扇窗开启后台保持后，过去学到的关闭习惯要让步。核对实例身份，避免句柄复用后把保护带给另一扇窗。
     private bool KeepProtects(Observed source, WindowBehaviorAction action) =>
         action == WindowBehaviorAction.Close && _keepRunning?.Invoke(source.Window.Handle, source.Window.ProcessId,
             source.Behavior.ProcessStartedUtc, source.Class) == true;

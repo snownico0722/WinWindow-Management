@@ -23,9 +23,6 @@
   <data name="ArrangeHint" xml:space="preserve"><value>按当前整理偏好排布整个桌面的普通可见窗口</value></data>
   <data name="ArrangeMode" xml:space="preserve"><value>自动整理档位</value></data>
   <data name="Assertive" xml:space="preserve"><value>积极</value></data>
-  <data name="Auto" xml:space="preserve"><value>自动</value></data>
-  <data name="AutoArrange" xml:space="preserve"><value>自动整理</value></data>
-  <data name="AutoHint" xml:space="preserve"><value>随窗口打开、关闭、移动或前后台变化自动整理桌面</value></data>
   <data name="AwaitLaunch" xml:space="preserve"><value>等待启动</value></data>
   <data name="Back" xml:space="preserve"><value>返回</value></data>
   <data name="BackToList" xml:space="preserve"><value>返回窗口列表</value></data>
@@ -93,7 +90,7 @@
   <data name="ForceMinimize" xml:space="preserve"><value>强制最小化</value></data>
   <data name="Full" xml:space="preserve"><value>完整</value></data>
   <data name="FullAssist" xml:space="preserve"><value>完整辅助</value></data>
-  <data name="FullHint" xml:space="preserve"><value>拖动或缩放结束后，智能整理同组窗口</value></data>
+  <data name="FullHint" xml:space="preserve"><value>随窗口或焦点变化整理工作区，并按已授权条件执行收起或关闭</value></data>
   <data name="General" xml:space="preserve"><value>常规</value></data>
   <data name="Gentle" xml:space="preserve"><value>保守</value></data>
   <data name="GlobalShortcuts" xml:space="preserve"><value>全局快捷键</value></data>
@@ -113,14 +110,14 @@
   <data name="LayoutStrength" xml:space="preserve"><value>整理幅度</value></data>
   <data name="Light" xml:space="preserve"><value>轻度</value></data>
   <data name="LightAssist" xml:space="preserve"><value>轻度辅助</value></data>
-  <data name="LightHint" xml:space="preserve"><value>拖动或缩放结束后，微调刚操作的窗口</value></data>
+  <data name="LightHint" xml:space="preserve"><value>拖动、缩放结束或打开新的任务窗口时，只调整这扇窗口的位置和大小</value></data>
   <data name="Managed" xml:space="preserve"><value>管理中</value></data>
   <data name="ManagedAndPinned" xml:space="preserve"><value>已管理 {0} · {1} 置顶</value></data>
   <data name="ManagedCount" xml:space="preserve"><value>已管理 {0}</value></data>
   <data name="ManagedWindows" xml:space="preserve"><value>已管理窗口</value></data>
   <data name="ManagerZOrder" xml:space="preserve"><value>管理器窗口层级</value></data>
-  <data name="Manual" xml:space="preserve"><value>手动</value></data>
-  <data name="ManualArrange" xml:space="preserve"><value>手动整理</value></data>
+  <data name="Manual" xml:space="preserve"><value>关闭</value></data>
+  <data name="ManualArrange" xml:space="preserve"><value>关闭自动整理</value></data>
   <data name="ManualHint" xml:space="preserve"><value>仅点击整理桌面或按快捷键时整理</value></data>
   <data name="MaxBleed" xml:space="preserve"><value>外缘最大超出距离（DIP）</value></data>
   <data name="MaximizeOrRestore" xml:space="preserve"><value>最大化 / 还原</value></data>
@@ -251,7 +248,7 @@
   <data name="ImportPlacementHint" xml:space="preserve"><value>把「数据与记录」导出的 ZIP 交给 AI，分析和回放后导入返回的摆放规则。</value></data>
   <data name="ImportPlacementRules" xml:space="preserve"><value>导入摆放规则</value></data>
   <data name="LearnBehaviorTiming" xml:space="preserve"><value>从日常操作中学习执行时机</value></data>
-  <data name="BehaviorLearningHint" xml:space="preserve"><value>根据你收起、关闭和重新打开窗口的行为调整时机。只执行已勾选的规则。</value></data>
+  <data name="BehaviorLearningHint" xml:space="preserve"><value>根据你收起、关闭和重新打开窗口的行为调整时机。完整模式下，已勾选的规则可自动执行。</value></data>
   <data name="BehaviorClose" xml:space="preserve"><value>关闭窗口</value></data>
   <data name="BehaviorMinimize" xml:space="preserve"><value>最小化窗口</value></data>
   <data name="BehaviorNextApp" xml:space="preserve"><value>其他应用</value></data>
@@ -264,9 +261,9 @@
   <data name="RuleImportFailed" xml:space="preserve"><value>导入规则失败。{0}</value></data>
   <data name="JsonFilter" xml:space="preserve"><value>JSON 规则|*.json</value></data>
   <data name="CurrentSnapshot" xml:space="preserve"><value>当前快照</value></data>
-  <data name="CurrentSnapshotHint" xml:space="preserve"><value>在桌面生成 ZIP。包含接下来 10 秒的窗口变化和标题，开启追溯时还会附上过去 1 分钟。</value></data>
+  <data name="CurrentSnapshotHint" xml:space="preserve"><value>在桌面生成 ZIP。包含接下来 10 秒的窗口变化和标题，开启追溯时还会附上过去最多 5 分钟。</value></data>
   <data name="SnapshotLookback" xml:space="preserve"><value>快照追溯记录</value></data>
-  <data name="SnapshotLookbackHint" xml:space="preserve"><value>在内存中保留最近 1 分钟的窗口位置、标题和整理决策，点击「当前快照」时一并导出。关闭后清空本次追溯记录。</value></data>
+  <data name="SnapshotLookbackHint" xml:space="preserve"><value>在内存中保留最近 5 分钟的窗口位置、标题、整理决策和拖动手势，点击「当前快照」时一并导出。关闭后清空本次追溯记录。</value></data>
   <data name="SnapshotCapturing" xml:space="preserve"><value>正在采集 10 秒窗口快照…</value></data>
   <data name="SnapshotSaved" xml:space="preserve"><value>已保存到桌面 · {0}</value></data>
   <data name="SnapshotDesktopMissing" xml:space="preserve"><value>找不到 Windows 桌面文件夹。</value></data>
@@ -274,4 +271,7 @@
   <data name="BehaviorNewProcessHint" xml:space="preserve"><value>从 {0} 切到新启动的 {1} 后{2}。</value></data>
   <data name="LayoutModelVersion" xml:space="preserve"><value>桌面整理模型</value></data>
   <data name="LearningModelVersion" xml:space="preserve"><value>学习模型</value></data>
+  <data name="LayoutStrengthHint" xml:space="preserve"><value>影响已授权范围内的整理幅度</value></data>
+  <data name="LegacyLightHint" xml:space="preserve"><value>沿用原来的松手辅助。再次选择轻度可启用新任务开窗辅助</value></data>
+  <data name="LegacyFullHint" xml:space="preserve"><value>沿用原来的松手后同组整理。再次选择轻度可改为单窗辅助</value></data>
 </root>

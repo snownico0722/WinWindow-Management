@@ -73,6 +73,102 @@ internal static class SmokeTests
     {
         try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { }
     }
+    private static void CheckSnapshotHistoryWindow(NeatWin.Core.LayoutRunObservation decision, NeatWin.Core.SurfaceEvent surface)
+    {
+        long tick = Environment.TickCount64;
+        using var history = new DesktopSnapshotHistory(() => Volatile.Read(ref tick));
+        history.SetEnabled(true, 0, () => new HashSet<nint>());
+        var gesture = new NeatWin.Core.GestureEvent(1, 7, "start", tick, null, null, 96, false);
+        void Observe()
+        {
+            history.Observe(decision with { RequestId = tick.ToString() });
+            history.ObserveGesture("lookback-boundary", gesture with { Tick = tick });
+            history.ObserveSurface(surface with { Tick = tick });
+        }
+
+        Observe();
+        var startup = history.BeginCapture();
+        history.EndCapture(startup);
+        Assert(startup.EarliestTick == startup.Tick, "recently enabled history reports only the available interval");
+        Interlocked.Increment(ref tick);
+        Observe();
+        Interlocked.Add(ref tick, 300_000);
+        var full = history.BeginCapture();
+        history.EndCapture(full);
+        Assert(full.EarliestTick == full.Tick - 300_000 &&
+            full.PastDecisions is [var plan] && plan.Tick == full.EarliestTick &&
+            full.PastGestures is [var drag] && drag.Event.Tick == full.EarliestTick &&
+            full.PastSurfaces is [var card] && card.Tick == full.EarliestTick,
+            "snapshot retains decisions, drag gestures and local surface changes at five minutes and expires older events");
+
+        for (int i = 0; i < DesktopSnapshotHistory.MaxPastSurfaceEvents; i++)
+            history.ObserveSurface(surface with { Tick = tick });
+        var crowded = history.BeginCapture();
+        history.EndCapture(crowded);
+        Assert(crowded.SurfaceDroppedThrough == full.EarliestTick &&
+            crowded.PastSurfaces.Length == DesktopSnapshotHistory.MaxPastSurfaceEvents,
+            "snapshot reports the missing part of surface history when the rolling buffer fills");
+    }
+
+    private static async Task CheckNativeGeometryBatchAsync(NeatWin.Windows.WindowManager windows,
+        nint first, nint second, string output, List<Process> processes)
+    {
+        static RectI Shift(NeatWin.Core.WindowSnapshot source) =>
+            source.VisualRect with { X = source.VisualRect.X + (source.VisualRect.X > source.WorkArea.X + 48 ? -40 : 40) };
+        bool Reached(TidyMove move) => windows.Capture().Any(w => w.Handle == move.Window.Handle &&
+            WindowStateRules.Near(w.VisualRect, move.TargetVisualRect));
+
+        var before = windows.Capture();
+        var sources = new[] { before.Single(w => w.Handle == first), before.Single(w => w.Handle == second) };
+        var moves = sources.Select(w => new TidyMove(w, Shift(w))).ToArray();
+        var applied = windows.ApplyLayout(new(moves, [], []), null, gestureWindow: second);
+        Assert(applied is { Failures.Count: 0, Plan.Moves.Count: 2, Notes.Length: 0 } &&
+            applied.FirstGeometrySubmittedTick is long submitted && applied.GestureWindowSubmittedTick == submitted,
+            "responsive cross-process geometry batch succeeds without individual retries");
+        await WaitAsync("both responsive fixtures reach their batch geometry targets", () => moves.All(Reached));
+        var after = windows.Capture();
+        var handles = new[] { first, second };
+        Assert(before.Where(w => handles.Contains(w.Handle)).Select(w => (w.Handle, w.IsTopmost, w.IsForeground))
+            .SequenceEqual(after.Where(w => handles.Contains(w.Handle)).Select(w => (w.Handle, w.IsTopmost, w.IsForeground))),
+            "geometry batch preserves fixture activation and stacking");
+        var undo = windows.ApplyLayout(LayoutUndoPlanner.Create(applied.Plan, after));
+        Assert(undo is { Failures.Count: 0, Plan.Moves.Count: 2 }, "native batch geometry can be undone");
+        await WaitAsync("batch undo restores both fixtures", () => sources.All(w => Reached(new(w, w.VisualRect))));
+
+        string gate = "WinWindow-layout-stall-" + Guid.NewGuid().ToString("N");
+        using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".entered");
+        using var release = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".release");
+        var stalled = await FixtureAsync(output, false, stall: gate);
+        processes.Add(stalled.Process);
+        var desk = windows.Capture();
+        var responsive = desk.Single(w => w.Handle == first);
+        var blocked = desk.Single(w => w.Handle == stalled.Hwnd);
+        var responsiveMove = new TidyMove(responsive, Shift(responsive));
+        var blockedMove = new TidyMove(blocked, Shift(blocked));
+        Assert(Native.PostMessage(stalled.Hwnd, App.StallFixtureMessage, 0, 0), "post stall to one fixture's window thread");
+        var watchdog = Task.Run(() => { if (!release.WaitOne(3_000)) release.Set(); });
+        try
+        {
+            await WaitAsync("stalled fixture has stopped processing window messages", () => entered.WaitOne(0));
+            var fallback = windows.ApplyLayout(new([responsiveMove, blockedMove], [], []), null, gestureWindow: first);
+            Assert(!release.WaitOne(0) && fallback.FirstGeometrySubmittedTick.HasValue &&
+                fallback.GestureWindowSubmittedTick.HasValue && fallback.Failures.All(f => f.Move.Window.Handle != first),
+                "a recently blocked window cannot delay its responsive geometry partner");
+            await WaitAsync("responsive async geometry finishes while its partner remains blocked",
+                () => Reached(responsiveMove), 1_500);
+            Assert(!release.WaitOne(0), "responsive fallback finishes before the blocked window resumes");
+        }
+        finally
+        {
+            release.Set();
+            await watchdog;
+            Stop(stalled.Process);
+            await stalled.Process.WaitForExitAsync();
+        }
+        windows.ApplyLayout(new([new(windows.Capture().Single(w => w.Handle == first), responsive.VisualRect)], [], []));
+        await WaitAsync("restore the responsive fixture after the fallback test", () => Reached(new(responsive, responsive.VisualRect)));
+    }
+
     public static async Task<int> RunAsync(string output)
     {
         output = Path.GetFullPath(output); Directory.CreateDirectory(output);
@@ -140,6 +236,7 @@ internal static class SmokeTests
             Assert(restored.Plan.Moves.Count == 1 && restored.Failures.Count == 0 && restored.FirstGeometrySubmittedTick.HasValue &&
                 restored.GestureWindowSubmittedTick == null, "undoing the native move cannot count as submission for another fixture");
             await WaitAsync("layout undo restores fixture geometry", () => Reached(source.VisualRect));
+            await CheckNativeGeometryBatchAsync(layoutWindows, normal.Hwnd, twins.Hwnd, output, processes);
             Stop(twins.Process);
             await twins.Process.WaitForExitAsync();
             await manager.SetPinAsync(item, true);
@@ -453,7 +550,14 @@ internal static class SmokeTests
             var gestureTick = Environment.TickCount64;
             shell.SnapshotHistory.ObserveGesture("smoke-gesture", new(1, 7, "start", gestureTick, new(10, 20, 300, 240),
                 new(0, 0, 1920, 1040), 96, false));
+            var card = new NeatWin.Core.SurfaceEvent(1, "smoke-surface", Environment.TickCount64, DateTimeOffset.UtcNow,
+                "suppress", "chat-detail", 7, 8, null, null, new(10, 20, 300, 240), new(0, 0, 800, 700),
+                true, true, false, false);
+            shell.SnapshotHistory.ObserveSurface(card);
             var snapshot = shell.SnapshotHistory.BeginCapture();
+            CheckSnapshotHistoryWindow(snapshot.PastDecisions.First().Observation, card);
+            shell.SnapshotHistory.ObserveSurface(card with { Tick = Environment.TickCount64, Action = "release",
+                ReleaseReason = "geometry-changed", ReleasedChildRect = new(10, 20, 640, 480) });
             var snapshotDir = Directory.CreateDirectory(Path.Combine(output, Guid.NewGuid().ToString("N"))).FullName;
             File.WriteAllText(Path.Combine(snapshotDir, "第一版.zip"), "existing");
             var archivePath = await DesktopSnapshot.ExportAsync(new HashSet<nint>(), new WindowInteropHelper(shell).Handle,
@@ -464,8 +568,14 @@ internal static class SmokeTests
             using (var archive = System.IO.Compression.ZipFile.OpenRead(archivePath))
             using (var timeline = new StreamReader(archive.GetEntry("timeline.jsonl")!.Open()))
             using (var decisions = new StreamReader(archive.GetEntry("layout-decisions.jsonl")!.Open()))
+            using (var surfaces = new StreamReader(archive.GetEntry("surfaces-snapshot.jsonl")!.Open()))
             {
                 var samples = (await timeline.ReadToEndAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                using var header = JsonDocument.Parse(samples[0]);
+                Assert(header.RootElement.GetProperty("LookbackMilliseconds").GetInt32() == 300_000 &&
+                    header.RootElement.GetProperty("LookbackCollectionMilliseconds").GetInt64() == snapshot.Tick - snapshot.EarliestTick &&
+                    header.RootElement.GetProperty("WindowHistorySpanMilliseconds").GetInt64() == snapshot.Tick - snapshot.PastWindows[0].Tick,
+                    "snapshot records configured lookback, time since collection began, and sampled window span");
                 var times = samples.Skip(1).Select(line =>
                 {
                     using var frame = JsonDocument.Parse(line);
@@ -475,15 +585,23 @@ internal static class SmokeTests
                     times.SequenceEqual(times.Order()) && samples.Any(line => line.Contains(DesktopSnapshot.Handle(item.Hwnd), StringComparison.Ordinal)) &&
                     archive.GetEntry("gestures-smoke-gesture.jsonl") is not null && archive.GetEntry("summary.txt") is not null && (await decisions.ReadToEndAsync()).Contains("\"Trigger\":\"explicit\"", StringComparison.Ordinal),
                     "snapshot ZIP includes the pre-click window timeline and earlier decisions alongside the live capture");
+                var events = (await surfaces.ReadToEndAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(line => JsonSerializer.Deserialize<NeatWin.Core.SurfaceEvent>(line))
+                    .Where(s => s?.Session == card.Session).ToArray();
+                Assert(events is [ { Action: "suppress", WindowId: 7 }, { Action: "release", WindowId: 7, ReleaseReason: "geometry-changed" } ],
+                    "snapshot ZIP includes local surface suppression before capture and release during capture");
             }
             File.Delete(archivePath);
             OpenSection("DataSection");
             lookback.IsChecked = false;
             lookback.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             var disabledSnapshot = shell.SnapshotHistory.BeginCapture();
+            shell.SnapshotHistory.ObserveSurface(card with { Tick = Environment.TickCount64 });
             shell.SnapshotHistory.EndCapture(disabledSnapshot);
-            Assert(!disabledSnapshot.LookbackEnabled && disabledSnapshot.PastWindows.Length == 0 && disabledSnapshot.PastDecisions.Length == 0 && disabledSnapshot.PastGestures.Length == 0,
-                "turning snapshot lookback off clears both history buffers");
+            Assert(!disabledSnapshot.LookbackEnabled && disabledSnapshot.PastWindows.Length == 0 &&
+                disabledSnapshot.PastDecisions.Length == 0 && disabledSnapshot.PastGestures.Length == 0 &&
+                disabledSnapshot.PastSurfaces.Length == 0 && disabledSnapshot.LiveSurfaces.Any(s => s.Session == card.Session),
+                "turning snapshot lookback off clears prior observations while the active capture still receives local surface transitions");
             await WaitAsync("snapshot lookback opt-out survives reload", () => !new StateStore(data).Preferences.SnapshotLookbackEnabled);
             ((ToggleButton)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             var row = await FindRowAsync(shell, chosen);
@@ -837,24 +955,49 @@ internal static class SmokeTests
         RadioButton Mode(AutomaticLayoutMode mode) => modes.Single(b => Equals(b.Tag, mode.ToString()));
         // This runner arranges native fixtures without a user at the keyboard. Give the two
         // fixtures a working-task history before testing the automatic path.
-        void UseBothFixtures()
+        async Task UseBothFixturesAsync()
         {
-            var pair = Pair();
-            var main = pair.FirstOrDefault(w => w.IsForeground) ?? pair[0];
-            var companion = pair.Single(w => w.Handle != main.Handle);
-            var now = Environment.TickCount64;
-            shell.LayoutFocus.Visit(main.Handle, main.ProcessId, now - 1800);
-            shell.LayoutFocus.Visit(companion.Handle, companion.ProcessId, now - 900);
-            shell.LayoutFocus.Visit(main.Handle, main.ProcessId, now);
+            // 一次切换只说明交接，允许保留叠放；来回使用同一对窗口才是本用例要覆盖的并看信号。
+            foreach (var handle in new[] { second, first, second, first })
+            {
+                Native.SetForegroundWindow(handle);
+                await WaitAsync("fixture owns real foreground", () => Native.GetForegroundWindow() == handle);
+                var window = Pair().Single(w => w.Handle == handle);
+                // Model the missing human input at the current monotonic time. Native focus
+                // events still drive the ordinary workspace scheduler and submission guards.
+                var now = Environment.TickCount64;
+                shell.LayoutFocus.Visit(handle, window.ProcessId, now);
+                shell.LayoutFocus.Interact(handle, window.ProcessId, now);
+                await Task.Delay(180);
+            }
         }
-        UseBothFixtures();
+        shell.ShowShell();
+        await WaitAsync("workbench owns input before enabling automation", () =>
+            Native.GetForegroundWindow() == new WindowInteropHelper(shell).Handle);
+        var whileEditingSettings = Pair();
         Mode(AutomaticLayoutMode.AutoFullAssist).IsChecked = true;
-        await WaitAsync("automatic mode opens up the two covered task windows", Improved, 8000);
+        await Task.Delay(1350);
+        Assert(Pair().All(w => whileEditingSettings.Any(p => p.Handle == w.Handle && WindowStateRules.Near(p.VisualRect, w.VisualRect))),
+            "automatic mode leaves external geometry alone while the workbench owns focus");
+        await UseBothFixturesAsync();
+        try { await WaitAsync("automatic mode opens up the two covered task windows", Improved, 8000); }
+        catch (TimeoutException ex)
+        {
+            var frames = Pair();
+            var focus = shell.LayoutFocus.Resolve(frames, Environment.TickCount64);
+            var recent = shell.SnapshotHistory.BeginCapture();
+            shell.SnapshotHistory.EndCapture(recent);
+            var decisions = recent.PastDecisions.TakeLast(4).Select(e => $"{e.Observation.Trigger}/{e.Observation.Outcome} " +
+                $"{e.Observation.Signals?.FocusEvidence} {string.Join(",", e.Observation.Groups.Select(g => g.Selected))} " +
+                string.Join(",", e.Observation.ApplyNotes));
+            throw new TimeoutException($"{ex.Message}; foreground={Native.GetForegroundWindow()}, task={focus}, " +
+                $"frames={string.Join(" | ", frames.Select(w => $"{w.Handle} {w.VisualRect}"))}, status={status.Text}, decisions={string.Join(" | ", decisions)}", ex);
+        }
         var stable = Pair();
         await Task.Delay(1250);
         Assert(Pair().All(a => stable.Any(w => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))),
             "automatic arrangement settles without reacting to its own native moves");
-        UseBothFixtures();
+        await UseBothFixturesAsync();
         await OverlapAsync();
         await WaitAsync("automatic mode responds to actual external window moves", Improved, 8000);
         Mode(AutomaticLayoutMode.Off).IsChecked = true;
@@ -869,12 +1012,12 @@ internal static class SmokeTests
         var undo = (Button)shell.FindName("UndoArrangeButton");
         Rect Bounds(FrameworkElement element) => element.TransformToAncestor(footer).TransformBounds(new Rect(element.RenderSize));
         var snapshot = (Button)shell.FindName("SnapshotButton");
-        Assert(buttons.Length == 4 && buttons.All(b => b.IsVisible) && Bounds(group).Right <= Bounds(snapshot).Left &&
+        Assert(buttons.Length == 3 && buttons.All(b => b.IsVisible) && Bounds(group).Right <= Bounds(snapshot).Left &&
             Bounds(snapshot).Right <= Bounds(undo).Left,
-            "all four mode choices fit to the left of the desktop commands at minimum width");
+            "all three mode choices fit to the left of the desktop commands at minimum width");
         Assert(buttons[0].IsChecked == true && shell.Icon is not null, "the workbench starts in manual mode with its application icon");
         var settingsPath = Path.Combine(store.DirectoryPath, "Layout", "settings.json");
-        foreach (var mode in new[] { AutomaticLayoutMode.LightAssist, AutomaticLayoutMode.FullAssist, AutomaticLayoutMode.AutoFullAssist, AutomaticLayoutMode.Off })
+        foreach (var mode in new[] { AutomaticLayoutMode.Light, AutomaticLayoutMode.AutoFullAssist, AutomaticLayoutMode.Off })
         {
             var option = buttons.Single(b => (string)b.Tag == mode.ToString());
             var selection = (ISelectionItemProvider)new RadioButtonAutomationPeer(option).GetPattern(PatternInterface.SelectionItem)!;
@@ -882,7 +1025,7 @@ internal static class SmokeTests
             await WaitAsync("footer applies and saves " + mode, () => option.IsChecked == true &&
                 new NeatWin.App.SettingsStore(settingsPath).LoadAutomaticLayoutMode() == mode);
             Assert(buttons.Count(b => b.IsChecked == true) == 1, "only " + mode + " is selected in the footer");
-            if (mode == AutomaticLayoutMode.LightAssist)
+            if (mode == AutomaticLayoutMode.Light)
             {
                 shell.UpdateLayout();
                 Capture(shell, Path.Combine(output, "footer-light-assist.png"));

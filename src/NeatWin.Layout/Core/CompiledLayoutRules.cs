@@ -4,7 +4,10 @@ namespace NeatWin.Core;
 
 // Only anonymous keys from the recorder export or generic behavioral roles may participate in rules.
 public sealed record AppPairRule(string FirstApp, string SecondApp, string FirstSide = "either",
-    double? Overlap = null);
+    double? Overlap = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool OnlyWhenPaired = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? FirstWidth = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? SecondWidth = null);
 
 public sealed record RolePairRule(string FirstRole, string SecondRole, string FirstSide = "left",
     double? Overlap = null);
@@ -14,7 +17,9 @@ public sealed record AppSlotRule(string App, string Side = "either", double? Wid
 public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = .31, double AudioPeakThreshold = .02,
     double FragmentChangeThreshold = .08, AppPairRule[]? Pairs = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] RolePairRule[]? RolePairs = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AppSlotRule[]? AppSlots = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AppSlotRule[]? AppSlots = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LayoutScene[]? Scenes = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SurfaceRule[]? SurfaceRules = null)
 {
     public static CompiledLayoutRules Default { get; } = new(Pairs: []);
 
@@ -24,13 +29,18 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
     internal bool IsValid()
     {
         static bool Key(string? key) => key is { Length: 24 } && key.All(char.IsAsciiHexDigit);
-        if (Version is not (1 or 2) || MediaOverlap is not (>= 0 and <= .40) ||
+        if (SurfaceRules != null && (Version < 4 || SurfaceRules.Length > 64 || SurfaceRules.Any(r => r == null || !r.IsValid()) ||
+            SurfaceRules.Select(r => r.Id).Distinct().Count() != SurfaceRules.Length)) return false;
+        if (Version is not (1 or 2 or 3 or 4 or 5) || Scenes != null && (Version < 4 || Scenes.Length > 64 ||
+            Scenes.Any(s => s == null || !s.IsValid()) || Scenes.Select(s => s.Id).Distinct().Count() != Scenes.Length) || MediaOverlap is not (>= 0 and <= .40) ||
             AudioPeakThreshold is not (> 0 and <= 1) || FragmentChangeThreshold is not (> 0 and <= 1) ||
             Pairs?.Length > 64 || RolePairs?.Length > 32 || AppSlots?.Length > 64) return false;
         var seen = new HashSet<(string, string)>();
         foreach (var pair in Pairs ?? [])
         {
-            if (pair is null || !Key(pair.FirstApp) || !Key(pair.SecondApp) ||
+            if (pair is null || pair.OnlyWhenPaired && Version < 3 || !Key(pair.FirstApp) || !Key(pair.SecondApp) ||
+                ((pair.FirstWidth != null || pair.SecondWidth != null) && Version < 5) ||
+                pair.FirstWidth is not (null or >= .18 and <= .88) || pair.SecondWidth is not (null or >= .18 and <= .88) ||
                 pair.FirstSide is not ("left" or "right" or "either") ||
                 pair.Overlap is not (null or (>= 0 and <= .40))) return false;
             string a = pair.FirstApp.ToUpperInvariant(), b = pair.SecondApp.ToUpperInvariant();
@@ -53,7 +63,7 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
     }
 
     internal WorkingPairRule[] Bind(IEnumerable<(WindowSnapshot Window, string? Key)> entries,
-        IReadOnlyList<TaskWindowHint>? hints = null, IReadOnlyDictionary<nint, string>? activities = null)
+        IReadOnlyList<TaskWindowHint>? hints = null, IReadOnlyDictionary<nint, string>? activities = null, LayoutFocus? focus = null)
     {
         var matches = new List<WorkingPairRule>();
         var hintByHandle = (hints ?? []).ToDictionary(h => h.Handle);
@@ -64,8 +74,15 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
                 .Where(g => g.Count() == 1)
                 .ToDictionary(g => g.Key, g => g.Single().Window.Handle, StringComparer.OrdinalIgnoreCase);
             foreach (var pair in Pairs ?? [])
-                if (unique.TryGetValue(pair.FirstApp, out var first) && unique.TryGetValue(pair.SecondApp, out var second))
-                    matches.Add(new(first, second, pair.FirstSide, pair.Overlap));
+            {
+                if (!unique.TryGetValue(pair.FirstApp, out var first) || !unique.TryGetValue(pair.SecondApp, out var second)) continue;
+                // 仅给定宽度时不建立任务关系，也不借机分栏。宽度的消费端单独匹配当前真实交接。
+                if ((pair.FirstWidth.HasValue || pair.SecondWidth.HasValue) && pair.FirstSide == "either" && pair.Overlap == null) continue;
+                var bound = new WorkingPairRule(first, second, pair.FirstSide, pair.Overlap, pair.OnlyWhenPaired);
+                // 两个应用同时存在只能识别窗口。条件规则只描述已被观察到的搭配，不从后台拉出搭档，也不拆开导航链。
+                if (!pair.OnlyWhenPaired || focus is { Evidence: "recent-switch-pair", Navigation: not { Length: > 0 } } &&
+                    bound.Matches(focus.Main, focus.Companion)) matches.Add(bound);
+            }
 
             if (RolePairs is not { Length: > 0 }) continue;
             foreach (var roleRule in RolePairs)
@@ -94,28 +111,29 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
         {
             if (!result.TryGetValue(slot.Window, out var prior)) { result[slot.Window] = slot; continue; }
             // A rule choosing only one dimension leaves evidence on the other dimensions available.
-            var stronger = prior.Confidence >= slot.Confidence ? prior : slot;
-            var other = stronger == prior ? slot : prior;
-            var position = stronger.PreferCenter ? stronger : other;
-            var size = stronger.PreferWidth ? stronger : other;
+            var position = prior.PositionConfidence >= slot.PositionConfidence ? prior : slot;
+            var size = prior.WidthConfidence >= slot.WidthConfidence ? prior : slot;
             result[slot.Window] = position with
             {
-                Width = size.Width, PreferWidth = size.PreferWidth,
-                Height = prior.Height, Confidence = stronger.Confidence,
+                Width = size.Width, PreferWidth = size.PreferWidth, Height = prior.Height,
+                Confidence = Math.Max(position.PositionConfidence, Math.Max(size.WidthConfidence, prior.HeightConfidence)),
+                AxisConfidence = new(position.PositionConfidence, size.WidthConfidence, prior.HeightConfidence),
             };
         }
         return result.Values.ToArray();
     }
 
-    internal PlacementPreference[] BindSlots(IEnumerable<(WindowSnapshot Window, string? Key)> entries)
+    internal PlacementPreference[] BindSlots(IEnumerable<(WindowSnapshot Window, string? Key)> entries, LayoutFocus? focus = null)
     {
-        if (AppSlots is not { Length: > 0 }) return [];
+        bool paired = focus is { Main: not 0, Companion: not 0, Navigation: not { Length: > 0 } } &&
+            (focus.OpeningResidentLeft.HasValue || focus.Evidence == "recent-switch-pair" && focus.Switches >= 2);
+        if (AppSlots is not { Length: > 0 } && !(paired && Pairs?.Any(p => p.FirstWidth.HasValue || p.SecondWidth.HasValue) == true)) return [];
         var list = new List<PlacementPreference>();
         foreach (var screen in entries.Where(e => e.Key != null && e.Window.IsManageable).GroupBy(e => e.Window.MonitorHandle))
         {
             var unique = screen.GroupBy(e => e.Key!, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() == 1)
                 .ToDictionary(g => g.Key, g => g.Single().Window, StringComparer.OrdinalIgnoreCase);
-            foreach (var slot in AppSlots)
+            foreach (var slot in AppSlots ?? [])
             {
                 if (!unique.TryGetValue(slot.App, out var w)) continue;
                 double width = slot.Width ?? Math.Clamp(w.VisualRect.Width / (double)Math.Max(1, w.WorkArea.Width), .22, .80);
@@ -131,12 +149,34 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
                     list.Add(new(w.Handle, 0, center, width, order, -1, .46,
                         PreferWidth: slot.Width.HasValue, PreferCenter: slot.Side != "either"));
             }
+            if (!paired) continue;
+            foreach (var pair in Pairs ?? [])
+            {
+                if (!unique.TryGetValue(pair.FirstApp, out var first) || !unique.TryGetValue(pair.SecondApp, out var second) ||
+                    !(focus!.Main == first.Handle && focus.Companion == second.Handle ||
+                      focus.Main == second.Handle && focus.Companion == first.Handle)) continue;
+                // 情境只增强宽度这一轴的先验。各自的落点、互相的左右关系与是否值得移动仍由本次现场决定。
+                AddWidth(first, pair.FirstWidth);
+                AddWidth(second, pair.SecondWidth);
+            }
+            void AddWidth(WindowSnapshot window, double? width)
+            {
+                if (width == null) return;
+                int index = list.FindIndex(p => p.Window == window.Handle);
+                var prior = index < 0 ? null : list[index];
+                // .72 比无条件应用槽位的 .46 更具体，置信度更高的同轴手动习惯仍可胜出。
+                var value = new PlacementPreference(window.Handle, 0, prior?.Center ?? .5, width.Value, prior?.Order ?? 0,
+                    -1, .72, PreferCenter: prior?.PreferCenter == true,
+                    AxisConfidence: new(prior?.PositionConfidence ?? 0, .72, 0));
+                if (index < 0) list.Add(value);
+                else list[index] = value;
+            }
         }
         return list.ToArray();
     }
 }
 
-public sealed record WorkingPairRule(nint First, nint Second, string FirstSide, double? Overlap)
+public sealed record WorkingPairRule(nint First, nint Second, string FirstSide, double? Overlap, bool OnlyWhenPaired = false)
 {
     internal bool Matches(nint a, nint b) => First == a && Second == b || First == b && Second == a;
 }

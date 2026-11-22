@@ -30,6 +30,9 @@ public sealed partial class WindowManager
         "WorkerW",
         "Shell_TrayWnd",
         "Shell_SecondaryTrayWnd",
+        // 输入法宿主可能与浏览器同进程。按辅助窗口自己的类名排除，保留承载正文的应用窗口。
+        "IME",
+        "MSCTFIME UI",
     };
 
     public IReadOnlyList<WindowSnapshot> Capture()
@@ -131,7 +134,9 @@ public sealed partial class WindowManager
                 processId,
                 isTopmost,
                 independent && !isToolWindow && !noActivate && visualRect.Area >= 10_000
-                    ? (fullScreen ? "fullscreen" : maximized ? "maximized" : "windowed") : null) { Owner = owner });
+                    ? (fullScreen ? "fullscreen" : maximized ? "maximized" : "windowed") : null) { Owner = owner, NativeUtility = isToolWindow || noActivate || owner != 0 && !independent,
+                    IndependentFrame = (exStyle & NativeMethods.WsExAppWindow) != 0 ||
+                        (style & (NativeMethods.WsMinimizeBox | NativeMethods.WsMaximizeBox)) != 0 });
 
             return true;
         }, nint.Zero);
@@ -146,9 +151,35 @@ public sealed partial class WindowManager
         return result;
     }
 
-    public void Apply(IReadOnlyList<TidyMove> plan) => SubmitMoves(plan, [], 0, out _, out _);
+    public void Apply(IReadOnlyList<TidyMove> plan) => SubmitMoves(plan, CanDeferMoves(plan), [], 0, out _, out _);
 
-    private IReadOnlyList<WindowMoveFailure> SubmitMoves(IReadOnlyList<TidyMove> plan, List<string> notes,
+    private static bool CanDeferMoves(IReadOnlyList<TidyMove> plan)
+    {
+        if (plan.Count < 2) return false;
+        var parent = NativeMethods.GetAncestor(plan[0].Window.Handle, NativeMethods.GaParent);
+        if (parent == 0) return false;
+
+        // EndDeferWindowPos 会同步发位置消息。用整批共享的 30ms 探测已卡住的队列，
+        // 避免新近挂起尚未被 IsHungAppWindow 识别时拖住其余窗口。
+        long deadline = Environment.TickCount64 + 30;
+        foreach (var move in plan)
+        {
+            var hwnd = move.Window.Handle;
+            if (NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid) == 0 || pid != move.Window.ProcessId ||
+                (NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GwlStyle).ToInt64() & NativeMethods.WsChild) != 0 ||
+                NativeMethods.GetAncestor(hwnd, NativeMethods.GaParent) != parent || NativeMethods.IsHungAppWindow(hwnd))
+                return false;
+
+            // GA_PARENT 取真实父级。独立的顶层有主窗口仍可与其他桌面窗口同批提交。
+            long remaining = deadline - Environment.TickCount64;
+            if (remaining <= 0 || NativeMethods.SendMessageTimeout(hwnd, NativeMethods.WmNull, 0, 0,
+                    NativeMethods.SmtoBlock | NativeMethods.SmtoAbortIfHung, (uint)remaining, out _) == 0)
+                return false;
+        }
+        return true;
+    }
+
+    private IReadOnlyList<WindowMoveFailure> SubmitMoves(IReadOnlyList<TidyMove> plan, bool deferMoves, List<string> notes,
         nint gestureWindow, out long? firstSubmitTick, out long? gestureSubmitTick)
     {
         firstSubmitTick = gestureSubmitTick = null;
@@ -156,10 +187,10 @@ public sealed partial class WindowManager
 
         InvalidateCache();
         foreach (var move in plan) AutomationGuard.Mark(move.Window.Handle);
-        const uint flags = NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate |
-            NativeMethods.SwpNoOwnerZOrder | NativeMethods.SwpAsyncWindowPos;
+        // DeferWindowPos 不接受 SWP_ASYNCWINDOWPOS；逐窗提交仍用它隔离外部队列。
+        const uint geometryFlags = NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate | NativeMethods.SwpNoOwnerZOrder;
 
-        if (plan.Count > 1)
+        if (deferMoves)
         {
             var stage = "BeginDeferWindowPos";
             var deferred = NativeMethods.BeginDeferWindowPos(plan.Count);
@@ -170,7 +201,7 @@ public sealed partial class WindowManager
                 {
                     var outer = ToOuterRect(move.Window, move.TargetVisualRect);
                     deferred = NativeMethods.DeferWindowPos(deferred, move.Window.Handle, 0,
-                        outer.X, outer.Y, outer.Width, outer.Height, flags);
+                        outer.X, outer.Y, outer.Width, outer.Height, geometryFlags);
                     if (deferred == 0) break;
                 }
                 if (deferred != 0)
@@ -191,7 +222,8 @@ public sealed partial class WindowManager
         foreach (var move in plan)
         {
             var outer = ToOuterRect(move.Window, move.TargetVisualRect);
-            if (!NativeMethods.SetWindowPos(move.Window.Handle, 0, outer.X, outer.Y, outer.Width, outer.Height, flags))
+            if (!NativeMethods.SetWindowPos(move.Window.Handle, 0, outer.X, outer.Y, outer.Width, outer.Height,
+                    geometryFlags | NativeMethods.SwpAsyncWindowPos))
                 failures.Add(new(move, Marshal.GetLastPInvokeError()));
             else
             {
@@ -203,6 +235,7 @@ public sealed partial class WindowManager
         return failures;
     }
 
+    // 规划用可见边框计算对齐，原生移动接口接收外框。提交时补回每扇窗自己的边距，才能让并排后的可见边缘对齐。
     private static RectI ToOuterRect(WindowSnapshot window, RectI visualRect)
     {
         var insets = window.FrameInsets;

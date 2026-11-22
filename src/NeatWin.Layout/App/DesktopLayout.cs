@@ -17,13 +17,14 @@ internal sealed class DesktopLayout : IDisposable
 
     internal DesktopLayout(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged = null,
         Action<bool>? undoChanged = null, ForegroundHistory? focus = null, Action<LayoutRunObservation>? snapshotObserver = null, Action<string, GestureEvent>? gestureObserver = null,
-        Func<bool>? snapshotWantsGestures = null, Func<nint, uint, long, string, bool>? keepRunning = null)
+        Func<bool>? snapshotWantsGestures = null, Func<nint, uint, long, string, bool>? keepRunning = null,
+        Action<SurfaceEvent>? surfaceObserver = null, Func<bool>? snapshotWantsSurfaces = null)
     {
         var thread = new Thread(() =>
         {
             try
             {
-                using var context = new NeatWinApplicationContext(directory, report, recorderChanged, undoChanged, _stop.Token, focus, snapshotObserver, gestureObserver, snapshotWantsGestures, keepRunning);
+                using var context = new NeatWinApplicationContext(directory, report, recorderChanged, undoChanged, _stop.Token, focus, snapshotObserver, gestureObserver, snapshotWantsGestures, keepRunning, surfaceObserver, snapshotWantsSurfaces);
                 _ready.SetResult(context);
                 Application.Run(context);
             }

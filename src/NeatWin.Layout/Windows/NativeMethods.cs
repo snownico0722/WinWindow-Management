@@ -28,6 +28,7 @@ internal static class NativeMethods
     internal static extern bool GetLayeredWindowAttributes(nint hwnd, out uint color, out byte alpha, out uint flags);
     internal const long WsExToolWindow = 0x00000080L;
     internal const long WsExNoActivate = 0x08000000L;
+    internal const uint GaParent = 1;
     internal const uint GaRoot = 2;
     internal const uint GwOwner = 4;
     internal const uint MonitorDefaultToNearest = 2;
@@ -37,6 +38,7 @@ internal static class NativeMethods
     internal const uint SwpNoActivate = 0x0010;
     internal const uint SwpNoOwnerZOrder = 0x0200;
     internal const uint SwpAsyncWindowPos = 0x4000;
+    internal const uint WmNull = 0x0000;
     internal const int WmHotkey = 0x0312;
     internal const int WmLButtonDown = 0x0201;
     internal const int WmLButtonUp = 0x0202;
@@ -144,6 +146,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern uint GetDpiForWindow(nint hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int GetWindowText(nint hwnd, StringBuilder text, int maxCount);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern int GetClassName(nint hwnd, StringBuilder className, int maxCount);

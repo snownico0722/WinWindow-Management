@@ -15,6 +15,7 @@ internal sealed class IdleWindowReclaim
         var main = context.Focus?.Main ?? 0;
         var peer = context.Focus?.Companion ?? 0;
         var protectedHandles = new HashSet<nint> { main, peer, context.GestureAnchor, context.VideoHint?.WindowHandle ?? 0 };
+        if (plan.Scene != null) protectedHandles.UnionWith(plan.Scene.References.Select(g => g.Window.Handle));
         if (context.Focus?.NavigationAncestors is { } ancestors) protectedHandles.UnionWith(ancestors);
         foreach (var hint in context.WindowHints ?? [])
             if (hint.Anchor || hint.PassiveVisual || hint.MediaCompanion || hint.ProtectPeriphery || hint.ProtectedRegions is { Length: > 0 })
@@ -53,6 +54,7 @@ internal sealed class IdleWindowReclaim
         idle.ExceptWith(plan.Layers.SelectMany(l => l.FrontToBack.Select(w => w.Handle)));
         if (idle.Count == 0) return null;
 
+        // 按本轮摆完的位置评估回收收益。若主窗移动后自己就能露出来，原先挡住它的窗口可以留着。
         var projected = TaskLayoutSession.Project(snapshot, plan);
         WindowSnapshot? best = null;
         double bestGain = .12;

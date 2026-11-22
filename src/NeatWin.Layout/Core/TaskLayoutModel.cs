@@ -215,13 +215,47 @@ internal static partial class IntentLayoutPlanner
         RectI area, TidyOptions options, TaskLayoutContext context, WindowSnapshot[]? obstacles = null,
         OcclusionMetrics.Exposure[]? beforeExposure = null, AttentionTarget[]? goals = null)
     {
+        if (context.IsWorkspaceObservation && !context.ExplicitArrange && context.GestureAnchor == 0 &&
+            context.Focus is { OpeningResidentLeft: null } orderedFocus && goals != null)
+        {
+            int main = Array.FindIndex(windows, v => v.Window.Handle == orderedFocus.Main);
+            for (int j = 0; main >= 0 && j < windows.Length; j++)
+            {
+                if (goals[j].Role != AttentionRole.Reference) continue;
+                var a = original[main]; var b = original[j];
+                double dx = CenterX(a) - CenterX(b), dy = CenterY(a) - CenterY(b);
+                // 焦点切换可以重新分配阅读宽度。保留两窗中心的相对次序，用户仍能在原来的方向找到参考窗。
+                if (Math.Abs(dx) > area.Width * .28 && a.VerticalOverlapRatio(b) >= .45 &&
+                    dx * (CenterX(candidate.Rects[main]) - CenterX(candidate.Rects[j])) < 0) return false;
+                if (Math.Abs(dy) > area.Height * .28 && a.HorizontalOverlapRatio(b) >= .45 &&
+                    dy * (CenterY(candidate.Rects[main]) - CenterY(candidate.Rects[j])) < 0) return false;
+            }
+        }
         var previous = beforeExposure ?? MeasureBeforeExposure(windows, original, area, obstacles);
         var front = new List<RectI>();
         foreach (var i in candidate.Order)
         {
             var window = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             bool gestureEndpoint = window.Handle == context.GestureAnchor && b == context.GestureTarget;
+            // 只保护用户刚选的半屏。另一扇窗获得焦点或也被拖回同一侧，不能授权把前一扇当成分栏的牺牲品。
+            if (!gestureEndpoint && (!context.PreservesReleasedSide(window, b) || context.RepeatsReversal(window, b))) return false;
+            if (context.Scene?.Lane?.Allows(window, b) == false) return false;
+            if (!gestureEndpoint && (a.Width != b.Width || a.Height != b.Height) &&
+                context.VideoFits?.GetValueOrDefault(window.Handle) is { } fit && !fit.Preserves(a, b)) return false;
             bool textView = context.HoldsTextView(window);
+            if (a != b && !context.ExplicitArrange && context.GestureAnchor == 0 && context.Focus is { } focus)
+            {
+                // Across an opening, the resident owns its side. Also protect a prior
+                // side when new typing vetoed the opening and the foreground is now fixed.
+                bool? left = window.Handle == focus.Companion ? focus.OpeningResidentLeft : null;
+                if (!left.HasValue && goals?[i].Role == AttentionRole.Reference &&
+                    windows.Any(v => v.Window.Handle == focus.Main && context.HoldsTextView(v.Window) &&
+                        v.Window.VisualRect.Intersect(a).Area >= .4 * a.Area) &&
+                    Math.Abs(CenterX(a) - CenterX(area)) >= area.Width * .10)
+                    left = CenterX(a) < CenterX(area);
+                if (left.HasValue && (left.Value ? CenterX(b) > CenterX(area) : CenterX(b) < CenterX(area)))
+                    return false;
+            }
             if (textView)
             {
                 int rank = Array.IndexOf(candidate.Order, i);
@@ -374,7 +408,7 @@ internal static partial class IntentLayoutPlanner
                 // The working minimum and the comfortable upper bound serve different roles.
                 // Visible content and reachable title area are measured after all projected moves.
                 static int Missing(double fraction) => (int)Math.Round(20 * (1 - Math.Clamp(fraction, 0, 1)));
-                if (target.RestingCenter is double center)
+                if (!target.DefaultCenter && target.RestingCenter is double center)
                 {
                     var offset = Math.Abs(CenterX(b) - center) / area.Width;
                     alignment += 3 * Math.Max(0, offset - .04);
@@ -386,16 +420,14 @@ internal static partial class IntentLayoutPlanner
                 {
                     // During direct input, movement is salient relative to the surface
                     // containing the controls, even when it spans a small part of the monitor.
-                    double input = target.Role == AttentionRole.Main ? context.Attention?.GetValueOrDefault(w.Handle)?.Input ?? 0 : 0;
                     double dx = Math.Abs(CenterX(a) - CenterX(b)), dy = Math.Abs(CenterY(a) - CenterY(b));
-                    double displacement = (1 - input) * (dx / area.Width + dy / area.Height) +
-                        input * (dx / Math.Min(area.Width, a.Width) + dy / Math.Min(area.Height, a.Height));
+                    double displacement = dx / Math.Min(area.Width, a.Width) + dy / Math.Min(area.Height, a.Height);
                     double resize = Math.Abs(Math.Log(b.Width / (double)a.Width)) + Math.Abs(Math.Log(b.Height / (double)a.Height));
                     comfortDeficit += (int)Math.Round(20 * stability * (displacement + resize));
                     continuity += 8 * stability * (displacement + resize);
                 }
                 double exposedWidth = Math.Min(exposure.UsefulWidth, b.Width);
-                double exposedHeight = Math.Min(b.Height, b.Area * exposure.Visible / Math.Max(1, exposedWidth));
+                double exposedHeight = exposure.UsefulHeight(b);
                 if (target.Role is AttentionRole.Main or AttentionRole.Reference &&
                     context.VideoHint?.WindowHandle != w.Handle)
                 {
@@ -510,9 +542,14 @@ internal static partial class IntentLayoutPlanner
             }
             switching += .8 * accessLoss;
             peripheral += 1.4 * (1 - b.Intersect(area).Area / (double)b.Area);
+            if (context.Scene?.Lane is { Restore: { } restored } returning && returning.Front.Handle == windows[i].Window.Handle)
+                continuity += 3 * profile.SpatialContinuityWeight * (Math.Abs(CenterX(b) - CenterX(restored)) / area.Width +
+                    Math.Abs(CenterY(b) - CenterY(restored)) / area.Height);
             var distance = Math.Sqrt(Math.Pow(CenterX(a) - CenterX(b), 2) + Math.Pow(CenterY(a) - CenterY(b), 2));
             continuity += .35 * profile.SpatialContinuityWeight * distance / Math.Max(300 * scale, Math.Min(area.Width, area.Height));
             reflow += .18 * (Math.Abs(Math.Log(b.Width / (double)a.Width)) + Math.Abs(Math.Log(b.Height / (double)a.Height)));
+            if (!context.ExplicitArrange && context.Attention?.GetValueOrDefault(w.Handle)?.Correction is { } correction)
+                continuity += correction.Cost(a, b);
             if (context.RecentGesture is { } gesture && gesture.WindowHandle == w.Handle &&
                 gesture.WorkArea == area && gesture.EndRect == a && gesture.Kind != ManualGestureKind.Move)
                 reflow += .45 * (Math.Abs(Math.Log(b.Width / (double)a.Width)) + Math.Abs(Math.Log(b.Height / (double)a.Height)));
@@ -599,21 +636,21 @@ internal static partial class IntentLayoutPlanner
             if (index < 0) continue;
             var r = candidate.Rects[index];
             double targetCenter = (CenterX(r) - area.Left) / area.Width;
-            double error = preference.PreferCenter ? Math.Abs(targetCenter - preference.Center) : 0;
-            if (preference.PreferWidth) error += .5 * Math.Abs(r.Width / (double)area.Width - preference.Width);
+            double error = preference.PositionConfidence * Math.Abs(targetCenter - preference.Center);
+            error += .5 * preference.WidthConfidence * Math.Abs(r.Width / (double)area.Width - preference.Width);
             int peer = Array.FindIndex(windows, w => w.Window.Handle == preference.Partner);
             if (peer >= 0 && Math.Abs(preference.Order) >= .5 &&
                 Math.Sign(CenterX(r) - CenterX(candidate.Rects[peer])) != Math.Sign(preference.Order))
-                error += 2 * Math.Abs(preference.Order);
+                error += 2 * preference.PositionConfidence * Math.Abs(preference.Order);
             if (peer >= 0 && preference.RevealedCell is >= 0 and < 16)
             {
                 var cell = WindowExposure.Cell(candidate.Rects[peer], preference.RevealedCell);
                 var slot = Array.IndexOf(candidate.Order, peer);
                 var covers = candidate.Order.Take(slot).Select(i => candidate.Rects[i])
                     .Concat((obstacles ?? []).Where(w => w.ZOrder < ranks[slot]).Select(w => w.VisualRect));
-                error += 2 * (1 - ScreenExposure(cell, covers, area, windows[peer].Window.Dpi).Visible);
+                error += 2 * preference.PositionConfidence * (1 - ScreenExposure(cell, covers, area, windows[peer].Window.Dpi).Visible);
             }
-            personal += preference.Confidence * error;
+            personal += error;
         }
         return new(information, switching, continuity, reflow, peripheral, alignment, uncertainty, feedback, personal, pairCost,
             new(mainDeficit, accessDeficit, comfortDeficit, gestureDeficit));
@@ -624,7 +661,7 @@ internal static partial class IntentLayoutPlanner
         TaskLayoutContext context, IReadOnlyList<WindowSnapshot> desktop)
     {
         if (context.VerifiedRepeat && !context.ExplicitArrange) return refined.Count == 0 && planned.Layers.Count == 0;
-        context = ResolveExplicitFocus(visible, context);
+        context = ResolveExplicitFocus(visible, context.WithCurrentCorrections(desktop));
         visible = IncludeWorkingCompanion(visible, desktop, context);
         var known = planned.Groups.SelectMany(g => g.Handles).ToHashSet();
         if (refined.Any(m => !known.Contains(m.Window.Handle))) return false;
@@ -643,7 +680,7 @@ internal static partial class IntentLayoutPlanner
         }
         var plannedDesktop = Project(planned.Moves);
         var refinedDesktop = Project(refined);
-        if (!DesktopRegionsPreserved(plannedDesktop, refinedDesktop, context)) return false;
+        if (!DesktopRegionsPreserved(plannedDesktop, refinedDesktop, context, desktop)) return false;
         foreach (var trace in planned.Groups)
         {
             var group = visible.Where(v => trace.Handles.Contains(v.Window.Handle)).OrderBy(v => v.Window.ZOrder).ToArray();

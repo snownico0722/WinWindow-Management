@@ -22,6 +22,44 @@ internal static class AttentionWorkspaceChecks
             { [2] = new(1, 1, 1, 1, false), [3] = new(1, 1, 1, 1, false) } };
         IntentLayoutPlan Balanced(WindowSnapshot[] windows, TaskLayoutContext task) => LayoutDispatch.Create(LayoutRoute.Smart,
             new VisibilityAnalyzer().SelectForManualArrange(windows, true), new(SmartStrength: SmartTidyStrength.Balanced), null, windows, task);
+        // 用陌生窗口、镜像及不同原点回放第六版的因果链。参考离开后，原位可读的窗口仍无需横移。
+        foreach (bool right in new[] { false, true })
+        foreach (string surface in new[] { "maximized", "fullscreen" })
+        {
+            var side = Window(1, right ? 860 : 0, 30, 1060, 980);
+            var rear = Window(2, 0, 0, area.Width, area.Height) with { IsManageable = false, SurfaceState = surface };
+            var workspace = context with { IsWorkspaceObservation = true, AllowGestureAssist = false };
+            check(Balanced([side, rear], workspace).Moves.Count == 0 &&
+                Balanced([side], workspace).Moves.All(m => m.TargetVisualRect.X == side.VisualRect.X),
+                $"a single eligible window preserves a visible {surface} reference and retains its place after it leaves (right: {right})");
+        }
+        var left = Window(1, 0, 30, 1100, 990);
+        var center = left.VisualRect with { X = area.X + 410 };
+        var release = left.VisualRect with { X = area.X + 48 };
+        var released = left with { VisualRect = release };
+        var corrections = new ForegroundHistory();
+        corrections.Visit(1, 1, 0);
+        corrections.Submitted(new([new(left, center)], [], []), [left, peer], 1200);
+        var manual = new ManualWindowGesture(1, center, release, area, ManualGestureKind.Move, [], 400, 0);
+        corrections.Placed(released, manual, 2000, [released, peer]);
+        corrections.Submitted(new([new(released, left.VisualRect)], [], []), [released, peer], 2050);
+        corrections.Interact(1, 1, 16000);
+        corrections.Resolve([left, peer], 30000, out var observedCorrection);
+        var evidence = observedCorrection[1].Correction;
+        check(evidence is { X.Confidence: > .8, Y: null, Width: null, Height: null } &&
+            evidence.Cost(left.VisualRect, center) > .8 && evidence.Cost(left.VisualRect, left.VisualRect with { Height = 800 }) == 0,
+            "a partial reversal and subsequent edge assist revise only the returned axis after the gesture expires");
+        var oldHabit = new PlacementPreference(1, 0, .50, .55, 0, -1, .9, AxisConfidence: new(.75, .9, 0));
+        var countered = context with { Attention = observedCorrection, Placement = [oldHabit], WorkspaceCause = WorkspaceChangeCause.Focus };
+        var logged = RecordedTaskSignals.From(countered, new Dictionary<nint, int> { [1] = 1 });
+        var replayed = System.Text.Json.JsonSerializer.Deserialize<RecordedTaskSignals>(
+            System.Text.Json.JsonSerializer.Serialize(logged))!.ApplyToReplay(new());
+        check(replayed.WorkspaceCause == WorkspaceChangeCause.Focus &&
+            replayed.WithCurrentCorrections([left, peer]).Placement is [{ PreferCenter: false, PreferWidth: true, WidthConfidence: .9 }],
+            "replay preserves current counterevidence, the independent width prior and the dispatch cause");
+        corrections.Resolve([left], 31000, out var differentTask);
+        check(differentTask[1].Correction == null, "closing the former companion ends the situational correction");
+
         var dockedWindow = Window(1, 1240, 150, 600, 500);
         var opposite = Window(2, 180, 100, 740, 710);
         var drag = new ManualWindowGesture(1, dockedWindow.VisualRect with { X = area.Left + 610 },
@@ -51,6 +89,67 @@ internal static class AttentionWorkspaceChecks
         var shared = TaskLayoutSession.Project(uneven, Balanced(uneven, comparisonContext));
         check(shared[0].VisualRect.Width >= 900 && shared[1].VisualRect.Width >= 900 &&
             shared[0].VisualRect.Intersect(shared[1].VisualRect).IsEmpty, "a crowded balanced pair redistributes excess width without overlap");
+        var observed = comparisonContext with { IsWorkspaceObservation = true, AllowGestureAssist = false };
+        var ready = new[] { Window(1, 0, 80, 960, 900), Window(2, 960, 60, 960, 950) };
+        var popup = Window(3, 940, 875, 120, 30) with { IsTopmost = true, IsManageable = false, ZOrder = -1 };
+        foreach (bool mainOnRight in new[] { true, false })
+        {
+            var columns = new[] { Window(1, mainOnRight ? 900 : 0, 85, 1020, 855),
+                Window(2, mainOnRight ? 0 : 900, 40, 1020, 920) };
+            var unrelatedHabit = new PlacementPreference(2, 99, .67, .52, 0, -1, .8);
+            var quietPeer = context with { IsWorkspaceObservation = true, Placement = [unrelatedHabit] };
+            foreach (var visit in new[] { observed with { Placement = [unrelatedHabit] }, quietPeer })
+            {
+                var plan = Balanced([popup, .. columns], visit);
+                check(plan.Moves.Count == 0 && plan.Layers.Count == 0 &&
+                    plan.Groups.Single().Task?.Limits.Contains("existing-readable-columns") == true,
+                    $"readable columns keep their frames through input and peer expiry (main on right: {mainOnRight}, companion: {visit.Focus?.Companion})");
+            }
+            var alone = Balanced([columns[0]], quietPeer);
+            check(alone.Moves.All(m => m.Window.Handle != 1 || m.TargetVisualRect.X == columns[0].VisualRect.X),
+                $"removing the visible peer preserves the usable remaining column (main on right: {mainOnRight})");
+        }
+        foreach (var frame in new[] { ready, new[] { popup, ready[0], ready[1] }, ready })
+            check(Balanced(frame, observed).Moves.Count == 0,
+                "a readable pair stays settled as a peripheral surface appears and disappears");
+        var viewport = ready[1].VisualRect with { X = ready[1].VisualRect.X + 30, Y = 180, Width = 880, Height = 620 };
+        var video = new VideoBlackBarHint(2, VideoBlackBarOrientation.Horizontal, 1.78, viewport, .95);
+        var ordinarySwitch = observed with { Focus = new(1, 2, 1, "handoff"),
+            Placement = [new(2, 0, .77, .3, 0, -1, .48, PreferWidth: false)] };
+        foreach (var hints in new[] { ordinarySwitch, ordinarySwitch with { VideoHint = video },
+            ordinarySwitch with { VideoHint = video with { Tendency = VideoBlackBarTendency.Expand } },
+            context with { IsWorkspaceObservation = true, VideoHint = video } })
+        {
+            var result = Balanced(ready, hints);
+            check(result.Layers.Count == 0 && (hints.VideoHint == null ? result.Moves.Count == 0 :
+                result.Moves is [{ Window.Handle: 2 } resize] && resize.TargetVisualRect.X == ready[1].VisualRect.X &&
+                resize.TargetVisualRect.Width == ready[1].VisualRect.Width && resize.TargetVisualRect.Height < ready[1].VisualRect.Height),
+                "a focus handoff keeps readable columns and horizontal bars shorten only the browser on its existing column");
+        }
+        var atFloor = ordinarySwitch with { VideoHint = video, SizeFloors = [new(2, 1, ready[1].VisualRect.Height)] };
+        check(Balanced(ready, atFloor).Moves.Count == 0,
+            "when cropping reaches a size floor and growing covers the neighbor, the entire pair stays put");
+        var withSpace = ready.Select(w => w with { WorkArea = area with { Width = 2500 },
+            VisualRect = w.Handle == 2 ? w.VisualRect with { X = w.VisualRect.X + 240 } : w.VisualRect }).ToArray();
+        var positive = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(withSpace, true),
+            new(), null, withSpace, atFloor with { VerifiedRepeat = true,
+                VideoHint = video with { ViewportVisualRect = viewport with { X = viewport.X + 240 } } });
+        check(positive.Moves is [{ Window.Handle: 2 } growth] && growth.TargetVisualRect.Width > ready[1].VisualRect.Width &&
+            positive.Layers.Count == 0, "with free space the same shrink preference permits expansion when shrinking hits a floor");
+        var contrary = ordinarySwitch with { Placement = [new(2, 0, .2, .5, 0, -1, .85)] };
+        check(Balanced(ready, contrary).Groups.Single().Candidates.Length > 1,
+            "a learned position on the opposite side still reopens the search");
+        var underMain = ready[1] with { VisualRect = ready[1].VisualRect with { X = ready[1].VisualRect.X - 260 } };
+        check(!IntentLayoutPlanner.DesktopRegionsPreserved(ready, [ready[0], underMain], observed with { VideoHint = video }) &&
+            IntentLayoutPlanner.DesktopRegionsPreserved([ready[0], underMain], ready, observed with { VideoHint = video }, ready),
+            "moving a detected viewport under the foreground loses content while moving it back reveals it");
+        var covered = ready[1] with { VisualRect = ready[1].VisualRect with { X = area.Left + 15 } };
+        check(Balanced([ready[0], covered], observed).Moves.Count > 0 && Balanced(uneven, observed).Moves.Count > 0,
+            "a real collision or a narrow reference immediately reopens workspace arrangement");
+        var utilityFocus = ready.Select(w => w with { IsForeground = false }).ToArray();
+        check(Balanced(utilityFocus, observed).Groups.Count == 0 &&
+            Balanced(utilityFocus, observed with { ExplicitArrange = true }).Groups.Count > 0,
+            "an uncaptured foreground suspends automatic work while an explicit arrangement remains available");
         var spacious = uneven.Select(w => w with { WorkArea = area with { Width = 2560, Height = 1440 } }).ToArray();
         var generous = TaskLayoutSession.Project(spacious, Balanced(spacious, comparisonContext));
         check(generous[0].VisualRect.Width >= uneven[0].VisualRect.Width && generous[1].VisualRect.Width >= 900,
@@ -76,13 +175,27 @@ internal static class AttentionWorkspaceChecks
         check(!Balanced(trio, navigationTask).Groups.SelectMany(g => g.Candidates).Any(c => c.Kind == "attention-side-stack"),
             "a three-hop navigation task never becomes a main window with two tiled references");
 
-        double Distance(RectI r) => Math.Abs((r.Left + r.Width / 2d) - (area.Left + area.Width / 2d));
-        var centered = Solve([document], context)[0];
-        check(Distance(centered) <= area.Width * .05 && centered.Width >= document.VisualRect.Width,
-            "a lone reading window occupies the display's central viewing area");
+        var grown = Solve([document], context with { IsWorkspaceObservation = true })[0];
+        check(grown.X == document.VisualRect.X && grown.Width > document.VisualRect.Width,
+            "a narrow side window can gain readable width into the empty space in place");
+        foreach (var request in new[] { context with { ExplicitArrange = true }, context with { FirstPlacementWindow = 1, IsWorkspaceObservation = true } })
+        {
+            var adequate = Window(1, 0, 80, 1200, 900);
+            check(Solve([adequate], request)[0] == adequate.VisualRect,
+                "geometric centering alone cannot pay for moving an already readable window");
+            var goals = AttentionLayout.Targets([new(document, document.VisualRect.Area, document.VisualRect.Area, 1)], request, SmartTidyStrength.Assertive);
+            AttentionLayout.SetRestingCenter([new(document, document.VisualRect.Area, document.VisualRect.Area, 1)], goals, [], request);
+            check(goals is [{ DefaultCenter: true }], "a fresh or explicitly arranged window may compare a central landing");
+        }
         var parked = Solve([document, peer], context);
         check(parked[0].Intersect(peer.VisualRect).Area < peer.VisualRect.Area * .35,
             "solo centering respects another visible surface on the destination side");
+        var keyed = new[] { (document, (string?)new string('A', 24)), (peer, (string?)new string('B', 24)) };
+        var scoped = new CompiledLayoutRules(Version: 3, Pairs: [new(keyed[0].Item2!, keyed[1].Item2!, "left", OnlyWhenPaired: true)]);
+        check(scoped.IsValid() && scoped.Bind(keyed, focus: new(1, 0, 0)).Length == 0 &&
+            scoped.Bind(keyed, focus: new(2, 1, 1, "handoff")).Length == 0 &&
+            scoped.Bind(keyed, focus: new(2, 1, 3)) is [{ First: 1, Second: 2, FirstSide: "left" }],
+            "a learned side order binds in either focus direction only for an observed working pair");
         var pairContext = context with { Focus = new(1, 0, 1),
             Attention = new Dictionary<nint, LayoutAttention>(attention) { [2] = new(.95, .4, .2, .95, false) } };
         var pair = Solve([document, peer], pairContext);

@@ -5,7 +5,9 @@ public sealed record ObservedWindow(int Id, RectI Rect, RectI WorkArea, uint Dpi
     int ZOrder, bool Foreground, bool Topmost, bool Manageable, double VisibleRatio, WindowExposure? Exposure = null,
     string? AppKey = null, bool? Resizable = null, string? SurfaceState = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    int OwnerId = 0);
+    int OwnerId = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    bool LocalSurface = false);
 public sealed record WorkspaceFrame(DateTimeOffset Time, ObservedWindow[] Windows, bool Truncated = false,
     RecordedDisplay[]? Displays = null);
 public sealed record WorkspaceTransition(int Version, string Session, string Cause,
@@ -19,6 +21,8 @@ public sealed record ProjectedPlan(PlannedWindow[] Targets, int[][] Layers, stri
 public sealed record RejectedWindowMove(int Id, RectI Target, int Win32Error);
 public sealed record RecordedGestureTiming(int WindowId, bool ReusedPreview, long? ReleaseToFirstGeometrySubmitMs,
     long? ReleaseToGestureWindowSubmitMs);
+public sealed record RecordedShadowFinding(int WindowId, string Axis, string Diagnosis, bool AlternativeSelected);
+public sealed record RecordedShadowRule(int WindowId, string Axis, int Value, int Tolerance, string Change);
 public sealed record LayoutRunObservation(int Version, string Session, string RequestId, string Trigger,
     WorkspaceFrame Before, PlannedWindow[] Targets, int[][] Layers, PlannedGroup[] Groups,
     WorkspaceFrame? Actual, string Outcome, string[] ApplyNotes, ProjectedPlan? BasePlan = null, ProjectedPlan? Proposal = null, ProjectedPlan? ScoredPlan = null,
@@ -27,7 +31,15 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     string? UndoOfRequest = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    RecordedGestureTiming? GestureTiming = null);
+    RecordedGestureTiming? GestureTiming = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    long? OpeningToFirstGeometrySubmitMs = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    SceneEffect[]? SceneEffects = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    SceneEffect[]? ActualSceneEffects = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RecordedShadowFinding[]? ShadowReplay = null);
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
 public sealed class ObservationIdentityTracker
@@ -56,7 +68,7 @@ public sealed class ObservationIdentityTracker
     }
 
     public WorkspaceFrame Capture(IReadOnlyList<WindowSnapshot> snapshot,
-        RecordedDisplay[]? displays = null, Func<WindowSnapshot, string?>? appKey = null)
+        RecordedDisplay[]? displays = null, Func<WindowSnapshot, string?>? appKey = null, Func<WindowSnapshot, bool>? isLocalSurface = null)
     {
         var result = new List<ObservedWindow>();
         var ordered = snapshot.OrderBy(w => w.ZOrder).ToArray();
@@ -70,7 +82,7 @@ public sealed class ObservationIdentityTracker
             var exposure = WindowExposure.Measure(window.VisualRect, screens, front);
             result.Add(new(sampledIds[window.Handle], window.VisualRect, window.WorkArea, window.Dpi, window.ZOrder,
                 window.IsForeground, window.IsTopmost, window.IsManageable, exposure.Visible, exposure,
-                window.IsManageable || window.SurfaceState != null ? appKey?.Invoke(window) : null, window.IsResizable, window.SurfaceState, sampledIds.GetValueOrDefault(window.Owner)));
+                window.IsManageable || window.SurfaceState != null ? appKey?.Invoke(window) : null, window.IsResizable, window.SurfaceState, sampledIds.GetValueOrDefault(window.Owner), isLocalSurface?.Invoke(window) == true));
         }
         return new(DateTimeOffset.UtcNow, result.ToArray(), snapshot.Count > 64, displays);
     }
@@ -92,9 +104,11 @@ public sealed record RecordedWindowHint(int Id, bool Passive, bool Media, bool A
 public sealed record RecordedPlacement(int Id, int Partner, double Center, double Width, double Order,
     int Cell, double Confidence, double? Overlap,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    double? Height = null, bool PreferWidth = true, bool PreferCenter = true);
+    double? Height = null, bool PreferWidth = true, bool PreferCenter = true,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    PlacementConfidence? AxisConfidence = null);
 public sealed record RecordedVideo(int Id, VideoBlackBarOrientation Orientation, double ContentAspectRatio,
-    RectI Viewport, double Confidence, WindowExposure? Exposure);
+    RectI Viewport, double Confidence, WindowExposure? Exposure, VideoBlackBarTendency Tendency = VideoBlackBarTendency.Shrink);
 public sealed record RecordedSizeFloor(int Id, int MinWidth, int MinHeight);
 public sealed record RecordedNavigationHop(int Source, int Target, string Evidence, long AgeMilliseconds, string SourceRole);
 public sealed record RecordedNavigation(DateTimeOffset? ObservedAt, RecordedNavigationHop[] Hops);
@@ -107,7 +121,17 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     int GestureAnchor = 0, RecordedVideo? Video = null, RectI? GestureTarget = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    RecordedNavigation? Navigation = null)
+    RecordedNavigation? Navigation = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? WorkspaceCause = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<int, VideoViewportFit>? VideoFits = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    int FirstPlacementWindow = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    int OriginSide = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RecordedShadowRule[]? ShadowRules = null)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids, IReadOnlyList<WindowSnapshot>? snapshot = null)
     {
@@ -123,7 +147,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
                 context.Displays?.Select(d => d.Bounds) ?? [window.WorkArea],
                 snapshot!.Where(w => w.ZOrder < window.ZOrder).Select(w => w.VisualRect));
             video = new(Id(hint.WindowHandle), hint.Orientation, hint.ContentAspectRatio, hint.ViewportVisualRect,
-                hint.Confidence, exposure);
+                hint.Confidence, exposure, hint.Tendency);
         }
         // Keep the connected suffix ending at the live main window. A disappeared ancestor
         // has no current session mapping and cannot be joined to an unrelated earlier hop.
@@ -144,16 +168,26 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             hops.Reverse();
             if (hops.Count > 0) navigation = new(context.NavigationObservedAt, hops.ToArray());
         }
+        var shadow = context.ShadowAxes?.Where(a => Id(a.Window) != 0).Select(a =>
+            new RecordedShadowRule(Id(a.Window), a.Axis.ToString(), a.Value, a.Tolerance, a.Change.ToString())).ToArray();
+        var fits = context.VideoFits?.Where(pair => Id(pair.Key) != 0).ToDictionary(pair => Id(pair.Key), pair => pair.Value);
         return new(Id(focus?.Main ?? 0), Id(focus?.Companion ?? 0), focus?.Switches ?? 0, focus?.Evidence,
             (context.WindowHints ?? []).Where(h => Id(h.Handle) != 0)
                 .Select(h => new RecordedWindowHint(Id(h.Handle), h.PassiveVisual, h.MediaCompanion, h.Anchor, h.ProtectedRegions, h.Role, h.FloatingAffinity, h.TextFocus, h.InitialTextPlacement)).ToArray(),
             (context.Placement ?? []).Where(p => Id(p.Window) != 0)
                 .Select(p => new RecordedPlacement(Id(p.Window), Id(p.Partner), p.Center, p.Width, p.Order,
-                    p.RevealedCell, p.Confidence, p.InnerOverlap, p.Height, p.PreferWidth, p.PreferCenter)).ToArray(),
+                    p.RevealedCell, p.Confidence, p.InnerOverlap, p.Height, p.PreferWidth, p.PreferCenter, p.AxisConfidence)).ToArray(),
             floors.Length > 0 ? floors : null, context.Activities?.Where(a => Id(a.Key) != 0)
                 .ToDictionary(a => Id(a.Key), a => a.Value), context.Attention?.Where(a => Id(a.Key) != 0)
-                .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor), video, context.GestureTarget, navigation);
+                .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor), video, context.GestureTarget, navigation, context.WorkspaceCause == WorkspaceChangeCause.None ? null : context.WorkspaceCause.ToString(),
+            fits?.Count > 0 ? fits : null, Id(context.FirstPlacementWindow), context.OriginSide, shadow is { Length: > 0 } ? shadow : null);
     }
+
+    private static ShadowAxis? ReadShadowRule(RecordedShadowRule value) =>
+        value.WindowId > 0 && value.Tolerance is > 0 and <= 200 &&
+        Enum.TryParse<PlacementAxis>(value.Axis, out var axis) && Enum.IsDefined(axis) &&
+        Enum.TryParse<ShadowChange>(value.Change, out var change) && Enum.IsDefined(change) ?
+            new(value.WindowId, axis, value.Value, 0, value.Tolerance, change) : null;
 
     // During offline replay the session-local ids are the simulated handles.
     internal TaskLayoutContext ApplyToReplay(TaskLayoutContext context) => context with
@@ -161,15 +195,19 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         Focus = new(Main, Companion, Switches, FocusEvidence ?? "recent-switch-pair",
             Navigation?.Hops.Where(h => h.SourceRole is "waiting" or "return").Select(h => (nint)h.Source).ToArray(),
             Navigation?.Hops.Select(h => new NavigationHop(h.Source, h.Target, h.Evidence, h.AgeMilliseconds)).ToArray()),
-        NavigationObservedAt = Navigation?.ObservedAt,
+        NavigationObservedAt = Navigation?.ObservedAt, FirstPlacementWindow = FirstPlacementWindow, OriginSide = OriginSide,
+        WorkspaceCause = Enum.TryParse<WorkspaceChangeCause>(WorkspaceCause, out var cause) ? cause : WorkspaceChangeCause.None,
         WindowHints = Hints.Select(h => new TaskWindowHint(h.Id, h.Passive, ProtectedRegions: h.Regions,
             Anchor: h.Anchor, MediaCompanion: h.Media, Role: h.Role, FloatingAffinity: h.FloatingAffinity, TextFocus: h.TextFocus, InitialTextPlacement: h.InitialTextPlacement)).ToArray(),
         Placement = Placements.Select(p => new PlacementPreference(p.Id, p.Partner, p.Center, p.Width,
-            p.Order, p.Cell, p.Confidence, p.Overlap, p.Height, p.PreferWidth, p.PreferCenter)).ToArray(),
+            p.Order, p.Cell, p.Confidence, p.Overlap, p.Height, p.PreferWidth, p.PreferCenter, p.AxisConfidence)).ToArray(),
         Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),
         Attention = Attention?.ToDictionary(a => (nint)a.Key, a => a.Value),
         GestureAnchor = GestureAnchor, GestureTarget = GestureTarget,
-        VideoHint = Video is { } v ? new(v.Id, v.Orientation, v.ContentAspectRatio, v.Viewport, v.Confidence) : context.VideoHint,
+        ShadowAxes = (ShadowRules ?? []).Select(ReadShadowRule).OfType<ShadowAxis>().ToArray(),
+        VideoFits = VideoFits?.Where(pair => pair.Key > 0 && pair.Value is { IsValid: true })
+            .ToDictionary(pair => (nint)pair.Key, pair => pair.Value),
+        VideoHint = Video is { } v ? new(v.Id, v.Orientation, v.ContentAspectRatio, v.Viewport, v.Confidence, v.Tendency) : context.VideoHint,
         SizeFloors = SizeFloors?.Select(f => new WindowSizeFloor(f.Id, f.MinWidth, f.MinHeight)).ToArray()
     };
 }

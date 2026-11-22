@@ -1,14 +1,30 @@
+using NeatWin.Core;
 using System.Runtime.InteropServices;
 
 namespace NeatWin.Windows;
 
 internal static class NativeWindowActivity
 {
+    // 微信多个独立功能共用同一 Qt 窗口类。仅为已匹配的聊天宿主或截图工具框读取系统窗标题，返回用途，标题不进入长期记录。
+    internal static SurfacePurpose ChatSurface(WindowSnapshot w)
+    {
+        var text = new System.Text.StringBuilder(128);
+        return NativeMethods.GetWindowText(w.Handle, text, text.Capacity) > 0 ? TaskSurfaces.ChatCaption(text.ToString()) : SurfacePurpose.Unknown;
+    }
+
     internal static bool IsShellForeground(nint foreground)
     {
         if (foreground == 0 || foreground == NativeMethods.GetShellWindow()) return true;
         var root = NativeMethods.GetAncestor(foreground, NativeMethods.GaRoot);
         return WindowManager.IsSystemSurface(root != 0 ? root : foreground);
+    }
+
+    internal static bool SuspendsWorkspace(nint foreground)
+    {
+        // 工作台被排除在布局采样之外。用户进设置时必须中断旧任务，否则残留的应用焦点会继续移动背后的窗口。
+        if (IsShellForeground(foreground) || AutomationGuard.IsUtility(foreground)) return true;
+        NativeMethods.GetWindowThreadProcessId(foreground, out uint pid);
+        return pid == 0 || pid == Environment.ProcessId;
     }
 
     // The system move/size loop only covers dragging the window frame. Explorer's OLE
@@ -19,7 +35,7 @@ internal static class NativeWindowActivity
     internal static bool AllowsAutomaticPlacement(nint expectedForeground)
     {
         var current = NativeMethods.GetForegroundWindow();
-        return current == expectedForeground && !IsShellForeground(current) && !PointerBusy;
+        return current == expectedForeground && !SuspendsWorkspace(current) && !PointerBusy;
     }
 
     // Query the real foreground thread's move/size loop, including the short interval in which

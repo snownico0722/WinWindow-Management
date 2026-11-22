@@ -4,8 +4,12 @@ using NeatWin.Core;
 using NeatWin.Reference;
 
 var area = new RectI(0, 0, 1920, 1040);
+PlacementShadowChecks.Run(Check);
+SceneModelChecks.Run(Check);
 AttentionWorkspaceChecks.Run(Check);
+VideoFitChecks.Run(Check);
 ReadingFocusChecks.Run(Check);
+OpeningPlacementChecks.Run(Check);
 TextViewChecks.Run(Check);
 NavigationChecks.Run(Check);
 PlacementPreferenceChecks.Run(Check);
@@ -207,6 +211,35 @@ var gesture = new WindowAdjustmentObservation(now, "session", 1, home, left, are
         LayoutHabits.Resolve([firstVote, repeat with { Time = now.AddSeconds(25) }], windows[0], "1", "2", 2,
             now.AddSeconds(30), sessionOnly: true) == null,
         "assisted frames, rapid tweaks, absent partners and stale sessions cannot recreate a paired placement");
+}
+{
+    var resized = left with { Width = left.Width + 60 };
+    var final = resized with { X = home.X + 45 };
+    var width = gesture with { Start = left, End = resized, StartContext = moved,
+        EndContext = Frame([windows[0] with { VisualRect = resized }, windows[1]]) };
+    var position = gesture with { Start = resized, End = final, Outcome = "assisted-release",
+        StartContext = width.EndContext, EndContext = Frame([windows[0] with { VisualRect = final }, windows[1]]) };
+    var axes = LayoutHabits.Coalesce([gesture, width, position]);
+    Check(axes.SequenceEqual([HabitAxes.None, HabitAxes.Width, HabitAxes.Position]) &&
+        LayoutHabits.Observe(position, false, axes[2]) is { Edited: HorizontalEdit.Position } vote &&
+        Math.Abs(vote.Center - (final.Left + final.Width / 2d - area.Left) / area.Width) < .001,
+        "rapid same-window edits retain the final deliberate position and independent width");
+    var restoredPosition = left with { X = home.X };
+    var returnToStart = gesture with { Start = left, End = restoredPosition };
+    Check(LayoutHabits.Coalesce([gesture, returnToStart]).All(a => a == HabitAxes.None),
+        "an exploratory move returning to its starting position contributes no session or persistent vote");
+
+    var reversal = gesture with { PriorPlacement = new("verified", 950, left, home) };
+    var unrelatedResize = left with { Height = left.Height - 90 };
+    var mixed = reversal with { End = unrelatedResize,
+        SettledContext = Frame([windows[0] with { VisualRect = unrelatedResize }, windows[1]]) };
+    var afterReversal = position with { Start = left, End = left with { X = 24 } };
+    Check(LayoutHabits.Coalesce([reversal, afterReversal]).All(a => a == HabitAxes.None) &&
+        LayoutHabits.Observe(reversal) == null &&
+        LayoutHabits.Observe(reversal with { Outcome = "manual-release" }, byInstance: true) == null &&
+        LayoutHabits.Observe(mixed) is { Edited: HorizontalEdit.None, Height: not null } &&
+        LayoutHabits.Observe(reversal with { PriorPlacement = reversal.PriorPlacement! with { ElapsedMs = 31_000 } }) != null,
+        "a linked reversal rejects automatic placement without teaching an endpoint, while deliberate independent axes can still learn");
 }
 var edit = LayoutHabits.Observe(gesture);
 Check(edit is { Partner: "app-2", Order: -1, Corrected: true }, "a stable manual correction learns the left/right pair");
@@ -899,7 +932,7 @@ Check(RoutineTick(22_000, [reopenedHelper with { Foreground = false }, nextTask]
         usage.Sample(26_000, 2, false)?.PointerActions == null,
         "missing foreground events, sampling gaps, and unavailable input keep unknown evidence distinct from zero");
     var targets = new[] { Window(1, new(0, 0, 400, 400)), Window(2, new(0, 0, 800, 400)) };
-    var video = new VideoBlackBarHint(2, VideoBlackBarOrientation.Horizontal, 2, new(0, 0, 800, 400), .95);
+    var video = new VideoBlackBarHint(2, VideoBlackBarOrientation.Horizontal, 2, new(0, 0, 800, 400), .95, VideoBlackBarTendency.Expand);
     var data = RecordedTaskSignals.From(new(VideoHint: video), targets.ToDictionary(w => w.Handle, w => (int)w.Handle), targets);
     Check(data.Video?.Exposure?.Visible == .5 && data.ApplyToReplay(new()).VideoHint == video,
         "record and replay the detected video viewport independently of full-window exposure");
@@ -979,19 +1012,31 @@ Check(RoutineTick(22_000, [reopenedHelper with { Foreground = false }, nextTask]
         "replay links a raw late release while leaving confirmed manual-effort counts unknown");
 }
 
-if (args is ["--behavior", var zip, var behaviorRules, ..])
+if (args is ["--validate", var candidatePath])
+{
+    var candidate = ReadRules(candidatePath)!;
+    Console.WriteLine(JsonSerializer.Serialize(new { candidate.Version, Scenes = candidate.Scenes?.Select(r => r.Id),
+        SurfaceRules = candidate.SurfaceRules?.Select(r => r.Id), Pairs = candidate.Pairs?.Length ?? 0 }));
+}
+else if (args is ["--behavior", var zip, var behaviorRules, ..])
     BehaviorReplay.Run(zip, behaviorRules, args.ElementAtOrDefault(3));
 else if (args.Length > 0)
-    Replay(args[0], args.ElementAtOrDefault(1), args.ElementAtOrDefault(2));
+    Replay(args[0], args.ElementAtOrDefault(1), args.ElementAtOrDefault(2), args.ElementAtOrDefault(3));
 
-static void Replay(string path, string? rulesPath, string? sessionFilter)
+static CompiledLayoutRules? ReadRules(string? path)
 {
-    CompiledLayoutRules? overrideRules = null;
-    if (rulesPath != null)
-    {
-        overrideRules = JsonSerializer.Deserialize<CompiledLayoutRules>(File.ReadAllText(rulesPath), LayoutRuleFile.Json);
-        if (overrideRules?.IsValid() != true) throw new InvalidDataException("Invalid candidate layout rules.");
-    }
+    if (path == null) return null;
+    using var file = File.OpenRead(path);
+    if (file.Length is <= 0 or > 65536) throw new InvalidDataException("Invalid layout rule file size.");
+    var rules = JsonSerializer.Deserialize<CompiledLayoutRules>(file, LayoutRuleFile.Json);
+    return rules?.IsValid() == true ? rules : throw new InvalidDataException("Invalid layout rules.");
+}
+
+static void Replay(string path, string? rulesPath, string? sessionFilter, string? evaluationPath)
+{
+    var overrideRules = ReadRules(rulesPath);
+    var evaluation = ReadRules(evaluationPath);
+    if (sessionFilter == "*") sessionFilter = null;
     using var archive = ZipFile.OpenRead(path);
     var snapshotRoles = new SnapshotRoles(archive);
     var edits = ReplayEffort.Read(archive, sessionFilter);
@@ -1011,34 +1056,45 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
             var run = JsonSerializer.Deserialize<LayoutRunObservation>(line);
             // Only the before-frame and the evidence collected at request time feed the solver.
             // A snapshot may end before the last native request has been verified.
-            if (run is not { Trigger: "explicit" or "automatic-gesture" or "automatic-workspace" } ||
+            if (run is not { Trigger: "explicit" or "automatic-gesture" or "automatic-workspace" or "automatic-opening" } ||
                 (sessionFilter is not null && run.Session != sessionFilter) || !seen.Add((run.Session, run.RequestId))) continue;
             var frame = run.Before;
             var areas = frame.Windows.Select(w => w.WorkArea).Distinct().ToArray();
             bool explicitRun = run.Trigger == "explicit";
+            bool localOpening = run.Trigger == "automatic-opening";
+            if (localOpening && run.Signals is not { FirstPlacementWindow: > 0 }) continue;
             foreach (bool assumeResizable in new[] { true, false })
             {
                 var desktop = frame.Windows.OrderBy(w => w.ZOrder).Select(w => new WindowSnapshot(w.Id, w.Rect, w.Rect,
                     w.WorkArea, Array.IndexOf(areas, w.WorkArea) + 1, default, w.Resizable ?? (assumeResizable && w.Manageable),
-                    w.Foreground, w.Manageable, w.ZOrder, w.Dpi, IsTopmost: w.Topmost,
-                    SurfaceState: w.SurfaceState) { Owner = w.OwnerId }).ToArray();
+                    w.Foreground, w.Manageable && !w.LocalSurface, w.ZOrder, w.Dpi, IsTopmost: w.Topmost,
+                    SurfaceState: w.LocalSurface ? null : w.SurfaceState) { Owner = w.OwnerId }).ToArray();
                 var displays = areas.Select((a, i) => new TaskDisplay(i + 1, a,
                     frame.Displays?.FirstOrDefault(d => d.WorkArea == a)?.Bounds ?? a)).ToArray();
                 var focus = desktop.FirstOrDefault(w => w.IsForeground);
                 var ctx = new TaskLayoutContext(Displays: displays, ExplicitArrange: explicitRun, UseWorkingPairs: true,
                     PreferReversibleVerticalFill: true, Focus: new(focus?.Handle ?? 0, 0, 0));
-                ctx = (run.Signals?.ApplyToReplay(ctx) ?? ctx) with { AllowGestureAssist = run.Trigger == "automatic-gesture" };
+                ctx = (run.Signals?.ApplyToReplay(ctx) ?? ctx) with
+                {
+                    AllowGestureAssist = run.Trigger == "automatic-gesture",
+                    IsWorkspaceObservation = run.Trigger is "automatic-workspace" or "automatic-opening",
+                    LocalPlacementWindow = localOpening ? run.Signals!.FirstPlacementWindow : 0,
+                };
                 var activeRules = overrideRules ?? run.Rules ?? CompiledLayoutRules.Default;
                 var keyed = desktop.Zip(frame.Windows.OrderBy(w => w.ZOrder), (window, observed) => (window, observed.AppKey)).ToArray();
-                var slotPrefs = activeRules.BindSlots(keyed);
+                var observedPair = ctx.GestureAnchor != 0 && ctx.AllowGestureAssist && ctx.GestureAnchor != ctx.Focus?.Main ? null : ctx.Focus;
+                var slotPrefs = activeRules.BindSlots(keyed, observedPair);
                 var mergedPrefs = CompiledLayoutRules.ApplySlots(ctx.Placement ?? [], slotPrefs);
-                ctx = ctx with { Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities), Placement = mergedPrefs };
+                ctx = ctx with { AppKeys = keyed.ToDictionary(k => k.window.Handle, k => k.AppKey), Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities, observedPair), Placement = mergedPrefs };
                 ctx = ctx with { WindowHints = snapshotRoles.Enrich(run.Session, run.RequestId, frame.Time, desktop, ctx) };
                 var fullDesktop = run.FullDesktop ?? explicitRun;
                 var workingSet = fullDesktop ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);
-                var plan = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : LayoutRoute.Smart,
+                var plan = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : localOpening ? LayoutRoute.LocalOpening : LayoutRoute.Smart,
                     workingSet, new(SmartStrength: run.Strength ?? SmartTidyStrength.Balanced), null, desktop, ctx);
                 var projected = TaskLayoutSession.Project(desktop, plan);
+                // 衡量 A/B 两个方案时使用完全相同的观察人群。评估规则只看决策前的状态，不参与生成任何候选。
+                var evaluator = evaluation == null || frame.Truncated ? null :
+                    ActiveLayoutScene.Resolve(desktop, ctx with { Rules = evaluation }, includeDefaults: false);
                 bool? regionsPreserved = !frame.Truncated && ctx.WindowHints?.Any(h => h.ProtectedRegions is { Length: > 0 }) == true
                     ? IntentLayoutPlanner.DesktopRegionsPreserved(desktop, projected, ctx) : null;
                 double? runRegret = null, verticalError = null;
@@ -1064,12 +1120,15 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                         if (assumeResizable) { correctedRuns++; totalNormalizedRegret += horizontal; regretSamples += matched; }
                     }
                 }
-                Console.WriteLine(JsonSerializer.Serialize(new { run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
-                    run.GestureTiming, ObservedReleaseDetails = edits.Releases.GetValueOrDefault((run.Session, run.RequestId))?
+                Console.WriteLine(JsonSerializer.Serialize(new { run.Session, run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
+                    run.GestureTiming, run.ShadowReplay, ObservedReleaseDetails = edits.Releases.GetValueOrDefault((run.Session, run.RequestId))?
                         .OrderBy(g => g.Tick).Select(g => new { g.GestureId, g.WindowId, g.AutomationMarked, ElapsedMs = g.Prior!.ElapsedMs, g.Change }),
                     RecordedManualFollowups = followups?.Count, RecordedUndoOfThisRequest =
                         edits.Undone.Contains((run.Session, run.RequestId)) ? true : (bool?)null,
                     PostArrangeRegret = runRegret, PostArrangeVerticalError = verticalError, ProtectedRegionsPreserved = regionsPreserved,
+                    Layers = plan.Layers.Select(l => l.FrontToBack.Select(w => (int)w.Handle)),
+                    SceneEffects = plan.Scene?.Effects(projected, h => (int)h),
+                    EvaluationEffects = evaluation == null || frame.Truncated ? null : evaluator?.Effects(projected, h => (int)h) ?? [],
                     Roles = (ctx.WindowHints ?? []).Where(h => h.Role != WindowUseRole.Unknown || h.FloatingAffinity > 0 || h.TextFocus)
                         .Select(h => new { Id = (int)h.Handle, Role = h.Role.ToString(), h.FloatingAffinity, h.TextFocus }),
                     Moves = plan.Moves.Select(m => new { Id = (int)m.Window.Handle, Before = m.Window.VisualRect, After = m.TargetVisualRect }),

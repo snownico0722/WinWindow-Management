@@ -1,7 +1,6 @@
 namespace NeatWin.Core;
 
-// Explicit preferences, not inferred satisfaction or a personality diagnosis.
-// Defaults are engineering hypotheses; see docs/HUMAN_FACTORS_V3.md.
+// 当前默认取舍及可推翻它们的案例见 docs/DECISIONS.md 与 docs/LAYOUT_CASES.md。
 public sealed record TaskLayoutProfile(bool AllowUsefulResize = true, bool AllowPeripheralBleed = true,
     double MaximumBleedDip = 24, double JointVisibilityWeight = 1,
     double SpatialContinuityWeight = 1, double ComfortableWidthDip = 1120,
@@ -68,12 +67,90 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
 {
     // A workspace event can still carry the last gesture as an anchor without granting
     // another placement adjustment. Live and replay callers set this from the event kind.
+    internal IReadOnlyDictionary<nint, string?>? AppKeys { get; init; }
+    internal ActiveLayoutScene? Scene { get; init; }
+    internal ShadowAxis[]? ShadowAxes { get; init; }
+    internal ShadowReplayProbe? ShadowProbe { get; init; }
+    internal DateTimeOffset? ShadowTime { get; init; }
     internal bool AllowGestureAssist { get; init; } = true;
+    internal IReadOnlyDictionary<nint, VideoViewportFit>? VideoFits { get; init; }
+    internal int OriginSide { get; init; }
+    internal bool IsWorkspaceObservation { get; init; }
+    internal nint FirstPlacementWindow { get; init; }
+    internal nint LocalPlacementWindow { get; init; }
+    // 这次松手直接推翻了系统刚做的动作。辅助最多再动用户接手的窗，免得一次试摆牵动整组。
+    internal nint GeometryOnlyWindow => LocalPlacementWindow != 0 ? LocalPlacementWindow :
+        !ExplicitArrange && AllowGestureAssist && RecentGesture is { } g && GestureAnchor == g.WindowHandle &&
+        Attention?.GetValueOrDefault(GestureAnchor)?.RecentReturn?.MatchesRelease(g) == true ? GestureAnchor : 0;
+    internal WorkspaceChangeCause WorkspaceCause { get; init; }
+
+    // 这些系数只调节同等可读性下的动作门槛。救回屏外窗口或满足明确手势仍有自己可核对的空间收益。
+    internal double InterventionWeight(bool followsGesture) =>
+        ExplicitArrange ? 1 : followsGesture ? .85 :
+        Focus?.OpeningResidentLeft != null || WorkspaceCause.HasFlag(WorkspaceChangeCause.Membership) ? .55 :
+        IsWorkspaceObservation || GestureAnchor != 0 ? .35 : 1;
+
     internal DateTimeOffset? NavigationObservedAt { get; init; }
     public TaskLayoutProfile Preferences => (Profile ?? new()).Normalize();
     public bool PairPlanningEnabled => ExplicitArrange || UseWorkingPairs;
     internal bool HoldsTextView(WindowSnapshot window) => !ExplicitArrange && window.IsForeground &&
         WindowHints?.Any(h => h.Handle == window.Handle && h.TextFocus) == true;
+
+    internal static RectI LimitReturn(RectI frame, RectI target, PlacementCorrection? recent, PlacementCorrection? repeated)
+    {
+        var limited = recent?.Limit(frame, target, false) ?? target;
+        return repeated?.Limit(frame, limited, true) ?? limited;
+    }
+
+    internal RectI LimitReturn(WindowSnapshot window, RectI target)
+    {
+        var a = Attention?.GetValueOrDefault(window.Handle);
+        return ExplicitArrange ? target : LimitReturn(window.VisualRect, target, a?.RecentReturn, a?.RepeatedReversal);
+    }
+
+    internal bool RepeatsReversal(WindowSnapshot window, RectI target) => !ExplicitArrange &&
+        Attention?.GetValueOrDefault(window.Handle)?.RepeatedReversal?.RepeatsRejectedAxis(window.VisualRect, target) == true;
+
+    internal bool PreservesReleasedSide(WindowSnapshot window, RectI target)
+    {
+        // 只保护刚选的半屏；在同侧改变大小、贴边和回收屏外部分仍由各自的空间收益决定。
+        int side = Attention?.GetValueOrDefault(window.Handle)?.ManualSide ?? 0;
+        if (ExplicitArrange || window.VisualRect == target || side is not (-1 or 1)) return true;
+        return AttentionLayout.HorizontalSide(window.VisualRect, window.WorkArea) != side ||
+            AttentionLayout.HorizontalSide(target, window.WorkArea) == side;
+    }
+
+    internal TaskLayoutContext WithCurrentCorrections(IReadOnlyList<WindowSnapshot> desktop)
+    {
+        if (ExplicitArrange || Placement is not { Length: > 0 } || Attention == null ||
+            !Attention.Values.Any(a => a.Correction != null)) return this;
+        var revised = new List<PlacementPreference>();
+        foreach (var preference in Placement)
+        {
+            var w = desktop.FirstOrDefault(w => w.Handle == preference.Window);
+            if (w == null || Attention.GetValueOrDefault(w.Handle)?.Correction is not { } correction)
+            {
+                revised.Add(preference);
+                continue;
+            }
+            var rect = w.VisualRect;
+            var area = w.WorkArea;
+            int width = preference.PreferWidth ? (int)Math.Round(preference.Width * area.Width) : rect.Width;
+            int x = area.X + (int)Math.Round(preference.Center * area.Width - width / 2d);
+            int height = (int)Math.Round((preference.Height ?? 0) * area.Height);
+            // 一次回拖修正当前任务对旧习惯的信任。保存的样本保留原貌，其他轴和以后独立任务仍可使用。
+            double position = preference.PositionConfidence * (1 - (correction.X?.Cost(rect.X, x) ?? 0));
+            double horizontal = preference.WidthConfidence * (1 - (correction.Width?.Cost(rect.Width, width) ?? 0));
+            double vertical = preference.HeightConfidence * (1 - (correction.Height?.Cost(rect.Height, height) ?? 0));
+            double confidence = Math.Max(position, Math.Max(horizontal, vertical));
+            if (confidence >= .40)
+                revised.Add(preference with { Confidence = confidence, AxisConfidence = new(position, horizontal, vertical),
+                    PreferCenter = position >= .40, PreferWidth = horizontal >= .40, Height = vertical >= .40 ? preference.Height : null,
+                    Partner = position >= .40 ? preference.Partner : 0, Order = position >= .40 ? preference.Order : 0,
+                    RevealedCell = position >= .40 ? preference.RevealedCell : -1, InnerOverlap = position >= .40 ? preference.InnerOverlap : null });
+        }
+        return this with { Placement = revised.ToArray() };
+    }
 
     internal bool HasRecentInput(nint handle) => Attention?.GetValueOrDefault(handle)?.Input >= .65;
     public (int Width, int Height) MinimumSize(nint handle) =>

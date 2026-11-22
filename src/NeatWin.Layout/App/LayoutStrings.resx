@@ -63,4 +63,5 @@
   <data name="IdleMinimizeRequested" xml:space="preserve"><value>已请求收起一个静置窗口。</value></data>
   <data name="IdleMinimizeVerified" xml:space="preserve"><value>已收起一个静置窗口。</value></data>
   <data name="IdleMinimizeUnconfirmed" xml:space="preserve"><value>未观察到静置窗口进入最小化状态。</value></data>
+  <data name="VideoAspectLayout" xml:space="preserve"><value>调整视频比例</value></data>
 </root>

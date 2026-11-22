@@ -6,7 +6,7 @@ namespace NeatWin.Tests;
 public sealed class AutomationSettingsTests
 {
     [Fact]
-    public void SettingsSaveAndReloadAllFourModesWithoutLosingOtherSettings()
+    public void SettingsPreserveExistingGrantsAndRoundTripNewLightMode()
     {
         var dir = Path.Combine(Path.GetTempPath(), "NeatWin-mode-test-" + Guid.NewGuid());
         Directory.CreateDirectory(dir);
@@ -16,6 +16,8 @@ public sealed class AutomationSettingsTests
             File.WriteAllText(path, "{\"AutoTidyEnabled\":true,\"NeighborSnapDistance\":33}");
             var store = new SettingsStore(path);
             Assert.Equal(AutomaticLayoutMode.LightAssist, store.LoadAutomaticLayoutMode());
+            Assert.Equal(AutomaticLayoutMode.Light, AutomaticLayoutPolicy.VisibleChoice(store.LoadAutomaticLayoutMode()));
+            Assert.Null(AutomaticLayoutPolicy.Route(store.LoadAutomaticLayoutMode(), LayoutTrigger.NewTaskOpening));
             foreach (var mode in Enum.GetValues<AutomaticLayoutMode>())
             {
                 store.SaveAutomaticLayoutMode(mode);

@@ -39,6 +39,7 @@ public partial class WindowRow : UserControl
 
     private void Attach(WindowItem? item)
     {
+        // 同一行可能改绑另一扇窗口。先趁旧对象仍在时提交未完成的百分比编辑，避免把旧值写到新对象上。
         if (ReferenceEquals(_item, item)) { Sync(); return; }
         CancelHoverPreview();
         CommitNumber();

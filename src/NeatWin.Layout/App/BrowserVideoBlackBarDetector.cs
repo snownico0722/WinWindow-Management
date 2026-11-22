@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -16,16 +17,15 @@ internal sealed class BrowserVideoBlackBarDetector
 {
     private const int FrameCount = 3;
     private const int FrameDelayMilliseconds = 28;
-    private const int RepeatGuardMilliseconds = 20_000;
 
     private static readonly HashSet<string> BrowserProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
         "chrome", "msedge", "firefox", "brave", "vivaldi", "opera", "opera_gx", "arc",
     };
 
-    private readonly Dictionary<nint, Attempt> _attempts = new();
+    internal VideoFitSession Fits { get; } = new();
 
-    private (VideoBlackBarHint Hint, WindowSnapshot Window, long Tick)? _lastDetection;
+    private (VideoBlackBarHint Hint, WindowSnapshot Window, VideoPageIdentity? Page, long Tick)? _lastDetection;
 
     internal VideoBlackBarHint? TryDetect(IReadOnlyList<VisibleWindow> visibleWindows, bool cachedOnly = false)
     {
@@ -36,7 +36,8 @@ internal sealed class BrowserVideoBlackBarDetector
             if (_lastDetection is { } last && Environment.TickCount64 - last.Tick <= 1500 &&
                 visibleWindows.Any(v => v.Window.Handle == last.Window.Handle && v.Window.ProcessId == last.Window.ProcessId &&
                     v.Window.VisualRect == last.Window.VisualRect && v.Window.WorkArea == last.Window.WorkArea &&
-                    v.Window.Dpi == last.Window.Dpi && v.VisibleRatio >= .72)) return last.Hint;
+                    v.Window.Dpi == last.Window.Dpi && v.VisibleRatio >= .72 &&
+                    last.Page != null && ReadPage(v.Window) == last.Page)) return last.Hint;
             return null;
         }
         _lastDetection = null;
@@ -63,6 +64,7 @@ internal sealed class BrowserVideoBlackBarDetector
             return null;
         }
 
+        var page = ReadPage(candidate.Window);
         var detections = new List<DetectedBars>(FrameCount);
         for (var frameIndex = 0; frameIndex < FrameCount; frameIndex++)
         {
@@ -85,23 +87,6 @@ internal sealed class BrowserVideoBlackBarDetector
             return null;
         }
 
-        if (_attempts.TryGetValue(candidate.Window.Handle, out var previousAttempt))
-        {
-            var age = Environment.TickCount64 - previousAttempt.Tick;
-            if (age <= RepeatGuardMilliseconds &&
-                ApproximatelyMatches(candidate.Window.VisualRect, previousAttempt.TargetVisualRect, 12))
-            {
-                // If the same bars survive at the geometry just requested, assume they are baked
-                // into the media or the player ignores browser-window aspect changes. Do not chase.
-                return null;
-            }
-
-            if (!ApproximatelyMatches(candidate.Window.VisualRect, previousAttempt.TargetVisualRect, 28))
-            {
-                _attempts.Remove(candidate.Window.Handle);
-            }
-        }
-
         var viewport = MedianRect(detections.Select(item => item.ViewportClientRect).ToArray());
         var aspect = MedianDouble(detections.Select(item => item.ContentAspectRatio).ToArray());
         var confidence = detections.Min(item => item.Confidence);
@@ -115,12 +100,51 @@ internal sealed class BrowserVideoBlackBarDetector
                 viewport.Width,
                 viewport.Height),
             confidence);
-        _lastDetection = (hint, candidate.Window, Environment.TickCount64);
+        if (page != ReadPage(candidate.Window)) return null;
+        if (page != null && VideoViewportFit.From(candidate.Window.VisualRect, hint) is { } fit &&
+            Fits.Repeat(candidate.Window, page, fit, Environment.TickCount64)) return null;
+        _lastDetection = (hint, candidate.Window, page, Environment.TickCount64);
         return hint;
     }
 
-    internal void RecordApplied(nint hwnd, RectI targetVisualRect) =>
-        _attempts[hwnd] = new Attempt(targetVisualRect, Environment.TickCount64);
+    internal void RecordApplied(TidyMove move)
+    {
+        if (_lastDetection is { Page: { } page } last && last.Window.Handle == move.Window.Handle &&
+            last.Window.ProcessId == move.Window.ProcessId && last.Window.VisualRect == move.Window.VisualRect &&
+            VideoViewportFit.From(move.Window.VisualRect, last.Hint) is { } fit)
+            Fits.Submitted(move.Window, move.TargetVisualRect, page, fit, Environment.TickCount64);
+    }
+
+    internal void Forget(nint hwnd)
+    {
+        Fits.Forget(hwnd);
+        if (_lastDetection?.Window.Handle == hwnd) _lastDetection = null;
+    }
+
+    internal void Reset()
+    {
+        Fits.Clear();
+        _lastDetection = null;
+    }
+
+    internal static VideoPageIdentity? ReadPage(WindowSnapshot window)
+    {
+        NativeMethods.GetWindowThreadProcessId(window.Handle, out uint pid);
+        if (pid == 0 || pid != window.ProcessId) return null;
+        var caption = new StringBuilder(2048);
+        var cls = new StringBuilder(256);
+        if (NativeMethods.GetWindowText(window.Handle, caption, caption.Capacity) <= 0 ||
+            NativeMethods.GetClassName(window.Handle, cls, cls.Capacity) <= 0) return null;
+        try
+        {
+            using var process = Process.GetProcessById((int)pid);
+            return new(pid, process.StartTime.ToUniversalTime().Ticks, cls.ToString(), caption.ToString());
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return null;
+        }
+    }
 
     private static bool IsBrowserWindow(nint hwnd)
     {
@@ -613,19 +637,12 @@ internal sealed class BrowserVideoBlackBarDetector
         return values[values.Length / 2];
     }
 
-    private static bool ApproximatelyMatches(RectI a, RectI b, int tolerance) =>
-        Math.Abs(a.Left - b.Left) <= tolerance &&
-        Math.Abs(a.Top - b.Top) <= tolerance &&
-        Math.Abs(a.Right - b.Right) <= tolerance &&
-        Math.Abs(a.Bottom - b.Bottom) <= tolerance;
-
     private sealed record DetectedBars(
         VideoBlackBarOrientation Orientation,
         double ContentAspectRatio,
         RectI ViewportClientRect,
         double Confidence);
 
-    private sealed record Attempt(RectI TargetVisualRect, long Tick);
     private sealed record FramePixels(int Width, int Height, int Stride, byte[] Bytes);
     private readonly record struct LineMetric(
         double DarkFraction,

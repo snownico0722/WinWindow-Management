@@ -143,6 +143,7 @@ internal sealed class GesturePreviewCache
                 _lastSample = now;
                 return Task.CompletedTask;
             }
+            // 拖动时鼠标事件可能快过求解。只保留最新的待算位置，避免松手后还要等后台算完一串已经经过的坐标。
             _pending = new(_session, frame, now);
             return _worker ??= Task.Run(Work);
         }

@@ -67,7 +67,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     private string ResolveKey(string identity, bool persist) =>
         store.Key(identity, persist) ?? EphemeralKey(identity);
 
-    internal WindowUseRole SemanticRole(WindowSnapshot window, ForegroundReading reading = default)
+    private (string? App, string Class, WindowUseRole Role) Identity(WindowSnapshot window)
     {
         var key = (window.ProcessId, window.Handle);
         if (!_roles.TryGetValue(key, out var identity))
@@ -85,6 +85,20 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
             string windowClass = name.ToString();
             _roles[key] = identity = (executable, windowClass, WindowUseRoles.Identify(executable, windowClass));
         }
+        return identity;
+    }
+
+    internal bool CaptureOverlay(WindowSnapshot window)
+    {
+        if (!TaskSurfaces.CanBeCaptureTool(window)) return false;
+        var app = Identity(window).App?.ToLowerInvariant();
+        if (app is not ("qq" or "tim" or "wechat" or "weixin" or "qqscreenshot")) return false;
+        return TaskSurfaces.IsCaptureTool(window, NativeWindowActivity.ChatSurface(window));
+    }
+
+    internal WindowUseRole SemanticRole(WindowSnapshot window, ForegroundReading reading = default)
+    {
+        var identity = Identity(window);
         return reading.Root == window.Handle && reading.Pid == window.ProcessId &&
             WindowUseRoles.IsSharedOfficeFrame(identity.App, identity.Class)
             ? WindowUseRoles.Identify(identity.App, identity.Class, _officeSurface.Sample(reading, Environment.TickCount64))

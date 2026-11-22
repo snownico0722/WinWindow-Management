@@ -22,6 +22,9 @@ internal static class GeneralLayoutChecks
                         .OrderBy(w => w.ZOrder).ToArray();
                     var equal = PlanPair(windows, peerActive: true);
                     var reading = PlanPair(windows, peerActive: false);
+                    var noPulse = PlanPair(windows, peerActive: true, peerInput: 0);
+                    check(equal.Select(w => w.VisualRect).SequenceEqual(noPulse.Select(w => w.VisualRect)),
+                        $"{screen}: a pointer pulse alone does not change a working pair's allocation");
                     var renamed = new[] { windows[0] with { Handle = 203, ProcessId = 7783 }, windows[1] with { Handle = 91, ProcessId = 7759 } };
                     var renamedPlan = PlanPair(renamed, peerActive: true, rename: true);
                     var foreground = equal[0].VisualRect;
@@ -37,11 +40,10 @@ internal static class GeneralLayoutChecks
                     originalShare ??= readableShare;
                     check(equal.Select(w => w.VisualRect).SequenceEqual(renamedPlan.Select(w => w.VisualRect)),
                         $"{screen}: renaming both unknown programs and their window identities preserves the chosen geometry");
-                    // Under contention a recently switched, mostly passive surface should yield
-                    // some width to the window receiving sustained active input.
+                    // 停留与共同使用确实改变时可以重分宽；孤立的点击／滚轮脉冲不能改变同一任务的预算。
                     if (area.Width * 96d / dpi <= 1450)
                         check(reading[0].VisualRect.Width >= foreground.Width + width * .01,
-                            $"{screen}: sustained input receives more usable width than an equally active pair (foreground {active}, mirror {mirror})");
+                            $"{screen}: a task with stronger dwell and association receives more width under contention (foreground {active}, mirror {mirror})");
                     if (area.Width * 96d / dpi <= 1450 && !mirror)
                     {
                         var switched = new[] { reading[1] with { IsForeground = true, ZOrder = 0 },
@@ -116,13 +118,13 @@ internal static class GeneralLayoutChecks
                 $"idle reclaim follows elapsed time and useful space recovered for an ordinary {idleRole} window");
         }
 
-        static WindowSnapshot[] PlanPair(WindowSnapshot[] windows, bool peerActive, bool rename = false)
+        static WindowSnapshot[] PlanPair(WindowSnapshot[] windows, bool peerActive, bool rename = false, double peerInput = .95)
         {
             var main = windows[0].Handle;
             var peer = windows[1].Handle;
             var focus = new LayoutFocus(main, peer, 4);
             var attention = new Dictionary<nint, LayoutAttention> { [main] = new(1, 1, 1, 1, true),
-                [peer] = peerActive ? new(.99, 1, .95, .9, false) : new(.65, .55, .08, .65, false) };
+                [peer] = peerActive ? new(.99, 1, peerInput, .9, false) : new(.65, .55, .08, .65, false) };
             var hints = WindowUseRoles.Bind(windows, [], focus, attention, [], w => WindowUseRoles.Identify(
                 rename ? $"custom-view-{w.Handle}.exe" : $"sample-tool-{w.Handle}.exe", "AppWindow"));
             return Solve(windows, new(Focus: focus, Attention: attention, WindowHints: hints, UseWorkingPairs: true));

@@ -478,7 +478,8 @@ public partial class MainWindow : Window
             UndoArrangeButton.IsEnabled = available;
             _desktop?.SetUndoAvailable(available);
         }));
-    }, LayoutFocus, SnapshotHistory.Observe, SnapshotHistory.ObserveGesture, SnapshotHistory.WantsGestures, Manager.KeepsRunning);
+    }, LayoutFocus, SnapshotHistory.Observe, SnapshotHistory.ObserveGesture, SnapshotHistory.WantsGestures, Manager.KeepsRunning,
+        SnapshotHistory.ObserveSurface, SnapshotHistory.WantsSurfaces);
 
     private async void Arrange_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().ArrangeAsync());
     private async void UndoLayout_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().UndoAsync());

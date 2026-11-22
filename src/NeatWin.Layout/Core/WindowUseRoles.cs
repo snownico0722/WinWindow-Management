@@ -165,7 +165,12 @@ internal static class WindowUseRoles
                 double height = Math.Min(window.WorkArea.Height, (hint?.UsefulHeightDip ?? profile.ComfortableHeightDip) * scale);
                 firstPlacement = window.VisualRect.Width < width * .72 || window.VisualRect.Height < height * .72;
             }
-            if (hint == null && role == WindowUseRole.Unknown && affinity == 0 && !text) continue;
+            if (focus?.OpeningResidentLeft.HasValue == true && window.Handle == focus.Main)
+            {
+                firstPlacement = window.Handle == initialPlacement;
+                text = !firstPlacement;
+            }
+            if (hint == null && role == WindowUseRole.Unknown && affinity == 0 && !text && !firstPlacement) continue;
             byWindow[window.Handle] = (hint ?? new(window.Handle)) with { Role = role, FloatingAffinity = affinity, TextFocus = text && !firstPlacement, InitialTextPlacement = firstPlacement };
         }
         return byWindow.Values.ToArray();
