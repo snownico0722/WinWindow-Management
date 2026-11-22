@@ -74,8 +74,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _referenceStore = new IntentReferenceStore(Path.Combine(directory, "Recorder"));
         _tidyOptions = _settingsStore.LoadTidyOptions();
         _smartBehaviorOptions = _settingsStore.LoadSmartBehaviorOptions();
-        _verticalFillManager = new ReversibleVerticalFillManager(handle => _lastLiveHints.Any(h => h.Handle == handle && h.TextFocus));
         _autoTidyManager = new AutoTidyManager();
+        _verticalFillManager = new(_autoTidyManager, handle => _lastLiveHints.Any(h => h.Handle == handle && h.TextFocus));
         _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) {
             VisualSampling = _settingsStore.VisualSampling, GestureObserver = gestureObserver, SnapshotWantsGestures = snapshotWantsGestures,
             InteractionObserver = interactionObserver, SurfaceObserver = surfaceObserver, SnapshotWantsSurfaces = snapshotWantsSurfaces,
@@ -176,9 +176,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _placementShadowTimer.Dispose();
             ClearPlacementShadow();
             _autoTidyManager.TidyRequested -= OnFollowHandRequested;
-            _workspaceMonitor.Dispose(); _autoTidyManager.Dispose(); _journal.Dispose(); _behaviorMonitor.Dispose();
+            _workspaceMonitor.Dispose(); _verticalFillManager.Dispose(); _autoTidyManager.Dispose(); _journal.Dispose(); _behaviorMonitor.Dispose();
             _recorder.StatusChanged -= OnRecorderStatusChanged; _recorder.Dispose();
-            _verticalFillManager.Dispose(); _dispatch.Dispose();
+            _dispatch.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -537,10 +537,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                         opening.ResidentLeft ? "opening-resident-left" : "opening-resident-right");
                 }
                 var observedPair = trigger == "automatic-gesture" && focus.Main != foreground ? null : focus;
-                var learned = pairSmart ? _recorder.Preferences(snapshot, focus, observedFocus) : [];
-                var slots = pairSmart && _useImportedPlacement ? _recorder.BindSlots(rules, snapshot, observedPair) : [];
+                var usage = pairSmart ? _recorder.ObservePlacementUse(snapshot, capturedAt, observedFocus) : null;
+                var learned = pairSmart ? _recorder.Preferences(snapshot, focus, usage) : [];
+                var instanceUses = pairSmart ? _recorder.LiveInstanceUses(snapshot, usage) : null;
+                var slots = pairSmart && _useImportedPlacement ? _recorder.BindSlots(rules, snapshot, observedPair, instanceUses) : [];
                 var placements = CompiledLayoutRules.ApplySlots(learned, slots);
-                var pairs = pairSmart && _useImportedPlacement ? _recorder.BindRules(rules, snapshot, liveHints, activities, observedPair) : [];
+                var pairs = pairSmart && _useImportedPlacement ? _recorder.BindRules(rules, snapshot, liveHints, activities, observedPair, instanceUses) : [];
                 // An interrupted opening may still expose the resident by adjusting it on
                 // its own side. Only an idle input queue authorizes moving the incoming frame.
                 bool firstPlacement = localOnly || trigger == "automatic-workspace" && front != null && reading.Root == front.Handle &&
@@ -583,7 +585,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     BrowserBarSample = browserBars,
                     VideoFits = _smartBehaviorOptions.RemoveVideoBlackBars
                         ? _videoBlackBarDetector.Fits.Read(snapshot, BrowserVideoBlackBarDetector.ReadPage) : null,
-                    Rules = _useImportedPlacement ? rules : rules with { Pairs = [], RolePairs = [], AppSlots = [], Scenes = null, SurfaceRules = null }, Activities = activities,
+                    Rules = _useImportedPlacement ? rules : rules with { Pairs = [], RolePairs = [], AppSlots = [], Scenes = null, SurfaceRules = null }, Activities = activities, InstanceUses = instanceUses,
                     AppKeys = _useImportedPlacement && rules.Scenes is { Length: > 0 } ? snapshot.Where(w => w.IsManageable || w.SurfaceState != null)
                         .ToDictionary(w => w.Handle, w => _recorder.TryReadAppKey(w)) : null,
                     UseWorkingPairs = pairSmart,

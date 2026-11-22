@@ -31,6 +31,27 @@ public sealed class OfficeSurfaceProbeTests
     }
 
     [Fact]
+    public void StalledControlCannotBlockAnotherControlInTheSameOfficeFrame()
+    {
+        var queries = new List<TaskCompletionSource<FocusedOfficeSurface>>();
+        var probe = new OfficeSurfaceProbe(_ =>
+        {
+            var work = new TaskCompletionSource<FocusedOfficeSurface>();
+            queries.Add(work);
+            return work.Task;
+        });
+        ForegroundReading first = new(7, 11, 66, true, 51);
+        var second = first with { Focus = 12 };
+        probe.Sample(first, 0);
+        probe.Sample(second, 1600);
+        Assert.Equal(2, queries.Count);
+        queries[0].SetResult(FocusedOfficeSurface.Grid);
+        queries[1].SetResult(FocusedOfficeSurface.Document);
+        Assert.Equal(FocusedOfficeSurface.Document, probe.Sample(second with { LastInput = 98 }, 1700));
+        Assert.Equal(FocusedOfficeSurface.Unknown, probe.Sample(first, 1800));
+    }
+
+    [Fact]
     public void OnlyAnUnchangedInitialInputSurfaceAllowsFirstPlacement()
     {
         ForegroundReading start = new(1, 2, 3, true, 42);
@@ -42,7 +63,7 @@ public sealed class OfficeSurfaceProbeTests
     }
 
     [Fact]
-    public void SparseSamplesReuseTheSameInputTargetButNeverCarryItsSurfaceAcrossInputOrRetirement()
+    public void PointerAndCaretActivityKeepTheSameControlButFocusAndRetirementInvalidateIt()
     {
         var queries = new List<TaskCompletionSource<FocusedOfficeSurface>>();
         var probe = new OfficeSurfaceProbe(_ =>
@@ -58,10 +79,12 @@ public sealed class OfficeSurfaceProbeTests
         queries[0].SetResult(FocusedOfficeSurface.Grid);
         Assert.Equal(FocusedOfficeSurface.Grid, probe.Sample(first, 5100));
         Assert.Equal(2, queries.Count);
-        var nextInput = first with { LastInput = 44 };
-        Assert.Equal(FocusedOfficeSurface.Unknown, probe.Sample(nextInput, 5110));
+        var nextInput = first with { LastInput = 44, Caret = true };
+        Assert.Equal(FocusedOfficeSurface.Grid, probe.Sample(nextInput, 5110));
         queries[1].SetResult(FocusedOfficeSurface.Grid);
-        Assert.Equal(FocusedOfficeSurface.Unknown, probe.Sample(nextInput, 5200));
+        Assert.Equal(FocusedOfficeSurface.Grid, probe.Sample(nextInput, 5200));
+        nextInput = nextInput with { Focus = 99 };
+        Assert.Equal(FocusedOfficeSurface.Unknown, probe.Sample(nextInput, 5210));
         queries[2].SetResult(FocusedOfficeSurface.Canvas);
         Assert.Equal(FocusedOfficeSurface.Canvas, probe.Sample(nextInput, 5300));
         probe.Retire(first.Root);

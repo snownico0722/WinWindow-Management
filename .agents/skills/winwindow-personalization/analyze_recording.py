@@ -190,6 +190,7 @@ class Recording:
                                    "MainId": (row.get("Signals") or {}).get("Main"),
                                    "ObservedChangeEvents": (row.get("Signals") or {}).get("ObservedChangeEvents"),
                                    "OmittedChanges": (row.get("Signals") or {}).get("OmittedChanges"),
+                                   "InstanceUses": (row.get("Signals") or {}).get("InstanceUses"),
                                    "ReadingInput": (row.get("Signals") or {}).get("ReadingInput"),
                                    "CandidateGroups": [{"Ids": g.get("Ids"), "Selected": g.get("Selected"),
                                        "Limits": (g.get("Task") or {}).get("Limits"),

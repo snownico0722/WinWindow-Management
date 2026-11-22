@@ -703,15 +703,24 @@ internal sealed partial class RecorderSession : IDisposable
         return result.ToArray();
     }
 
+    internal Dictionary<nint, string>? LiveInstanceUses(IReadOnlyList<WindowSnapshot> windows, PlacementUseObservation? use)
+    {
+        if (use == null) return null;
+        var targets = new Dictionary<nint, string>();
+        foreach (var w in windows.Where(w => w.IsManageable && IsLocalSurface?.Invoke(w) != true))
+            if (use.UseOf(_identity.Id(w)) is { } role) targets[w.Handle] = role;
+        return targets.Count > 0 ? targets : null;
+    }
+
     internal WorkingPairRule[] BindRules(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows,
-        IReadOnlyList<TaskWindowHint> hints, IReadOnlyDictionary<nint, string> activities, LayoutFocus? focus) =>
+        IReadOnlyList<TaskWindowHint> hints, IReadOnlyDictionary<nint, string> activities, LayoutFocus? focus, IReadOnlyDictionary<nint, string>? uses) =>
         (rules.Pairs is { Length: > 0 } || rules.RolePairs is { Length: > 0 })
             ? rules.Bind(windows.Where(w => w.IsManageable).Select(w => (w, _activity.AppKey(w, false))),
-                hints, activities, focus)
+                hints, activities, focus, uses)
             : [];
 
-    internal PlacementPreference[] BindSlots(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows, LayoutFocus? focus) =>
-        rules.BindSlots(windows.Select(w => (w, _activity.AppKey(w, false))), focus);
+    internal PlacementPreference[] BindSlots(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows, LayoutFocus? focus, IReadOnlyDictionary<nint, string>? uses) =>
+        rules.BindSlots(windows.Select(w => (w, _activity.AppKey(w, false))), focus, uses);
 
     internal WindowSizeFloor[] BindSizeFloors(IReadOnlyList<WindowSnapshot> windows) =>
         SizeMemory.Bind(windows.Where(w => w.IsManageable).Select(w => (w, _activity.AppKey(w, false))));
@@ -723,7 +732,7 @@ internal sealed partial class RecorderSession : IDisposable
 
     internal string? TryReadAppKey(WindowSnapshot window) => _activity.AppKey(window, false);
 
-    private PlacementUseObservation? ObservePlacementUse(IReadOnlyList<WindowSnapshot> windows, long tick, LayoutFocus? focus = null)
+    internal PlacementUseObservation? ObservePlacementUse(IReadOnlyList<WindowSnapshot> windows, long tick, LayoutFocus? focus = null)
     {
         // 只用八秒内、仍属于同一窗口及前后台状态的测量。未采样到或共享进程的媒体状态保持未知。
         var current = windows.Where(w => w.IsManageable && IsLocalSurface?.Invoke(w) != true).ToDictionary(w => _identity.Id(w));
@@ -749,7 +758,7 @@ internal sealed partial class RecorderSession : IDisposable
         return new(frontId, joint, text, playing, scrolling);
     }
 
-    internal PlacementPreference[] Preferences(IReadOnlyList<WindowSnapshot> windows, LayoutFocus focus, LayoutFocus observedFocus)
+    internal PlacementPreference[] Preferences(IReadOnlyList<WindowSnapshot> windows, LayoutFocus focus, PlacementUseObservation? usage)
     {
         if (!_store.Enabled) return [];
         var stored = _store.Placement.Read();
@@ -758,7 +767,6 @@ internal sealed partial class RecorderSession : IDisposable
         var entries = windows.Where(w => w.IsManageable).Select(w =>
             (Window: w, App: stored.Length == 0 ? null : _activity.AppKey(w, false),
              Instance: _instanceHabits.Length == 0 ? string.Empty : _identity.Id(w).ToString(System.Globalization.CultureInfo.InvariantCulture))).ToArray();
-        var usage = ObservePlacementUse(windows, Environment.TickCount64, observedFocus);
         var ids = usage == null ? null : entries.ToDictionary(e => e.Window.Handle, e => _identity.Id(e.Window));
         return PlacementPreferences.Bind(entries, focus, stored, _instanceHabits, now,
             ids == null ? null : (window, peer) => usage!.For(ids.GetValueOrDefault(window), ids.GetValueOrDefault(peer)),

@@ -33,7 +33,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     private bool _enabled;
     private readonly Dictionary<int, PointerObservation> _pointerMessages = [];
     private int _pointerSequence;
-    private bool _tracePointer;
+    private bool _tracePointer, _restorePointer;
     private bool _trackTaskInput, _previewEnabled, _awaitingPointerUp;
     private bool _disposed;
     private ActiveGesture? _activeGesture;
@@ -80,6 +80,14 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     internal event Action<nint, uint, long, bool>? TaskInput;
 
     internal event Action<PointerObservation>? PointerObserved;
+    internal event Action<PointerObservation>? RestorePointer;
+    internal void SetRestorePointer(bool enabled)
+    {
+        if (_restorePointer == enabled) return;
+        _restorePointer = enabled;
+        UpdatePointerTracking();
+    }
+
     internal void SetPointerObservation(bool enabled)
     {
         if (_disposed) return;
@@ -125,7 +133,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
 
     private void UpdatePointerTracking()
     {
-        if (_enabled || _trackTaskInput || _tracePointer)
+        if (_enabled || _trackTaskInput || _tracePointer || _restorePointer)
         {
             if (_mouseHook == nint.Zero)
                 _mouseHook = NativeMethods.SetWindowsHookEx(NativeMethods.WhMouseLl, _mouseProc, nint.Zero, 0);
@@ -275,7 +283,8 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
                 NativeMethods.WmMouseWheel => "wheel", NativeMethods.WmMouseHWheel => "horizontal-wheel",
                 _ => null
             };
-            if (!_disposed && code >= NativeMethods.HcAction && action != null)
+            if (!_disposed && code >= NativeMethods.HcAction && action != null &&
+                (_enabled || _trackTaskInput || _tracePointer || _restorePointer && kind is NativeMethods.WmLButtonDown or NativeMethods.WmLButtonUp))
             {
                 var data = Marshal.PtrToStructure<NativeMethods.MsllHookStruct>(dataPointer);
                 if ((_trackTaskInput || _tracePointer) && (data.Flags & NativeMethods.MouseInputInjected) != 0)
@@ -321,6 +330,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
                 return;
             case PointerInputMessage:
                 if (!_pointerMessages.Remove((int)message.WParam, out var input)) return;
+                if (_restorePointer && input.Kind is "left-down" or "left-up") RestorePointer?.Invoke(input);
                 if (_tracePointer || _trackTaskInput) PointerObserved?.Invoke(input);
                 if (_enabled && input.Kind == "left-down" && input.Target != 0) TouchClick(input.Target);
                 // 松开是诊断证据，不能重复增加注意力。诊断单独开启时也不能给布局授权。

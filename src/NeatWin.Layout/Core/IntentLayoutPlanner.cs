@@ -164,6 +164,7 @@ internal static partial class IntentLayoutPlanner
                 candidates.Add(new("local", group.Select((v, i) => local.GetValueOrDefault(v.Window.Handle, original[i])).ToArray(), order));
                 if (!localOnly && group.Length >= 2)
                 {
+                    AddReferenceClearance(candidates, group, original, area, hint.GapPixels, groupContext, goals, order);
                     AddGroupLayouts(candidates, original);
                     if (group.Length is > 2 and <= 12)
                         AddCoveredPairCandidates(candidates, group, rescue, task, area, hint.GapPixels, order);
@@ -178,6 +179,7 @@ internal static partial class IntentLayoutPlanner
                         foreach (var packingArea in packingAreas)
                             AddDisplayLayouts(candidates, group, original, packingArea, task, options, groupContext, hint.GapPixels, order);
                 }
+                if (options.RescueOffscreenWindows) AddClippedEdgeRepairs(candidates, group, original, area, groupContext, goals, order);
                 AddAccessRepairs(candidates, group, original, beforeExposure, obstacles, area, hint.GapPixels, order);
                 if (localOnly && groupContext.PairPlanningEnabled)
                     AddCoveredWorkingPairRepair(candidates, group, original, obstacles, area, hint.GapPixels, groupContext, order);

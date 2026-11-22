@@ -6,81 +6,63 @@ namespace NeatWin.App;
 
 /// <summary>
 /// Preserves the useful part of Windows snap restore for NeatWin's vertical-fill preference.
-/// A low-level mouse hook is enabled only while at least one reversible window is tracked, so the
-/// original rectangle can be restored before the target application starts its drag loop. The
-/// existing move/size WinEvent remains as a fallback for client-drawn title bars.
+/// The shared pointer and move-start streams identify potential title-bar restores.
 /// </summary>
 internal sealed class ReversibleVerticalFillManager : IDisposable
 {
-    private readonly object _gate = new();
+    private readonly AutoTidyManager _input;
+    private readonly Func<bool> _leftHeld;
     private readonly Func<nint, bool> _preserveTextView;
-    private readonly Dictionary<nint, RestoreEntry> _entries = new();
-    private readonly NativeMethods.WinEventProc _winEventProc;
-    private readonly NativeMethods.LowLevelMouseProc _mouseProc;
-    private readonly nint _winEventHook;
-    private nint _mouseHook;
+    private readonly Dictionary<nint, RestoreEntry> _entries = [];
+    private int _sequence;
     private bool _disposed;
 
-    internal ReversibleVerticalFillManager(Func<nint, bool> preserveTextView)
+    internal ReversibleVerticalFillManager(AutoTidyManager input, Func<nint, bool> preserveTextView, Func<bool>? leftHeld = null)
     {
+        _input = input;
+        _leftHeld = leftHeld ?? (() => (NativeMethods.GetAsyncKeyState(1) & 0x8000) != 0);
         _preserveTextView = preserveTextView;
-        _winEventProc = OnWinEvent;
-        _mouseProc = OnLowLevelMouse;
-        _winEventHook = NativeMethods.SetWinEventHook(
-            NativeMethods.EventSystemMoveSizeStart,
-            NativeMethods.EventSystemMoveSizeStart,
-            nint.Zero,
-            _winEventProc,
-            0,
-            0,
-            NativeMethods.WinEventOutOfContext | NativeMethods.WinEventSkipOwnProcess);
+        input.RestorePointer += OnPress;
+        input.GestureStarted += OnMoveStart;
     }
 
     internal void Track(IReadOnlyList<TidyMove> plan, bool enabled)
     {
-        bool shouldHookMouse;
-
-        lock (_gate)
+        if (!enabled)
         {
-            if (!enabled)
+            _entries.Clear();
+            _sequence++;
+        }
+        else
+        {
+            foreach (var move in plan)
             {
-                _entries.Clear();
-                shouldHookMouse = false;
-            }
-            else
-            {
-                foreach (var move in plan)
+                var window = move.Window;
+                var target = move.TargetVisualRect;
+                var workArea = window.WorkArea;
+                var targetFillsVertically =
+                    Math.Abs(target.Top - workArea.Top) <= 1 &&
+                    Math.Abs(target.Bottom - workArea.Bottom) <= 1;
+                var originalAlreadyFilled =
+                    Math.Abs(window.VisualRect.Top - workArea.Top) <= 1 &&
+                    Math.Abs(window.VisualRect.Bottom - workArea.Bottom) <= 1;
+
+                if (window.IsResizable && targetFillsVertically && !originalAlreadyFilled)
                 {
-                    var window = move.Window;
-                    var target = move.TargetVisualRect;
-                    var workArea = window.WorkArea;
-                    var targetFillsVertically =
-                        Math.Abs(target.Top - workArea.Top) <= 1 &&
-                        Math.Abs(target.Bottom - workArea.Bottom) <= 1;
-                    var originalAlreadyFilled =
-                        Math.Abs(window.VisualRect.Top - workArea.Top) <= 1 &&
-                        Math.Abs(window.VisualRect.Bottom - workArea.Bottom) <= 1;
-
-                    if (window.IsResizable && targetFillsVertically && !originalAlreadyFilled)
-                    {
-                        _entries[window.Handle] = new RestoreEntry(
-                            window.ProcessId,
-                            window.VisualRect,
-                            target,
-                            workArea,
-                            window.FrameInsets);
-                    }
-                    else
-                    {
-                        _entries.Remove(window.Handle);
-                    }
+                    _entries[window.Handle] = new RestoreEntry(
+                        window.ProcessId,
+                        window.VisualRect,
+                        target,
+                        workArea,
+                        window.FrameInsets);
                 }
-
-                shouldHookMouse = _entries.Count > 0;
+                else
+                {
+                    _entries.Remove(window.Handle);
+                }
             }
         }
-
-        SetMouseHookEnabled(shouldHookMouse);
+        _input.SetRestorePointer(_entries.Count != 0);
     }
 
     public void Dispose()
@@ -91,115 +73,45 @@ internal sealed class ReversibleVerticalFillManager : IDisposable
         }
 
         _disposed = true;
-        SetMouseHookEnabled(false);
-
-        if (_winEventHook != nint.Zero)
-        {
-            _ = NativeMethods.UnhookWinEvent(_winEventHook);
-        }
-
-        lock (_gate)
-        {
-            _entries.Clear();
-        }
-
-        GC.SuppressFinalize(this);
+        _input.RestorePointer -= OnPress;
+        _input.GestureStarted -= OnMoveStart;
+        _input.SetRestorePointer(false);
+        _entries.Clear();
+        _sequence++;
     }
 
-    private void SetMouseHookEnabled(bool enabled)
+    private async void OnPress(PointerObservation input) => await PointerChangedAsync(input);
+
+    internal Task PointerChangedAsync(PointerObservation input)
     {
-        if (_disposed && enabled)
-        {
-            return;
-        }
-
-        if (enabled)
-        {
-            if (_mouseHook == nint.Zero)
-            {
-                _mouseHook = NativeMethods.SetWindowsHookEx(
-                    NativeMethods.WhMouseLl,
-                    _mouseProc,
-                    nint.Zero,
-                    0);
-            }
-
-            return;
-        }
-
-        if (_mouseHook != nint.Zero)
-        {
-            _ = NativeMethods.UnhookWindowsHookEx(_mouseHook);
-            _mouseHook = nint.Zero;
-        }
+        _sequence++; // 松手或开始另一笔操作后，迟到的跨进程命中结果不能再还原上一扇窗。
+        return input.Kind == "left-down" ? ProbeAsync(input.Target, new() { X = input.Point.X, Y = input.Point.Y }, false, input.TargetPid) : Task.CompletedTask;
     }
 
-    private nint OnLowLevelMouse(int code, nint message, nint dataPointer)
+    private async void OnMoveStart(nint hwnd)
     {
-        try
-        {
-            if (!_disposed &&
-                code >= NativeMethods.HcAction &&
-                message == NativeMethods.WmLButtonDown)
-            {
-                var data = Marshal.PtrToStructure<NativeMethods.MsllHookStruct>(dataPointer);
-                var hitWindow = NativeMethods.WindowFromPoint(data.Point);
-                var root = hitWindow == nint.Zero
-                    ? nint.Zero
-                    : NativeMethods.GetAncestor(hitWindow, NativeMethods.GaRoot);
-
-                if (root != nint.Zero)
-                {
-                    _ = TryRestoreFromPointer(root, data.Point, allowClientTitleFallback: false);
-                }
-            }
-        }
-        catch
-        {
-            // Never let a managed exception escape a global input hook.
-        }
-
-        return NativeMethods.CallNextHookEx(_mouseHook, code, message, dataPointer);
+        if (_entries.ContainsKey(hwnd) && NativeMethods.GetCursorPos(out var cursor))
+            await ProbeAsync(hwnd, cursor, true, null);
     }
 
-    private void OnWinEvent(
-        nint hook,
-        uint eventType,
-        nint hwnd,
-        int idObject,
-        int idChild,
-        uint eventThread,
-        uint eventTime)
+    private async Task ProbeAsync(nint hwnd, NativeMethods.Point cursor, bool allowClientTitleFallback, uint? pid)
     {
-        if (_disposed || hwnd == nint.Zero || !NativeMethods.GetCursorPos(out var cursor))
-        {
-            return;
-        }
-
-        // Primary path restores on mouse-down before dragging begins. This fallback covers apps
-        // that implement a custom client-area DragMove and therefore report HTCLIENT instead of
-        // HTCAPTION during the initial hit test.
-        _ = TryRestoreFromPointer(hwnd, cursor, allowClientTitleFallback: true);
+        if (!_entries.TryGetValue(hwnd, out var entry) || pid.HasValue && pid != entry.ProcessId) return;
+        int ticket = ++_sequence;
+        // 客户区自绘标题要询问目标线程。慢窗口最多占用一次后台命中测试，布局消息泵可继续处理鼠标松手。
+        bool title = await Task.Run(() => IsTitleBarPoint(hwnd, entry.TargetVisualRect, cursor, allowClientTitleFallback));
+        if (_disposed || _sequence != ticket) return;
+        if (!title || !_entries.TryGetValue(hwnd, out var current) || !ReferenceEquals(entry, current) ||
+            !_leftHeld() || NativeMethods.GetForegroundWindow() != hwnd) return;
+        TryRestoreFromPointer(hwnd, cursor, entry);
     }
 
-    private bool TryRestoreFromPointer(
-        nint hwnd,
-        NativeMethods.Point cursor,
-        bool allowClientTitleFallback)
+    private bool TryRestoreFromPointer(nint hwnd, NativeMethods.Point cursor, RestoreEntry entry)
     {
-        RestoreEntry entry;
-        lock (_gate)
-        {
-            if (!_entries.TryGetValue(hwnd, out entry))
-            {
-                return false;
-            }
-        }
-
         // Reading at an exact location takes priority over restoring a previously filled
         // window on title-bar mouse-down. An actual release still goes through gesture assist.
         if (hwnd == NativeMethods.GetForegroundWindow() && _preserveTextView(hwnd)) return false;
-        NativeMethods.GetWindowThreadProcessId(hwnd, out var owner);
+        var thread = NativeMethods.GetWindowThreadProcessId(hwnd, out var owner);
         var style = NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GwlExStyle).ToInt64();
         if (owner != entry.ProcessId || (style & (NativeMethods.WsExTopmost | NativeMethods.WsExTransparent)) != 0 ||
             NativeMethods.IsIconic(hwnd) || !NativeMethods.IsWindowVisible(hwnd))
@@ -215,13 +127,14 @@ internal sealed class ReversibleVerticalFillManager : IDisposable
 
         if (!ApproximatelyMatches(currentVisual, entry.TargetVisualRect, tolerance: 12))
         {
-            RemoveEntry(hwnd);
-            return false;
-        }
-
-        if (!IsTitleBarPoint(hwnd, currentVisual, cursor, allowClientTitleFallback))
-        {
-            return false;
+            // 慢速标题命中返回时，系统可能已开始移动。仅在同一窗口仍处于移动循环、尺寸没被用户改动时跟上当前指针。
+            var info = new NativeMethods.GuiThreadInfo { Size = Marshal.SizeOf<NativeMethods.GuiThreadInfo>() };
+            if (currentVisual.Width != entry.TargetVisualRect.Width || currentVisual.Height != entry.TargetVisualRect.Height ||
+                !NativeMethods.GetGUIThreadInfo(thread, ref info) || info.MoveSize != hwnd || !NativeMethods.GetCursorPos(out cursor))
+            {
+                RemoveEntry(hwnd);
+                return false;
+            }
         }
 
         var restoredVisual = PlaceRestoreRectUnderCursor(entry, currentVisual, cursor);
@@ -236,7 +149,7 @@ internal sealed class ReversibleVerticalFillManager : IDisposable
             outer.Height,
             NativeMethods.SwpNoZOrder |
             NativeMethods.SwpNoActivate |
-            NativeMethods.SwpNoOwnerZOrder);
+            NativeMethods.SwpNoOwnerZOrder | NativeMethods.SwpAsyncWindowPos);
 
         if (success)
         {
@@ -248,17 +161,8 @@ internal sealed class ReversibleVerticalFillManager : IDisposable
 
     private void RemoveEntry(nint hwnd)
     {
-        var noEntriesRemain = false;
-        lock (_gate)
-        {
-            _entries.Remove(hwnd);
-            noEntriesRemain = _entries.Count == 0;
-        }
-
-        if (noEntriesRemain)
-        {
-            SetMouseHookEnabled(false);
-        }
+        _entries.Remove(hwnd);
+        _input.SetRestorePointer(_entries.Count != 0);
     }
 
     private static bool IsTitleBarPoint(
@@ -388,7 +292,7 @@ internal sealed class ReversibleVerticalFillManager : IDisposable
             visualRect.Right + insets.Right,
             visualRect.Bottom + insets.Bottom);
 
-    private readonly record struct RestoreEntry(
+    private sealed record RestoreEntry(
         uint ProcessId,
         RectI OriginalVisualRect,
         RectI TargetVisualRect,

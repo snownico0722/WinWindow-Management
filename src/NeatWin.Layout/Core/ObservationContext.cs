@@ -44,7 +44,7 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     RecordedShadowFinding[]? ShadowReplay = null)
 {
-    internal const int CurrentVersion = 12;
+    internal const int CurrentVersion = 13;
 }
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
@@ -149,7 +149,9 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
     bool VerifiedTaskRepeat = false, Dictionary<int, ReadingInteraction>? ReadingInput = null, long[]? ObservedChangeEvents = null, int OmittedChanges = 0,
     // 旧记录没有手势起点，保持相同输入的序列化指纹，使跨版本回放可以逐请求配对。
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    RecordedDividerRelease? DividerRelease = null)
+    RecordedDividerRelease? DividerRelease = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<int, string>? InstanceUses = null)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids, IReadOnlyList<WindowSnapshot>? snapshot = null)
     {
@@ -204,7 +206,8 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
                 ? input.Where(e => Id(e.Key) != 0).ToDictionary(e => Id(e.Key), e => e.Value) : null, context.ObservedChangeEvents, context.OmittedChanges,
             context.AllowGestureAssist && Id(context.GestureAnchor) != 0 &&
             context.RecentGesture is { Kind: ManualGestureKind.Resize } release && release.WindowHandle == context.GestureAnchor
-                ? new(release.StartRect, release.EndRect, release.WorkArea) : null);
+                ? new(release.StartRect, release.EndRect, release.WorkArea) : null,
+            context.InstanceUses?.Where(e => Id(e.Key) != 0).ToDictionary(e => Id(e.Key), e => e.Value));
     }
 
     private static ShadowAxis? ReadShadowRule(RecordedShadowRule value) =>
@@ -225,6 +228,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             Anchor: h.Anchor, MediaCompanion: h.Media, Role: h.Role, FloatingAffinity: h.FloatingAffinity, TextFocus: h.TextFocus, InitialTextPlacement: h.InitialTextPlacement)).ToArray(),
         Placement = Placements.Select(p => new PlacementPreference(p.Id, p.Partner, p.Center, p.Width,
             p.Order, p.Cell, p.Confidence, p.Overlap, p.Height, p.PreferWidth, p.PreferCenter, p.AxisConfidence, p.Usage)).ToArray(),
+        InstanceUses = InstanceUses?.Where(e => e.Key > 0 && CompiledLayoutRules.IsInstanceUse(e.Value)).ToDictionary(e => (nint)e.Key, e => e.Value),
         Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),
         Attention = Attention?.ToDictionary(a => (nint)a.Key, a => a.Value),
         GestureAnchor = GestureAnchor, GestureTarget = GestureTarget,
