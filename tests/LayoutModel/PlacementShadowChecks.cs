@@ -39,24 +39,35 @@ internal static class PlacementShadowChecks
             "a single corrected replay never affects the live solver");
 
         var confirmed = findings[0] with { Won = true };
-        learner.Publish([confirmed], 3500);
+        learner.Publish([confirmed, confirmed], 3500);
+        check(learner.Bind(desktop, focus, 3600).Length == 0,
+            "reprocessing the same release cannot manufacture independent votes");
+        learner.Submitted(frame, plan, 3600);
+        learner.Observe(gesture with { ReleasedTick = 4200 }, released[0], released, 4200);
+        var second = PlacementShadowReplay.Analyze(learner.Take(), CancellationToken.None).Single();
+        learner.Publish([second with { Won = true }], 4300);
         if (!findings[0].Won)
         {
-            check(learner.Bind(desktop, focus, 3600).Length == 0,
-                "one winning alternative cannot override an unsuccessful replay");
-            learner.Publish([confirmed], 4000);
+            check(learner.Bind(desktop, focus, 4300).Length == 0, "unsuccessful replays supply no positive vote");
+            learner.Submitted(frame, plan, 4400);
+            learner.Observe(gesture with { ReleasedTick = 5000 }, released[0], released, 5000);
+            learner.Publish([PlacementShadowReplay.Analyze(learner.Take(), CancellationToken.None).Single() with { Won = true }], 5100);
         }
-        var bound = learner.Bind(desktop, focus, 4100);
+        var band = confirmed.Axis with { Axis = PlacementAxis.Width, Value = 900, Tolerance = 20 };
+        check(band.Apply(corrected with { Width = 895 }).Width == 895 &&
+            band.Apply(corrected with { Width = 1100 }) == (corrected with { Width = 920 }),
+            "a shadow rule keeps acceptable geometry and only repairs its own axis to the nearest boundary");
+        var bound = learner.Bind(desktop, focus, 5200);
         check(bound is [{ Axis: PlacementAxis.Width }] &&
-            learner.Bind([main], focus, 4100).Length == 0 &&
-            learner.Bind([main, peer with { ProcessId = 99 }], focus, 4100).Length == 0 &&
-            learner.Bind(desktop, focus, 4000 + 3 * PlacementShadowReplay.IntervalMs).Length == 0,
+            learner.Bind([main], focus, 5200).Length == 0 &&
+            learner.Bind([main, peer with { ProcessId = 99 }], focus, 5200).Length == 0 &&
+            learner.Bind(desktop, focus, 5100 + 3 * PlacementShadowReplay.IntervalMs).Length == 0,
             "corroborated rules bind only within the same live task and expire without new evidence");
 
         var far = Window(8, new(1780, 960, 100, 60));
         var near = far with { VisualRect = main.VisualRect };
-        check(learner.Bind([.. desktop, far], focus, 4100).Length == 1 &&
-            learner.Bind([.. desktop, near], focus, 4100).Length == 0,
+        check(learner.Bind([.. desktop, far], focus, 5200).Length == 1 &&
+            learner.Bind([.. desktop, near], focus, 5200).Length == 0,
             "only a new window intersecting the corrected region invalidates a shadow preference");
 
         var self = frame with { Context = context with { ShadowAxes = bound } };
@@ -71,7 +82,7 @@ internal static class PlacementShadowChecks
             signals.ApplyToReplay(wrongFocus).ShadowAxes is [{ Window: 19, Axis: PlacementAxis.Width }],
             "recorded diagnostics and rules use session-local identity and can be replayed");
         learner.Retire(peer.Handle);
-        check(learner.Bind(desktop, focus, 4200).Length == 0 &&
+        check(learner.Bind(desktop, focus, 5500).Length == 0 &&
             learner.Report(new Dictionary<nint, int> { [1] = 19 }) == null,
             "retiring a neighbor prevents old rules or diagnostics from following a recycled handle");
     }

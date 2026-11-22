@@ -157,8 +157,8 @@ class RecordingAnalysisTests(unittest.TestCase):
                     {key: replay(original) for key in keys},
                     {keys[0]: replay(manual), keys[1]: replay(manual, timestamp=time(2500))})
         self.assertEqual(first["Replay"]["fixed"]["Axes"]["width"],
-                         {"Keep": .05, "Baseline": .05, "Candidate": 0, "CandidateImprovesOverKeep": True,
-                          "CandidateImprovesOverBaseline": True})
+                         {"Keep": .05, "Baseline": .05, "Candidate": 0, "CandidateCloserToReleaseThanKeep": True,
+                          "CandidateCloserToReleaseThanBaseline": True})
         self.assertEqual(first["Replay"]["resizable"]["Status"], "unknown-replay-input")
         self.assertEqual(missed["Gestures"][3]["Replay"]["fixed"]["Status"], "unknown-no-request")
         self.assertIsNone(missed["ObservedSavedDrags"])
@@ -215,22 +215,49 @@ class RecordingAnalysisTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             baseline, candidate = (Path(tmp) / name for name in ("baseline.txt", "candidate.txt"))
             rows = [{"Session": session, "RequestId": "shared", "assumeResizable": resize,
+                     "InputFingerprint": "shared-input", "Truncated": False,
                      "PostArrangeRegret": .2, "ProtectedRegionsPreserved": True, "Moves": [],
                      "SceneEffects": [{"Rule": "keep", "SubjectId": 2, "BeforeVisible": .6, "AfterVisible": .6,
                                        "LostVisible": .01, "MaxLoss": .05}]}
                     for session in ("a","b") for resize in (True,False)]
             baseline.write_text("PASS normal replay header\n" + "\n".join(map(json.dumps, rows)), encoding="utf-8")
-            rows[0] = {**rows[0], "PostArrangeRegret": .3, "ProtectedRegionsPreserved": False,
+            rows[1] = {**rows[1], "HorizontalReleaseDistance": .3}
+            rows[0] = {**rows[0], "HorizontalReleaseDistance": .1, "ProtectedRegionsPreserved": False,
                        "SceneEffects": [{**rows[0]["SceneEffects"][0], "AfterVisible": .7, "LostVisible": .06}]}
             candidate.write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
             report = analysis.compare(baseline, candidate)
             self.assertTrue(report["CompletePairing"])
             request = report["Sessions"]["a"]["Assumptions"]["resizable"]["Requests"][0]
-            self.assertEqual(request["Harm"], ["protected-region-regression", "horizontal-regret-increased"])
+            self.assertEqual(request["Harm"], ["protected-region-regression"])
+            self.assertEqual(request["HorizontalReleaseDistanceDelta"], -.1)
+            farther = report["Sessions"]["a"]["Assumptions"]["fixed"]
+            self.assertEqual(farther["Requests"][0]["Harm"], [])
+            self.assertEqual(farther["Summary"]["HorizontalReleaseDistanceDelta"]["Farther"], 1)
+            historical = report["Sessions"]["a"]["ObservedOnRecordedDesktop"]
+            self.assertEqual(historical["PairedRequests"], 1)
+            self.assertIsNone(historical["LinkedManualFollowups"])
             self.assertTrue(request["ReferenceVisibilityLosses"][0]["LossLimitExceeded"])
             self.assertEqual(request["ReferenceVisibilityLosses"][0]["AdditionalLossOfOriginalExposure"], .05)
             candidate.write_text("\n".join(map(json.dumps, rows[1:])), encoding="utf-8")
             self.assertFalse(analysis.compare(baseline, candidate)["CompletePairing"])
+
+    def test_distance_and_protection_need_comparable_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = [Path(tmp) / name for name in ("base", "trial")]
+            for side, path in enumerate(paths):
+                rows = [{"RequestId": request, "Session": "test", "assumeResizable": assume,
+                         "InputFingerprint": None if request == "missing" else str(side),
+                         "Truncated": False, "HorizontalReleaseDistance": side,
+                         "ProtectedRegionsPreserved": side == 0}
+                        for request in ("different", "missing") for assume in (False, True)]
+                path.write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
+            result = analysis.compare(*paths)
+            view = result["Sessions"]["test"]["Assumptions"]["resizable"]
+            self.assertFalse(result["CompletePairing"])
+            self.assertEqual(view["Summary"]["Pairing"], {"input-mismatch": 1, "unknown-replay-input": 1})
+            for request in view["Requests"]:
+                self.assertEqual(request["Harm"], [])
+                self.assertIsNone(request["HorizontalReleaseDistanceDelta"])
 
     def test_reference_evaluation_counts_only_same_subject_and_observation(self):
         def effect(subject, lost, before=.6, rule="eval"):
@@ -250,7 +277,7 @@ class RecordingAnalysisTests(unittest.TestCase):
             traces = [Path(tmp) / f"{name}.txt" for name in ("baseline", "candidate")]
             for side, path in enumerate(traces):
                 rows = [{"Session": "capture", "RequestId": request, "assumeResizable": assume,
-                         "Truncated": request == "truncated", "EvaluationEffects": effects[side]}
+                         "InputFingerprint": "input-" + request, "Truncated": request == "truncated", "EvaluationEffects": effects[side]}
                         for request, effects in pairs.items() for assume in (True, False)]
                 path.write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
             result = analysis.compare(*traces)

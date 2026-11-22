@@ -2,7 +2,14 @@ namespace NeatWin.Core;
 
 internal enum AttentionRole { Main, Reference, Return, Waiting, Background }
 
-internal sealed record AttentionTarget(AttentionRole Role, int Width, int Height, int AccessWidth, bool Movable, bool Resizable, bool LearnedHeight = false, bool LearnedWidth = false, int FrameWidth = 0, double? RestingCenter = null, double PlacementStability = 0, int MinimumFrameWidth = 0, bool DefaultCenter = false);
+internal sealed record AttentionTarget(AttentionRole Role, int Width, int Height, int AccessWidth, bool Movable, bool Resizable, bool LearnedHeight = false, bool LearnedWidth = false, int FrameWidth = 0, double? RestingCenter = null, double PlacementStability = 0, int MinimumFrameWidth = 0, bool DefaultCenter = false,
+    PlacementBands? Bands = null)
+{
+    internal int WidthFor(int candidate, int extent) => LearnedWidth && FrameWidth == 0 && Bands?.Width is { } band
+        ? band.SizeTarget(candidate, extent, Width) : Width;
+    internal int HeightFor(int candidate, int extent) => LearnedHeight && Bands?.Height is { } band
+        ? band.SizeTarget(candidate, extent, Height) : Height;
+}
 
 // Frozen at the beginning of a solve. Dimensions are pixels in the window's current work area.
 internal static class AttentionLayout
@@ -120,7 +127,7 @@ internal static class AttentionLayout
                 accessWidth, movable, resize, content && learnedHeight,
                 content && preference is { PreferWidth: true, Width: > 0 and <= 1 } && hint?.UsefulWidthDip is not (> 0 and <= 4000),
                 RestingCenter: preference is { PreferCenter: true } ? w.WorkArea.Left + preference.Center * w.WorkArea.Width : null,
-                PlacementStability: floating);
+                PlacementStability: floating, Bands: preference?.Bands);
         }).ToArray();
         // A temporary overlay can leave its source partly visible on purpose. Preserve the
         // source's actual reading surface, with a minimum useful portion even when buried.

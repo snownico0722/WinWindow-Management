@@ -879,7 +879,7 @@ def analyze(paths, baseline_paths=(), candidate_paths=()):
             score_missed_replays(key, report, baseline, candidate)
             if has_probes:
                 score_missed_replays(key, report, baseline, candidate, probe=True)
-    return {"ReportVersion": 1, "Archives": archives, "DuplicateRowsSkipped": dup, "InvalidRows": malformed,
+    return {"ReportVersion": 2, "Archives": archives, "DuplicateRowsSkipped": dup, "InvalidRows": malformed,
             "Sessions": reports}
 
 
@@ -896,6 +896,11 @@ def read_replay(path):
                 continue
             if not item.get("Session") or not isinstance(item.get("assumeResizable"), bool):
                 raise ValueError(f"{path}:{line}: rerun LayoutModel with Session and assumeResizable in each request")
+            # Legacy stdout called geometric distance "regret". The recorded release is only one observed layout.
+            for current, legacy in (("HorizontalReleaseDistance", "PostArrangeRegret"),
+                                    ("VerticalReleaseDistance", "PostArrangeVerticalError")):
+                if current not in item:
+                    item[current] = item.get(legacy)
             key = (item["Session"], item["RequestId"], item["assumeResizable"])
             if key in rows:
                 duplicates.append(key)
@@ -980,8 +985,8 @@ def score_missed_replays(session, report, baseline, candidate, probe=False):
                         before, after = (axis_error(result[target], entry["ManualRelease"], entry["WorkArea"], dim)
                                          for target in ("BaselineTarget", "CandidateTarget"))
                         result.setdefault("Axes", {})[dim] = scores = {"Keep": axis["KeepError"], "Baseline": before,
-                            "Candidate": after, "CandidateImprovesOverKeep": after < axis["KeepError"],
-                            "CandidateImprovesOverBaseline": after < before}
+                            "Candidate": after, "CandidateCloserToReleaseThanKeep": after < axis["KeepError"],
+                            "CandidateCloserToReleaseThanBaseline": after < before}
                         field, idx = axis_field(dim)
                         result.setdefault("CandidateSearch", {})[dim] = ("selected-near-release" if abs(result["CandidateTarget"][idx] -
                             entry["ManualRelease"][idx]) <= 4 else axis_diagnosis(new.get("CandidateGroups"), window, field,
@@ -998,8 +1003,8 @@ def score_missed_replays(session, report, baseline, candidate, probe=False):
 
 
 def comparison_counts(scores, baseline):
-    return dict(Counter("improved" if s["Candidate"] < s[baseline] else
-                        "regressed" if s["Candidate"] > s[baseline] else "same" for s in scores))
+    return dict(Counter("closer" if s["Candidate"] < s[baseline] else
+                        "farther" if s["Candidate"] > s[baseline] else "same" for s in scores))
 
 def replay_signature(row):
     return (sorted((move["Id"], rect(move["Before"]), rect(move["After"])) for move in row.get("Moves", [])),
@@ -1112,16 +1117,19 @@ def compare(baseline, candidate):
         if a is None or b is None:
             entries.append({"RequestId": request, "Status": "candidate-only" if a is None else "baseline-only"})
             continue
-        same_input = all(a.get(k) == b.get(k) for k in ("Trigger", "Truncated", "RecordedManualFollowups",
+        same_input = all(a.get(k) == b.get(k) for k in ("InputFingerprint", "BeforeTime", "Trigger", "Truncated", "RecordedManualFollowups",
                          "RecordedUndoOfThisRequest", "ObservedReleaseDetails", "GestureTiming"))
-        evaluation = ({"Status": "duplicate-request", "Subjects": []} if key in duplicates
-                      else evaluate_reference_pair(a, b, same_input))
-        horizontal = metric_delta(a,b,"PostArrangeRegret")
-        vertical = metric_delta(a,b,"PostArrangeVerticalError")
+        status = ("duplicate-request" if key in duplicates else "input-mismatch" if not same_input
+                  else "unknown-replay-input" if not a.get("InputFingerprint") else "paired")
+        evaluation = (evaluate_reference_pair(a, b, True) if status == "paired"
+                      else {"Status": status, "Subjects": []})
+        horizontal = metric_delta(a, b, "HorizontalReleaseDistance")
+        vertical = metric_delta(a, b, "VerticalReleaseDistance")
         protected_a, protected_b = (row.get("ProtectedRegionsPreserved") for row in (a,b))
         effects_a, effects_b = (row.get("SceneEffects") for row in (a,b))
         subject_key = lambda effect: (effect.get("Rule"), effect.get("SubjectId"))
         previous_effects = {subject_key(effect): effect for effect in effects_a or []}
+        comparable = status == "paired" and a.get("Truncated") is False
         harmed = []
         for effect in effects_b or []:
             before, after, limit = (effect.get(k) for k in ("BeforeVisible", "AfterVisible", "MaxLoss"))
@@ -1132,8 +1140,8 @@ def compare(baseline, candidate):
             if lost is None:
                 lost = round(before - after, 6)
             old_effect = previous_effects.get(subject_key(effect), {})
-            if not old_effect and effect.get("SubjectId") is not None:
-                old_effect = next((e for e in effects_a or [] if e.get("SubjectId") == effect["SubjectId"]), {})
+            if effect.get("SubjectId") is None or old_effect.get("BeforeVisible") != before or not comparable:
+                old_effect = {}
             old_after = old_effect.get("AfterVisible")
             relative = round(old_after-after, 6) if old_after is not None else None
             extra_loss = round(lost - old_effect["LostVisible"], 6) if old_effect.get("LostVisible") is not None else None
@@ -1144,12 +1152,11 @@ def compare(baseline, candidate):
                                "LossLimitExceeded": lost > limit + 0.000001 if limit is not None else None})
         changed = replay_signature(a) != replay_signature(b)
         harm = []
-        if protected_a is True and protected_b is False:
+        if comparable and protected_a is True and protected_b is False:
             harm.append("protected-region-regression")
-        if horizontal is not None and horizontal > 0:
-            harm.append("horizontal-regret-increased")
-        if vertical is not None and vertical > 0:
-            harm.append("vertical-error-increased")
+        if any(subject["CandidateLostVisible"] > subject["BaselineLostVisible"]
+               for subject in evaluation["Subjects"]):
+            harm.append("reference-exposure-regression")
         moves_a = {m["Id"]: rect(m["After"]) for m in a.get("Moves") or []}
         moves_b = {m["Id"]: rect(m["After"]) for m in b.get("Moves") or []}
         changed_targets = [{"Id": i, "BaselineTarget": moves_a.get(i), "CandidateTarget": moves_b.get(i)}
@@ -1158,11 +1165,12 @@ def compare(baseline, candidate):
         unmatched_measurements = sorted({e["SubjectId"] for e in effects_a or []
                                          if e.get("SubjectId") is not None and e.get("AfterVisible") is not None
                                          and e["SubjectId"] not in candidate_subjects})
-        entries.append({"RequestId": request, "Trigger": b.get("Trigger"), "Status": "paired" if same_input else "input-mismatch",
+        entries.append({"RequestId": request, "Trigger": b.get("Trigger"), "Status": status,
                         "Truncated": b.get("Truncated"), "OutcomeChanged": changed, "ChangedTargets": changed_targets,
                         "LayerOrderChanged": a.get("Layers") != b.get("Layers")
                         if a.get("Layers") is not None and b.get("Layers") is not None else None,
-                        "HorizontalRegretDelta": horizontal, "VerticalErrorDelta": vertical,
+                        "HorizontalReleaseDistanceDelta": horizontal if comparable else None,
+                        "VerticalReleaseDistanceDelta": vertical if comparable else None,
                         "ProtectedRegions": [protected_a, protected_b], "Harm": harm, "ReferenceVisibilityLosses": harmed,
                         "RecordedManualFollowups": b.get("RecordedManualFollowups"),
                         "RecordedUndoOfThisRequest": b.get("RecordedUndoOfThisRequest"),
@@ -1171,6 +1179,20 @@ def compare(baseline, candidate):
                         "BaselineSubjectsMissingCandidateMeasurement": unmatched_measurements,
                         "BaselineSelected": a.get("Selected"), "CandidateSelected": b.get("Selected"),
                         "BaselineMoveCount": len(a.get("Moves") or []), "CandidateMoveCount": len(b.get("Moves") or [])})
+    # Both runs project alternatives on the same historical actions. Count each original request only once.
+    for session, result in sessions.items():
+        observed = {}
+        for view in result["Assumptions"].values():
+            for row in view:
+                if row["Status"] == "paired":
+                    observed[row["RequestId"]] = row
+        followups = [r["RecordedManualFollowups"] for r in observed.values() if r["RecordedManualFollowups"] is not None]
+        result["ObservedOnRecordedDesktop"] = {
+            "PairedRequests": len(observed), "RequestsWithFollowupCount": len(followups),
+            "RequestsWithManualFollowups": sum(n > 0 for n in followups) if followups else None,
+            "LinkedManualFollowups": sum(followups) if followups else None,
+            "ConfirmedUndoRequests": sum(r["RecordedUndoOfThisRequest"] is True for r in observed.values()),
+        }
     evaluation_entries = defaultdict(list)
     for result in sessions.values():
         for name, entries in result["Assumptions"].items():
@@ -1186,17 +1208,18 @@ def compare(baseline, candidate):
                            bool(r["BaselineSubjectsMissingCandidateMeasurement"]) for r in paired),
                        "ReferenceLossLimitExceeded": sum(any(e["LossLimitExceeded"] is True for e in r["ReferenceVisibilityLosses"])
                                                          for r in paired)}
-            for field in ("HorizontalRegretDelta", "VerticalErrorDelta"):
+            for field in ("HorizontalReleaseDistanceDelta", "VerticalReleaseDistanceDelta"):
                 values = [r[field] for r in paired if r[field] is not None]
                 summary[field] = {"Count": len(values), "Mean": round(sum(values)/len(values), 6) if values else None,
-                                  "Improved": sum(v < 0 for v in values), "Regressed": sum(v > 0 for v in values)}
+                                  "Closer": sum(v < 0 for v in values), "Farther": sum(v > 0 for v in values),
+                                  "Unchanged": sum(v == 0 for v in values)}
             result["Assumptions"][name] = {"Summary": summary, "Requests": entries}
     missing_assumptions = sorted((session, request) for session, request in
         {(session, request) for session, request, _ in old.keys() | new.keys()}
         if any((session, request, assume) not in old and (session, request, assume) not in new for assume in (False, True)))
     invalid = bool(old_duplicates or new_duplicates or missing_assumptions) or any(
         r["Status"] != "paired" for result in sessions.values() for view in result["Assumptions"].values() for r in view["Requests"])
-    return {"ReportVersion": 1, "CompletePairing": not invalid,
+    return {"ReportVersion": 2, "CompletePairing": not invalid,
             "BaselineRecordedEffort": old_summaries, "CandidateRecordedEffort": new_summaries,
             "DuplicateBaselineKeys": old_duplicates, "DuplicateCandidateKeys": new_duplicates,
             "RequestsMissingAnAssumptionOnBothSides": missing_assumptions,

@@ -57,5 +57,40 @@ internal static class PlacementPreferenceChecks
         check(knownWidth.Single(p => p.Window == 1) is { Partner: 0, PreferWidth: true, PreferCenter: false } width &&
             Math.Abs(width.Width - .72) < .001 && PlacementPreferences.Bind(live, new(1, 0, 0), widthVotes, [], now).Length == 0,
             "pair-specific resize evidence sets the width for a confirmed partner and never guesses an unconfirmed partner");
+
+        // 人工样本覆盖一段舒适宽度。验证点取在样本之间，也覆盖越界、分歧和回放三条实际路径。
+        double[] widths = [.34, .38, .35, .39, .37, .34, .38, .36, .35, .37, .88];
+        var samples = recent.Select((v, i) => v with
+            { Edited = HorizontalEdit.Width, Width = widths[i], Height = .22 + widths[i] / 2 }).ToArray();
+        PlacementPreference Learn(int width) => LayoutHabits.Resolve(samples, live[0].Window with
+            { VisualRect = rect with { Width = width, Height = 422 } }, "app-1", "app-3", 3, now)!;
+        var inside = Learn(701);
+        var low = Learn(410);
+        var high = Learn(980);
+        check(inside is { PreferCenter: false, Bands.Center: null, Bands.Width.High: <= .39, Bands.Height: not null } &&
+            inside.Width == 701d / area.Width && inside.Height == 422d / area.Height &&
+            low.Width == inside.Bands.Width!.Low && high.Width == inside.Bands.Width.High && low.Width < high.Width,
+            "unseen sizes inside a coherent band stay put, outside sizes target its nearest boundary and an outlier cannot widen it");
+        var positions = recent.Select((v, i) => v with { Center = widths[i], Edited = HorizontalEdit.Position }).ToArray();
+        var moved = live[0].Window with { VisualRect = new(381, 80, 640, 700) };
+        var left = LayoutHabits.Resolve(positions, moved, "app-1", "app-3", 3, now)!;
+        check(left is { Bands.Center: not null, Bands.Width: null, PreferWidth: false } &&
+            left.Center == 701d / area.Width, "casual placement preserves an unseen horizontal center within the preferred side");
+        var slot = new PlacementPreference(1, 0, .5, .47, 0, -1, 1, PreferCenter: false);
+        var merged = CompiledLayoutRules.ApplySlots([inside], [slot]).Single();
+        check(merged.Width == .47 && merged.Bands?.Width == null && merged.Bands?.Height == inside.Bands?.Height,
+            "an explicit winning width stays exact while independently learned height retains its band");
+        var recorded = RecordedTaskSignals.From(new(Placement: [inside]), new Dictionary<nint, int> { [1] = 1 });
+        var json = System.Text.Json.JsonSerializer.Serialize(recorded);
+        var replay = System.Text.Json.JsonSerializer.Deserialize<RecordedTaskSignals>(json)!.ApplyToReplay(new());
+        var legacy = RecordedTaskSignals.From(new(Placement: [slot]), new Dictionary<nint, int> { [1] = 1 });
+        check(replay.Placement!.Single().Bands == inside.Bands &&
+            !System.Text.Json.JsonSerializer.Serialize(legacy).Contains("\"Bands\""),
+            "recorded bands round-trip and old point-only inputs keep their fingerprint");
+        var target = new AttentionTarget(AttentionRole.Main, 701, 422, 100, true, true, LearnedHeight: true,
+            LearnedWidth: true, Bands: inside.Bands);
+        check(target.WidthFor(711, area.Width) == 711 && target.HeightFor(418, area.Height) == 418 &&
+            (target with { FrameWidth = 680 }).WidthFor(711, area.Width) == 701 &&
+            target.WidthFor(980, area.Width) < 980, "geometry within the observed band has no personal size penalty and a binding pair budget survives");
     }
 }

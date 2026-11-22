@@ -147,6 +147,7 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
                 Confidence = Math.Max(region.RegionConfidence, Math.Max(position.PositionConfidence, Math.Max(size.WidthConfidence, prior.HeightConfidence))),
                 AxisConfidence = new(position.PositionConfidence, size.WidthConfidence, prior.HeightConfidence, region.RegionConfidence),
                 Usage = prior.Usage,
+                Bands = PlacementBands.From(position.Bands?.Center, size.Bands?.Width, prior.Bands?.Height),
             };
         }
         return result.Values.ToArray();

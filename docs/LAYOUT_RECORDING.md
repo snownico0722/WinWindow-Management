@@ -93,7 +93,7 @@
 
 ## 验证
 
-在仓库根目录运行 `dotnet run --project tests/LayoutModel -c Release`。追加 `-- path/to/Recorder.zip [candidate.json]` 可在本地回放手动、拖动手势及桌面变化触发的 Smart 请求，并关联 `adjustments-*.jsonl` 中的 `AfterRequest` 人工二次微调，在有对应手动修正的请求上输出候选规则与修正结果的横向中心/宽度归一化误差（`PostArrangeRegret`）及纵向中心/高度误差（`PostArrangeVerticalError`）。有完整快照和受保护区域时，`ProtectedRegionsPreserved` 给出候选方案能否保住该区域；缺少证据的指标留空。每个请求分别按可缩放和固定尺寸两种假设输出目标位置，旧记录缺少可缩放字段时这两种结果构成敏感性检查。「当前快照」导出的 ZIP 也可以直接传给同一命令。回放使用当时记录的信号，输出的是重新计算的方案。原生窗口实际是否接受调整，可在快照的决策日志中按请求编号查看后续实测结果。
+在仓库根目录运行 `dotnet run --project tests/LayoutModel -c Release`。追加 `-- path/to/Recorder.zip [candidate.json]` 可在本地回放手动、拖动手势及桌面变化触发的 Smart 请求，并关联 `adjustments-*.jsonl` 中的 `AfterRequest` 人工二次微调，在有对应手动修正的请求上输出候选规则与修正结果的横向中心/宽度归一化误差（`HorizontalReleaseDistance`，旧输出名 `PostArrangeRegret`）及纵向中心/高度误差（`VerticalReleaseDistance`，旧输出名 `PostArrangeVerticalError`）。有完整快照和受保护区域时，`ProtectedRegionsPreserved` 给出候选方案能否保住该区域；缺少证据的指标留空。每个请求分别按可缩放和固定尺寸两种假设输出目标位置，旧记录缺少可缩放字段时这两种结果构成敏感性检查。「当前快照」导出的 ZIP 也可以直接传给同一命令。回放使用当时记录的信号，输出的是重新计算的方案。原生窗口实际是否接受调整，可在快照的决策日志中按请求编号查看后续实测结果。
 
 设计依据包括通过窗口切换推断任务关系的 [Taskposé](https://hci.stanford.edu/publications/2008/taskpose/taskpose-uist08.pdf)、对窗口局部进行独立观察的 [WinCuts](https://www.microsoft.com/en-us/research/publication/wincuts-manipulating-arbitrary-window-regions-for-more-effective-use-of-screen-space/)，以及记录应用级播放状态的 [Windows 媒体会话接口](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssession)。评分阈值是本项目的工程选择。
 
@@ -231,3 +231,9 @@ Smart v2.4 的普通候选可在 `Breakdown.Interruption` 查看已经计入总�
 DividerRelease 保存完整模式参与求解的原始缩放起止框和工作区，实例由 GestureAnchor 关联。分析工具的 InterventionAssessment 同时列出提交、回执及可关联的人工补调；MissedAssistance 继续列出无提交或无请求的人工摆放。按相同会话、实例、坐标轴核对证据，旧包缺少候选信息时保留未知。几何上更接近一次手工松手，不能换算成实际节省了一次拖动。
 
 v13 请求的 `Signals.InstanceUses` 用会话窗口编号记录求解前识别到的实例用途。v6 个人规则可在 `AppSlots` 用 `Use`，在 `Pairs` 用 `FirstUse` 和 `SecondUse`，可选值为 `reading`、`editing`、`playback`。两个端点可用相同应用键和不同用途。每个端点须在其显示器上唯一命中；旧规则仍按原有唯一应用键匹配。旧快照没有这一项，回放保留未知。用途来自当时可得的滚动、编辑或播放观测，单个应用可以随任务转换用途。
+
+### v14 摆放偏好和历史松手距离
+
+`Signals.Placements[].Bands` 保存有独立手动样本支持的横向中心、宽度和高度范围，单位为工作区比例。对应的单值是请求时从当前几何到区间的最近目标。旧请求只有单值，回放沿用当时的信息。原始手势轨迹、尺寸和每次松手仍完整保留。
+
+分析报告 v2 的 `HorizontalReleaseDistanceDelta` 和 `VerticalReleaseDistanceDelta` 表示候选与基线到历史松手的距离差。负值代表更接近那次松手。`ObservedOnRecordedDesktop` 按会话内请求去重，统计记录到的人工补调和已确认撤销。没有补调计数时为 null。每个回放方案的参考区损失另见 `ReferenceEvaluation`，只在相同决策输入、观察基础和参考窗口上比较。判断是否真正减少手调，需要新版本使用后的记录。
