@@ -163,7 +163,7 @@
   <data name="Quit" xml:space="preserve"><value>Quit</value></data>
   <data name="ReadPlacement" xml:space="preserve"><value>Read window position</value></data>
   <data name="RecordActivity" xml:space="preserve"><value>Record window activity</value></data>
-  <data name="RecordPrivacy" xml:space="preserve"><value>Records anonymous windows, visible regions, usage intervals, process resources, audio peak levels and available playback state locally. Behavior sequences include executable names without paths. Optional visual sampling stores change summaries only.</value></data>
+  <data name="RecordPrivacy" xml:space="preserve"><value>Records app names, executable paths, titles, handles, positions, usage, pointer events, resource use and playback locally. Exports include these original values. Visual change sampling is optional.</value></data>
   <data name="RecorderCounts" xml:space="preserve"><value>{0} · {1} gestures, {2} window changes</value></data>
   <data name="RecordsCleared" xml:space="preserve"><value>Records cleared.</value></data>
   <data name="RefreshWindows" xml:space="preserve"><value>Refresh windows</value></data>
@@ -263,7 +263,7 @@
   <data name="CurrentSnapshot" xml:space="preserve"><value>Snapshot</value></data>
   <data name="CurrentSnapshotHint" xml:space="preserve"><value>Save the next 10 seconds of window changes, including titles, in a desktop ZIP. With lookback enabled, also include up to five minutes of history.</value></data>
   <data name="SnapshotLookback" xml:space="preserve"><value>Snapshot lookback</value></data>
-  <data name="SnapshotLookbackHint" xml:space="preserve"><value>Keep the last five minutes of window positions, titles, layout decisions, and drag gestures in memory for Snapshot. Turning this off clears the lookback history.</value></data>
+  <data name="SnapshotLookbackHint" xml:space="preserve"><value>Keep the last five minutes of window states, pointer events, popup transitions, and layout decisions in memory for Snapshot. Turning this off clears the lookback history.</value></data>
   <data name="SnapshotCapturing" xml:space="preserve"><value>Capturing 10 seconds of window activity…</value></data>
   <data name="SnapshotSaved" xml:space="preserve"><value>Saved to desktop · {0}</value></data>
   <data name="SnapshotDesktopMissing" xml:space="preserve"><value>The Windows desktop folder is unavailable.</value></data>

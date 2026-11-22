@@ -5,11 +5,20 @@ namespace NeatWin.Windows;
 
 internal static class NativeWindowActivity
 {
-    // 微信多个独立功能共用同一 Qt 窗口类。仅为已匹配的聊天宿主或截图工具框读取系统窗标题，返回用途，标题不进入长期记录。
+    // 微信多个独立功能共用同一 Qt 窗口类。仅为已匹配的聊天宿主或截图工具框读取系统窗标题，返回用途。
     internal static SurfacePurpose ChatSurface(WindowSnapshot w)
     {
         var text = new System.Text.StringBuilder(128);
         return NativeMethods.GetWindowText(w.Handle, text, text.Capacity) > 0 ? TaskSurfaces.ChatCaption(text.ToString()) : SurfacePurpose.Unknown;
+    }
+
+    internal static RectI? CaretClientRect(nint root)
+    {
+        var info = new NativeMethods.GuiThreadInfo { Size = Marshal.SizeOf<NativeMethods.GuiThreadInfo>() };
+        if (!NativeMethods.GetGUIThreadInfo(0, ref info) || info.Caret == 0 ||
+            NativeMethods.GetAncestor(info.Caret, NativeMethods.GaRoot) != root) return null;
+        var r = info.CaretRect;
+        return r.Bottom > r.Top ? RectI.FromEdges(r.Left, r.Top, r.Right, r.Bottom) : null;
     }
 
     internal static bool IsShellForeground(nint foreground)

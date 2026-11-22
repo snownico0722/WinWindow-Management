@@ -18,13 +18,14 @@ internal sealed class DesktopLayout : IDisposable
     internal DesktopLayout(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged = null,
         Action<bool>? undoChanged = null, ForegroundHistory? focus = null, Action<LayoutRunObservation>? snapshotObserver = null, Action<string, GestureEvent>? gestureObserver = null,
         Func<bool>? snapshotWantsGestures = null, Func<nint, uint, long, string, bool>? keepRunning = null,
-        Action<SurfaceEvent>? surfaceObserver = null, Func<bool>? snapshotWantsSurfaces = null)
+        Action<SurfaceEvent>? surfaceObserver = null, Func<bool>? snapshotWantsSurfaces = null,
+        Action<DesktopInteraction>? interactionObserver = null)
     {
         var thread = new Thread(() =>
         {
             try
             {
-                using var context = new NeatWinApplicationContext(directory, report, recorderChanged, undoChanged, _stop.Token, focus, snapshotObserver, gestureObserver, snapshotWantsGestures, keepRunning, surfaceObserver, snapshotWantsSurfaces);
+                using var context = new NeatWinApplicationContext(directory, report, recorderChanged, undoChanged, _stop.Token, focus, snapshotObserver, gestureObserver, snapshotWantsGestures, keepRunning, surfaceObserver, snapshotWantsSurfaces, interactionObserver);
                 _ready.SetResult(context);
                 Application.Run(context);
             }
@@ -52,6 +53,7 @@ internal sealed class DesktopLayout : IDisposable
             await context.DispatchAsync(() => { if (!_stop.IsCancellationRequested) action(context); }).ConfigureAwait(false);
     }
 
+    internal Task RefreshPointerObservationAsync() => RunAsync(context => context.RefreshPointerObservation());
     internal Task ArrangeAsync() => RunAsync(context => context.RunTidy());
     internal Task UndoAsync() => RunAsync(context => context.UndoTidy());
     internal async Task<(LayoutPreferences Preferences, RecorderStatus Recorder, BehaviorSettings Behavior)> ReadSettingsAsync()

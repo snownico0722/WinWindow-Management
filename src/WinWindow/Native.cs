@@ -46,6 +46,7 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern nint GetFocus();
     [DllImport("user32.dll", EntryPoint = "GetPropW", CharSet = CharSet.Unicode)] internal static extern nint GetProp(nint hwnd, string name);
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextLength(nint hwnd);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(nint hwnd, StringBuilder text, int length);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(nint hwnd, StringBuilder text, int length);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern nint GetWindowLong64(nint hwnd, int index);
@@ -255,7 +256,7 @@ internal static class Native
         else SetWindowLong32(hwnd, -20, (int)value);
     }
 
-    public static string Title(nint hwnd) { var b = new StringBuilder(2048); GetWindowText(hwnd, b, b.Capacity); return b.ToString(); }
+    public static string Title(nint hwnd) { var b = new StringBuilder(Math.Max(256, GetWindowTextLength(hwnd) + 1)); GetWindowText(hwnd, b, b.Capacity); return b.ToString(); }
     public static string ClassName(nint hwnd) { var b = new StringBuilder(256); GetClassName(hwnd, b, b.Capacity); return b.ToString(); }
     public static long Style(nint hwnd) => IntPtr.Size == 8 ? GetWindowLong64(hwnd, -20).ToInt64() : GetWindowLong32(hwnd, -20);
     public static bool IsTopmost(nint hwnd) => (Style(hwnd) & TopmostStyle) != 0;

@@ -135,6 +135,14 @@ internal static class SmokeTests
         Assert(undo is { Failures.Count: 0, Plan.Moves.Count: 2 }, "native batch geometry can be undone");
         await WaitAsync("batch undo restores both fixtures", () => sources.All(w => Reached(new(w, w.VisualRect))));
 
+        // 主窗不在提交列表里。用真实 HWND 验证过期接缝不能漏过原生提交前的最后一次检查。
+        var stale = new ManualWindowGesture(first, sources[0].VisualRect, Shift(sources[0]), sources[0].WorkArea,
+            ManualGestureKind.Resize, [], 100, 0) { ProcessId = sources[0].ProcessId };
+        var divider = new IntentLayoutPlan([moves[1]], [], []) { IsDividerGesture = true };
+        var skipped = windows.ApplyLayout(divider, null, new TaskLayoutContext(RecentGesture: stale));
+        Assert(skipped.Interrupted && skipped.Plan.Moves.Count == 0 && Reached(new(sources[1], sources[1].VisualRect)),
+            "stale divider release cannot move the untouched native peer");
+
         string gate = "WinWindow-layout-stall-" + Guid.NewGuid().ToString("N");
         using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".entered");
         using var release = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".release");
@@ -553,11 +561,15 @@ internal static class SmokeTests
             var card = new NeatWin.Core.SurfaceEvent(1, "smoke-surface", Environment.TickCount64, DateTimeOffset.UtcNow,
                 "suppress", "chat-detail", 7, 8, null, null, new(10, 20, 300, 240), new(0, 0, 800, 700),
                 true, true, false, false);
+            var click = new NeatWin.Core.DesktopInteraction("smoke-input", 1, Environment.TickCount64, "right-down",
+                7, 42, "0xA", Point: new(36, 55));
+            shell.SnapshotHistory.ObserveInteraction(click);
             shell.SnapshotHistory.ObserveSurface(card);
             var snapshot = shell.SnapshotHistory.BeginCapture();
             CheckSnapshotHistoryWindow(snapshot.PastDecisions.First().Observation, card);
             shell.SnapshotHistory.ObserveSurface(card with { Tick = Environment.TickCount64, Action = "release",
                 ReleaseReason = "geometry-changed", ReleasedChildRect = new(10, 20, 640, 480) });
+            shell.SnapshotHistory.ObserveInteraction(click with { Sequence = 2, Kind = "right-up", Tick = Environment.TickCount64 });
             var snapshotDir = Directory.CreateDirectory(Path.Combine(output, Guid.NewGuid().ToString("N"))).FullName;
             File.WriteAllText(Path.Combine(snapshotDir, "第一版.zip"), "existing");
             var archivePath = await DesktopSnapshot.ExportAsync(new HashSet<nint>(), new WindowInteropHelper(shell).Handle,
@@ -571,6 +583,12 @@ internal static class SmokeTests
             using (var surfaces = new StreamReader(archive.GetEntry("surfaces-snapshot.jsonl")!.Open()))
             {
                 var samples = (await timeline.ReadToEndAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                using var inputLines = new StreamReader(archive.GetEntry("interactions-snapshot.jsonl")!.Open());
+                var clicks = (await inputLines.ReadToEndAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(line => JsonSerializer.Deserialize<NeatWin.Core.DesktopInteraction>(line))
+                    .Where(e => e?.Session == "smoke-input").ToArray();
+                Assert(clicks is [{ Sequence: 1, Kind: "right-down" }, { Sequence: 2, Kind: "right-up" }],
+                    "snapshot joins raw input from both sides of the click");
                 using var header = JsonDocument.Parse(samples[0]);
                 Assert(header.RootElement.GetProperty("LookbackMilliseconds").GetInt32() == 300_000 &&
                     header.RootElement.GetProperty("LookbackCollectionMilliseconds").GetInt64() == snapshot.Tick - snapshot.EarliestTick &&

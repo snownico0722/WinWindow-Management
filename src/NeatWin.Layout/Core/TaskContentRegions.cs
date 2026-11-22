@@ -20,7 +20,7 @@ internal static partial class IntentLayoutPlanner
     private static readonly TaskContentRegion[] EdgeRegions =
         [new(0, 0, .12, 1), new(.88, 0, .12, 1), new(0, 0, 1, .12), new(0, .88, 1, .12)];
 
-    private static TaskContentRegion[] ProtectedRegions(WindowSnapshot window, TaskLayoutContext context)
+    internal static TaskContentRegion[] ProtectedRegions(WindowSnapshot window, TaskLayoutContext context)
     {
         var hint = context.WindowHints?.FirstOrDefault(h => h.Handle == window.Handle);
         var edges = context.Preferences.ProtectWindowEdges || hint?.ProtectPeriphery == true;

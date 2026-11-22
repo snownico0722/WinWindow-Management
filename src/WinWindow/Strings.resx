@@ -163,7 +163,7 @@
   <data name="Quit" xml:space="preserve"><value>退出</value></data>
   <data name="ReadPlacement" xml:space="preserve"><value>读取窗口位置</value></data>
   <data name="RecordActivity" xml:space="preserve"><value>记录窗口活动习惯</value></data>
-  <data name="RecordPrivacy" xml:space="preserve"><value>在本机记录匿名窗口、可见区域、使用时段、进程资源、音量峰值和可用的播放状态。连续行为另记应用文件名，不含路径。画面变化可单独开启，只保存变化摘要。</value></data>
+  <data name="RecordPrivacy" xml:space="preserve"><value>在本机记录应用名、可执行路径、窗口标题、句柄、位置、使用时段和指针操作，以及进程资源和播放状态。导出包含原始记录。画面变化采样可单独开启。</value></data>
   <data name="RecorderCounts" xml:space="preserve"><value>{0} · 已记录 {1} 次手势、{2} 次窗口变化</value></data>
   <data name="RecordsCleared" xml:space="preserve"><value>记录已清空。</value></data>
   <data name="RefreshWindows" xml:space="preserve"><value>刷新窗口列表</value></data>
@@ -263,7 +263,7 @@
   <data name="CurrentSnapshot" xml:space="preserve"><value>当前快照</value></data>
   <data name="CurrentSnapshotHint" xml:space="preserve"><value>在桌面生成 ZIP。包含接下来 10 秒的窗口变化和标题，开启追溯时还会附上过去最多 5 分钟。</value></data>
   <data name="SnapshotLookback" xml:space="preserve"><value>快照追溯记录</value></data>
-  <data name="SnapshotLookbackHint" xml:space="preserve"><value>在内存中保留最近 5 分钟的窗口位置、标题、整理决策和拖动手势，点击「当前快照」时一并导出。关闭后清空本次追溯记录。</value></data>
+  <data name="SnapshotLookbackHint" xml:space="preserve"><value>在内存中保留最近 5 分钟的窗口状态、鼠标操作、弹层变化和整理决策，点击「当前快照」时一并导出。关闭后清空本次追溯记录。</value></data>
   <data name="SnapshotCapturing" xml:space="preserve"><value>正在采集 10 秒窗口快照…</value></data>
   <data name="SnapshotSaved" xml:space="preserve"><value>已保存到桌面 · {0}</value></data>
   <data name="SnapshotDesktopMissing" xml:space="preserve"><value>找不到 Windows 桌面文件夹。</value></data>

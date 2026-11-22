@@ -5,26 +5,36 @@ namespace NeatWin.Core;
 [Flags]
 public enum HorizontalEdit { None = 0, Position = 1, Width = 2 }
 
-// A sample describes a stable manual edit. Application keys are anonymous and installation-local.
+// A stable manual edit keeps the installation-local rule keys and the observed identities of both windows.
 public sealed record LayoutHabit(DateTimeOffset Time, string Display, string App, string? Partner,
     double Center, double Width, int Order, int RevealedCell, bool Corrected, double? InnerOverlap = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? PartnerCenter = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? PartnerWidth = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? Height = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] HorizontalEdit? Edited = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementUsage? Usage = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementUsage? Usage = null,
+    RawWindowIdentity? Identity = null, RawWindowIdentity? PartnerIdentity = null);
 
 [JsonConverter(typeof(JsonStringEnumConverter<PlacementUsage>))]
-public enum PlacementUsage { Joint, BackgroundPlayback, ForegroundPlayback, TextFocus }
+public enum PlacementUsage { Joint, BackgroundPlayback, ForegroundPlayback, TextFocus, ScrollReading, BackgroundReading }
 
-// 匿名 ID 只在当前录制会话内有意义。用途取自手势开始前或布局求解前的观察。
-public sealed record PlacementUseObservation(int Foreground, int JointPeer, bool TextFocus, int[] Playing)
+// 窗口编号只在当前录制会话内有意义。用途取自手势开始前或布局求解前的观察。
+public sealed record PlacementUseObservation(int Foreground, int JointPeer, bool TextFocus, int[] Playing, int[]? Scrolling = null)
 {
+    // 同一任务的两个参与者可能有相同程序名。只用该实例自己的可观察用途，不把搭档播放视频算成主窗的属性。
+    internal string? UseOf(int window)
+    {
+        if (window == 0) return null;
+        if (Playing.Contains(window)) return "playback";
+        if (Foreground == window && TextFocus) return "editing";
+        return Scrolling?.Contains(window) == true ? "reading" : null;
+    }
+
     internal bool SupportsPair(int window, int peer)
     {
         if (Foreground == 0 || window != Foreground && peer != Foreground) return false;
         int background = window == Foreground ? peer : window;
-        return background != 0 && (background == JointPeer || HasPlaybackPeer(background));
+        return background != 0 && (background == JointPeer || HasPlaybackPeer(background) || Scrolling?.Contains(background) == true);
     }
 
     internal PlacementUsage? For(int window, int peer = 0)
@@ -33,6 +43,8 @@ public sealed record PlacementUseObservation(int Foreground, int JointPeer, bool
         int background = window == Foreground ? peer : window;
         if (Playing.Contains(Foreground)) return PlacementUsage.ForegroundPlayback;
         if (background != 0 && HasPlaybackPeer(background)) return PlacementUsage.BackgroundPlayback;
+        if (background != 0 && Scrolling?.Contains(background) == true) return PlacementUsage.BackgroundReading;
+        if (Scrolling?.Contains(Foreground) == true) return PlacementUsage.ScrollReading;
         if (background != 0 && background == JointPeer) return PlacementUsage.Joint;
         return TextFocus ? PlacementUsage.TextFocus : null;
     }
@@ -846,12 +858,15 @@ public static class LayoutHabits
         var moved = frame.Windows.FirstOrDefault(w => w.Id == o.WindowId);
         // 移动资料卡不等于更改主聊天窗的摆放偏好，即使它们使用同一应用和窗口类。
         if (moved == null || moved.LocalSurface || start.Windows.Any(w => w.Id == o.WindowId && w.LocalSurface) || !moved.Manageable || moved.Rect != o.End || moved.VisibleRatio < .2) return null;
-        string? Key(ObservedWindow w) => byInstance ? w.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) : w.AppKey;
+        string? Key(ObservedWindow w)
+        {
+            if (byInstance) return w.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var siblings = frame.Windows.Where(v => v.Manageable && !v.LocalSurface && v.WorkArea == w.WorkArea && v.AppKey == w.AppKey);
+            if (w.AppKey == null || !siblings.Any(v => v.Id != w.Id)) return w.AppKey;
+            var role = o.StartUsage?.UseOf(w.Id);
+            return role != null && siblings.Count(v => o.StartUsage?.UseOf(v.Id) == role) == 1 ? w.AppKey + "/" + role : null;
+        }
         if (Key(moved) is not { } movedKey) return null;
-        // Two live documents can share a persistent application identity. Only a session
-        // observation can tell which document the user actually placed.
-        if (!byInstance && frame.Windows.Count(w => w.Manageable && !w.LocalSurface && w.WorkArea == o.WorkArea && w.AppKey == movedKey) > 1)
-            return null;
         var movedBefore = start.Windows.FirstOrDefault(w => w.Id == o.WindowId && w.Manageable && !w.LocalSurface);
         var peers = from w in frame.Windows
                     where w.Id != moved.Id && w.Manageable && !w.LocalSurface && Key(w) != null && w.WorkArea == o.WorkArea && w.VisibleRatio >= .04
@@ -867,8 +882,6 @@ public static class LayoutHabits
         bool paired = peer.Window != null && (peer.Scoped || peer.Gain >= .04 || peersFound.Length == 1 && peer.Window.VisibleRatio >= .45);
         double center = (moved.Rect.X + moved.Rect.Width / 2d - o.WorkArea.X) / o.WorkArea.Width;
         var partner = paired ? peer.Window : null;
-        if (!byInstance && partner != null && frame.Windows.Count(w => w.Manageable && !w.LocalSurface && w.WorkArea == o.WorkArea && w.AppKey == partner.AppKey) > 1)
-            return null;
         int order = partner == null ? 0 : Math.Sign(moved.Rect.X + moved.Rect.Width / 2d - partner.Rect.X - partner.Rect.Width / 2d);
         int cell = -1;
         // 某轴已被撤回或归入另一笔试摆时，无法把这次露出归到任何一笔保留的编辑。
@@ -889,7 +902,7 @@ public static class LayoutHabits
             o.AfterRequest != null, partner != null && order != 0 && moved.Rect.VerticalOverlapRatio(partner.Rect) >= .5
                 ? moved.Rect.HorizontalOverlapRatio(partner.Rect) : null,
             partnerCenter, partnerWidth, axes.HasFlag(HabitAxes.Height)
-                ? Math.Clamp(moved.Rect.Height / (double)o.WorkArea.Height, .05, 1) : null, edited, usage);
+                ? Math.Clamp(moved.Rect.Height / (double)o.WorkArea.Height, .05, 1) : null, edited, usage, moved.Identity, partner?.Identity);
     }
 
     internal static bool HasLinkedReversal(WindowAdjustmentObservation o) => LinkedReversal(o) != null;

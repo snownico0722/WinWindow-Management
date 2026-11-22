@@ -28,7 +28,7 @@ internal sealed class PlacementHistoryStore(string directory)
             _key = File.ReadAllBytes(KeyPath);
         }
         if (_key.Length != 32) return null;
-        // 同一安装需要跨会话认出同一应用。用本机密钥派生稳定标识，使摆放记录可以关联样本并省去原始身份字符串。
+        // 同一安装需要跨会话认出同一应用。用本机密钥派生稳定标识，维持既有规则匹配；新样本同时保存可读身份。
         return Convert.ToHexString(HMACSHA256.HashData(_key, Encoding.UTF8.GetBytes(identity)))[..24];
     }
 
@@ -37,11 +37,15 @@ internal sealed class PlacementHistoryStore(string directory)
         if (_samples != null) return _samples;
         try
         {
-            if (File.Exists(HistoryPath) && new FileInfo(HistoryPath).Length <= 512 * 1024)
-                _samples = JsonSerializer.Deserialize<LayoutHabit[]>(File.ReadAllText(HistoryPath))?
+            if (File.Exists(HistoryPath))
+            {
+                // 原始标题和路径可使正常的 1024 个样本超过旧字节上限。按样本数限制历史。
+                using var input = File.OpenRead(HistoryPath);
+                _samples = JsonSerializer.Deserialize<LayoutHabit[]>(input)?
                     .Where(s => s != null && double.IsFinite(s.Center) && double.IsFinite(s.Width) &&
                         s.Center is >= 0 and <= 1 && s.Width is > 0 and <= 1 && s.RevealedCell is >= -1 and < 16)
                     .TakeLast(1024).ToArray();
+            }
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { }
         return _samples ??= [];

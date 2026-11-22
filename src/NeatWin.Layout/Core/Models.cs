@@ -19,6 +19,7 @@ public sealed record WindowSnapshot(
 {
     public nint Owner { get; init; }
     internal bool NativeUtility { get; init; }
+    internal bool HasCaption { get; init; }
     internal bool IndependentFrame { get; init; }
 }
 

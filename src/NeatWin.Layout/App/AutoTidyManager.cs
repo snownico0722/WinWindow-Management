@@ -31,6 +31,9 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     private readonly Dictionary<nint, AttentionState> _attention = new();
     private long _suppressUntilTick;
     private bool _enabled;
+    private readonly Dictionary<int, PointerObservation> _pointerMessages = [];
+    private int _pointerSequence;
+    private bool _tracePointer;
     private bool _trackTaskInput, _previewEnabled, _awaitingPointerUp;
     private bool _disposed;
     private ActiveGesture? _activeGesture;
@@ -76,6 +79,15 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
     internal event Action<ManualWindowGesture>? TidyRequested;
     internal event Action<nint, uint, long, bool>? TaskInput;
 
+    internal event Action<PointerObservation>? PointerObserved;
+    internal void SetPointerObservation(bool enabled)
+    {
+        if (_disposed) return;
+        _tracePointer = enabled;
+        UpdatePointerTracking();
+    }
+
+    internal bool PointerHookAvailable => _mouseHook != 0;
     internal bool TaskInputAvailable => _trackTaskInput && _mouseHook != 0;
     internal bool IsGestureInProgress => _activeGesture != null;
     internal bool IsAvailable => _eventHook != nint.Zero;
@@ -113,7 +125,7 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
 
     private void UpdatePointerTracking()
     {
-        if (_enabled || _trackTaskInput)
+        if (_enabled || _trackTaskInput || _tracePointer)
         {
             if (_mouseHook == nint.Zero)
                 _mouseHook = NativeMethods.SetWindowsHookEx(NativeMethods.WhMouseLl, _mouseProc, nint.Zero, 0);
@@ -255,19 +267,33 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
             if (!_disposed && code >= NativeMethods.HcAction && kind == NativeMethods.WmLButtonUp &&
                 (_activeGesture != null || _awaitingPointerUp))
                 _ = NativeMethods.PostMessage(Handle, PointerReleasedMessage, 0, 0);
-            if (!_disposed && code >= NativeMethods.HcAction &&
-                (kind == NativeMethods.WmLButtonDown || _trackTaskInput && kind is
-                 NativeMethods.WmRButtonDown or NativeMethods.WmMButtonDown or NativeMethods.WmMouseWheel or NativeMethods.WmMouseHWheel))
+            string? action = kind switch
+            {
+                NativeMethods.WmLButtonDown => "left-down", NativeMethods.WmLButtonUp => "left-up",
+                NativeMethods.WmRButtonDown => "right-down", NativeMethods.WmRButtonUp => "right-up",
+                NativeMethods.WmMButtonDown => "middle-down", NativeMethods.WmMButtonUp => "middle-up",
+                NativeMethods.WmMouseWheel => "wheel", NativeMethods.WmMouseHWheel => "horizontal-wheel",
+                _ => null
+            };
+            if (!_disposed && code >= NativeMethods.HcAction && action != null)
             {
                 var data = Marshal.PtrToStructure<NativeMethods.MsllHookStruct>(dataPointer);
-                if (_trackTaskInput && (data.Flags & NativeMethods.MouseInputInjected) != 0)
+                if ((_trackTaskInput || _tracePointer) && (data.Flags & NativeMethods.MouseInputInjected) != 0)
                     return NativeMethods.CallNextHookEx(_mouseHook, code, message, dataPointer);
                 var hit = NativeMethods.WindowFromPoint(data.Point);
-                var root = hit == nint.Zero ? nint.Zero : NativeMethods.GetAncestor(hit, NativeMethods.GaRoot);
-                if (root != nint.Zero)
-                {
-                    _ = NativeMethods.PostMessage(Handle, (uint)(PointerInputMessage + kind), root, unchecked((int)data.Time));
-                }
+                var root = hit == 0 ? 0 : NativeMethods.GetAncestor(hit, NativeMethods.GaRoot);
+                var foreground = NativeMethods.GetForegroundWindow();
+                bool wheel = kind is NativeMethods.WmMouseWheel or NativeMethods.WmMouseHWheel;
+                var target = wheel && !NativeMethods.ScrollsInactiveWindows() ? foreground : root;
+                NativeMethods.GetWindowThreadProcessId(target, out uint pid);
+                long now = Environment.TickCount64;
+                long tick = now - unchecked((uint)now - data.Time);
+                var input = new PointerObservation(action, target, pid, hit, foreground, new(data.Point.X, data.Point.Y),
+                    wheel ? unchecked((short)(data.MouseData >> 16)) : null, tick);
+                // WH_MOUSE_LL 内保持轻量。用仅本线程可解析的序号投递，窗口销毁后不重新命中测试。
+                int id = unchecked(++_pointerSequence);
+                if (NativeMethods.PostMessage(Handle, PointerInputMessage, id, 0))
+                    _pointerMessages[id] = input;
             }
         }
         catch
@@ -293,22 +319,17 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
             case MoveSizeEndMessage:
                 EndGesture(message.WParam, unchecked((uint)(int)message.LParam));
                 return;
-            case >= PointerInputMessage + NativeMethods.WmLButtonDown and <= PointerInputMessage + NativeMethods.WmMouseHWheel:
-                int kind = message.Msg - PointerInputMessage;
-                if (_enabled && kind == NativeMethods.WmLButtonDown) TouchClick(message.WParam);
-                if (_trackTaskInput)
+            case PointerInputMessage:
+                if (!_pointerMessages.Remove((int)message.WParam, out var input)) return;
+                if (_tracePointer || _trackTaskInput) PointerObserved?.Invoke(input);
+                if (_enabled && input.Kind == "left-down" && input.Target != 0) TouchClick(input.Target);
+                // 松开是诊断证据，不能重复增加注意力。诊断单独开启时也不能给布局授权。
+                if (_trackTaskInput && input.Kind is not ("left-up" or "right-up" or "middle-up") &&
+                    input.Target != 0 && input.TargetPid != 0 && !AutomationGuard.IsUtility(input.Target))
                 {
-                    var target = message.WParam;
-                    if (kind is NativeMethods.WmMouseWheel or NativeMethods.WmMouseHWheel &&
-                        !NativeMethods.ScrollsInactiveWindows()) target = NativeMethods.GetForegroundWindow();
-                    if (target != 0 && !AutomationGuard.IsUtility(target))
-                    {
-                        NativeMethods.GetWindowThreadProcessId(target, out var pid);
-                        long now = Environment.TickCount64;
-                        long tick = now - unchecked((uint)now - (uint)(int)message.LParam);
-                        bool click = kind is NativeMethods.WmLButtonDown or NativeMethods.WmMButtonDown;
-                        TaskInput?.Invoke(target, pid, tick, click);
-                    }
+                    NativeMethods.GetWindowThreadProcessId(input.Target, out uint currentPid);
+                    if (currentPid == input.TargetPid)
+                        TaskInput?.Invoke(input.Target, input.TargetPid, input.Tick, input.Kind is "left-down" or "middle-down");
                 }
                 return;
         }

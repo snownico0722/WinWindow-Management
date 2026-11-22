@@ -197,7 +197,7 @@ public sealed class IntentReferenceStore
         writer.Write(JsonSerializer.Serialize(Read(respectEnabled: false)));
     }
 
-    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl", "activity-*.jsonl", "behavior-*.jsonl", "gestures-*.jsonl", "focus-*.jsonl", "surfaces-*.jsonl" }
+    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl", "activity-*.jsonl", "behavior-*.jsonl", "gestures-*.jsonl", "focus-*.jsonl", "surfaces-*.jsonl", "interactions-*.jsonl" }
         .SelectMany(pattern => Directory.EnumerateFiles(_directory, pattern));
 
     internal void AppendActivity(ActivitySample sample, WorkspaceFrame? geometry, long geometryTick) =>
@@ -205,6 +205,8 @@ public sealed class IntentReferenceStore
             GeometryTick = geometryTick, Frame = geometry, sample.Processes, sample.Windows, sample.Media, sample.InputIdleMilliseconds, sample.AudioTick, sample.DisplayRequired, sample.Usage, sample.CoUse, sample.FocusCoverage });
     internal void AppendFocusBoundary(string session, string reason, FocusCoverage coverage) =>
         AppendJson("focus", new { Version = 1, Session = session, Time = DateTimeOffset.UtcNow, Reason = reason, FocusCoverage = coverage });
+    internal void AppendInteractions(string session, List<DesktopInteraction> events, int dropped) =>
+        AppendJson("interactions", new { Version = 1, Session = session, Events = events, Dropped = dropped });
     internal void AppendSurface(object row) => AppendJson("surfaces", row);
     internal void AppendGestures(GestureBatch batch) => AppendJson("gestures", batch);
     internal void AppendBehavior(WindowBehaviorFrame frame) => AppendJson("behavior", frame);
@@ -227,16 +229,21 @@ public sealed class IntentReferenceStore
         if (!Directory.Exists(_directory)) return;
         var files = LogFiles().Select(p => new FileInfo(p)).Where(f => f.Exists)
             .OrderByDescending(f => f.LastWriteTimeUtc).ToArray();
-        long retainedBytes = 0;
-        for (var i = 0; i < files.Length; i++)
+        // 高频指针流单独轮换。游戏中的大量点击不能把用于长期学习的手势和决策提前挤掉。
+        foreach (var group in files.GroupBy(f => f.Name.StartsWith("interactions-", StringComparison.Ordinal)))
         {
-            try
+            long retainedBytes = 0;
+            int count = 0;
+            foreach (var file in group)
             {
-                retainedBytes += files[i].Length;
-                if (i >= 128 || retainedBytes > 128L * 1024 * 1024 || files[i].LastWriteTimeUtc < DateTime.UtcNow.AddDays(-30))
-                    files[i].Delete();
+                try
+                {
+                    retainedBytes += file.Length;
+                    if (++count > 128 || retainedBytes > 128L * 1024 * 1024 || file.LastWriteTimeUtc < DateTime.UtcNow.AddDays(-30))
+                        file.Delete();
+                }
+                catch (FileNotFoundException) { } // Another writer may prune a closed log concurrently.
             }
-            catch (FileNotFoundException) { } // Another writer may prune a closed log concurrently.
         }
     }
 }

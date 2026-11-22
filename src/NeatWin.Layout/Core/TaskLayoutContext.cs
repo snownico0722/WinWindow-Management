@@ -72,16 +72,24 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     internal ShadowAxis[]? ShadowAxes { get; init; }
     internal ShadowReplayProbe? ShadowProbe { get; init; }
     internal DateTimeOffset? ShadowTime { get; init; }
+    internal bool TraceCandidateAxes { get; init; }
+    internal RecordedDividerRelease? ReplayDivider { get; init; }
     internal bool AllowGestureAssist { get; init; } = true;
+    internal (nint Window, BrowserBarObservation Detail)? BrowserBarSample { get; init; }
     internal IReadOnlyDictionary<nint, VideoViewportFit>? VideoFits { get; init; }
     internal int OriginSide { get; init; }
     internal bool IsWorkspaceObservation { get; init; }
+    internal bool VerifiedTaskRepeat { get; init; }
+    internal nint[]? VerifiedTaskMembers { get; init; }
     internal nint FirstPlacementWindow { get; init; }
     internal nint LocalPlacementWindow { get; init; }
     // 这次松手直接推翻了系统刚做的动作。辅助最多再动用户接手的窗，免得一次试摆牵动整组。
     internal nint GeometryOnlyWindow => LocalPlacementWindow != 0 ? LocalPlacementWindow :
         !ExplicitArrange && AllowGestureAssist && RecentGesture is { } g && GestureAnchor == g.WindowHandle &&
         Attention?.GetValueOrDefault(GestureAnchor)?.RecentReturn?.MatchesRelease(g) == true ? GestureAnchor : 0;
+    internal IReadOnlyDictionary<nint, ReadingInteraction>? ReadingInput { get; init; }
+    internal int OmittedChanges { get; init; }
+    internal long[]? ObservedChangeEvents { get; init; }
     internal WorkspaceChangeCause WorkspaceCause { get; init; }
 
     // 这些系数决定相对原位要多少净收益才值得提交，不代替窗口实际几何变化的感知成本。
@@ -252,10 +260,15 @@ public sealed class TaskLayoutSession
     private RectI? _assistedGestureFrame;
     private bool _lastRequestUsedGesture;
     private DateTimeOffset _appliedTime;
+    private PendingTask? _pendingTask;
+    private string? _pendingRequest;
+    private readonly List<SettledTask> _settledTasks = [];
 
     public void Gesture(ManualWindowGesture gesture, DateTimeOffset now)
     {
-        _gesture = gesture; _gestureTime = now; _assistedGestureFrame = null; _verified = null; _pending = null;
+        _gesture = gesture; _gestureTime = now; _assistedGestureFrame = null; _verified = null;
+        CancelVerification();
+        _settledTasks.RemoveAll(task => task.Members.Any(p => p.Window.Handle == gesture.WindowHandle));
         // A follow-up may be a task change, not rejection.
         _pendingGroups = [];
     }
@@ -281,33 +294,170 @@ public sealed class TaskLayoutSession
             RejectedLayouts: _rejected.ToArray(), ExplicitArrange: explicitArrange, GestureAnchor: anchor);
     }
 
-    public void Requested(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan, DateTimeOffset now, bool explicitArrange = false)
+    public bool Requested(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan, DateTimeOffset now, bool explicitArrange = false,
+        TaskLayoutContext? context = null)
     {
-        if (plan.Moves.Count == 0 && plan.Layers.Count == 0) return;
+        if (plan.Moves.Count == 0 && plan.Layers.Count == 0)
+        {
+            if (_pending != null || _pendingTask != null || !CanPreserveTask(context) || context!.VerifiedTaskRepeat ||
+                context.Focus is not { Main: not 0 } focus) return false;
+            var kept = plan.Groups.FirstOrDefault(g => g.Selected == "keep" && g.Handles.Contains(focus.Main));
+            if (kept == null) return false;
+            _pendingTask = PrepareTask(before, [], context, kept.Handles, verifyKeep: true);
+            return _pendingTask != null;
+        }
         _lastRequestWasExplicit = explicitArrange;
         var placed = Project(before, plan);
         _lastRequestUsedGesture = !explicitArrange && _gesture is { } g && now - _gestureTime <= GestureLifetime &&
             before.Any(w => w.Handle == g.WindowHandle && (g.ProcessId == 0 || g.ProcessId == w.ProcessId) && w.IsForeground &&
                 (w.VisualRect == g.EndRect || w.VisualRect == _assistedGestureFrame));
         if (_lastRequestUsedGesture) _assistedGestureFrame = placed.First(w => w.Handle == _gesture!.WindowHandle).VisualRect;
-        _pending = placed; _verified = null; _appliedTime = now;
+        _pending = placed; _pendingRequest = null; _verified = null; _appliedTime = now;
         var changed = plan.Moves.Where(m => m.TargetVisualRect != m.Window.VisualRect)
             .Select(m => m.Window.Handle).Concat(plan.Layers.SelectMany(l => l.FrontToBack.Select(w => w.Handle))).ToHashSet();
         _pendingGroups = plan.Groups.Where(g => g.Handles.Any(changed.Contains))
             .Select(g => new FeedbackGroup(LayoutKey(placed.Where(w => g.Handles.Contains(w.Handle))),
                 g.Handles.Where(changed.Contains).ToArray())).ToArray();
+        _pendingTask = null;
+        if (context?.Focus is { Main: not 0 } active)
+        {
+            var group = plan.Groups.Where(g => g.Handles.Contains(active.Main) && g.Handles.Any(changed.Contains))
+                .OrderByDescending(g => g.Handles.Length).FirstOrDefault();
+            _pendingTask = PrepareTask(placed, plan.Layers, context, context.VerifiedTaskMembers ?? group?.Handles ?? []);
+            if (_pendingTask?.Members.Any(w => changed.Contains(w.Handle)) != true) _pendingTask = null;
+        }
+        return true;
+    }
+
+    private static PendingTask? PrepareTask(IReadOnlyList<WindowSnapshot> desktop, IReadOnlyList<WindowLayerOrder> layers,
+        TaskLayoutContext context, nint[] group, bool verifyKeep = false)
+    {
+        var focus = context.Focus!;
+        // 规划器可以从当时可见的证据中补出对照窗。把真正参与摆放的工作组和同一任务的焦点证据一起核验。
+        var known = TaskHandles(focus).ToHashSet();
+        var taskHandles = known.Concat(group).ToHashSet();
+        var members = desktop.Where(w => taskHandles.Contains(w.Handle)).OrderBy(w => w.Handle).ToArray();
+        var main = members.FirstOrDefault(w => w.Handle == focus.Main);
+        if (main == null || members.Length != taskHandles.Count || members.Any(w => !w.IsManageable || w.IsTopmost || !SameDisplay(w, main)))
+            return null;
+        var local = LocalSurfaces(desktop, main);
+        if (verifyKeep)
+        {
+            // 保持原位也要核对真实桌面。可读性不足的旁窗仍列入本屏变化检查，但不足以作为已就绪的任务成员。
+            var exposed = MeasureTask(members, desktop);
+            if (exposed.Any(p => known.Contains(p.Window.Handle) && !Readable(p.Window, p.Exposure))) return null;
+            members = exposed.Where(p => Readable(p.Window, p.Exposure)).Select(p => p.Window).ToArray();
+            if (members.Length == 1 && local.Count(w => w.IsManageable) > 1) return null;
+        }
+        return new(members, local, Display(context, main),
+            layers.Where(l => l.FrontToBack.Any(w => taskHandles.Contains(w.Handle))).ToArray());
     }
 
     public void Verify(IReadOnlyList<WindowSnapshot> actual)
     {
-        if (_pending is null) return; // A no-op verification must not erase a verified layout.
+        int tolerance = _pending == null ? 0 : 3;
         // Match the native journal's three-pixel settling tolerance once, then anchor the
         // exact observed geometry. Later one-pixel user changes still invalidate reuse.
-        var matches = _pending.Length == actual.Count && _pending.All(expected => actual.Any(w =>
-            WindowStateRules.Matches(expected, w, expected.VisualRect) &&
-            w.ZOrder == expected.ZOrder && w.IsForeground == expected.IsForeground));
-        _verified = matches ? Fingerprint(actual) : null;
-        _pending = null;
+        if (_pending != null)
+        {
+            var matches = _pending.Length == actual.Count && _pending.All(expected => actual.Any(w =>
+                WindowStateRules.Matches(expected, w, expected.VisualRect) &&
+                w.ZOrder == expected.ZOrder && w.IsForeground == expected.IsForeground));
+            _verified = matches ? Fingerprint(actual) : null;
+            _pending = null;
+        }
+        if (_pendingTask is not { } task) return;
+        _pendingTask = null;
+        var observed = task.Members.Select(expected => actual.FirstOrDefault(w =>
+            SameSurface(expected, w, tolerance))).OfType<WindowSnapshot>().ToArray();
+        // 只采用原生回执。焦点或无关显示器的顺序可在确认期间变化，实际依赖的组内层级仍须兑现。
+        if (observed.Length != task.Members.Length ||
+            !SameLocalSurfaces(task.Surfaces, LocalSurfaces(actual, observed[0]), tolerance) ||
+            !task.Layers.All(l => WindowLayerSafety.MatchesOrder(l, actual))) return;
+        var exposures = MeasureTask(observed, actual);
+        if (!exposures.All(p => Readable(p.Window, p.Exposure))) return;
+        _settledTasks.RemoveAll(t => t.Members.Select(p => p.Window.Handle).SequenceEqual(observed.Select(w => w.Handle)));
+        if (_settledTasks.Count >= 16) _settledTasks.RemoveAt(0);
+        _settledTasks.Add(new(exposures, LocalSurfaces(actual, observed[0]), task.Display));
+    }
+
+    internal TaskLayoutContext PreserveVerifiedTask(IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext context)
+    {
+        if (!CanPreserveTask(context) || context.Focus is not { Main: not 0 } focus) return context;
+        var front = desktop.FirstOrDefault(w => w.IsForeground && w.Handle == focus.Main);
+        if (front == null) return context;
+        var local = LocalSurfaces(desktop, front);
+        var active = TaskHandles(focus).ToArray();
+        for (int i = _settledTasks.Count - 1; i >= 0; i--)
+        {
+            var settled = _settledTasks[i];
+            if (!settled.Members.Any(p => p.Window.Handle == front.Handle)) continue;
+            var members = settled.Members.Select(p => desktop.FirstOrDefault(w => SameSurface(p.Window, w, 0)))
+                .OfType<WindowSnapshot>().ToArray();
+            if (members.Length != settled.Members.Length || settled.Display != Display(context, front) ||
+                !SameLocalSurfaces(settled.Surfaces, local, 0))
+            {
+                _settledTasks.RemoveAt(i);
+                continue;
+            }
+            if (active.Any(h => !members.Any(w => w.Handle == h))) continue;
+            var current = MeasureTask(members, desktop);
+            // 焦点、输入强度和主副角色会自然互换。只有实际可读面积或受保护内容的损失才让普通的 Z 序变动重新求解。
+            if (current.Zip(settled.Members).All(p => StillReadable(p.Second, p.First, context)))
+                return context with { VerifiedTaskRepeat = true, VerifiedTaskMembers = members.Select(w => w.Handle).ToArray() };
+        }
+        return context;
+    }
+
+    private static bool CanPreserveTask(TaskLayoutContext? context) => context is
+        { IsWorkspaceObservation: true, ExplicitArrange: false, AllowGestureAssist: false, FirstPlacementWindow: 0, LocalPlacementWindow: 0 } &&
+        context.Focus?.OpeningResidentLeft == null;
+
+    private static bool SameDisplay(WindowSnapshot a, WindowSnapshot b) => a.MonitorHandle == b.MonitorHandle && a.WorkArea == b.WorkArea;
+    private static TaskDisplay? Display(TaskLayoutContext context, WindowSnapshot w) => context.Displays?.FirstOrDefault(d =>
+        d.Monitor == w.MonitorHandle && d.WorkArea == w.WorkArea);
+    private static bool SameSurface(WindowSnapshot old, WindowSnapshot current, int tolerance) =>
+        old.SurfaceState == current.SurfaceState && WindowStateRules.Matches(old, current, old.VisualRect, tolerance);
+    private static IEnumerable<nint> TaskHandles(LayoutFocus focus) =>
+        new[] { focus.Main, focus.Companion }.Concat(focus.NavigationAncestors ?? []).Where(h => h != 0);
+
+    private static WindowSnapshot[] LocalSurfaces(IReadOnlyList<WindowSnapshot> desktop, WindowSnapshot w) =>
+        desktop.Where(p => SameDisplay(p, w) && (p.IsManageable || p.SurfaceState != null)).OrderBy(p => p.Handle).ToArray();
+
+    private static bool SameLocalSurfaces(WindowSnapshot[] expected, WindowSnapshot[] actual, int tolerance) =>
+        expected.Length == actual.Length && expected.Zip(actual).All(p => SameSurface(p.First, p.Second, tolerance));
+
+    private static TaskExposure[] MeasureTask(WindowSnapshot[] members, IReadOnlyList<WindowSnapshot> desktop) =>
+        members.Select(w =>
+        {
+            var front = desktop.Where(p => p.ZOrder < w.ZOrder && !p.VisualRect.Intersect(w.VisualRect).IsEmpty).ToArray();
+            var covers = front.Select(p => p.VisualRect).ToArray();
+            OcclusionMetrics.Exposure Measure(IEnumerable<RectI> blockers) => IntentLayoutPlanner.ScreenExposure(
+                w.VisualRect, blockers, w.WorkArea, w.Dpi);
+            return new TaskExposure(w, Measure(covers),
+                Measure(front.Where(p => !members.Any(m => m.Handle == p.Handle)).Select(p => p.VisualRect)), covers);
+        }).ToArray();
+
+    private static bool StillReadable(TaskExposure prior, TaskExposure current, TaskLayoutContext context)
+    {
+        var w = current.Window;
+        // 相同任务成员可以自然遮住对方的一点边缘。大块正文或独立遮挡的损失另算，避免掩盖一个看似普通的层级变化。
+        return Readable(w, current.Exposure) &&
+            current.Exposure.CenterVisible >= prior.Exposure.CenterVisible - .25 &&
+            current.External.CenterVisible >= prior.External.CenterVisible - .15 &&
+            current.External.Visible >= prior.External.Visible - .15 &&
+            IntentLayoutPlanner.RegionsPreserved(prior.Window.VisualRect, w.VisualRect, prior.Covers, current.Covers,
+                w.WorkArea, IntentLayoutPlanner.ProtectedRegions(w, context));
+    }
+
+    private static bool Readable(WindowSnapshot w, OcclusionMetrics.Exposure exposed)
+    {
+        var box = w.VisualRect;
+        double scale = (w.Dpi == 0 ? 96 : w.Dpi) / 96d;
+        // 这里检查已用空间是否还连续可读，沿用标题带/正文带测量。留给边缘遮挡一定余量，窄工具窗按其实际宽度判断。
+        return box.Width >= Math.Min(320 * scale, w.WorkArea.Width * .30) && box.Height >= Math.Min(220 * scale, w.WorkArea.Height * .30) &&
+            exposed.Visible >= .65 && exposed.CenterVisible >= .70 && exposed.AccessWidth >= Math.Min(140 * scale, .70 * box.Width) &&
+            exposed.UsefulWidth >= Math.Min(480 * scale, .70 * box.Width) && exposed.UsefulHeight(box) >= .55 * box.Height;
     }
 
     public void RejectExplicitly(IEnumerable<nint>? restoredHandles = null)
@@ -320,12 +470,43 @@ public sealed class TaskLayoutSession
             if (!_rejected.Contains(group.Layout)) _rejected.Enqueue(group.Layout);
             while (_rejected.Count > 32) _rejected.Dequeue();
         }
-        _pendingGroups = []; _pending = null; _verified = null;
+        _pendingGroups = []; Invalidate();
     }
 
     private sealed record FeedbackGroup(string Layout, nint[] ChangedHandles);
 
-    public void Invalidate() { _pending = null; _verified = null; }
+    private sealed record TaskExposure(WindowSnapshot Window, OcclusionMetrics.Exposure Exposure,
+        OcclusionMetrics.Exposure External, RectI[] Covers);
+    private sealed record PendingTask(WindowSnapshot[] Members, WindowSnapshot[] Surfaces, TaskDisplay? Display, WindowLayerOrder[] Layers);
+    private sealed record SettledTask(TaskExposure[] Members, WindowSnapshot[] Surfaces, TaskDisplay? Display);
+
+    internal void InvalidateExactRepeat() => _verified = null;
+    internal void CancelVerification(string? request = null)
+    {
+        if (request != null && _pendingRequest != request) return;
+        _pending = null; _pendingTask = null; _pendingRequest = null;
+    }
+
+    internal void BindRequest(string? request)
+    {
+        if (request == null) CancelVerification();
+        else _pendingRequest = request;
+    }
+
+    internal void VerifyRequest(string request, IReadOnlyList<WindowSnapshot> actual)
+    {
+        if (_pendingRequest != request) return;
+        Verify(actual);
+        _pendingRequest = null;
+    }
+
+    public void Invalidate() { CancelVerification(); _verified = null; _settledTasks.Clear(); }
+
+    internal void Retire(nint handle)
+    {
+        if (_pendingTask?.Surfaces.Any(w => w.Handle == handle) == true) CancelVerification();
+        _settledTasks.RemoveAll(task => task.Surfaces.Any(w => w.Handle == handle));
+    }
 
     public static string LayoutKey(IEnumerable<WindowSnapshot> windows) => string.Join(";",
         windows.OrderBy(w => w.Handle).Select(w => $"{w.Handle}:{w.ProcessId}:{w.WorkArea}:{w.Dpi}:{w.VisualRect}:{w.ZOrder}"));

@@ -2,7 +2,7 @@ namespace NeatWin.Core;
 
 internal static class PlacementPreferences
 {
-    internal const string ModelVersion = "v2.3";
+    internal const string ModelVersion = "v2.5";
 
     private const double MinimumConfidence = .40;
     private const double ConfidenceMargin = .08;
@@ -10,7 +10,7 @@ internal static class PlacementPreferences
 
     internal static PlacementPreference[] Bind((WindowSnapshot Window, string? App, string Instance)[] entries,
         LayoutFocus focus, IReadOnlyList<LayoutHabit> stored, IReadOnlyList<LayoutHabit> session, DateTimeOffset now,
-        Func<nint, nint, PlacementUsage?>? use = null)
+        Func<nint, nint, PlacementUsage?>? use = null, Func<nint, string?>? instanceUse = null)
     {
         // 后台播放的对象可以明确搭配关系，即使这个窗口不需要接收焦点。
         var observedPeers = new Dictionary<nint, nint>();
@@ -21,7 +21,7 @@ internal static class PlacementPreferences
                 var front = group.FirstOrDefault(e => e.Window.IsForeground).Window;
                 if (front == null) continue;
                 var peers = group.Where(e => e.Window.Handle != front.Handle &&
-                    use(front.Handle, e.Window.Handle) == PlacementUsage.BackgroundPlayback).Take(2).ToArray();
+                    use(front.Handle, e.Window.Handle) is PlacementUsage.BackgroundPlayback or PlacementUsage.BackgroundReading).Take(2).ToArray();
                 if (peers.Length != 1 || focus.Companion != 0) continue;
                 observedPeers[front.Handle] = peers[0].Window.Handle;
                 observedPeers[peers[0].Window.Handle] = front.Handle;
@@ -62,7 +62,16 @@ internal static class PlacementPreferences
             foreach (var monitor in entries.GroupBy(e => e.Window.MonitorHandle))
             {
                 // 同屏两份文档可能共用应用标识。只有标识唯一时才能把票投给具体窗口，否则一次左侧习惯会同时套到两份文档上。
-                var live = monitor.Select(e => (e.Window, Key: instance ? e.Instance : e.App))
+                var repeated = monitor.Where(e => e.App != null).GroupBy(e => e.App!).Where(g => g.Count() > 1)
+                    .Select(g => g.Key).ToHashSet();
+                // 用途只帮助同名窗口消除歧义。两个同用途实例仍只能接受会话级投票。
+                string? MatchKey((WindowSnapshot Window, string? App, string Instance) entry)
+                {
+                    if (instance) return entry.Instance;
+                    if (entry.App == null || !repeated.Contains(entry.App)) return entry.App;
+                    return instanceUse?.Invoke(entry.Window.Handle) is { } role ? entry.App + "/" + role : null;
+                }
+                var live = monitor.Select(e => (e.Window, Key: MatchKey(e)))
                     .Where(e => !string.IsNullOrEmpty(e.Key)).GroupBy(e => e.Key!)
                     .Where(g => g.Count() == 1).ToDictionary(g => g.Key, g => g.First().Window);
                 var keys = live.ToDictionary(p => p.Value.Handle, p => p.Key);

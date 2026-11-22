@@ -16,7 +16,14 @@ internal static partial class IntentLayoutPlanner
         if (options.AlgorithmMode == TidyAlgorithmMode.Classic)
             return new(new TidyEngine().CreatePlan(visible, options), [], []);
         taskContext ??= new TaskLayoutContext();
-        if (taskContext.VerifiedRepeat && !taskContext.ExplicitArrange) return new([], [], []);
+        // 已匹配的个人场景可以明确要求重新比较已就绪的布局；其余单纯切换沿用实际验证过的摆法。
+        if (!taskContext.ExplicitArrange && (taskContext.VerifiedRepeat ||
+            (taskContext.VerifiedTaskRepeat && taskContext.Scene?.Settings?.ReconsiderSettled != true)))
+        {
+            if (!taskContext.TraceCandidateAxes) return new([], [], []);
+            var reason = taskContext.VerifiedRepeat ? "verified-exact-repeat" : "verified-task-repeat";
+            return new([], [], [new(visible.Select(v => v.Window.Handle).ToArray(), "keep", 0, [], new([], "search-skipped", [reason]))]);
+        }
         // Anchored monitors keep their original location and remain in the desktop occlusion checks.
         desktop ??= visible.Select(v => v.Window).ToArray();
         if (taskContext is { ExplicitArrange: false, IsWorkspaceObservation: true, Attention: not null } &&
@@ -198,6 +205,10 @@ internal static partial class IntentLayoutPlanner
                 HashSet<RectI>? localTargets = localPlacement >= 0 ? [original[localPlacement]] : null;
                 int gestureIndex = Array.FindIndex(group, v => v.Window.Handle == groupContext.GestureAnchor);
                 var shadowAxes = (groupContext.ShadowAxes ?? []).Where(axis => handles.Contains(axis.Window)).ToArray();
+                var axes = groupContext.TraceCandidateAxes ? new LayoutAxisEvidence() : null;
+                axes?.Observe(original, true);
+                HeldLayoutAxes? hold = null;
+                double fullRank = double.NegativeInfinity;
                 foreach (var candidate in candidates.Skip(1)) Evaluate(candidate, 0);
                 if (shadowAxes.Any(axis => axis.Change == ShadowChange.Generate))
                 {
@@ -232,28 +243,47 @@ internal static partial class IntentLayoutPlanner
                 }
 
                 // 从实际胜出的方案中逐窗试着保留一组原边界。联合解决遮挡仍然可选；没有额外收益的横移或邻窗联动可被删掉。
-                // 最多检查常见小组的每扇窗三次；所有选择沿用本轮证据和提交门槛，不会引发第二次系统摆放。
+                // 常见小组比较整窗、两个方向和单独的轴；所有选择沿用本轮证据和提交门槛，不会引发第二次系统摆放。
                 // 纯几何调用没有打断的观察依据，保留其对明确整理命令选出的完整方案。
                 if (best.Kind != "keep" && group.Length <= 8 && groupContext.Attention != null)
                 {
+                    fullRank = bestScore;
+                    Candidate? measured = null;
+                    double withCost = 0;
                     foreach (int i in order.Reverse())
                     {
                         var start = original[i];
-                        var target = best.Rects[i];
-                        if (target == start) continue;
-                        foreach (var simpler in new[] { start, target with { X = start.X, Width = start.Width },
-                            target with { Y = start.Y, Height = start.Height } })
+                        if (best.Rects[i] == start) continue;
+                        var compared = new HashSet<(RectI Current, RectI Simpler)>();
+                        foreach (string mask in new[] { "XYWH", "XW", "YH", "X", "Y", "W", "H" })
                         {
-                            // 省一次移动若重新遮住刚露出的正文，不能再声称取得了相同的布局收益。
-                            // 原求解的叠放候选仍照常比较；这里只核验对胜出方案的删减。
-                            if (simpler == best.Rects[i] || order.Any(j => j != i &&
-                                simpler.Intersect(best.Rects[j]).Area > best.Rects[i].Intersect(best.Rects[j]).Area)) continue;
+                            var target = best.Rects[i];
+                            var simpler = new RectI(mask.Contains('X') ? start.X : target.X, mask.Contains('Y') ? start.Y : target.Y,
+                                mask.Contains('W') ? start.Width : target.Width, mask.Contains('H') ? start.Height : target.Height);
+                            if (simpler == target || !compared.Add((target, simpler))) continue;
+                            if (axes != null && !ReferenceEquals(measured, best))
+                            {
+                                measured = best;
+                                withCost = Breakdown(best).Total;
+                            }
+                            hold = new(i, mask, withCost, null);
+                            if (order.Any(j => j != i && simpler.Intersect(best.Rects[j]).Area > target.Intersect(best.Rects[j]).Area))
+                            {
+                                if (axes != null)
+                                {
+                                    var blocked = (RectI[])best.Rects.Clone();
+                                    blocked[i] = simpler;
+                                    axes.Observe(blocked, false);
+                                    audits.Add(new("retain-existing-edges", null, "new-peer-overlap", Held: hold));
+                                }
+                                continue;
+                            }
                             var frames = (RectI[])best.Rects.Clone();
                             frames[i] = simpler;
-                            var proposal = new Candidate("retain-existing-edges", frames, best.Order);
-                            if (seen.Add(CandidateKey(proposal))) Evaluate(proposal, 1);
+                            Evaluate(new("retain-existing-edges", frames, best.Order), 1);
                         }
                     }
+                    hold = null;
                 }
 
                 void Evaluate(Candidate candidate, int generation)
@@ -267,6 +297,8 @@ internal static partial class IntentLayoutPlanner
                         frames[localPlacement] = target;
                         candidate = candidate with { Rects = frames, Order = order };
                     }
+                    axes?.Observe(candidate.Rects, false);
+                    groupContext.ShadowProbe?.Observe(group, candidate.Rects, double.PositiveInfinity);
                     RectI[]? fitted = null, held = null;
                     if (groupContext.VideoFits is { Count: > 0 } fits)
                     for (int i = 0; i < group.Length; i++)
@@ -331,7 +363,7 @@ internal static partial class IntentLayoutPlanner
                     }
                     if (rejection is not null)
                     {
-                        audits.Add(new(candidate.Kind, null, rejection, Generation: generation));
+                        audits.Add(new(candidate.Kind, null, rejection, Generation: generation, Held: axes != null ? hold : null));
                         // 只有一轴挤到参考内容时仍可改善另一轴。拆开试算后继续走相同的可读性、比例、输入与遮挡检查。
                         if (rejection.StartsWith("visible-reference:", StringComparison.Ordinal) &&
                             !candidate.Kind.StartsWith("reference-fit-", StringComparison.Ordinal) && candidate.Order.SequenceEqual(order))
@@ -348,6 +380,7 @@ internal static partial class IntentLayoutPlanner
                     }
                     var breakdown = Breakdown(candidate);
                     var score = breakdown.Total;
+                    axes?.Observe(candidate.Rects, breakdown.Feedback == 0);
                     groupContext.ShadowProbe?.Observe(group, candidate.Rects, breakdown.Feedback);
                     // 松手位置提供摆放意图。补齐落点的收益依然要和原位比较，不能给整组窗口无条件让位。
                     bool followsGesture = groupContext.AllowGestureAssist && gestureIndex >= 0 &&
@@ -359,12 +392,18 @@ internal static partial class IntentLayoutPlanner
                     double? centerTieCost = null;
                     if (goals is [{ DefaultCenter: true, RestingCenter: double middle }])
                         centerTieCost = baseThreshold * Math.Abs(CenterX(candidate.Rects[0]) - middle) / area.Width;
-                    audits.Add(new(candidate.Kind, score, null, breakdown, generation, weight, threshold, centerTieCost));
+                    audits.Add(new(candidate.Kind, score, null, breakdown, generation, weight, threshold, centerTieCost,
+                        axes != null && hold != null ? hold with { GainFromMoving = score - hold.OriginalCost } : null));
                     // 只给已满足可读性和收益门槛的候选一个小的排序优势。影子偏好无法替代实际空间收益。
                     bool matchesShadowRank = shadowAxes.Any(axis => axis.Change == ShadowChange.Rank &&
                         axis.Matches(candidate.Rects[Array.FindIndex(group, v => v.Window.Handle == axis.Window)]));
                     double rank = score + (centerTieCost ?? 0) - (matchesShadowRank ? baseThreshold * .5 : 0);
-                    if (breakdown.Feedback == 0 && (score < baseline - threshold && (best.Kind == "keep" || rank < bestScore) ||
+                    // 对未经手势点名的附带位移，若省下该轴仍有几乎相同的净收益，保留原边界。
+                    // 所有删减共同使用完整方案的一份余量，避免逐轴放宽后把本来要解决的问题丢掉。
+                    bool sameBenefit = hold != null && candidate.Kind == "retain-existing-edges" &&
+                        groupContext.IsWorkspaceObservation && candidate.Order.SequenceEqual(best.Order) &&
+                        rank <= fullRank + Math.Min(threshold * .10, baseThreshold * .25);
+                    if (breakdown.Feedback == 0 && (score < baseline - threshold && (best.Kind == "keep" || rank < bestScore || sameBenefit) ||
                         best.Kind == "keep" && needsRescue && candidate.Kind == "rescue"))
                     { best = candidate; bestScore = rank; }
                 }
@@ -379,7 +418,7 @@ internal static partial class IntentLayoutPlanner
                 traces.Add(new(group.Select(v => v.Window.Handle).ToArray(), best.Kind, stackSignal, audits.ToArray(),
                     new(task, viewingModel,
                         ["hypothesis-weights-not-calibrated-probabilities", "content-prior-not-semantic-recognition", "stable-is-not-satisfaction",
-                         .. shadowAxes.Select(axis => $"shadow-placement:{axis.Axis}:{axis.Change}")])));
+                         .. shadowAxes.Select(axis => $"shadow-placement:{axis.Axis}:{axis.Change}")]), axes?.Export()));
 
                 void AddGroupLayouts(List<Candidate> output, RectI[] seed)
                 {
