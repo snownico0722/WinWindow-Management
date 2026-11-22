@@ -18,9 +18,10 @@ public sealed record RelationReferenceSample(DateTimeOffset Time, string Context
     string Kind, double OverlapRatio);
 public sealed record PlannedWindow(int Id, RectI Target);
 public sealed record PlannedGroup(int[] Ids, string Selected, double StackEvidence,
-    LayoutCandidateTrace[] Candidates, TaskGroupExplanation? Task = null);
+    LayoutCandidateTrace[] Candidates, TaskGroupExplanation? Task = null, LayoutAxisCoverage[]? AxisCoverage = null);
 public sealed record ProjectedPlan(PlannedWindow[] Targets, int[][] Layers, string[] Selected);
 public sealed record RejectedWindowMove(int Id, RectI Target, int Win32Error);
+public sealed record RecordedDividerRelease(RectI Start, RectI End, RectI WorkArea);
 public sealed record RecordedGestureTiming(int WindowId, bool ReusedPreview, long? ReleaseToFirstGeometrySubmitMs,
     long? ReleaseToGestureWindowSubmitMs);
 public sealed record RecordedShadowFinding(int WindowId, string Axis, string Diagnosis, bool AlternativeSelected);
@@ -43,7 +44,7 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     RecordedShadowFinding[]? ShadowReplay = null)
 {
-    internal const int CurrentVersion = 11;
+    internal const int CurrentVersion = 12;
 }
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
@@ -145,7 +146,10 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     BrowserBarObservation? BrowserBars = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    bool VerifiedTaskRepeat = false, Dictionary<int, ReadingInteraction>? ReadingInput = null, long[]? ObservedChangeEvents = null, int OmittedChanges = 0)
+    bool VerifiedTaskRepeat = false, Dictionary<int, ReadingInteraction>? ReadingInput = null, long[]? ObservedChangeEvents = null, int OmittedChanges = 0,
+    // 旧记录没有手势起点，保持相同输入的序列化指纹，使跨版本回放可以逐请求配对。
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RecordedDividerRelease? DividerRelease = null)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids, IReadOnlyList<WindowSnapshot>? snapshot = null)
     {
@@ -197,7 +201,10 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             fits?.Count > 0 ? fits : null, Id(context.FirstPlacementWindow), context.OriginSide, shadow is { Length: > 0 } ? shadow : null,
             context.BrowserBarSample is { } sample ? sample.Detail with { WindowId = Id(sample.Window) } : null,
             context.VerifiedTaskRepeat, context.ReadingInput is { Count: > 0 } input
-                ? input.Where(e => Id(e.Key) != 0).ToDictionary(e => Id(e.Key), e => e.Value) : null, context.ObservedChangeEvents, context.OmittedChanges);
+                ? input.Where(e => Id(e.Key) != 0).ToDictionary(e => Id(e.Key), e => e.Value) : null, context.ObservedChangeEvents, context.OmittedChanges,
+            context.AllowGestureAssist && Id(context.GestureAnchor) != 0 &&
+            context.RecentGesture is { Kind: ManualGestureKind.Resize } release && release.WindowHandle == context.GestureAnchor
+                ? new(release.StartRect, release.EndRect, release.WorkArea) : null);
     }
 
     private static ShadowAxis? ReadShadowRule(RecordedShadowRule value) =>
@@ -221,6 +228,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),
         Attention = Attention?.ToDictionary(a => (nint)a.Key, a => a.Value),
         GestureAnchor = GestureAnchor, GestureTarget = GestureTarget,
+        ReplayDivider = DividerRelease,
         ShadowAxes = (ShadowRules ?? []).Select(ReadShadowRule).OfType<ShadowAxis>().ToArray(),
         VerifiedTaskRepeat = VerifiedTaskRepeat,
         ReadingInput = ReadingInput?.Where(e => e.Key > 0 && e.Value is { Scrolling: >= 0 and <= 1, CaretMotion: >= 0 and <= 1 })

@@ -72,6 +72,8 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     internal ShadowAxis[]? ShadowAxes { get; init; }
     internal ShadowReplayProbe? ShadowProbe { get; init; }
     internal DateTimeOffset? ShadowTime { get; init; }
+    internal bool TraceCandidateAxes { get; init; }
+    internal RecordedDividerRelease? ReplayDivider { get; init; }
     internal bool AllowGestureAssist { get; init; } = true;
     internal (nint Window, BrowserBarObservation Detail)? BrowserBarSample { get; init; }
     internal IReadOnlyDictionary<nint, VideoViewportFit>? VideoFits { get; init; }

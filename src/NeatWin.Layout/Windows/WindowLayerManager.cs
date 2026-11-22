@@ -27,6 +27,11 @@ public sealed partial class WindowManager
         // 求解和松手预览可以早于最近一次回拖。提交整组前再核对，避免只执行旧方案的一半。
         if (InteractionChanged(automaticForeground) || allowsMove != null && plan.Moves.Any(m => !allowsMove(m)))
             return new(plan with { Moves = [], Layers = [] }, ["检测到新的手动调整，未覆盖窗口位置。"]) { Interrupted = true };
+        // 接缝联动只提交搭档。若主窗松手后又移动，搭档的目标也随即失去依据。
+        if (plan.IsDividerGesture && plan.Moves.Count > 0 && context?.RecentGesture is { } release &&
+            !current.Any(w => w.Handle == release.WindowHandle && w.ProcessId == release.ProcessId && w.VisualRect == release.EndRect &&
+                w.IsForeground && w.WorkArea == release.WorkArea))
+            return new(plan with { Moves = [], Layers = [] }, ["接缝起点已变化。"]) { Interrupted = true };
         if (needed.Any(w => !current.Any(c => c.Handle == w.Handle &&
             c.IsManageable && WindowStateRules.Matches(w, c, w.VisualRect))))
             return new(plan with { Moves = [], Layers = [] }, ["桌面在规划后发生变化，本次未执行。"]);
