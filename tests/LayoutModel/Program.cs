@@ -4,6 +4,7 @@ using NeatWin.Core;
 using NeatWin.Reference;
 
 var area = new RectI(0, 0, 1920, 1040);
+PlacementShadowChecks.Run(Check);
 SceneModelChecks.Run(Check);
 AttentionWorkspaceChecks.Run(Check);
 VideoFitChecks.Run(Check);
@@ -1045,10 +1046,10 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                 ctx = (run.Signals?.ApplyToReplay(ctx) ?? ctx) with { AllowGestureAssist = run.Trigger == "automatic-gesture", IsWorkspaceObservation = run.Trigger == "automatic-workspace" };
                 var activeRules = overrideRules ?? run.Rules ?? CompiledLayoutRules.Default;
                 var keyed = desktop.Zip(frame.Windows.OrderBy(w => w.ZOrder), (window, observed) => (window, observed.AppKey)).ToArray();
-                var slotPrefs = activeRules.BindSlots(keyed);
+                var observedPair = ctx.GestureAnchor != 0 && ctx.AllowGestureAssist && ctx.GestureAnchor != ctx.Focus?.Main ? null : ctx.Focus;
+                var slotPrefs = activeRules.BindSlots(keyed, observedPair);
                 var mergedPrefs = CompiledLayoutRules.ApplySlots(ctx.Placement ?? [], slotPrefs);
-                ctx = ctx with { AppKeys = keyed.ToDictionary(k => k.window.Handle, k => k.AppKey), Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities,
-                    ctx.GestureAnchor != 0 && ctx.AllowGestureAssist && ctx.GestureAnchor != ctx.Focus?.Main ? null : ctx.Focus), Placement = mergedPrefs };
+                ctx = ctx with { AppKeys = keyed.ToDictionary(k => k.window.Handle, k => k.AppKey), Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities, observedPair), Placement = mergedPrefs };
                 ctx = ctx with { WindowHints = snapshotRoles.Enrich(run.Session, run.RequestId, frame.Time, desktop, ctx) };
                 var fullDesktop = run.FullDesktop ?? explicitRun;
                 var workingSet = fullDesktop ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);
@@ -1084,7 +1085,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                     }
                 }
                 Console.WriteLine(JsonSerializer.Serialize(new { run.Session, run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
-                    run.GestureTiming, ObservedReleaseDetails = edits.Releases.GetValueOrDefault((run.Session, run.RequestId))?
+                    run.GestureTiming, run.ShadowReplay, ObservedReleaseDetails = edits.Releases.GetValueOrDefault((run.Session, run.RequestId))?
                         .OrderBy(g => g.Tick).Select(g => new { g.GestureId, g.WindowId, g.AutomationMarked, ElapsedMs = g.Prior!.ElapsedMs, g.Change }),
                     RecordedManualFollowups = followups?.Count, RecordedUndoOfThisRequest =
                         edits.Undone.Contains((run.Session, run.RequestId)) ? true : (bool?)null,

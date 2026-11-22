@@ -100,9 +100,9 @@ public sealed class AutomaticLayoutScheduler
         _observed = Normalize(snapshot); _notBefore = now; _lastChange = now;
     }
 
-    public void RequestCurrent(long now)
+    public void RequestCurrent(long now, WorkspaceChangeCause cause = WorkspaceChangeCause.Requested)
     {
-        if (AutomaticLayoutPolicy.WatchesWorkspace(Mode)) Queue(LayoutTrigger.WorkspaceChange, now);
+        if (AutomaticLayoutPolicy.WatchesWorkspace(Mode)) Queue(LayoutTrigger.WorkspaceChange, now, cause);
     }
 
     internal void DeferWorkspaceWhileBusy(long now)
@@ -285,7 +285,7 @@ public sealed class AutomaticLayoutScheduler
 internal static class LayoutDispatch
 {
     internal static string ModelVersion(TidyAlgorithmMode mode) =>
-        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v2.1";
+        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v2.2";
 
     internal static IntentLayoutPlan Create(LayoutRoute route, IReadOnlyList<VisibleWindow> visible,
         TidyOptions options, IntentReferenceDocument? reference, IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext? context)

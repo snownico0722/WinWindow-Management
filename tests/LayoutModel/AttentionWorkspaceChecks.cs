@@ -39,10 +39,10 @@ internal static class AttentionWorkspaceChecks
         var released = left with { VisualRect = release };
         var corrections = new ForegroundHistory();
         corrections.Visit(1, 1, 0);
-        corrections.Submitted(new([new(left, center)], [], []), [left, peer]);
+        corrections.Submitted(new([new(left, center)], [], []), [left, peer], 1200);
         var manual = new ManualWindowGesture(1, center, release, area, ManualGestureKind.Move, [], 400, 0);
         corrections.Placed(released, manual, 2000, [released, peer]);
-        corrections.Submitted(new([new(released, left.VisualRect)], [], []), [released, peer]);
+        corrections.Submitted(new([new(released, left.VisualRect)], [], []), [released, peer], 2050);
         corrections.Interact(1, 1, 16000);
         corrections.Resolve([left, peer], 30000, out var observedCorrection);
         var evidence = observedCorrection[1].Correction;

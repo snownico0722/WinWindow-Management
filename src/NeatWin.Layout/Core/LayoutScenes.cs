@@ -81,7 +81,59 @@ internal sealed class ReferenceExposure
     }
 }
 
-internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, ReferenceExposure[] References, int WorkingSide = 0)
+// 焦点换到新 HWND 不等于视线想换栏。这里描述本次进入工作面的证据，只约束横向，纵向和同侧尺寸仍参与求解。
+internal sealed record AttentionLane(WindowSnapshot Front, nint Source, int Side)
+{
+    internal static AttentionLane? Resolve(WindowSnapshot front, WindowSnapshot[] peers, TaskLayoutContext ctx)
+    {
+        if (!ctx.IsWorkspaceObservation || ctx.ExplicitArrange || !front.IsManageable || front.IsTopmost ||
+            ctx.Focus is not { } focus || focus.Main != front.Handle || front.VisualRect.IsEmpty) return null;
+        var source = peers.FirstOrDefault(w => w.Handle == focus.Companion && w.WorkArea == front.WorkArea);
+        int side = ctx.OriginSide;
+        if (side == 0 && source != null)
+            side = AttentionLayout.HorizontalSide(source.VisualRect, front.WorkArea);
+        int current = AttentionLayout.HorizontalSide(front.VisualRect, front.WorkArea);
+        // 新窗本来就在另一侧时，可能是用户点到了那里。保留它的原生落点，不反向拉回来源一侧。
+        if (side is not (-1 or 1) || current == -side || current == 0 && source != null &&
+            AttentionLayout.IsCentralStack(front.VisualRect, source.VisualRect, front.WorkArea)) return null;
+        if (source == null && ctx.OriginSide == 0) return null;
+        if (source != null && focus.Navigation is not { Length: > 0 })
+        {
+            // 宽窗已横跨中线，且两窗中心本来错开，展开可恢复被它盖掉的大块原工作面。
+            // 这种开窗和在原栏叠出一个新窗口有不同的空间证据；知识来自两窗几何，对左右镜像同样成立。
+            var area = front.WorkArea;
+            var a = front.VisualRect.Intersect(area);
+            var b = source.VisualRect.Intersect(area);
+            double separation = side * ((b.X + b.Width / 2d) - (a.X + a.Width / 2d));
+            if (current == 0 && focus.OpeningResidentLeft.HasValue && a.Width >= area.Width * .60 &&
+                separation >= area.Width * .16 && a.Intersect(b).Area >= b.Area * .60) return null;
+            bool matches(nint a, nint b) => a == front.Handle && b == source.Handle || b == front.Handle && a == source.Handle;
+            // 单次切换和某个程序惯常靠左都不授权分栏。两窗明确联合观看、在这对窗口已建立的方向规则，
+            // 或反复切换且双方均有直接操作，才让全局求解重新比较横向转移的收益。
+            if (ctx.PairHints?.Any(h => h.Relation == TaskRelation.JointView && matches(h.First, h.Second)) == true ||
+                focus.Evidence == "recent-switch-pair" && focus.Switches >= 2 &&
+                (ctx.RulePairs?.Any(p => p.FirstSide != "either" && matches(p.First, p.Second)) == true ||
+                 focus.Switches >= 3 && ctx.Attention?.GetValueOrDefault(front.Handle)?.Input >= .35 &&
+                 ctx.Attention?.GetValueOrDefault(source.Handle)?.Input >= .35)) return null;
+        }
+        return new(front, source?.Handle ?? 0, side);
+    }
+
+    internal bool Allows(WindowSnapshot window, RectI target)
+    {
+        if (window.Handle != Front.Handle && window.Handle != Source || target == window.VisualRect) return true;
+        var area = window.WorkArea;
+        var frame = window.VisualRect;
+        // 屏外救回必须可达。原来已在中线附近的窗可以留在中线；靠侧的窗则应继续留在同侧阅读。
+        if (frame.Intersect(area).Area < frame.Area * .65 || frame.Top < area.Top || frame.Top >= area.Bottom) return true;
+        int old = AttentionLayout.HorizontalSide(frame, area), next = AttentionLayout.HorizontalSide(target, area);
+        if (window.Handle == Source && old != Side) return true;
+        return old == Side ? next == Side : next != -Side;
+    }
+}
+
+internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, ReferenceExposure[] References, int WorkingSide = 0,
+    AttentionLane? Lane = null)
 {
     internal static ActiveLayoutScene? Resolve(IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext ctx, bool includeDefaults = true)
     {
@@ -140,12 +192,18 @@ internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, Re
                     guards.Add(occupied);
             }
         }
-        return match == null && guards.Count == 0 ? null : new(match, front.MonitorHandle, guards.ToArray(), workingSide);
+        var lane = includeDefaults ? AttentionLane.Resolve(front, peers, ctx) : null;
+        return match == null && guards.Count == 0 && lane == null ? null :
+            new(match, front.MonitorHandle, guards.ToArray(), workingSide, lane);
     }
 
     internal bool Allows(IReadOnlyList<WindowSnapshot> current, IntentLayoutPlan plan)
     {
-        if (References.Length == 0 || plan.Moves.Count == 0 && plan.Layers.Count == 0) return true;
+        if (plan.Moves.Count == 0 && plan.Layers.Count == 0) return true;
+        if (Lane is { } lane && (current.FirstOrDefault(w => w.IsForeground) is not { } front ||
+            !WindowStateRules.Matches(lane.Front, front, lane.Front.VisualRect) ||
+            plan.Moves.Any(m => !lane.Allows(m.Window, m.TargetVisualRect)))) return false;
+        if (References.Length == 0) return true;
         var projected = TaskLayoutSession.Project(current, plan);
         foreach (var g in References)
         {
@@ -160,6 +218,7 @@ internal sealed record ActiveLayoutScene(LayoutScene? Settings, nint Monitor, Re
     internal SceneEffect[] Effects(IReadOnlyList<WindowSnapshot> after, Func<nint, int> id)
     {
         var result = new List<SceneEffect>();
+        if (Lane != null) result.Add(new(Lane.Side < 0 ? "attention-origin-left" : "attention-origin-right", id(Lane.Front.Handle), null, null, null, null));
         if (Settings != null && References.All(g => g.Rule != Settings.Id))
             result.Add(new(Settings.Id, null, null, null, null, null));
         foreach (var g in References)

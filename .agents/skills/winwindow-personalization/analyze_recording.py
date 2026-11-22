@@ -164,7 +164,13 @@ class Recording:
                                    "FullDesktop": row.get("FullDesktop"), "Truncated": before.get("Truncated"),
                                    "Time": before.get("Time"), "ForegroundId": active.get("Id"),
                                    "TargetWindowIds": targets, "UndoOfRequest": row.get("UndoOfRequest"),
-                                   "SceneEffects": row.get("SceneEffects")}
+                                   "SceneEffects": row.get("SceneEffects"),
+                                   "OriginSide": (row.get("Signals") or {}).get("OriginSide"),
+                                   "ShadowRules": (row.get("Signals") or {}).get("ShadowRules"),
+                                   "ShadowReplay": row.get("ShadowReplay"),
+                                   "RepeatedReversal": {wid: signal["RepeatedReversal"] for wid, signal in
+                                                        ((row.get("Signals") or {}).get("Attention") or {}).items()
+                                                        if signal.get("RepeatedReversal")}}
         elif stream == "adjustments":
             for field in ("StartContext", "EndContext", "SettledContext"):
                 self.frame(row.get(field), stream)

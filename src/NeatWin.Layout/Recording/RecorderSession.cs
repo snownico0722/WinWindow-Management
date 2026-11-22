@@ -136,6 +136,7 @@ internal sealed class RecorderSession : IDisposable
 
     internal string SessionId => _session;
     internal ObservationIdentityTracker Identity => _identity;
+    internal Action<nint>? WindowRetired { get; set; }
     internal long RecordingEpoch { get; private set; }
     internal bool CanWriteDiagnostics => _ownsSingleton && !_paused && !_disposed;
 
@@ -401,7 +402,9 @@ internal sealed class RecorderSession : IDisposable
             if (type == 0x8001)
             {
                 if (_active?.Window.Handle == hwnd) EndUnobservedGesture("destroy-observed", EventTick(time));
-                _identity.Retire(hwnd); _activity.Retire(hwnd); SizeMemory.Retire(hwnd); _lastPlan.Remove(hwnd); _contextDirty = true; return;
+                _identity.Retire(hwnd); _activity.Retire(hwnd); SizeMemory.Retire(hwnd); _lastPlan.Remove(hwnd); _contextDirty = true;
+                WindowRetired?.Invoke(hwnd);
+                return;
             }
             if (_paused && !(type == 0x800B && _active?.Window.Handle == hwnd && ObserveGestures)) return;
             if (type == 0x0003)
@@ -641,8 +644,8 @@ internal sealed class RecorderSession : IDisposable
                 hints, activities, focus)
             : [];
 
-    internal PlacementPreference[] BindSlots(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows) =>
-        rules.AppSlots is { Length: > 0 } ? rules.BindSlots(windows.Select(w => (w, _activity.AppKey(w, false)))) : [];
+    internal PlacementPreference[] BindSlots(CompiledLayoutRules rules, IReadOnlyList<WindowSnapshot> windows, LayoutFocus? focus) =>
+        rules.BindSlots(windows.Select(w => (w, _activity.AppKey(w, false))), focus);
 
     internal WindowSizeFloor[] BindSizeFloors(IReadOnlyList<WindowSnapshot> windows) =>
         SizeMemory.Bind(windows.Where(w => w.IsManageable).Select(w => (w, _activity.AppKey(w, false))));

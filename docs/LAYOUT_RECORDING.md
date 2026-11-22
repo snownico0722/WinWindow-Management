@@ -182,3 +182,15 @@
 离线模型也可用 --validate compiled-rules.json 核对导入格式。比较默认和个人方案时，可在会话参数后传入同一份观察规则文件。两次回放都只用这份文件选择观察对象，输出 EvaluationEffects，评分仍各自使用原方案。用 "*" 表示所有会话。随包 compare 工具提供共同样本数及原有可见像素的损失率和总损失；无共同样本时保持未知。
 
 Smart v2.1 的请求可在 `Signals.Attention` 的各窗口读到 `ManualSide`（−1 左，1 右）。它来自一次明显的实际横拖，缺失表示没有记录到有效侧别。候选说明的 `existing-occupied-side-stack` 表示对侧有独立工作面、当前前台已足够可读。
+
+## v2.2 的注意力与后台回放
+
+`Signals.OriginSide` 来自同屏前一工作面的外框。值 -1、1 分别代表左、右，缺失表示没有记录到明确侧别。它不能测量眼睛注视的位置。`SceneEffects` 的 `attention-origin-left/right` 表示求解使用了继承证据，此证据也可能来自本次交接的同屏来源。`attention-side-transfer` 标记因违背工作侧而被拒绝的候选。`Attention` 中的 `RepeatedReversal` 按轴记录重复推翻的目标与松手值，候选的对应拒绝理由是 `repeated-manual-reversal`。对旧记录分别比较带时间顺序的操作和当时实际可用的字段。
+
+v5 规则在 `Pairs` 中增加可选 `FirstWidth` 和 `SecondWidth`，数值是对应窗口占显示器工作区的宽度比例（0.18 至 0.88）。例如下列规则只描述 A 与 B 交接或共同使用时 A 的宽度。仅同屏共存、同应用多实例无法消歧，或正在逐层导航时，宽度保持未绑定。
+
+```json
+{"Version":5,"Pairs":[{"FirstApp":"AAAAAAAAAAAAAAAAAAAAAAAA","SecondApp":"BBBBBBBBBBBBBBBBBBBBBBBB","OnlyWhenPaired":true,"FirstWidth":0.66}]}
+```
+
+`ShadowReplay` 记录最近后台比较的结论，`Signals.ShadowRules` 记录此次决策实际使用的轴和候选策略。比较结果可能随多个请求重复出现，应回到原始回拖看是否有独立证据。旧导出没有这些字段。离线回放使用当时已下发的建议；历史文件无法验证新后台学习是否让真实用户少摆了窗口。

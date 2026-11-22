@@ -39,7 +39,7 @@ internal sealed class LayoutRunJournal : IDisposable
     internal string? Record(IReadOnlyList<WindowSnapshot> before, LayoutApplication application, string trigger,
         IntentLayoutPlan? baseline = null, IntentLayoutPlan? proposal = null, IntentLayoutPlan? scored = null,
         TaskLayoutContext? context = null, SmartTidyStrength? strength = null, bool? fullDesktop = null, bool allowReplan = false, string? undoOfRequest = null,
-        ManualWindowGesture? releaseInput = null, bool reusedPreview = false, long? openingTick = null)
+        ManualWindowGesture? releaseInput = null, bool reusedPreview = false, long? openingTick = null, PlacementShadowReplay? shadow = null)
     {
         try
         {
@@ -72,7 +72,7 @@ internal sealed class LayoutRunJournal : IDisposable
                 application.MinimizeRequested is { } minimized ? ids[minimized.Handle] : null, UndoOfRequest: undoOfRequest, GestureTiming: timing,
                 OpeningToFirstGeometrySubmitMs: openingTick is long activated && application.FirstGeometrySubmittedTick is long submitted && submitted >= activated
                     ? submitted - activated : null,
-                SceneEffects: scene?.Effects(TaskLayoutSession.Project(before, plan), h => ids[h]));
+                SceneEffects: scene?.Effects(TaskLayoutSession.Project(before, plan), h => ids[h]), ShadowReplay: shadow?.Report(ids));
             _snapshotObserver?.Invoke(observation);
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);

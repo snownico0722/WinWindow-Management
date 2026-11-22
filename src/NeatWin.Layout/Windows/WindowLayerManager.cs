@@ -77,13 +77,14 @@ public sealed partial class WindowManager
             accepted = accepted with { Moves = [] };
             notes.Add("层级未完全实现，已保留后台参照窗的可见区域。");
         }
+        bool deferMoves = CanDeferMoves(accepted.Moves);
         bool interrupted = InteractionChanged(automaticForeground);
         if (interrupted)
         {
             accepted = accepted with { Moves = [] };
             notes.Add("检测到新的手动调整，未覆盖窗口位置。");
         }
-        var failures = SubmitMoves(accepted.Moves, notes, gestureWindow, out var firstSubmit, out var gestureSubmit);
+        var failures = SubmitMoves(accepted.Moves, deferMoves && !interrupted, notes, gestureWindow, out var firstSubmit, out var gestureSubmit);
         if (failures.Count > 0)
         {
             var refused = failures.Select(f => f.Move.Window.Handle).ToHashSet();

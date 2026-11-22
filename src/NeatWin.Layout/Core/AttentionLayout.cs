@@ -77,7 +77,9 @@ internal static class AttentionLayout
             var a = w.VisualRect;
             bool waiting = !context.ExplicitArrange && focus.IsNavigationAncestor(w.Handle) && w.Handle != focus.Companion;
             var role = w.Handle == focus.Main ? AttentionRole.Main :
-                w.Handle == focus.Companion ? (focus.Evidence == "handoff" ? AttentionRole.Return : AttentionRole.Reference) :
+                // 同侧接力时，上一步需要一个可点回的入口；只有确认并看，才给它分配持续阅读预算。
+                w.Handle == focus.Companion ? (focus.Evidence == "handoff" || context.Scene?.Lane?.Source == w.Handle
+                    ? AttentionRole.Return : AttentionRole.Reference) :
                 waiting ? AttentionRole.Waiting : context.HasRecentInput(w.Handle) ? AttentionRole.Reference : AttentionRole.Background;
             if (role == AttentionRole.Reference && context.PairHints?.Any(h => h.Relation == TaskRelation.Alternating &&
                 (h.First == w.Handle && h.Second == focus.Main || h.Second == w.Handle && h.First == focus.Main)) == true)
@@ -207,8 +209,8 @@ internal static class AttentionLayout
             context.RulePairs?.Any(p => !p.OnlyWhenPaired) == true) return null;
         var area = group[0].Window.WorkArea;
         // 同侧打开的正文可以沿用原位叠放。开窗碰撞、最近来回切换，都不能单独证明另一栏空闲。
-        if (group.Length == 2 && context.Scene is { WorkingSide: not 0 } scene &&
-            group.All(v => HorizontalSide(v.Window.VisualRect, area) == scene.WorkingSide))
+        int side = context.Scene?.WorkingSide is int occupiedSide && occupiedSide != 0 ? occupiedSide : context.Scene?.Lane?.Side ?? 0;
+        if (group.Length == 2 && side != 0 && group.All(v => HorizontalSide(v.Window.VisualRect, area) == side))
         {
             int main = Array.FindIndex(group, v => v.Window.IsForeground && v.Window.Handle == context.Focus?.Main);
             if (main >= 0)
@@ -216,10 +218,11 @@ internal static class AttentionLayout
                 var frame = group[main].Window.VisualRect;
                 var peer = group[1 - main].Window.VisualRect;
                 var seen = exposed[main];
-                if (frame.Intersect(area) == frame && frame.Intersect(peer).Area >= Math.Min(frame.Area, peer.Area) * .50 &&
+                if ((!targets[main].LearnedWidth || targets[main].Width == frame.Width) &&
+                    frame.Intersect(area) == frame && frame.Intersect(peer).Area >= Math.Min(frame.Area, peer.Area) * .50 &&
                     seen.CenterVisible >= .90 && seen.AccessWidth >= targets[main].AccessWidth &&
                     seen.UsefulWidth >= targets[main].Width * .80 && seen.UsefulHeight(frame) >= targets[main].Height * .80)
-                    return "existing-occupied-side-stack";
+                    return context.Scene?.WorkingSide != 0 ? "existing-occupied-side-stack" : "inherited-side-stack";
             }
         }
         // 工作区观察有时仍带着上一手的锚点。上面的同侧叠放依旧有效，真正的松手辅助由独立手势请求处理。

@@ -69,8 +69,12 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     // another placement adjustment. Live and replay callers set this from the event kind.
     internal IReadOnlyDictionary<nint, string?>? AppKeys { get; init; }
     internal ActiveLayoutScene? Scene { get; init; }
+    internal ShadowAxis[]? ShadowAxes { get; init; }
+    internal ShadowReplayProbe? ShadowProbe { get; init; }
+    internal DateTimeOffset? ShadowTime { get; init; }
     internal bool AllowGestureAssist { get; init; } = true;
     internal IReadOnlyDictionary<nint, VideoViewportFit>? VideoFits { get; init; }
+    internal int OriginSide { get; init; }
     internal bool IsWorkspaceObservation { get; init; }
     internal nint FirstPlacementWindow { get; init; }
     internal WorkspaceChangeCause WorkspaceCause { get; init; }
@@ -86,6 +90,9 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     public bool PairPlanningEnabled => ExplicitArrange || UseWorkingPairs;
     internal bool HoldsTextView(WindowSnapshot window) => !ExplicitArrange && window.IsForeground &&
         WindowHints?.Any(h => h.Handle == window.Handle && h.TextFocus) == true;
+
+    internal bool RepeatsReversal(WindowSnapshot window, RectI target) => !ExplicitArrange &&
+        Attention?.GetValueOrDefault(window.Handle)?.RepeatedReversal?.RepeatsRejectedAxis(window.VisualRect, target) == true;
 
     internal bool PreservesReleasedSide(WindowSnapshot window, RectI target)
     {

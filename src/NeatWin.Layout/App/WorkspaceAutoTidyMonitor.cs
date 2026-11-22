@@ -40,6 +40,7 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
         RemoveHooks();
         var baseline = _capture(true);
         _scheduler.Reset(mode, baseline, Environment.TickCount64);
+        _focus.ObserveWorkingSide(baseline, Environment.TickCount64);
         _observedStamps.Clear();
         foreach (var window in baseline) _observedStamps[window.Handle] = AutomationGuard.Stamp(window.Handle);
         if (AutomaticLayoutPolicy.WatchesWorkspace(mode))
@@ -79,10 +80,11 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     internal void ApplicationRequested(IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan) =>
         _scheduler.ApplicationRequested(before, plan, Environment.TickCount64);
 
-    internal void RequestCurrent()
+    internal void RequestCurrent(WorkspaceChangeCause cause = WorkspaceChangeCause.Requested)
     {
         if (_disposed || !AutomaticLayoutPolicy.WatchesWorkspace(Mode)) return;
-        if (!_scheduler.HasPending) _scheduler.RequestCurrent(Environment.TickCount64);
+        if (cause == WorkspaceChangeCause.None) cause = WorkspaceChangeCause.Requested;
+        if (!_scheduler.HasPending || cause != WorkspaceChangeCause.Requested) _scheduler.RequestCurrent(Environment.TickCount64, cause);
         _timer.Start();
     }
 
@@ -188,13 +190,11 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
             var opening = navigation == null && _scheduler.PendingRelease == null ? _focus.OpeningFor(snapshot, tick) : null;
             var request = _scheduler.Observe(snapshot, tick, _busy() || NativeWindowActivity.PointerBusy, marked,
                 navigationSettleUntil: quiet, openingReady: opening != null);
+            if (!snapshot.Any(w => w.IsForeground && _scheduler.Surfaces.IsLocal(w)))
+                _focus.ObserveWorkingSide(snapshot, tick);
             if (_scheduler.HasPending) ScheduleNextObservation();
             else { _timer.Stop(); _timer.Interval = WorkspacePollMilliseconds; }
-            if (request is not null)
-            {
-                if (opening != null) _focus.Dispatched(opening);
-                Requested?.Invoke(request with { Opening = opening });
-            }
+            if (request is not null) Requested?.Invoke(request with { Opening = opening });
         }
         catch (Exception ex) { _timer.Stop(); Failed?.Invoke(ex); }
     }

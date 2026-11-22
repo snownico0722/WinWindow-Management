@@ -38,7 +38,8 @@ public sealed record LayoutAttention(double Recency, double Dwell, double Input,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double SustainedForeground = 0,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double ManualFloatPreference = 0,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementCorrection? Correction = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int ManualSide = 0)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int ManualSide = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementCorrection? RepeatedReversal = null)
 {
     public double Weight => Foreground ? 1 : Math.Clamp(Recency * (.70 + .15 * Dwell) + .35 * Input, 0, 1);
 }
@@ -52,8 +53,9 @@ public sealed class ForegroundHistory
     private readonly List<(nint Handle, uint Pid, long Time)> _visits = [];
     private readonly Dictionary<(nint Handle, uint Pid), long> _input = new();
     private sealed record ManualPlace(uint Pid, RectI WorkArea, RectI End, double Strength, long Tick, int Side, long SideTick);
+    private readonly Dictionary<nint, RecentReversals> _reversals = [];
     private readonly Dictionary<nint, ManualPlace> _manualPlaces = [];
-    private readonly Dictionary<nint, (TidyMove Move, WindowSnapshot[] Neighbors)> _submitted = [];
+    private readonly Dictionary<nint, (TidyMove Move, WindowSnapshot[] Neighbors, long Tick)> _submitted = [];
     private readonly Dictionary<nint, (WindowSnapshot Window, WindowSnapshot[] Neighbors, PlacementCorrection Evidence)> _corrections = [];
     private sealed record RememberedNavigation((nint Handle, uint Pid, long Time) Visit, NavigationState Path, long Sampled);
     private RememberedNavigation? _rememberedNavigation;
@@ -140,6 +142,44 @@ public sealed class ForegroundHistory
 
     // Use the last working surface even when a taskbar or launcher owned focus in between.
     // A visit token makes the accelerated placement single-use across repeated window events.
+    // 记录当时确实在前台的工作面。打开器退出后仍可短暂继承原侧；后台窗口的旧坐标不能给下一次开窗投票。
+    private (WindowSnapshot Window, long Visit)? _lastWorkingFrame;
+    private ((nint Handle, uint Pid, long Time) Visit, RectI Area, nint Monitor, int Side)? _inheritedLane;
+
+    internal int ObserveWorkingSide(IReadOnlyList<WindowSnapshot> desktop, long now)
+    {
+        lock (_visits)
+        {
+            var front = desktop.FirstOrDefault(w => w.IsForeground);
+            if (front == null || !front.IsManageable || front.IsTopmost || front.WorkArea.IsEmpty || _visits.Count == 0) return 0;
+            var current = _visits[^1];
+            if (current.Handle != front.Handle || current.Pid != front.ProcessId || current.Time > now) return 0;
+            if (_lastWorkingFrame is { } last && (last.Visit != current.Time ||
+                last.Window.Handle != front.Handle || last.Window.ProcessId != front.ProcessId))
+            {
+                _inheritedLane = null;
+                // 允许任务栏或打开器短暂接管焦点。若中间还用过其他工作窗，旧侧别已经不是这次动作的来源。
+                int index = _visits.FindLastIndex(v => v.Time == last.Visit);
+                bool connected = index >= 0 && index + 1 < _visits.Count &&
+                    (_visits[index + 1].Time - last.Visit >= AutomaticLayoutScheduler.SettleMilliseconds ||
+                     ReceivedInput(_visits[index], _visits[index + 1].Time)) &&
+                    current.Time - _visits[index + 1].Time <= 1500 &&
+                    _visits.Skip(index + 1).SkipLast(1).All(v => v.Handle == 0 || !desktop.Any(w => w.IsManageable && w.Handle == v.Handle && w.ProcessId == v.Pid));
+                var key = (front.Handle, front.ProcessId);
+                bool NearVisit(long tick) => tick >= current.Time - 1500 && tick <= now && tick <= current.Time + 750;
+                bool appeared = _created.TryGetValue(key, out var birth) && NearVisit(birth.Time) ||
+                    _shown.TryGetValue(key, out long shown) && NearVisit(shown);
+                var source = last.Window;
+                if (connected && appeared && (source.Handle != front.Handle || source.ProcessId != front.ProcessId) &&
+                    source.MonitorHandle == front.MonitorHandle && source.WorkArea == front.WorkArea)
+                    _inheritedLane = (current, front.WorkArea, front.MonitorHandle, AttentionLayout.HorizontalSide(source.VisualRect, source.WorkArea));
+            }
+            _lastWorkingFrame = (front, current.Time);
+            return _inheritedLane is { } lane && lane.Visit == current && lane.Area == front.WorkArea &&
+                lane.Monitor == front.MonitorHandle && now - current.Time <= AttentionHalfLifeMilliseconds ? lane.Side : 0;
+        }
+    }
+
     internal sealed record Opening(long Visit, WindowSnapshot Incoming, WindowSnapshot Resident, bool ResidentLeft);
     private Opening? _dispatchedOpening;
 
@@ -231,18 +271,19 @@ public sealed class ForegroundHistory
             _clicks.RemoveAll(click => click.Handle == handle);
             if (_rememberedNavigation?.Path.Hops.Any(hop => hop.Source == handle) == true) _rememberedNavigation = null;
             _manualPlaces.Remove(handle);
+            _reversals.Remove(handle);
             _submitted.Remove(handle);
             _corrections.Remove(handle);
         }
     }
 
-    internal void Submitted(IntentLayoutPlan plan, IReadOnlyList<WindowSnapshot> before)
+    internal void Submitted(IntentLayoutPlan plan, IReadOnlyList<WindowSnapshot> before, long now)
     {
         if (plan.Moves.Count == 0) return;
         var projected = TaskLayoutSession.Project(before, plan);
         lock (_visits)
             foreach (var move in plan.Moves)
-                _submitted[move.Window.Handle] = (move, ContentNeighbors(move.Window, projected));
+                _submitted[move.Window.Handle] = (move, ContentNeighbors(move.Window, projected), now);
     }
 
     // 邻窗关闭、换屏或可用视野变化时，旧任务里的回拖不能锁死新任务。层级比较只关心内容窗口之间的顺序。
@@ -276,8 +317,19 @@ public sealed class ForegroundHistory
             if (desktop != null)
             {
                 var neighbors = ContentNeighbors(window, desktop);
-                bool linked = _submitted.Remove(window.Handle, out var last) && SameNeighbors(last.Neighbors, neighbors) &&
+                bool beganAtSubmission = _submitted.Remove(window.Handle, out var last) &&
                     WindowStateRules.Matches(last.Move.Window, window, end) && WindowStateRules.Near(start, last.Move.TargetVisualRect);
+                // 用户很久以后独立改布局不应累计成连续推翻；短时重复证据额外要求起点与近期提交同时吻合。
+                var reversal = beganAtSubmission && now - last.Tick is >= 0 and <= 30_000 ? PlacementCorrection.Observe(start, end, last.Move!.Window.VisualRect,
+                    last.Move.TargetVisualRect, window.Dpi) : null;
+                if (!_reversals.TryGetValue(window.Handle, out var votes) || !votes.Matches(window))
+                {
+                    votes = new(window);
+                    if (reversal != null) _reversals[window.Handle] = votes;
+                    else _reversals.Remove(window.Handle);
+                }
+                votes.Observe(start, end, gesture.Kind, reversal, now);
+                bool linked = beganAtSubmission && SameNeighbors(last.Neighbors, neighbors);
                 _corrections.Remove(window.Handle, out var old);
                 var previous = old.Evidence != null && WindowStateRules.Matches(old.Window, window, end) && SameNeighbors(old.Neighbors, neighbors) ? old.Evidence : null;
                 var evidence = PlacementCorrection.Observe(start, end, linked ? last.Move!.Window.VisualRect : null,
@@ -516,6 +568,12 @@ public sealed class ForegroundHistory
                     attention[target.Handle] = signal with { ManualFloatPreference = sameFrame ? placed.Strength * strength : 0,
                         ManualSide = sameSide ? placed.Side : 0 };
             }
+            foreach (var (handle, votes) in _reversals)
+                if (valid.TryGetValue(handle, out var live) && votes.Matches(live) && votes.Active(now) is { } repeated)
+                {
+                    var signal = attention.GetValueOrDefault(handle) ?? new(0, 0, 0, 0, live.IsForeground);
+                    attention[handle] = signal with { RepeatedReversal = repeated };
+                }
             foreach (var (handle, item) in _corrections.ToArray())
             {
                 if (!valid.TryGetValue(handle, out var w) || !WindowStateRules.Matches(item.Window, w, w.VisualRect) ||

@@ -110,6 +110,65 @@ internal static class SmokeTests
             "snapshot reports the missing part of surface history when the rolling buffer fills");
     }
 
+    private static async Task CheckNativeGeometryBatchAsync(NeatWin.Windows.WindowManager windows,
+        nint first, nint second, string output, List<Process> processes)
+    {
+        static RectI Shift(NeatWin.Core.WindowSnapshot source) =>
+            source.VisualRect with { X = source.VisualRect.X + (source.VisualRect.X > source.WorkArea.X + 48 ? -40 : 40) };
+        bool Reached(TidyMove move) => windows.Capture().Any(w => w.Handle == move.Window.Handle &&
+            WindowStateRules.Near(w.VisualRect, move.TargetVisualRect));
+
+        var before = windows.Capture();
+        var sources = new[] { before.Single(w => w.Handle == first), before.Single(w => w.Handle == second) };
+        var moves = sources.Select(w => new TidyMove(w, Shift(w))).ToArray();
+        var applied = windows.ApplyLayout(new(moves, [], []), null, gestureWindow: second);
+        Assert(applied is { Failures.Count: 0, Plan.Moves.Count: 2, Notes.Length: 0 } &&
+            applied.FirstGeometrySubmittedTick is long submitted && applied.GestureWindowSubmittedTick == submitted,
+            "responsive cross-process geometry batch succeeds without individual retries");
+        await WaitAsync("both responsive fixtures reach their batch geometry targets", () => moves.All(Reached));
+        var after = windows.Capture();
+        var handles = new[] { first, second };
+        Assert(before.Where(w => handles.Contains(w.Handle)).Select(w => (w.Handle, w.IsTopmost, w.IsForeground))
+            .SequenceEqual(after.Where(w => handles.Contains(w.Handle)).Select(w => (w.Handle, w.IsTopmost, w.IsForeground))),
+            "geometry batch preserves fixture activation and stacking");
+        var undo = windows.ApplyLayout(LayoutUndoPlanner.Create(applied.Plan, after));
+        Assert(undo is { Failures.Count: 0, Plan.Moves.Count: 2 }, "native batch geometry can be undone");
+        await WaitAsync("batch undo restores both fixtures", () => sources.All(w => Reached(new(w, w.VisualRect))));
+
+        string gate = "WinWindow-layout-stall-" + Guid.NewGuid().ToString("N");
+        using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".entered");
+        using var release = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".release");
+        var stalled = await FixtureAsync(output, false, stall: gate);
+        processes.Add(stalled.Process);
+        var desk = windows.Capture();
+        var responsive = desk.Single(w => w.Handle == first);
+        var blocked = desk.Single(w => w.Handle == stalled.Hwnd);
+        var responsiveMove = new TidyMove(responsive, Shift(responsive));
+        var blockedMove = new TidyMove(blocked, Shift(blocked));
+        Assert(Native.PostMessage(stalled.Hwnd, App.StallFixtureMessage, 0, 0), "post stall to one fixture's window thread");
+        var watchdog = Task.Run(() => { if (!release.WaitOne(3_000)) release.Set(); });
+        try
+        {
+            await WaitAsync("stalled fixture has stopped processing window messages", () => entered.WaitOne(0));
+            var fallback = windows.ApplyLayout(new([responsiveMove, blockedMove], [], []), null, gestureWindow: first);
+            Assert(!release.WaitOne(0) && fallback.FirstGeometrySubmittedTick.HasValue &&
+                fallback.GestureWindowSubmittedTick.HasValue && fallback.Failures.All(f => f.Move.Window.Handle != first),
+                "a recently blocked window cannot delay its responsive geometry partner");
+            await WaitAsync("responsive async geometry finishes while its partner remains blocked",
+                () => Reached(responsiveMove), 1_500);
+            Assert(!release.WaitOne(0), "responsive fallback finishes before the blocked window resumes");
+        }
+        finally
+        {
+            release.Set();
+            await watchdog;
+            Stop(stalled.Process);
+            await stalled.Process.WaitForExitAsync();
+        }
+        windows.ApplyLayout(new([new(windows.Capture().Single(w => w.Handle == first), responsive.VisualRect)], [], []));
+        await WaitAsync("restore the responsive fixture after the fallback test", () => Reached(new(responsive, responsive.VisualRect)));
+    }
+
     public static async Task<int> RunAsync(string output)
     {
         output = Path.GetFullPath(output); Directory.CreateDirectory(output);
@@ -177,6 +236,7 @@ internal static class SmokeTests
             Assert(restored.Plan.Moves.Count == 1 && restored.Failures.Count == 0 && restored.FirstGeometrySubmittedTick.HasValue &&
                 restored.GestureWindowSubmittedTick == null, "undoing the native move cannot count as submission for another fixture");
             await WaitAsync("layout undo restores fixture geometry", () => Reached(source.VisualRect));
+            await CheckNativeGeometryBatchAsync(layoutWindows, normal.Hwnd, twins.Hwnd, output, processes);
             Stop(twins.Process);
             await twins.Process.WaitForExitAsync();
             await manager.SetPinAsync(item, true);

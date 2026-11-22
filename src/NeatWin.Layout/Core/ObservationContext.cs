@@ -21,6 +21,8 @@ public sealed record ProjectedPlan(PlannedWindow[] Targets, int[][] Layers, stri
 public sealed record RejectedWindowMove(int Id, RectI Target, int Win32Error);
 public sealed record RecordedGestureTiming(int WindowId, bool ReusedPreview, long? ReleaseToFirstGeometrySubmitMs,
     long? ReleaseToGestureWindowSubmitMs);
+public sealed record RecordedShadowFinding(int WindowId, string Axis, string Diagnosis, bool AlternativeSelected);
+public sealed record RecordedShadowRule(int WindowId, string Axis, int Value, int Tolerance, string Change);
 public sealed record LayoutRunObservation(int Version, string Session, string RequestId, string Trigger,
     WorkspaceFrame Before, PlannedWindow[] Targets, int[][] Layers, PlannedGroup[] Groups,
     WorkspaceFrame? Actual, string Outcome, string[] ApplyNotes, ProjectedPlan? BasePlan = null, ProjectedPlan? Proposal = null, ProjectedPlan? ScoredPlan = null,
@@ -35,7 +37,9 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     SceneEffect[]? SceneEffects = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    SceneEffect[]? ActualSceneEffects = null);
+    SceneEffect[]? ActualSceneEffects = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RecordedShadowFinding[]? ShadowReplay = null);
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
 public sealed class ObservationIdentityTracker
@@ -123,7 +127,11 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     Dictionary<int, VideoViewportFit>? VideoFits = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    int FirstPlacementWindow = 0)
+    int FirstPlacementWindow = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    int OriginSide = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RecordedShadowRule[]? ShadowRules = null)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids, IReadOnlyList<WindowSnapshot>? snapshot = null)
     {
@@ -160,6 +168,8 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             hops.Reverse();
             if (hops.Count > 0) navigation = new(context.NavigationObservedAt, hops.ToArray());
         }
+        var shadow = context.ShadowAxes?.Where(a => Id(a.Window) != 0).Select(a =>
+            new RecordedShadowRule(Id(a.Window), a.Axis.ToString(), a.Value, a.Tolerance, a.Change.ToString())).ToArray();
         var fits = context.VideoFits?.Where(pair => Id(pair.Key) != 0).ToDictionary(pair => Id(pair.Key), pair => pair.Value);
         return new(Id(focus?.Main ?? 0), Id(focus?.Companion ?? 0), focus?.Switches ?? 0, focus?.Evidence,
             (context.WindowHints ?? []).Where(h => Id(h.Handle) != 0)
@@ -170,8 +180,14 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             floors.Length > 0 ? floors : null, context.Activities?.Where(a => Id(a.Key) != 0)
                 .ToDictionary(a => Id(a.Key), a => a.Value), context.Attention?.Where(a => Id(a.Key) != 0)
                 .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor), video, context.GestureTarget, navigation, context.WorkspaceCause == WorkspaceChangeCause.None ? null : context.WorkspaceCause.ToString(),
-            fits?.Count > 0 ? fits : null, Id(context.FirstPlacementWindow));
+            fits?.Count > 0 ? fits : null, Id(context.FirstPlacementWindow), context.OriginSide, shadow is { Length: > 0 } ? shadow : null);
     }
+
+    private static ShadowAxis? ReadShadowRule(RecordedShadowRule value) =>
+        value.WindowId > 0 && value.Tolerance is > 0 and <= 200 &&
+        Enum.TryParse<PlacementAxis>(value.Axis, out var axis) && Enum.IsDefined(axis) &&
+        Enum.TryParse<ShadowChange>(value.Change, out var change) && Enum.IsDefined(change) ?
+            new(value.WindowId, axis, value.Value, 0, value.Tolerance, change) : null;
 
     // During offline replay the session-local ids are the simulated handles.
     internal TaskLayoutContext ApplyToReplay(TaskLayoutContext context) => context with
@@ -179,7 +195,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         Focus = new(Main, Companion, Switches, FocusEvidence ?? "recent-switch-pair",
             Navigation?.Hops.Where(h => h.SourceRole is "waiting" or "return").Select(h => (nint)h.Source).ToArray(),
             Navigation?.Hops.Select(h => new NavigationHop(h.Source, h.Target, h.Evidence, h.AgeMilliseconds)).ToArray()),
-        NavigationObservedAt = Navigation?.ObservedAt, FirstPlacementWindow = FirstPlacementWindow,
+        NavigationObservedAt = Navigation?.ObservedAt, FirstPlacementWindow = FirstPlacementWindow, OriginSide = OriginSide,
         WorkspaceCause = Enum.TryParse<WorkspaceChangeCause>(WorkspaceCause, out var cause) ? cause : WorkspaceChangeCause.None,
         WindowHints = Hints.Select(h => new TaskWindowHint(h.Id, h.Passive, ProtectedRegions: h.Regions,
             Anchor: h.Anchor, MediaCompanion: h.Media, Role: h.Role, FloatingAffinity: h.FloatingAffinity, TextFocus: h.TextFocus, InitialTextPlacement: h.InitialTextPlacement)).ToArray(),
@@ -188,6 +204,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         Activities = Activities?.ToDictionary(a => (nint)a.Key, a => a.Value),
         Attention = Attention?.ToDictionary(a => (nint)a.Key, a => a.Value),
         GestureAnchor = GestureAnchor, GestureTarget = GestureTarget,
+        ShadowAxes = (ShadowRules ?? []).Select(ReadShadowRule).OfType<ShadowAxis>().ToArray(),
         VideoFits = VideoFits?.Where(pair => pair.Key > 0 && pair.Value is { IsValid: true })
             .ToDictionary(pair => (nint)pair.Key, pair => pair.Value),
         VideoHint = Video is { } v ? new(v.Id, v.Orientation, v.ContentAspectRatio, v.Viewport, v.Confidence, v.Tendency) : context.VideoHint,

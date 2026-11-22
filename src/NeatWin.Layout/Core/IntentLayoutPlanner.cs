@@ -82,7 +82,7 @@ internal static partial class IntentLayoutPlanner
                 if (groupContext.IsWorkspaceObservation && groupContext.Placement is { Length: > 0 } preferences)
                     groupContext = groupContext with { Placement = preferences.Where(p => handles.Contains(p.Window) &&
                         (p.Partner == 0 || handles.Contains(p.Partner))).ToArray() };
-                var hint = IntentEvidence.Resolve(reference, area, group[0].Window.Dpi, DateTimeOffset.UtcNow);
+                var hint = IntentEvidence.Resolve(reference, area, group[0].Window.Dpi, groupContext.ShadowTime ?? DateTimeOffset.UtcNow);
                 var original = group.Select(v => v.Window.VisualRect).ToArray();
                 var task = InferTask(group, original, groupContext);
                 var demands = MeasureDemand(group.Length, task);
@@ -121,6 +121,28 @@ internal static partial class IntentLayoutPlanner
                 var candidates = new List<Candidate> { new("keep", original, order) };
                 var rescue = group.Select(v => Fit(v.Window.VisualRect, v.Window, options, groupContext.Preferences.AllowUsefulResize)).ToArray();
                 if (!rescue.SequenceEqual(original)) candidates.Add(new("rescue", rescue, order));
+                // 给约束一个可用的同侧候选，否则“不要横移”很容易退化成偏小的阅读窗口永远得不到放大。
+                if (scene?.Lane is { } inherited && goals != null)
+                {
+                    int active = Array.FindIndex(group, v => v.Window.Handle == inherited.Front.Handle);
+                    if (active >= 0 && goals[active] is { Movable: true, Resizable: true } target)
+                    {
+                        var window = group[active].Window;
+                        var frame = window.VisualRect;
+                        var grown = AttentionLayout.WorkingArea(window, target);
+                        int width = target.LearnedWidth ? target.Width : grown.Width;
+                        int x = (int)Math.Round(CenterX(frame) - width / 2d);
+                        var fitted = grown with { X = Math.Clamp(x, area.Left, area.Right - width), Width = width };
+                        // 只放大一轴也可能足以改善正文，且能留下来源窗的标题或正文。
+                        foreach (var rect in new[] { fitted, frame with { X = fitted.X, Width = fitted.Width },
+                            frame with { Y = fitted.Y, Height = fitted.Height } })
+                        {
+                            var frames = (RectI[])original.Clone();
+                            frames[active] = rect;
+                            candidates.Add(new("attention-same-side", frames, order));
+                        }
+                    }
+                }
                 var local = LogicalLocalPlan(group, options).ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
                 candidates.Add(new("local", group.Select((v, i) => local.GetValueOrDefault(v.Window.Handle, original[i])).ToArray(), order));
                 if (!localOnly && group.Length >= 2)
@@ -164,7 +186,22 @@ internal static partial class IntentLayoutPlanner
                 var audits = new List<LayoutCandidateTrace>(generationNotes) { new("keep", baseline, null, baselineBreakdown) };
                 var seen = candidates.Select(CandidateKey).ToHashSet();
                 int gestureIndex = Array.FindIndex(group, v => v.Window.Handle == groupContext.GestureAnchor);
+                var shadowAxes = (groupContext.ShadowAxes ?? []).Where(axis => handles.Contains(axis.Window)).ToArray();
                 foreach (var candidate in candidates.Skip(1)) Evaluate(candidate, 0);
+                if (shadowAxes.Any(axis => axis.Change == ShadowChange.Generate))
+                {
+                    // 每个新候选只改变经过人工回拖验证的那一轴。完整的安全拦截仍由 Evaluate 执行。
+                    var seeds = new[] { best, candidates[0] };
+                    foreach (var axis in shadowAxes.Where(a => a.Change == ShadowChange.Generate))
+                    foreach (var seed in seeds)
+                    {
+                        int index = Array.FindIndex(group, v => v.Window.Handle == axis.Window);
+                        var rects = (RectI[])seed.Rects.Clone();
+                        rects[index] = axis.Apply(rects[index]);
+                        var candidate = new Candidate("shadow-placement", rects, seed.Order);
+                        if (seen.Add(CandidateKey(candidate))) Evaluate(candidate, 0);
+                    }
+                }
                 // Finish useful geometry in this call, but freeze task evidence, content demand,
                 // safety floors and movement origin. Never learn or re-infer from our own output.
                 // This is bounded candidate lookahead, not repeated native window application.
@@ -217,7 +254,10 @@ internal static partial class IntentLayoutPlanner
                 {
                     var targetLookup = candidate.Order.SequenceEqual(order) ? null :
                         Enumerable.Range(0, group.Length).ToDictionary(i => group[i].Window.Handle, i => candidate.Rects[i]);
-                    var rejection = !candidate.Order.SequenceEqual(order) &&
+                    var rejection = Array.Exists(order, i => !(groupContext.AllowGestureAssist && group[i].Window.Handle == groupContext.GestureAnchor &&
+                        candidate.Rects[i] == groupContext.GestureTarget) && groupContext.RepeatsReversal(group[i].Window, candidate.Rects[i]))
+                        ? "repeated-manual-reversal" : scene?.Lane is { } lane && Array.Exists(order, i => !lane.Allows(group[i].Window, candidate.Rects[i]))
+                        ? "attention-side-transfer" : !candidate.Order.SequenceEqual(order) &&
                         !LayerOrderSafe(group, candidate, order)
                         ? "layer-preserve-foreground-or-occluded" : !candidate.Order.SequenceEqual(order) &&
                         !WindowLayerSafety.CanReorder(candidate.Order.Select(i => group[i].Window).ToArray(), desktop ?? all.Select(v => v.Window).ToArray(), targetLookup)
@@ -255,6 +295,7 @@ internal static partial class IntentLayoutPlanner
                     }
                     var breakdown = Breakdown(candidate);
                     var score = breakdown.Total;
+                    groupContext.ShadowProbe?.Observe(group, candidate.Rects, breakdown.Feedback);
                     // 先比较主窗能否阅读、副窗能否点到，再用总成本挑摆法。否则少挪几像素就可能压过露出一整扇参考窗的收益。
                     bool followsGesture = groupContext.AllowGestureAssist && gestureIndex >= 0 &&
                         groupContext.GestureTarget == candidate.Rects[gestureIndex] && candidate.Rects[gestureIndex] != original[gestureIndex];
@@ -267,7 +308,10 @@ internal static partial class IntentLayoutPlanner
                     if (goals is [{ DefaultCenter: true, RestingCenter: double middle }])
                         centerTieCost = baseThreshold * Math.Abs(CenterX(candidate.Rects[0]) - middle) / area.Width;
                     audits.Add(new(candidate.Kind, score, null, breakdown, generation, weight, threshold, centerTieCost));
-                    double rank = score + (centerTieCost ?? 0);
+                    // 只给已满足可读性和收益门槛的候选一个小的排序优势。影子偏好无法替代实际空间收益。
+                    bool matchesShadowRank = shadowAxes.Any(axis => axis.Change == ShadowChange.Rank &&
+                        axis.Matches(candidate.Rects[Array.FindIndex(group, v => v.Window.Handle == axis.Window)]));
+                    double rank = score + (centerTieCost ?? 0) - (matchesShadowRank ? baseThreshold * .5 : 0);
                     if (breakdown.Feedback == 0 && (priority < 0 || priority == 0 && (best.Kind == "keep" || rank < bestScore) &&
                         (bestGoal.CompareTo(baselineBreakdown.Goal) < 0 || score < baseline - threshold) ||
                         best.Kind == "keep" && needsRescue && candidate.Kind == "rescue"))
@@ -283,7 +327,8 @@ internal static partial class IntentLayoutPlanner
                 if (!best.Order.SequenceEqual(order)) layers.Add(new(best.Order.Select(i => group[i].Window).ToArray()));
                 traces.Add(new(group.Select(v => v.Window.Handle).ToArray(), best.Kind, stackSignal, audits.ToArray(),
                     new(task, viewingModel,
-                        ["hypothesis-weights-not-calibrated-probabilities", "content-prior-not-semantic-recognition", "stable-is-not-satisfaction"])));
+                        ["hypothesis-weights-not-calibrated-probabilities", "content-prior-not-semantic-recognition", "stable-is-not-satisfaction",
+                         .. shadowAxes.Select(axis => $"shadow-placement:{axis.Axis}:{axis.Change}")])));
 
                 void AddGroupLayouts(List<Candidate> output, RectI[] seed)
                 {

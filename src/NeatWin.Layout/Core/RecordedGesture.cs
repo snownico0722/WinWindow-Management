@@ -42,6 +42,10 @@ public sealed record PlacementCorrection(AxisCorrection? X, AxisCorrection? Y, A
         return result is { X: null, Y: null, Width: null, Height: null } ? null : result;
     }
 
+    internal bool RepeatsRejectedAxis(RectI from, RectI to) =>
+        X?.Cost(from.X, to.X) >= .5 || Y?.Cost(from.Y, to.Y) >= .5 ||
+        Width?.Cost(from.Width, to.Width) >= .5 || Height?.Cost(from.Height, to.Height) >= .5;
+
     internal double Cost(RectI current, RectI candidate) => (X?.Cost(current.X, candidate.X) ?? 0) +
         (Y?.Cost(current.Y, candidate.Y) ?? 0) + (Width?.Cost(current.Width, candidate.Width) ?? 0) +
         (Height?.Cost(current.Height, candidate.Height) ?? 0);
@@ -92,3 +96,44 @@ internal sealed record GestureEvent(int GestureId, int WindowId, string Stage, l
 }
 
 internal sealed record GestureBatch(int Version, string Session, DateTimeOffset Time, GestureEvent[] Events, int DroppedEvents);
+
+// 两次从系统落点往同方向拖回，短时间内已有足够证据停止重试这一轴。每轴独立计时；输入不会续期。
+internal sealed class RecentReversals(WindowSnapshot window)
+{
+    private sealed record Vote(AxisCorrection Correction, long Tick, bool Repeated);
+    private readonly Vote?[] _axes = new Vote?[4];
+    private const int LifetimeMs = 120_000;
+    internal bool Matches(WindowSnapshot live) => WindowStateRules.Matches(window, live, live.VisualRect);
+
+    internal void Observe(RectI start, RectI end, ManualGestureKind kind, PlacementCorrection? reversal, long tick)
+    {
+        // 从左边框拉宽时 X 也会改变。此次推翻的是宽度，上一轮主动摆放的位置证据仍然有效。
+        if (kind == ManualGestureKind.Move)
+        {
+            Update(0, start.X != end.X, reversal?.X);
+            Update(1, start.Y != end.Y, reversal?.Y);
+        }
+        else
+        {
+            Update(2, start.Width != end.Width, reversal?.Width);
+            Update(3, start.Height != end.Height, reversal?.Height);
+        }
+
+        void Update(int axis, bool changed, AxisCorrection? evidence)
+        {
+            if (!changed) return;
+            var prior = _axes[axis];
+            // 用户后来在该轴选择了不同摆法，就以新的动作重新起算，不需要点撤销。
+            bool same = evidence is { Confidence: >= .65 } && prior != null && tick - prior.Tick is >= 0 and <= LifetimeMs &&
+                Math.Sign((long)evidence.Released - evidence.Submitted) == Math.Sign((long)prior.Correction.Released - prior.Correction.Submitted);
+            _axes[axis] = evidence is { Confidence: >= .65 } ? new(evidence, tick, same) : null;
+        }
+    }
+
+    internal PlacementCorrection? Active(long now)
+    {
+        AxisCorrection? Read(int i) => _axes[i] is { Repeated: true } v && now - v.Tick is >= 0 and <= LifetimeMs ? v.Correction : null;
+        var result = new PlacementCorrection(Read(0), Read(1), Read(2), Read(3));
+        return result is { X: null, Y: null, Width: null, Height: null } ? null : result;
+    }
+}

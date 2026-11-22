@@ -2,7 +2,7 @@ namespace NeatWin.Core;
 
 internal static class PlacementPreferences
 {
-    internal const string ModelVersion = "v2.0";
+    internal const string ModelVersion = "v2.1";
 
     private const double MinimumConfidence = .40;
     private const double ConfidenceMargin = .08;

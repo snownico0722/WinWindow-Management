@@ -18,6 +18,10 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private readonly BrowserVideoBlackBarDetector _videoBlackBarDetector = new();
     private readonly Control _dispatch = new();
     private readonly System.Windows.Forms.Timer _manualArrangeTimer = new() { Interval = 150 };
+    private readonly System.Windows.Forms.Timer _placementShadowTimer = new() { Interval = PlacementShadowReplay.IntervalMs };
+    private readonly PlacementShadowReplay _placementShadow = new();
+    private PlacementShadowReplay.Example[]? _placementShadowBatch;
+    private int _placementShadowEpoch;
     private readonly Action<string> _report;
     private readonly Action<bool>? _undoChanged;
     private readonly Action<RecorderStatus>? _recorderChanged;
@@ -75,6 +79,11 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             VisualSampling = _settingsStore.VisualSampling, GestureObserver = gestureObserver, SnapshotWantsGestures = snapshotWantsGestures,
             SurfaceObserver = surfaceObserver, SnapshotWantsSurfaces = snapshotWantsSurfaces
         };
+        _recorder.WindowRetired = handle =>
+        {
+            if (_placementShadowBatch?.Any(example => example.Scope.Includes(handle)) == true) _placementShadowEpoch++;
+            _placementShadow.Retire(handle);
+        };
         _journal = new LayoutRunJournal(_windowManager, _referenceStore, _recorder, snapshotObserver);
         _behaviorMonitor = new(_windowManager, _referenceStore, _settingsStore, _recorder,
             () => _stopping.IsCancellationRequested || _tidyRunning || NativeWindowActivity.PointerBusy, _focus, keepRunning);
@@ -94,6 +103,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _recorder.RecordPointer(target, pid);
         };
         _manualArrangeTimer.Tick += (_, _) => RunTidy();
+        _placementShadowTimer.Tick += OnPlacementShadowTick;
+        _placementShadowTimer.Start();
         _autoTidyManager.GestureStarted += handle =>
         {
             _journal.MarkGesture(handle);
@@ -119,6 +130,14 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 {
                     _taskSession.Gesture(gesture, DateTimeOffset.UtcNow);
                     _focus.Placed(moved, gesture, Environment.TickCount64, releasedDesktop);
+                    if (_referenceStore.Enabled)
+                    {
+                        // 手势比已在后台计算的历史规则更新。旧批次不能覆盖已经发生的纠正。
+                        if (_placementShadowBatch?.Any(example => example.Axes.Any(axis => PlacementShadowReplay.Contradicts(axis, gesture))) == true)
+                            _placementShadowEpoch++;
+                        _placementShadow.Observe(gesture, moved, releasedDesktop
+                            .Where(w => w.Handle == moved.Handle || !_surfaces.IsLocal(w)).ToArray(), Environment.TickCount64);
+                    }
                 }
                 _workspaceMonitor.GestureCompleted(gesture, releasedDesktop);
             }
@@ -148,6 +167,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         {
             _gesturePreview.Clear();
             _manualArrangeTimer.Dispose();
+            _placementShadowTimer.Dispose();
+            ClearPlacementShadow();
             _autoTidyManager.TidyRequested -= OnFollowHandRequested;
             _workspaceMonitor.Dispose(); _autoTidyManager.Dispose(); _journal.Dispose(); _behaviorMonitor.Dispose();
             _recorder.StatusChanged -= OnRecorderStatusChanged; _recorder.Dispose();
@@ -169,6 +190,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     internal void ImportPlacementRules(string path)
     {
         _referenceStore.ImportPlacementRules(path);
+        ClearPlacementShadow();
         _settingsStore.UseImportedPlacement = _useImportedPlacement = true;
         _surfaceRules = _referenceStore.Rules.Read().SurfaceRules;
         _surfaces.Reset();
@@ -203,6 +225,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _surfaces.Reset();
         }
         _taskSession.Invalidate();
+        ClearPlacementShadow();
         _gesturePreview.Clear();
         if (value.Mode == _automaticMode) return;
         var previous = _automaticMode;
@@ -237,9 +260,35 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     internal void ClearRecorderData()
     {
         _recorder.Clear();
+        ClearPlacementShadow();
         _behaviorMonitor.ClearLearning();
         _taskSession.Invalidate();
     }
+    private void ClearPlacementShadow()
+    {
+        _placementShadowEpoch++;
+        _placementShadow.Clear();
+    }
+
+    private async void OnPlacementShadowTick(object? sender, EventArgs args)
+    {
+        if (_placementShadowBatch != null || _stopping.IsCancellationRequested || !_referenceStore.Enabled) return;
+        var batch = _placementShadow.Take();
+        if (batch.Length == 0) return;
+        int epoch = _placementShadowEpoch;
+        _placementShadowBatch = batch;
+        try
+        {
+            // 线程池只处理已捕获的快照。结束时仅发布规则，不调用窗口或自动整理入口。
+            var findings = await Task.Run(() => PlacementShadowReplay.Analyze(batch, _stopping), _stopping);
+            if (epoch == _placementShadowEpoch && !_stopping.IsCancellationRequested && _referenceStore.Enabled)
+                _placementShadow.Publish(findings, Environment.TickCount64);
+        }
+        catch (OperationCanceledException) when (_stopping.IsCancellationRequested) { }
+        catch (Exception ex) { Trace.TraceWarning($"Placement shadow replay unavailable: {ex.Message}"); }
+        finally { _placementShadowBatch = null; }
+    }
+
     private void OnRecorderStatusChanged(RecorderStatus status) => _recorderChanged?.Invoke(status);
 
     private bool ConfigureAutomation(AutomaticLayoutMode mode, bool arrangeNow = false)
@@ -303,6 +352,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _workspaceMonitor.ApplicationRequested(snapshot, new(assisted, [], []));
             if (_stopping.IsCancellationRequested) return;
             var application = _windowManager.ApplyLayout(new(assisted, [], []), interaction.ForegroundWindow, gestureWindow: gesture.WindowHandle);
+            _placementShadow.Submitted(null, application.Plan, Environment.TickCount64);
             _journal.Record(snapshot, application, "follow-hand", releaseInput: gesture, reusedPreview: preview?.Used == true);
         }
         catch { /* Assistance must not interrupt the completed manual action. */ }
@@ -332,7 +382,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             var foreground = NativeMethods.GetForegroundWindow();
             if (!showActivity && !NativeWindowActivity.AllowsAutomaticPlacement(foreground))
             {
-                _workspaceMonitor.RequestCurrent();
+                _workspaceMonitor.RequestCurrent(cause);
                 return;
             }
             var snapshot = _windowManager.Capture();
@@ -344,19 +394,19 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                  foreground != ended.WindowHandle || !snapshot.Any(w => w.IsForeground && w.Handle == ended.WindowHandle &&
                      w.ProcessId == ended.ProcessId && w.IsManageable)))
             {
-                _workspaceMonitor.RequestCurrent();
+                _workspaceMonitor.RequestCurrent(cause);
                 return;
             }
             long capturedAt = Environment.TickCount64;
             if (trigger == "automatic-workspace" && _focus.NavigationFor(snapshot, capturedAt)?.SettleUntil > capturedAt)
             {
-                _workspaceMonitor.RequestCurrent();
+                _workspaceMonitor.RequestCurrent(cause);
                 return;
             }
             if (smart && _smartBehaviorOptions.RemoveVideoBlackBars && trigger == "automatic-workspace" &&
                 _videoBlackBarDetector.Fits.AwaitingGeometry(snapshot, BrowserVideoBlackBarDetector.ReadPage, capturedAt))
             {
-                _workspaceMonitor.RequestCurrent();
+                _workspaceMonitor.RequestCurrent(cause);
                 return;
             }
             var visibleWorkingSet = fullDesktop
@@ -374,6 +424,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             ForegroundReading? initialReading = null, workspaceReading = null;
             bool reusedPreview = false;
             IntentLayoutPlan? scored = null;
+            PlacementShadowReplay.Frame? shadowFrame = null;
             if (tiling)
             {
                 detailed = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, null, snapshot, null);
@@ -392,15 +443,13 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 bool pairSmart = explicitSmart || trigger is "automatic-gesture" or "automatic-workspace";
                 var floors = _recorder.BindSizeFloors(snapshot);
                 var learned = pairSmart ? _recorder.Preferences(snapshot, focus).Where(p => p.Confidence >= .40).ToArray() : [];
-                var slots = pairSmart && _useImportedPlacement ? _recorder.BindSlots(rules, snapshot) : [];
-                var placements = CompiledLayoutRules.ApplySlots(learned, slots);
                 var front = snapshot.FirstOrDefault(w => w.IsForeground);
                 var reading = ForegroundReading.Read(front);
                 if (trigger == "automatic-workspace" && reading.LastInput.HasValue) workspaceReading = reading;
                 var frontRole = front == null ? WindowUseRole.Unknown : _recorder.SemanticRole(front, reading);
                 if (trigger == "automatic-workspace" && !reading.Caret && _recorder.AwaitingOfficeSurface(reading.Root))
                 {
-                    _workspaceMonitor.RequestCurrent();
+                    _workspaceMonitor.RequestCurrent(cause);
                     return;
                 }
                 if (opening != null)
@@ -411,23 +460,27 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                         front.VisualRect == incoming.VisualRect && front.WorkArea == incoming.WorkArea &&
                         snapshot.Any(w => w.Handle == resident.Handle && w.ProcessId == resident.ProcessId && w.IsManageable &&
                             w.VisualRect == resident.VisualRect && w.MonitorHandle == front.MonitorHandle && w.WorkArea == front.WorkArea);
+                    // 前面短暂的输入、导航或测量门槛可以重试。到此已核对现场，本次开窗证据只能消费一次。
+                    _focus.Dispatched(opening);
                     if (!matches || focus.Main != incoming.Handle || focus.Navigation != null ||
                         focus.Companion != 0 && focus.Companion != resident.Handle)
                     {
-                        _workspaceMonitor.RequestCurrent();
+                        _workspaceMonitor.RequestCurrent(cause);
                         return;
                     }
                     if (frontRole == WindowUseRole.Note || WindowUseRoles.IsFloating(frontRole) ||
                         attention.GetValueOrDefault(incoming.Handle)?.ManualFloatPreference > 0 ||
                         liveHints.Any(h => h.Anchor && (h.Handle == incoming.Handle || h.Handle == resident.Handle)))
                     {
-                        _workspaceMonitor.RequestCurrent();
+                        _workspaceMonitor.RequestCurrent(cause);
                         return;
                     }
                     focus = new(incoming.Handle, resident.Handle, focus.Switches,
                         opening.ResidentLeft ? "opening-resident-left" : "opening-resident-right");
                 }
                 var observedPair = trigger == "automatic-gesture" && focus.Main != foreground ? null : focus;
+                var slots = pairSmart && _useImportedPlacement ? _recorder.BindSlots(rules, snapshot, observedPair) : [];
+                var placements = CompiledLayoutRules.ApplySlots(learned, slots);
                 var pairs = pairSmart && _useImportedPlacement ? _recorder.BindRules(rules, snapshot, liveHints, activities, observedPair) : [];
                 // An interrupted opening may still expose the resident by adjusting it on
                 // its own side. Only an idle input queue authorizes moving the incoming frame.
@@ -456,6 +509,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     AllowGestureAssist = trigger == "automatic-gesture",
                     IsWorkspaceObservation = trigger == "automatic-workspace",
                     WorkspaceCause = cause,
+                    OriginSide = trigger == "automatic-workspace" ? _focus.ObserveWorkingSide(snapshot, capturedAt) : 0,
                     FirstPlacementWindow = firstPlacement && opening == null ? front!.Handle : 0,
                     NavigationObservedAt = focus.Navigation is { Length: > 0 } ? focusObservedAt : null,
                     Attention = attention,
@@ -487,6 +541,16 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                         diagnosticBaseline = () => LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, reference, snapshot, defaultContext);
                     }
                     taskContext = taskContext with { Placement = placements };
+                }
+                // 普通点击、滚动和因应用拒绝位置而重试的调用不能消费后台结果。
+                bool shadowEligible = _referenceStore.Enabled && (explicitSmart || trigger == "automatic-gesture" ||
+                    trigger == "automatic-workspace" && allowPlacementReplan && (cause & ~WorkspaceChangeCause.Requested) != 0);
+                if (shadowEligible)
+                {
+                    var axes = _placementShadow.Bind(snapshot, taskContext.Focus, capturedAt);
+                    taskContext = taskContext with { ShadowAxes = axes, ShadowTime = focusObservedAt };
+                    recordedContext = recordedContext with { ShadowAxes = axes };
+                    shadowFrame = new(route, visibleWorkingSet.ToArray(), effectiveOptions, reference, snapshot.ToArray(), taskContext, focusObservedAt);
                 }
                 reclaimContext = taskContext;
                 detailed = LayoutDispatch.Create(route, visibleWorkingSet, effectiveOptions, reference, snapshot, taskContext);
@@ -533,7 +597,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             }
             if (smart)
             {
-                _focus.Submitted(detailed, requestedDesktop);
+                _focus.Submitted(detailed, requestedDesktop, Environment.TickCount64);
                 _taskSession.Requested(requestedDesktop, detailed, DateTimeOffset.UtcNow, explicitSmart);
             }
             if (diagnosticBaseline != null)
@@ -541,8 +605,11 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 try { baseline = diagnosticBaseline(); }
                 catch (Exception ex) { System.Diagnostics.Trace.TraceWarning($"Diagnostic baseline unavailable: {ex.Message}"); }
             }
+            _placementShadow.Submitted(!application.Interrupted && application.Failures.Count == 0 && reclaimed == 0 &&
+                proposed.Moves.Count == plan.Count && proposed.Layers.Count == layerOrders.Count ? shadowFrame : null,
+                application.Plan, application.FirstGeometrySubmittedTick ?? Environment.TickCount64);
             var requestId = _journal.Record(snapshot, application, trigger, baseline ?? scored ?? proposed, proposed, scored, recordedContext,
-                smart ? effectiveOptions.SmartStrength : null, smart ? fullDesktop : null, allowPlacementReplan, releaseInput: releaseInput, reusedPreview: reusedPreview, openingTick: opening?.Visit);
+                smart ? effectiveOptions.SmartStrength : null, smart ? fullDesktop : null, allowPlacementReplan, releaseInput: releaseInput, reusedPreview: reusedPreview, openingTick: opening?.Visit, shadow: _placementShadow);
             if (hasUndo) _undoRequest = requestId;
             if (showActivity)
             {
@@ -586,6 +653,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _workspaceMonitor.ApplicationRequested(current.Values.ToArray(), reverse);
             if (_stopping.IsCancellationRequested) return;
             var application = _windowManager.ApplyLayout(reverse);
+            _placementShadow.Submitted(null, application.Plan, Environment.TickCount64);
             foreach (var move in application.Plan.Moves) _videoBlackBarDetector.Forget(move.Window.Handle);
             if (_undoWasSmart)
                 _taskSession.RejectExplicitly(application.Plan.Moves.Select(m => m.Window.Handle)
@@ -618,7 +686,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         "window-access" or "working-pair-access" => LayoutText.Get("WindowAccess"), "display-reflow" => LayoutText.Get("DisplayReflow"),
         "video-aspect-shrink" or "video-aspect-expand" => LayoutText.Get("VideoAspectLayout"),
         "video-current" => LayoutText.Get("PreservePlacement"),
-        "learned-position" => LayoutText.Get("LearnedPosition"),
+        "learned-position" or "shadow-placement" => LayoutText.Get("LearnedPosition"),
         "attention-layout" or "attention-side-stack" => LayoutText.Get("AttentionLayout"),
         "working-overlap" => LayoutText.Get("WorkingOverlap"),
         "working-pair" => LayoutText.Get("WorkingPair"), "working-region" => LayoutText.Get("WatchedRegion"),
