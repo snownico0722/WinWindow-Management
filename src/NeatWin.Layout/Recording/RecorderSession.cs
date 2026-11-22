@@ -123,7 +123,7 @@ internal sealed partial class RecorderSession : IDisposable
                 match.Child.NativeUtility, match.Child.IndependentFrame, match.Child.IsResizable,
                 match.ReleaseReason, match.ReleasedChildRect, match.ReleasedHostRect, match.ContextPress?.Sequence,
                 starting ? _activity.RawIdentity(match.Child.Handle, match.Child.ProcessId, true) : null,
-                starting ? _activity.RawIdentity(match.Host.Handle, match.Host.ProcessId, true) : null);
+                starting ? _activity.RawIdentity(match.Host.Handle, match.Host.ProcessId, true) : null, match.ContextPress?.ReleaseSequence);
         if (action == "suppress")
         {
             if (_observedSurfaces.Count >= MaxObservedSurfaces)

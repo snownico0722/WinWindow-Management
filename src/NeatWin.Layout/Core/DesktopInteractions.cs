@@ -11,7 +11,7 @@ public sealed record ReadingInteraction(double Scrolling, double CaretMotion, lo
 internal readonly record struct PointerObservation(string Kind, nint Target, uint TargetPid, nint Hit, nint Foreground,
     PointI Point, int? Delta, long Tick);
 
-internal sealed record ContextPress(nint Root, uint Pid, PointI Point, long Tick, long Sequence);
+internal sealed record ContextPress(nint Root, uint Pid, PointI Point, long Tick, long Sequence, long? ReleaseSequence = null);
 
 // 每次求解只读取当时已发生的输入。静默后权重自动衰减，无定时排布，也不把系统挪窗当作用户偏好。
 internal sealed class DesktopInteractionHistory
@@ -32,8 +32,9 @@ internal sealed class DesktopInteractionHistory
         if (kind == "right-up" && _context is { } down)
         {
             // 长按后松开也可能打开菜单，右键拖动游戏视角则不能遗留菜单意图。
-            _context = down.Root == root && down.Pid == pid && Math.Abs((long)point.X - down.Point.X) <= 8 &&
-                Math.Abs((long)point.Y - down.Point.Y) <= 8 ? down with { Tick = tick, Sequence = sequence } : null;
+            // 有些菜单在按下时就生成自己的 HWND，松开会命中菜单；原纸片仍由按下事件标识。
+            _context = down.Pid == pid && Math.Abs((long)point.X - down.Point.X) <= 8 &&
+                Math.Abs((long)point.Y - down.Point.Y) <= 8 ? down with { Tick = tick, ReleaseSequence = sequence } : null;
         }
         if (kind == "left-down" || kind == "middle-down") _context = null;
         if (kind is "wheel" or "horizontal-wheel")

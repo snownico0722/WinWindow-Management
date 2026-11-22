@@ -21,7 +21,14 @@ internal static class DesktopInteractionChecks
         };
         scheduler.Reset(AutomaticLayoutMode.AutoFullAssist, [front, host], now);
         evidence.Pointer("right-down", 1, 17, now += 30, 10, new(1350, 280));
-        evidence.Pointer("right-up", 1, 17, now += 1000, 11, new(1350, 281));
+        evidence.Pointer("right-up", popup.Handle, 17, now += 1000, 11, new(1350, 281));
+        check(evidence.ContextAt(now) is { Root: 1, Sequence: 10, ReleaseSequence: 11 },
+            "release on the newly opened menu retains the original right-click host");
+        var dialog = popup with { Handle = 4, HasCaption = true };
+        var dialogSurfaces = new TaskSurfaces { ReadContextPress = () => evidence.ContextAt(now) };
+        dialogSurfaces.Update([front, host], null);
+        dialogSurfaces.Update([front, host, dialog], host);
+        check(!dialogSurfaces.IsLocal(dialog), "a fixed-size captioned window beside the click keeps its task identity");
         scheduler.Observe([front, host, popup], ++now, false);
         check(surfaces.IsLocal(popup) && !scheduler.HasPending && recorded.Count == 0,
             "a context popup larger than a background note consumes the release without scheduling a workspace change");

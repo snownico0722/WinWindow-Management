@@ -160,7 +160,12 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         // 标题可以在同一 HWND 内变化。展示/改名/快照时读取，滚轮与插入点事件复用最近一次读数。
         var title = new StringBuilder(Math.Max(256, NativeMethods.GetWindowTextLength(hwnd) + 1));
         NativeMethods.GetWindowText(hwnd, title, title.Capacity);
-        return _rawWindows[key] = info! with { Title = title.ToString() };
+        return _rawWindows[key] = info! with
+        {
+            Title = title.ToString(),
+            Style = unchecked((uint)NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GwlStyle)),
+            ExtendedStyle = unchecked((uint)NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GwlExStyle))
+        };
     }
 
     private ProcessInfo Identify(uint id, Process process)

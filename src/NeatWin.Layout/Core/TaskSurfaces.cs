@@ -152,7 +152,7 @@ internal sealed class TaskSurfaces
     private static bool IsContextPopup(WindowSnapshot child, WindowSnapshot host, ContextPress press)
     {
         if (child.Handle == host.Handle || press.Root != host.Handle || press.Pid != host.ProcessId ||
-            child.ProcessId != press.Pid || child.IndependentFrame || child.IsResizable ||
+            child.ProcessId != press.Pid || child.IndependentFrame || child.IsResizable || child.HasCaption ||
             child.Owner != 0 && child.Owner != host.Handle || child.WorkArea.IsEmpty) return false;
         var rect = child.VisualRect;
         // 菜单可翻到点击点的左上方，故比较点到矩形的距离。整张无边框画布或普通独立编辑窗仍参与整理。

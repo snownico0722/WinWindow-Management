@@ -2,7 +2,7 @@ namespace NeatWin.Core;
 
 // 数字 ID 保持旧回放与个人规则兼容。原始身份与它并存，便于直接追踪同应用的不同窗口。
 public sealed record RawWindowIdentity(string Handle, uint ProcessId, string? App, string? ExecutablePath,
-    DateTime? ProcessStartedUtc, string? ClassName, string? Title);
+    DateTime? ProcessStartedUtc, string? ClassName, string? Title, uint? Style = null, uint? ExtendedStyle = null);
 public sealed record ObservedWindow(int Id, RectI Rect, RectI WorkArea, uint Dpi,
     int ZOrder, bool Foreground, bool Topmost, bool Manageable, double VisibleRatio, WindowExposure? Exposure = null,
     string? AppKey = null, bool? Resizable = null, string? SurfaceState = null,
