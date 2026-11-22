@@ -80,6 +80,8 @@ public sealed class AutomaticLayoutScheduler
     private readonly HashSet<nint> _manual = [];
     private long _ownUntil, _settleUntil, _notBefore, _lastChange;
     private bool _pending;
+    internal TaskSurfaces Surfaces { get; init; } = new();
+    private bool _localForeground;
     private LayoutTrigger _trigger;
     private nint _foreground, _dragging;
     private ManualWindowGesture? _release;
@@ -93,6 +95,8 @@ public sealed class AutomaticLayoutScheduler
         Mode = AutomaticLayoutPolicy.Read((int)mode, false);
         _own.Clear(); _manual.Clear(); _pending = false; _foreground = _dragging = 0; _release = null;
         _cause = WorkspaceChangeCause.None;
+        Surfaces.Reset();
+        _observed = [];
         _observed = Normalize(snapshot); _notBefore = now; _lastChange = now;
     }
 
@@ -105,6 +109,8 @@ public sealed class AutomaticLayoutScheduler
     {
         if (_pending && _release == null) _lastChange = now;
     }
+
+    internal void CancelLocalGesture() { _manual.Remove(_dragging); _dragging = 0; _release = null; }
 
     public void GestureStarted(nint handle)
     {
@@ -201,7 +207,7 @@ public sealed class AutomaticLayoutScheduler
         }
         else
         {
-            if (busy) { _lastChange = now; return null; }
+            if (busy || _localForeground) { _lastChange = now; return null; }
             // 已确认的开窗碰撞可以抢在常规静稳期之前处理。导航静默期仍优先，让用户有时间点开下一层内容。
             if (now < navigationSettleUntil || !openingReady && (now - _lastChange < SettleMilliseconds || now < _notBefore)) return null;
         }
@@ -218,15 +224,23 @@ public sealed class AutomaticLayoutScheduler
 
     private WindowSnapshot[] Normalize(IReadOnlyList<WindowSnapshot> snapshot)
     {
-        var foreground = snapshot.FirstOrDefault(w => w.IsForeground)?.Handle ?? 0;
+        var previous = _observed.FirstOrDefault(w => w.Handle == _foreground);
+        Surfaces.Update(snapshot, previous);
+        var front = snapshot.FirstOrDefault(w => w.IsForeground);
+        _localForeground = front != null && Surfaces.IsLocal(front);
+        var foreground = _localForeground ? 0 : front?.Handle ?? 0;
         // Activating our own settings, the taskbar or another excluded utility is not a new task.
         if (foreground != 0) _foreground = foreground;
         if (!snapshot.Any(w => w.Handle == _foreground)) _foreground = 0;
         // 输入候选、提示等小型被动浮层仍保留在求解时的真实遮挡快照里。它们自己出现或消失不代表新的工作窗口。
-        var relevant = snapshot.Where(w => w.IsManageable || w.SurfaceState != null || w.IsForeground ||
+        var relevant = snapshot.Where(w => !Surfaces.IsLocal(w)).Where(w => w.IsManageable || w.SurfaceState != null || w.IsForeground ||
             !w.IsTopmost || w.VisualRect.Intersect(w.WorkArea).Area >= w.WorkArea.Area * .15);
+        // 模态卡片会临时禁用宿主，关闭后又启用。两次状态回弹都不代表主窗变成了新的任务。
+        var modalHosts = Surfaces.Hosts.Select(w => w.Handle).ToHashSet();
         return relevant.OrderBy(w => w.ZOrder).Select((w, rank) => w with
-            { ZOrder = rank, IsForeground = w.Handle == _foreground }).ToArray();
+            { ZOrder = rank, IsForeground = w.Handle == _foreground,
+              IsManageable = modalHosts.Contains(w.Handle) && _observed.FirstOrDefault(old =>
+                  old.Handle == w.Handle && old.ProcessId == w.ProcessId) is { } prior ? prior.IsManageable : w.IsManageable }).ToArray();
     }
 
     private WorkspaceChangeCause UpdateObserved(WindowSnapshot[] next, HashSet<nint> ignoreGeometry, HashSet<nint> ignoreOrder)
@@ -271,7 +285,7 @@ public sealed class AutomaticLayoutScheduler
 internal static class LayoutDispatch
 {
     internal static string ModelVersion(TidyAlgorithmMode mode) =>
-        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v1.7";
+        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v2.0";
 
     internal static IntentLayoutPlan Create(LayoutRoute route, IReadOnlyList<VisibleWindow> visible,
         TidyOptions options, IntentReferenceDocument? reference, IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext? context)
@@ -279,8 +293,10 @@ internal static class LayoutDispatch
         if (route == LayoutRoute.FullTiling) return FullTilingPlanner.Create(desktop, options);
         if (route == LayoutRoute.Smart) options = options with { AlgorithmMode = TidyAlgorithmMode.Smart };
         // 普通布局使用独立的焦点、手势和空间证据。改变黑边观测时，其他窗口可选的位置不随视频权重改变。
+        if (context != null) context = context with { Scene = ActiveLayoutScene.Resolve(desktop, context) };
         var ordinary = context?.VideoHint == null ? context : context with { VideoHint = null };
         var plan = IntentLayoutPlanner.CreateDetailedPlan(visible, options, reference, desktop, ordinary);
-        return context?.VideoHint != null ? VideoAspectPostProcessor.Select(visible, desktop, plan, options, context) : plan;
+        if (context?.VideoHint != null) plan = VideoAspectPostProcessor.Select(visible, desktop, plan, options, context);
+        return context?.Scene is { } scene ? plan with { Scene = scene } : plan;
     }
 }

@@ -68,3 +68,5 @@ dotnet run --no-build -c Release --project src/WinWindow -- --self-test TestResu
 `Native` 封装 Win32 与图标缓存；`WindowManager` 管理操作与恢复；`WindowRow` 维护单行卡片交互与编辑状态；`DesktopIntegration` 管理托盘、快捷键和唤醒；`StateStore` 负责持久化。外部窗口修改不在 UI 线程同步等待。
 
 产品决定见 [DECISIONS.md](docs/DECISIONS.md)，维护规则见 [AGENTS.md](AGENTS.md)。布局程序集沿用 NeatWin 源码，不预建插件平台或数据库，尚未选择开源许可证。
+
+Smart v2.0 支持按应用组合和触发方式导入个人模型。它可以改变重排成本、尺寸策略与参照内容的可见范围，并区分应用内临时卡片和独立工作窗口。录制 ZIP 附带可直接运行的分析工具和个性化迭代说明，支持对比默认与个人规则的回放结果。参见[布局记录与回放](docs/LAYOUT_RECORDING.md)。

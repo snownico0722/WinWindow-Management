@@ -90,6 +90,50 @@ internal sealed class RecorderSession : IDisposable
     private string? _error;
     private long _lastMaintenanceTick = long.MinValue;
 
+    private const int MaxObservedSurfaces = 512;
+    private readonly Dictionary<(nint Child, uint ChildPid, nint Host, uint HostPid), SurfaceEvent> _observedSurfaces = [];
+    internal Action<SurfaceEvent>? SurfaceObserver { get; init; }
+    internal Func<bool>? SnapshotWantsSurfaces { get; init; }
+
+    internal void ResetSurfaceObservations() => _observedSurfaces.Clear();
+
+    internal void SurfaceChanged(SurfaceMatch match, string action)
+    {
+        var key = (match.Child.Handle, match.Child.ProcessId, match.Host.Handle, match.Host.ProcessId);
+        _observedSurfaces.Remove(key, out var suppression);
+        bool writeDisk = CanWriteDiagnostics;
+        bool snapshot = _ownsSingleton && !_disposed && SnapshotWantsSurfaces?.Invoke() == true;
+        if (!writeDisk && !snapshot) return;
+
+        long tick = Environment.TickCount64;
+        var time = DateTimeOffset.UtcNow;
+        bool starting = action != "release";
+        // 打开时记录本次选择（局部或独立）及身份。解除可能由销毁或句柄重用触发，不能重新查询系统去猜测原窗口。
+        // 即使启用了快照，暂停长期记录时也只读取已有的匿名键。
+        var item = suppression is { } prior && !starting
+            ? prior with { Action = action, Tick = tick, Time = time, ReleaseReason = match.ReleaseReason,
+                ReleasedChildRect = match.ReleasedChildRect, ReleasedHostRect = match.ReleasedHostRect }
+            : new SurfaceEvent(1, _session, tick, time, action, match.Rule,
+                starting ? _identity.Id(match.Child) : null, starting ? _identity.Id(match.Host) : null,
+                starting ? _activity.AppKey(match.Child, writeDisk) : null,
+                starting ? _activity.AppKey(match.Host, writeDisk) : null,
+                match.Child.VisualRect, match.Host.VisualRect, match.Child.Owner == match.Host.Handle,
+                match.Child.NativeUtility, match.Child.IndependentFrame, match.Child.IsResizable,
+                match.ReleaseReason, match.ReleasedChildRect, match.ReleasedHostRect);
+        if (action == "suppress")
+        {
+            if (_observedSurfaces.Count >= MaxObservedSurfaces)
+                _observedSurfaces.Remove(_observedSurfaces.MinBy(pair => pair.Value.Tick).Key);
+            _observedSurfaces[key] = item;
+        }
+        if (snapshot) SurfaceObserver?.Invoke(item);
+        if (writeDisk)
+        {
+            try { _store.AppendSurface(item); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { _error = e.Message; }
+        }
+    }
+
     internal string SessionId => _session;
     internal ObservationIdentityTracker Identity => _identity;
     internal long RecordingEpoch { get; private set; }
@@ -462,11 +506,14 @@ internal sealed class RecorderSession : IDisposable
 
     private void ResetActivity()
     {
+        ResetSurfaceObservations();
         _latest = null; _savedGeometry = null; _sampleTick = 0; _lastPlan.Clear(); _activity.Reset(); _usage.Reset();
     }
 
+    internal Func<WindowSnapshot, bool>? IsLocalSurface { get; set; }
+
     internal WorkspaceFrame Capture(IReadOnlyList<WindowSnapshot> windows) =>
-        _identity.Capture(windows, DesktopActivity.Displays(), CanWriteDiagnostics ? w => _activity.AppKey(w, true) : null);
+        _identity.Capture(windows, DesktopActivity.Displays(), CanWriteDiagnostics ? w => _activity.AppKey(w, true) : null, IsLocalSurface);
 
     private void SampleActivity()
     {

@@ -5,7 +5,9 @@ public sealed record ObservedWindow(int Id, RectI Rect, RectI WorkArea, uint Dpi
     int ZOrder, bool Foreground, bool Topmost, bool Manageable, double VisibleRatio, WindowExposure? Exposure = null,
     string? AppKey = null, bool? Resizable = null, string? SurfaceState = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    int OwnerId = 0);
+    int OwnerId = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    bool LocalSurface = false);
 public sealed record WorkspaceFrame(DateTimeOffset Time, ObservedWindow[] Windows, bool Truncated = false,
     RecordedDisplay[]? Displays = null);
 public sealed record WorkspaceTransition(int Version, string Session, string Cause,
@@ -29,7 +31,11 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     RecordedGestureTiming? GestureTiming = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    long? OpeningToFirstGeometrySubmitMs = null);
+    long? OpeningToFirstGeometrySubmitMs = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    SceneEffect[]? SceneEffects = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    SceneEffect[]? ActualSceneEffects = null);
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
 public sealed class ObservationIdentityTracker
@@ -58,7 +64,7 @@ public sealed class ObservationIdentityTracker
     }
 
     public WorkspaceFrame Capture(IReadOnlyList<WindowSnapshot> snapshot,
-        RecordedDisplay[]? displays = null, Func<WindowSnapshot, string?>? appKey = null)
+        RecordedDisplay[]? displays = null, Func<WindowSnapshot, string?>? appKey = null, Func<WindowSnapshot, bool>? isLocalSurface = null)
     {
         var result = new List<ObservedWindow>();
         var ordered = snapshot.OrderBy(w => w.ZOrder).ToArray();
@@ -72,7 +78,7 @@ public sealed class ObservationIdentityTracker
             var exposure = WindowExposure.Measure(window.VisualRect, screens, front);
             result.Add(new(sampledIds[window.Handle], window.VisualRect, window.WorkArea, window.Dpi, window.ZOrder,
                 window.IsForeground, window.IsTopmost, window.IsManageable, exposure.Visible, exposure,
-                window.IsManageable || window.SurfaceState != null ? appKey?.Invoke(window) : null, window.IsResizable, window.SurfaceState, sampledIds.GetValueOrDefault(window.Owner)));
+                window.IsManageable || window.SurfaceState != null ? appKey?.Invoke(window) : null, window.IsResizable, window.SurfaceState, sampledIds.GetValueOrDefault(window.Owner), isLocalSurface?.Invoke(window) == true));
         }
         return new(DateTimeOffset.UtcNow, result.ToArray(), snapshot.Count > 64, displays);
     }

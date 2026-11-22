@@ -35,7 +35,7 @@ public static class VideoAspectPostProcessor
         var hint = context.VideoHint;
         if (options.AlgorithmMode != TidyAlgorithmMode.Smart ||
             hint is not { Confidence: >= .82, ContentAspectRatio: >= .55 and <= 4.5 } ||
-            !context.Preferences.AllowUsefulResize || context.GestureAnchor != 0 ||
+            context.GestureAnchor != 0 ||
             context.Focus?.OpeningResidentLeft != null || context.Focus?.Navigation is { Length: > 0 })
             return plan;
         var browser = visible.FirstOrDefault(v => v.Window.Handle == hint.WindowHandle)?.Window;
@@ -44,6 +44,8 @@ public static class VideoAspectPostProcessor
         if (context.IsWorkspaceObservation && !desktop.Any(w => w.IsForeground && w.MonitorHandle == browser.MonitorHandle && w.IsManageable))
             return plan;
 
+        var scene = context.Scene?.Monitor == browser.MonitorHandle ? context.Scene : null;
+        if (!(scene?.Settings?.AllowResize ?? context.Preferences.AllowUsefulResize)) return plan;
         var frame = browser.VisualRect;
         var view = hint.ViewportVisualRect;
         if (view.IsEmpty || view.Intersect(frame) != view) return plan;
@@ -100,6 +102,9 @@ public static class VideoAspectPostProcessor
             if (rect != frame) moves.Add(new(browser, rect));
             var candidate = plan with { Moves = moves };
             var after = TaskLayoutSession.Project(desktop, candidate);
+            if (rejection == null && scene?.References.FirstOrDefault(g =>
+                g.Measure(after, w => w.VisualRect, w => w.ZOrder).Lost > g.Limit + 1e-9) is { } protectedView)
+                rejection = "visible-reference:" + protectedView.Rule;
             if (rejection == null && (!IntentLayoutPlanner.TextViewAcceptsPlan(desktop, candidate, context) ||
                 !IntentLayoutPlanner.DesktopRegionsPreserved(projected, after, context, desktop) ||
                 context.RejectedLayouts?.Contains(TaskLayoutSession.LayoutKey(after.Where(w =>

@@ -288,6 +288,11 @@ public sealed class ForegroundHistory
         }
     }
 
+    internal bool RecentlyClicked(WindowSnapshot w, long tick)
+    {
+        lock (_visits) return _clicks.Any(c => c.Handle == w.Handle && c.Pid == w.ProcessId && tick - c.Time is >= 0 and <= 1500);
+    }
+
     internal void Interact(nint handle, uint pid, long now, bool click = false)
     {
         if (handle == 0 || pid == 0 || pid == Environment.ProcessId) return;
@@ -594,16 +599,17 @@ public static class LayoutHabits
             endpoint is not { Truncated: false } frame || o.StartContext is not { Truncated: false } start ||
             o.WorkArea.IsEmpty) return null;
         var moved = frame.Windows.FirstOrDefault(w => w.Id == o.WindowId);
-        if (moved == null || !moved.Manageable || moved.Rect != o.End || moved.VisibleRatio < .2) return null;
+        // 移动资料卡不等于更改主聊天窗的摆放偏好，即使它们使用同一应用和窗口类。
+        if (moved == null || moved.LocalSurface || start.Windows.Any(w => w.Id == o.WindowId && w.LocalSurface) || !moved.Manageable || moved.Rect != o.End || moved.VisibleRatio < .2) return null;
         string? Key(ObservedWindow w) => byInstance ? w.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) : w.AppKey;
         if (Key(moved) is not { } movedKey) return null;
         // Two live documents can share a persistent application identity. Only a session
         // observation can tell which document the user actually placed.
-        if (!byInstance && frame.Windows.Count(w => w.Manageable && w.WorkArea == o.WorkArea && w.AppKey == movedKey) > 1)
+        if (!byInstance && frame.Windows.Count(w => w.Manageable && !w.LocalSurface && w.WorkArea == o.WorkArea && w.AppKey == movedKey) > 1)
             return null;
         var peers = from w in frame.Windows
-                    where w.Id != moved.Id && w.Manageable && Key(w) != null && w.WorkArea == o.WorkArea && w.VisibleRatio >= .04
-                    let before = start.Windows.FirstOrDefault(v => v.Id == w.Id && v.Rect == w.Rect && v.AppKey == w.AppKey)
+                    where w.Id != moved.Id && w.Manageable && !w.LocalSurface && Key(w) != null && w.WorkArea == o.WorkArea && w.VisibleRatio >= .04
+                    let before = start.Windows.FirstOrDefault(v => !v.LocalSurface && v.Id == w.Id && v.Rect == w.Rect && v.AppKey == w.AppKey)
                     where before != null
                     let gain = w.VisibleRatio - before.VisibleRatio
                     orderby gain descending, w.VisibleRatio descending
@@ -613,7 +619,7 @@ public static class LayoutHabits
         bool paired = peer.Window != null && (peer.Gain >= .04 || peersFound.Length == 1 && peer.Window.VisibleRatio >= .45);
         double center = (moved.Rect.X + moved.Rect.Width / 2d - o.WorkArea.X) / o.WorkArea.Width;
         var partner = paired ? peer.Window : null;
-        if (!byInstance && partner != null && frame.Windows.Count(w => w.Manageable && w.WorkArea == o.WorkArea && w.AppKey == partner.AppKey) > 1)
+        if (!byInstance && partner != null && frame.Windows.Count(w => w.Manageable && !w.LocalSurface && w.WorkArea == o.WorkArea && w.AppKey == partner.AppKey) > 1)
             return null;
         int order = partner == null ? 0 : Math.Sign(moved.Rect.X + moved.Rect.Width / 2d - partner.Rect.X - partner.Rect.Width / 2d);
         int cell = -1;

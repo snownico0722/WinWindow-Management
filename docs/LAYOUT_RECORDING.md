@@ -169,3 +169,14 @@
 `Signals.FirstPlacementWindow` 是本轮确认首次独立落位的会话内窗口编号。普通成员增减和焦点切换不能代替该证据。缺省时旧记录仍可用原有的 `InitialTextPlacement` 解释小文字窗。候选的可选 `CenterTieCost` 只影响已经具备独立几何收益的方案间排序；`Cost` 和 `GainThreshold` 可以单独解释是否值得调整。
 
 在 v3 摆放规则的 `Pairs` 条目加上 `"OnlyWhenPaired": true`，只在已经观察到这两扇窗参与当前工作配对时采用左右偏好。后台共存、第三扇窗接手任务、应用内导航不会启动配对。旧规则和省略这个字段的规则仍可主动建议搭档。导入个人规则前分别留出完整会话核对；没有后续人工修正时，对实际减少的摆放次数保留未知。
+
+## v4 个人规则、v9 决策与表面事件
+
+通过「导入摆放规则」载入 Version 4 的 compiled-rules.json。原有 v1–v3 文件继续可用。导出包内的 SKILL.md 列出 Scenes、SurfaceRules、作用顺序与完整示例。随包的 analyze_recording.py 使用 Python 标准库，提供 analyze 与 compare 子命令。它能合并重叠的滚动导出，按会话处理整晚活动，以及逐请求对照两份引擎回放输出。
+
+- Scenes 中首条匹配的规则生效，作用于前台显示器。触发值为 workspace、gesture、explicit。可选 ForegroundApps、ReferenceApp、MinWindows、MaxWindows 和 MinVisible 指定何时使用。ReferenceApp 须唯一、在前台后方且已有可见区域。MinWindows 与 MaxWindows 统计合格窗口数。Weights 中 Information、Switching、Continuity、Reflow、Personal 在 0–8 倍内调整对应成本；Intervention 在 0.125–8 倍内调整动作门槛。AllowResize 和 ReconsiderSettled 可覆盖默认规则。关闭导入可回到通用默认。
+- MaxVisibleLoss 为原窗面积的比例。合格候选可以在预算内覆盖原来已露出的区域。SceneEffects 给出规则、参照窗编号、BeforeVisible、AfterVisible、LostVisible 和 MaxLoss。三个面积量都按原窗面积归一。新增露出不会抵消另一处刚丢失的内容。ActualSceneEffects 只在有可对账的后置帧时给值。旧版本、用户接手或身份丢失时保留缺测。应用启用前可回放检验，几何预测仍须与后续手动调整分开解读。
+- SurfaceRules 项为 Id、HostApp、可选 ChildApp、MaxAreaRatio、Action。比例相对宿主窗面积，动作 local 或 task。先匹配宿主和邻近/归属关系，同类键需要额外的原生工具窗、点击或表面证据。独立通话仍可参与排布。长期记录以及短时快照里的 surfaces 事件分别记录 suppress、release 和可观测的 task 判定。窗口、宿主可能在开始录制前已存在，因此编号和键允许缺失。工作区帧的 LocalSurface 用于防止辅助窗口污染位置学习，旧帧缺失该字段时无法据此反推历史语义。
+- 评价应分别报告匹配次数、有效几何变化、原可见区域损失、无关窗口变化、可归因的后续人工调整。一个快照多次导出、同一手势的多帧、持续驻留都不能充作独立用户偏好。长期记录无须增加键入内容或联系人姓名来支持这些指标。
+
+离线模型也可用 --validate compiled-rules.json 核对导入格式。比较默认和个人方案时，可在会话参数后传入同一份观察规则文件。两次回放都只用这份文件选择观察对象，输出 EvaluationEffects，评分仍各自使用原方案。用 "*" 表示所有会话。随包 compare 工具提供共同样本数及原有可见像素的损失率和总损失；无共同样本时保持未知。

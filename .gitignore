@@ -4,3 +4,6 @@
 artifacts/
 TestResults/
 *.user
+
+# Local caches from the recording-analysis CLI and its tests
+__pycache__/

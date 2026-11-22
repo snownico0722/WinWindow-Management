@@ -134,7 +134,9 @@ public sealed partial class WindowManager
                 processId,
                 isTopmost,
                 independent && !isToolWindow && !noActivate && visualRect.Area >= 10_000
-                    ? (fullScreen ? "fullscreen" : maximized ? "maximized" : "windowed") : null) { Owner = owner });
+                    ? (fullScreen ? "fullscreen" : maximized ? "maximized" : "windowed") : null) { Owner = owner, NativeUtility = isToolWindow || noActivate || owner != 0 && !independent,
+                    IndependentFrame = (exStyle & NativeMethods.WsExAppWindow) != 0 ||
+                        (style & (NativeMethods.WsMinimizeBox | NativeMethods.WsMaximizeBox)) != 0 });
 
             return true;
         }, nint.Zero);

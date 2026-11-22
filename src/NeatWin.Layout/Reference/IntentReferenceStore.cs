@@ -177,13 +177,16 @@ public sealed class IntentReferenceStore
         using (var skill = typeof(IntentReferenceStore).Assembly.GetManifestResourceStream("NeatWin.Layout.LearningSkill")!)
         using (var output = archive.CreateEntry("SKILL.md").Open())
             skill.CopyTo(output);
+        using (var script = typeof(IntentReferenceStore).Assembly.GetManifestResourceStream("NeatWin.Layout.RecordingAnalysis")!)
+        using (var output = archive.CreateEntry("analyze_recording.py").Open())
+            script.CopyTo(output);
         using (var preferences = archive.CreateEntry("placement-v1.json").Open())
             JsonSerializer.Serialize(preferences, Placement.Read());
         using var writer = new StreamWriter(archive.CreateEntry("intent-reference.json").Open());
         writer.Write(JsonSerializer.Serialize(Read(respectEnabled: false)));
     }
 
-    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl", "activity-*.jsonl", "behavior-*.jsonl", "gestures-*.jsonl", "focus-*.jsonl" }
+    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl", "activity-*.jsonl", "behavior-*.jsonl", "gestures-*.jsonl", "focus-*.jsonl", "surfaces-*.jsonl" }
         .SelectMany(pattern => Directory.EnumerateFiles(_directory, pattern));
 
     internal void AppendActivity(ActivitySample sample, WorkspaceFrame? geometry, long geometryTick) =>
@@ -191,6 +194,7 @@ public sealed class IntentReferenceStore
             GeometryTick = geometryTick, Frame = geometry, sample.Processes, sample.Windows, sample.Media, sample.InputIdleMilliseconds, sample.AudioTick, sample.DisplayRequired, sample.Usage, sample.CoUse, sample.FocusCoverage });
     internal void AppendFocusBoundary(string session, string reason, FocusCoverage coverage) =>
         AppendJson("focus", new { Version = 1, Session = session, Time = DateTimeOffset.UtcNow, Reason = reason, FocusCoverage = coverage });
+    internal void AppendSurface(object row) => AppendJson("surfaces", row);
     internal void AppendGestures(GestureBatch batch) => AppendJson("gestures", batch);
     internal void AppendBehavior(WindowBehaviorFrame frame) => AppendJson("behavior", frame);
     public void AppendTransition(WorkspaceTransition observation) => AppendJson("workspace", observation);

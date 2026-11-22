@@ -4,6 +4,7 @@ using NeatWin.Core;
 using NeatWin.Reference;
 
 var area = new RectI(0, 0, 1920, 1040);
+SceneModelChecks.Run(Check);
 AttentionWorkspaceChecks.Run(Check);
 VideoFitChecks.Run(Check);
 ReadingFocusChecks.Run(Check);
@@ -981,19 +982,31 @@ Check(RoutineTick(22_000, [reopenedHelper with { Foreground = false }, nextTask]
         "replay links a raw late release while leaving confirmed manual-effort counts unknown");
 }
 
-if (args is ["--behavior", var zip, var behaviorRules, ..])
+if (args is ["--validate", var candidatePath])
+{
+    var candidate = ReadRules(candidatePath)!;
+    Console.WriteLine(JsonSerializer.Serialize(new { candidate.Version, Scenes = candidate.Scenes?.Select(r => r.Id),
+        SurfaceRules = candidate.SurfaceRules?.Select(r => r.Id), Pairs = candidate.Pairs?.Length ?? 0 }));
+}
+else if (args is ["--behavior", var zip, var behaviorRules, ..])
     BehaviorReplay.Run(zip, behaviorRules, args.ElementAtOrDefault(3));
 else if (args.Length > 0)
-    Replay(args[0], args.ElementAtOrDefault(1), args.ElementAtOrDefault(2));
+    Replay(args[0], args.ElementAtOrDefault(1), args.ElementAtOrDefault(2), args.ElementAtOrDefault(3));
 
-static void Replay(string path, string? rulesPath, string? sessionFilter)
+static CompiledLayoutRules? ReadRules(string? path)
 {
-    CompiledLayoutRules? overrideRules = null;
-    if (rulesPath != null)
-    {
-        overrideRules = JsonSerializer.Deserialize<CompiledLayoutRules>(File.ReadAllText(rulesPath), LayoutRuleFile.Json);
-        if (overrideRules?.IsValid() != true) throw new InvalidDataException("Invalid candidate layout rules.");
-    }
+    if (path == null) return null;
+    using var file = File.OpenRead(path);
+    if (file.Length is <= 0 or > 65536) throw new InvalidDataException("Invalid layout rule file size.");
+    var rules = JsonSerializer.Deserialize<CompiledLayoutRules>(file, LayoutRuleFile.Json);
+    return rules?.IsValid() == true ? rules : throw new InvalidDataException("Invalid layout rules.");
+}
+
+static void Replay(string path, string? rulesPath, string? sessionFilter, string? evaluationPath)
+{
+    var overrideRules = ReadRules(rulesPath);
+    var evaluation = ReadRules(evaluationPath);
+    if (sessionFilter == "*") sessionFilter = null;
     using var archive = ZipFile.OpenRead(path);
     var snapshotRoles = new SnapshotRoles(archive);
     var edits = ReplayEffort.Read(archive, sessionFilter);
@@ -1022,8 +1035,8 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
             {
                 var desktop = frame.Windows.OrderBy(w => w.ZOrder).Select(w => new WindowSnapshot(w.Id, w.Rect, w.Rect,
                     w.WorkArea, Array.IndexOf(areas, w.WorkArea) + 1, default, w.Resizable ?? (assumeResizable && w.Manageable),
-                    w.Foreground, w.Manageable, w.ZOrder, w.Dpi, IsTopmost: w.Topmost,
-                    SurfaceState: w.SurfaceState) { Owner = w.OwnerId }).ToArray();
+                    w.Foreground, w.Manageable && !w.LocalSurface, w.ZOrder, w.Dpi, IsTopmost: w.Topmost,
+                    SurfaceState: w.LocalSurface ? null : w.SurfaceState) { Owner = w.OwnerId }).ToArray();
                 var displays = areas.Select((a, i) => new TaskDisplay(i + 1, a,
                     frame.Displays?.FirstOrDefault(d => d.WorkArea == a)?.Bounds ?? a)).ToArray();
                 var focus = desktop.FirstOrDefault(w => w.IsForeground);
@@ -1034,7 +1047,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                 var keyed = desktop.Zip(frame.Windows.OrderBy(w => w.ZOrder), (window, observed) => (window, observed.AppKey)).ToArray();
                 var slotPrefs = activeRules.BindSlots(keyed);
                 var mergedPrefs = CompiledLayoutRules.ApplySlots(ctx.Placement ?? [], slotPrefs);
-                ctx = ctx with { Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities,
+                ctx = ctx with { AppKeys = keyed.ToDictionary(k => k.window.Handle, k => k.AppKey), Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities,
                     ctx.GestureAnchor != 0 && ctx.AllowGestureAssist && ctx.GestureAnchor != ctx.Focus?.Main ? null : ctx.Focus), Placement = mergedPrefs };
                 ctx = ctx with { WindowHints = snapshotRoles.Enrich(run.Session, run.RequestId, frame.Time, desktop, ctx) };
                 var fullDesktop = run.FullDesktop ?? explicitRun;
@@ -1042,6 +1055,9 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                 var plan = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : LayoutRoute.Smart,
                     workingSet, new(SmartStrength: run.Strength ?? SmartTidyStrength.Balanced), null, desktop, ctx);
                 var projected = TaskLayoutSession.Project(desktop, plan);
+                // 衡量 A/B 两个方案时使用完全相同的观察人群。评估规则只看决策前的状态，不参与生成任何候选。
+                var evaluator = evaluation == null || frame.Truncated ? null :
+                    ActiveLayoutScene.Resolve(desktop, ctx with { Rules = evaluation }, includeDefaults: false);
                 bool? regionsPreserved = !frame.Truncated && ctx.WindowHints?.Any(h => h.ProtectedRegions is { Length: > 0 }) == true
                     ? IntentLayoutPlanner.DesktopRegionsPreserved(desktop, projected, ctx) : null;
                 double? runRegret = null, verticalError = null;
@@ -1067,12 +1083,15 @@ static void Replay(string path, string? rulesPath, string? sessionFilter)
                         if (assumeResizable) { correctedRuns++; totalNormalizedRegret += horizontal; regretSamples += matched; }
                     }
                 }
-                Console.WriteLine(JsonSerializer.Serialize(new { run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
+                Console.WriteLine(JsonSerializer.Serialize(new { run.Session, run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
                     run.GestureTiming, ObservedReleaseDetails = edits.Releases.GetValueOrDefault((run.Session, run.RequestId))?
                         .OrderBy(g => g.Tick).Select(g => new { g.GestureId, g.WindowId, g.AutomationMarked, ElapsedMs = g.Prior!.ElapsedMs, g.Change }),
                     RecordedManualFollowups = followups?.Count, RecordedUndoOfThisRequest =
                         edits.Undone.Contains((run.Session, run.RequestId)) ? true : (bool?)null,
                     PostArrangeRegret = runRegret, PostArrangeVerticalError = verticalError, ProtectedRegionsPreserved = regionsPreserved,
+                    Layers = plan.Layers.Select(l => l.FrontToBack.Select(w => (int)w.Handle)),
+                    SceneEffects = plan.Scene?.Effects(projected, h => (int)h),
+                    EvaluationEffects = evaluation == null || frame.Truncated ? null : evaluator?.Effects(projected, h => (int)h) ?? [],
                     Roles = (ctx.WindowHints ?? []).Where(h => h.Role != WindowUseRole.Unknown || h.FloatingAffinity > 0 || h.TextFocus)
                         .Select(h => new { Id = (int)h.Handle, Role = h.Role.ToString(), h.FloatingAffinity, h.TextFocus }),
                     Moves = plan.Moves.Select(m => new { Id = (int)m.Window.Handle, Before = m.Window.VisualRect, After = m.TargetVisualRect }),

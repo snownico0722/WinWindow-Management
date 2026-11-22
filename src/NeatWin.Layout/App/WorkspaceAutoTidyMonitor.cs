@@ -12,7 +12,7 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     private readonly Func<bool, IReadOnlyList<WindowSnapshot>> _capture;
     private readonly Func<bool> _busy;
     private readonly ForegroundHistory _focus;
-    private readonly AutomaticLayoutScheduler _scheduler = new();
+    private readonly AutomaticLayoutScheduler _scheduler;
     private readonly NativeMethods.WinEventProc _callback;
     private readonly List<nint> _hooks = [];
     private readonly Dictionary<nint, nint> _observedStamps = new();
@@ -24,8 +24,9 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     internal bool WatchingWorkspace => _hooks.Count != 0;
     internal AutomaticLayoutMode Mode => _scheduler.Mode;
 
-    internal WorkspaceAutoTidyMonitor(Func<bool, IReadOnlyList<WindowSnapshot>> capture, Func<bool> busy, ForegroundHistory focus)
+    internal WorkspaceAutoTidyMonitor(Func<bool, IReadOnlyList<WindowSnapshot>> capture, Func<bool> busy, ForegroundHistory focus, TaskSurfaces surfaces)
     {
+        _scheduler = new() { Surfaces = surfaces };
         _capture = capture; _busy = busy; _focus = focus; _callback = OnWinEvent;
         CreateHandle(new CreateParams { Caption = "NeatWin.AutomaticLayout", Parent = NativeMethods.HwndMessage });
         _timer.Tick += OnTick;
@@ -59,6 +60,8 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
         }
         return true;
     }
+
+    internal void CancelLocalGesture() => _scheduler.CancelLocalGesture();
 
     internal void GestureStarted(nint handle) => _scheduler.GestureStarted(handle);
     internal void GestureCompleted(ManualWindowGesture gesture, IReadOnlyList<WindowSnapshot> releasedDesktop)

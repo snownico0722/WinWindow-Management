@@ -453,7 +453,13 @@ internal static class SmokeTests
             var gestureTick = Environment.TickCount64;
             shell.SnapshotHistory.ObserveGesture("smoke-gesture", new(1, 7, "start", gestureTick, new(10, 20, 300, 240),
                 new(0, 0, 1920, 1040), 96, false));
+            var card = new NeatWin.Core.SurfaceEvent(1, "smoke-surface", Environment.TickCount64, DateTimeOffset.UtcNow,
+                "suppress", "chat-detail", 7, 8, null, null, new(10, 20, 300, 240), new(0, 0, 800, 700),
+                true, true, false, false);
+            shell.SnapshotHistory.ObserveSurface(card);
             var snapshot = shell.SnapshotHistory.BeginCapture();
+            shell.SnapshotHistory.ObserveSurface(card with { Tick = Environment.TickCount64, Action = "release",
+                ReleaseReason = "geometry-changed", ReleasedChildRect = new(10, 20, 640, 480) });
             var snapshotDir = Directory.CreateDirectory(Path.Combine(output, Guid.NewGuid().ToString("N"))).FullName;
             File.WriteAllText(Path.Combine(snapshotDir, "第一版.zip"), "existing");
             var archivePath = await DesktopSnapshot.ExportAsync(new HashSet<nint>(), new WindowInteropHelper(shell).Handle,
@@ -464,6 +470,7 @@ internal static class SmokeTests
             using (var archive = System.IO.Compression.ZipFile.OpenRead(archivePath))
             using (var timeline = new StreamReader(archive.GetEntry("timeline.jsonl")!.Open()))
             using (var decisions = new StreamReader(archive.GetEntry("layout-decisions.jsonl")!.Open()))
+            using (var surfaces = new StreamReader(archive.GetEntry("surfaces-snapshot.jsonl")!.Open()))
             {
                 var samples = (await timeline.ReadToEndAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
                 var times = samples.Skip(1).Select(line =>
@@ -475,15 +482,23 @@ internal static class SmokeTests
                     times.SequenceEqual(times.Order()) && samples.Any(line => line.Contains(DesktopSnapshot.Handle(item.Hwnd), StringComparison.Ordinal)) &&
                     archive.GetEntry("gestures-smoke-gesture.jsonl") is not null && archive.GetEntry("summary.txt") is not null && (await decisions.ReadToEndAsync()).Contains("\"Trigger\":\"explicit\"", StringComparison.Ordinal),
                     "snapshot ZIP includes the pre-click window timeline and earlier decisions alongside the live capture");
+                var events = (await surfaces.ReadToEndAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(line => JsonSerializer.Deserialize<NeatWin.Core.SurfaceEvent>(line))
+                    .Where(s => s?.Session == card.Session).ToArray();
+                Assert(events is [ { Action: "suppress", WindowId: 7 }, { Action: "release", WindowId: 7, ReleaseReason: "geometry-changed" } ],
+                    "snapshot ZIP includes local surface suppression before capture and release during capture");
             }
             File.Delete(archivePath);
             OpenSection("DataSection");
             lookback.IsChecked = false;
             lookback.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             var disabledSnapshot = shell.SnapshotHistory.BeginCapture();
+            shell.SnapshotHistory.ObserveSurface(card with { Tick = Environment.TickCount64 });
             shell.SnapshotHistory.EndCapture(disabledSnapshot);
-            Assert(!disabledSnapshot.LookbackEnabled && disabledSnapshot.PastWindows.Length == 0 && disabledSnapshot.PastDecisions.Length == 0 && disabledSnapshot.PastGestures.Length == 0,
-                "turning snapshot lookback off clears both history buffers");
+            Assert(!disabledSnapshot.LookbackEnabled && disabledSnapshot.PastWindows.Length == 0 &&
+                disabledSnapshot.PastDecisions.Length == 0 && disabledSnapshot.PastGestures.Length == 0 &&
+                disabledSnapshot.PastSurfaces.Length == 0 && disabledSnapshot.LiveSurfaces.Any(s => s.Session == card.Session),
+                "turning snapshot lookback off clears prior observations while the active capture still receives local surface transitions");
             await WaitAsync("snapshot lookback opt-out survives reload", () => !new StateStore(data).Preferences.SnapshotLookbackEnabled);
             ((ToggleButton)shell.FindName("SettingsButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             var row = await FindRowAsync(shell, chosen);

@@ -64,13 +64,15 @@ internal sealed class LayoutRunJournal : IDisposable
                 long? Elapsed(long? tick) => tick >= release ? tick - release : null;
                 timing = new(windowId, reusedPreview, Elapsed(application.FirstGeometrySubmittedTick), Elapsed(application.GestureWindowSubmittedTick));
             }
-            var observation = new LayoutRunObservation(8, _session, Guid.NewGuid().ToString("N"), trigger,
+            var scene = scored?.Scene ?? proposal?.Scene;
+            var observation = new LayoutRunObservation(9, _session, Guid.NewGuid().ToString("N"), trigger,
                 frame, targets, layers, groups, null, refused.Length > 0 ? "submission-failed" : "requested-not-yet-verified",
                 application.Notes, Project(baseline), Project(proposal), Project(scored), context?.Rules,
                 context == null ? null : RecordedTaskSignals.From(context, ids, before), strength, fullDesktop, refused.Length == 0 ? null : refused,
                 application.MinimizeRequested is { } minimized ? ids[minimized.Handle] : null, UndoOfRequest: undoOfRequest, GestureTiming: timing,
                 OpeningToFirstGeometrySubmitMs: openingTick is long activated && application.FirstGeometrySubmittedTick is long submitted && submitted >= activated
-                    ? submitted - activated : null);
+                    ? submitted - activated : null,
+                SceneEffects: scene?.Effects(TaskLayoutSession.Project(before, plan), h => ids[h]));
             _snapshotObserver?.Invoke(observation);
             var epoch = _recorder?.RecordingEpoch ?? 0;
             var recorded = TryAppend(observation, epoch);
@@ -79,7 +81,7 @@ internal sealed class LayoutRunJournal : IDisposable
             if (_pending.Count >= 8) _pending.RemoveAt(0);
             foreach (var old in _pending) old.Intervened = true;
             _pending.Add(new(observation, before.Select(w => w.Handle).ToHashSet(), Environment.TickCount64, epoch,
-                recorded, plan.Moves, application.Failures, allowReplan, application.MinimizeRequested) { Intervened = application.Interrupted });
+                recorded, plan.Moves, application.Failures, allowReplan, application.MinimizeRequested) { Intervened = application.Interrupted, Scene = scene });
             _timer.Start();
             return observation.RequestId;
         }
@@ -148,7 +150,12 @@ internal sealed class LayoutRunJournal : IDisposable
                                 w.Dpi, w.Handle, w.ProcessId, _recorder.TryReadAppKey(w));
                     }
                 }
-                var actual = requested with { Actual = frame, MinimizeVerified = minimized, Outcome = intervened ? "intervened" :
+                // 用户已接手或实例消失时只保留实际帧，不把这段差异归给系统的摆放。
+                bool comparable = !intervened && !frame.Truncated && !requested.Before.Truncated && pending.Scene != null &&
+                    pending.Scene.References.All(g => current.TryGetValue(g.Window.Handle, out var w) &&
+                        requested.SceneEffects?.Any(e => e.Rule == g.Rule && e.SubjectId == _identity.Id(w)) == true);
+                var actual = requested with { Actual = frame,
+                    ActualSceneEffects = comparable ? pending.Scene!.Effects(snapshot, h => _identity.Id(current[h])) : null, MinimizeVerified = minimized, Outcome = intervened ? "intervened" :
                     pending.Failures.Count > 0 ? "submission-failed" : matches ? "observed-match" : "observed-difference" };
                 // Pause/clear stops writes, not the runtime's placement verification. An old
                 // completion must not resurrect cleared data or become a new recording session.
@@ -178,6 +185,7 @@ internal sealed class LayoutRunJournal : IDisposable
         internal bool AllowReplan { get; } = allowReplan;
         internal WindowSnapshot? Minimize { get; } = minimize;
         internal HashSet<nint>? UnchangedOnFirstRead { get; set; }
+        internal ActiveLayoutScene? Scene { get; init; }
         internal bool Intervened { get; set; }
     }
 }

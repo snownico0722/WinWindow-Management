@@ -14,10 +14,12 @@ internal sealed class DesktopSnapshotHistory : IDisposable
 {
     internal const int LookbackMilliseconds = 60_000;
     internal const int SampleIntervalMilliseconds = 1000;
+    private const int MaxSurfaceEvents = 512;
     private readonly object _gate = new();
     private readonly Queue<DesktopSnapshot.Sample> _windows = new();
     private readonly Queue<Decision> _decisions = new();
     private readonly Queue<Gesture> _gestures = new();
+    private readonly Queue<SurfaceEvent> _surfaces = new();
     private PeriodicTimer? _timer;
     private Capture? _capture;
     private long _clearedAt;
@@ -25,10 +27,19 @@ internal sealed class DesktopSnapshotHistory : IDisposable
     internal sealed record Gesture(string Session, GestureEvent Event);
     internal sealed record Decision(long Tick, LayoutRunObservation Observation);
     internal sealed record Capture(DateTimeOffset Time, long Tick, bool LookbackEnabled,
-        DesktopSnapshot.Sample[] PastWindows, Decision[] PastDecisions, Gesture[] PastGestures, long GestureEarliestTick)
+        DesktopSnapshot.Sample[] PastWindows, Decision[] PastDecisions, Gesture[] PastGestures,
+        SurfaceEvent[] PastSurfaces, long EarliestTick)
     {
         internal ConcurrentQueue<Gesture> LiveGestures { get; } = new();
         internal ConcurrentQueue<Decision> LiveDecisions { get; } = new();
+        internal ConcurrentQueue<SurfaceEvent> LiveSurfaces { get; } = new();
+        private int _droppedSurfaces;
+        internal int DroppedSurfaces => Volatile.Read(ref _droppedSurfaces);
+        internal void ObserveSurface(SurfaceEvent observation)
+        {
+            if (LiveSurfaces.Count < MaxSurfaceEvents) LiveSurfaces.Enqueue(observation);
+            else Interlocked.Increment(ref _droppedSurfaces);
+        }
     }
 
     internal void SetEnabled(bool enabled, nint workbench, Func<IReadOnlySet<nint>> getManaged)
@@ -104,6 +115,24 @@ internal sealed class DesktopSnapshotHistory : IDisposable
         }
     }
 
+    internal bool WantsSurfaces() { lock (_gate) return _timer != null || _capture != null; }
+
+    internal void ObserveSurface(SurfaceEvent observation)
+    {
+        lock (_gate)
+        {
+            if (observation.Tick < _clearedAt) return;
+            if (_timer != null)
+            {
+                Trim(Environment.TickCount64);
+                if (_surfaces.Count >= MaxSurfaceEvents) _surfaces.Dequeue();
+                _surfaces.Enqueue(observation);
+            }
+            if (_capture is { } capture && observation.Tick >= capture.Tick)
+                capture.ObserveSurface(observation);
+        }
+    }
+
     internal Capture BeginCapture()
     {
         lock (_gate)
@@ -112,7 +141,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
             Trim(tick);
             // 复制点击前的记录和接收后续事件共用同一把锁，恰逢点击发生的排布或手势就不会落在两段记录之间。
             return _capture = new(DateTimeOffset.Now, tick, _timer is not null, _windows.ToArray(), _decisions.ToArray(),
-                _gestures.ToArray(), _timer == null ? tick : Math.Max(_clearedAt, tick - LookbackMilliseconds));
+                _gestures.ToArray(), _surfaces.ToArray(), _timer == null ? tick : Math.Max(_clearedAt, tick - LookbackMilliseconds));
         }
     }
 
@@ -127,6 +156,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
         var earliest = now - LookbackMilliseconds;
         while (_windows.TryPeek(out var sample) && sample.Tick < earliest) _windows.Dequeue();
         while (_gestures.TryPeek(out var gesture) && gesture.Event.Tick < earliest) _gestures.Dequeue();
+        while (_surfaces.TryPeek(out var surface) && surface.Tick < earliest) _surfaces.Dequeue();
         while (_decisions.TryPeek(out var decision) && decision.Tick < earliest) _decisions.Dequeue();
     }
 
@@ -138,6 +168,7 @@ internal sealed class DesktopSnapshotHistory : IDisposable
             _windows.Clear();
             _decisions.Clear();
             _gestures.Clear();
+            _surfaces.Clear();
         }
     }
 

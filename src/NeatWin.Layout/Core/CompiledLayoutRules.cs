@@ -15,7 +15,9 @@ public sealed record AppSlotRule(string App, string Side = "either", double? Wid
 public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = .31, double AudioPeakThreshold = .02,
     double FragmentChangeThreshold = .08, AppPairRule[]? Pairs = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] RolePairRule[]? RolePairs = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AppSlotRule[]? AppSlots = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AppSlotRule[]? AppSlots = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LayoutScene[]? Scenes = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SurfaceRule[]? SurfaceRules = null)
 {
     public static CompiledLayoutRules Default { get; } = new(Pairs: []);
 
@@ -25,7 +27,10 @@ public sealed record CompiledLayoutRules(int Version = 1, double MediaOverlap = 
     internal bool IsValid()
     {
         static bool Key(string? key) => key is { Length: 24 } && key.All(char.IsAsciiHexDigit);
-        if (Version is not (1 or 2 or 3) || MediaOverlap is not (>= 0 and <= .40) ||
+        if (SurfaceRules != null && (Version < 4 || SurfaceRules.Length > 64 || SurfaceRules.Any(r => r == null || !r.IsValid()) ||
+            SurfaceRules.Select(r => r.Id).Distinct().Count() != SurfaceRules.Length)) return false;
+        if (Version is not (1 or 2 or 3 or 4) || Scenes != null && (Version < 4 || Scenes.Length > 64 ||
+            Scenes.Any(s => s == null || !s.IsValid()) || Scenes.Select(s => s.Id).Distinct().Count() != Scenes.Length) || MediaOverlap is not (>= 0 and <= .40) ||
             AudioPeakThreshold is not (> 0 and <= 1) || FragmentChangeThreshold is not (> 0 and <= 1) ||
             Pairs?.Length > 64 || RolePairs?.Length > 32 || AppSlots?.Length > 64) return false;
         var seen = new HashSet<(string, string)>();

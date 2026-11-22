@@ -71,6 +71,12 @@ internal static partial class IntentLayoutPlanner
             foreach (var group in wholeDisplay || sharedTask ? [all] : Groups(all, taskContext))
             {
                 var groupContext = ResolveWorkingPair(group, taskContext);
+                var scene = groupContext.Scene?.Monitor == monitor.Key ? groupContext.Scene : null;
+                if (scene?.Settings?.AllowResize is bool allow)
+                    groupContext = groupContext with { Profile = groupContext.Preferences with { AllowUsefulResize = allow } };
+                var weights = scene?.Settings?.Weights;
+                var indices = scene?.References.Length > 0 ? group.Select((v, i) => (v.Window.Handle, Index: i))
+                    .ToDictionary(p => p.Handle, p => p.Index) : null;
                 var handles = group.Select(v => v.Window.Handle).ToHashSet();
                 // 配对习惯可用于上一步寻找搭档。确定本轮成员后，和缺席窗口一起学到的几何偏好就不该继续改变当前两栏。
                 if (groupContext.IsWorkspaceObservation && groupContext.Placement is { Length: > 0 } preferences)
@@ -99,11 +105,12 @@ internal static partial class IntentLayoutPlanner
                     .Where(r => r != area).Take(6).Prepend(area).ToArray();
                 var beforeExposure = MeasureBeforeExposure(group, original, area, obstacles);
                 var stackSignal = StackSignal(group, original);
-                TaskCostBreakdown Breakdown(Candidate c) => EffectiveBreakdown(
+                TaskCostBreakdown StandardCost(Candidate c) => EffectiveBreakdown(
                     TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, goals), options.SmartStrength, task);
+                TaskCostBreakdown Breakdown(Candidate c) => weights?.Apply(StandardCost(c)) ?? StandardCost(c);
                 var viewingModel = groupContext.Calibration?.Matches(area, group[0].Window.Dpi) == true
                     ? "calibrated-flat-screen-angle" : "normalized-distance-not-gaze";
-                if (AttentionLayout.SettledWorkspaceReason(group, goals, beforeExposure, obstacles, groupContext) is { } reason)
+                if (scene?.Settings?.ReconsiderSettled != true && AttentionLayout.SettledWorkspaceReason(group, goals, beforeExposure, obstacles, groupContext) is { } reason)
                 {
                     var kept = Breakdown(new("keep", original, order));
                     traces.Add(new(group.Select(v => v.Window.Handle).ToArray(), "keep", stackSignal,
@@ -218,13 +225,40 @@ internal static partial class IntentLayoutPlanner
                         HitsOutsideGroup(settled, group, original, candidate.Rects) ? "other-group" :
                         blockers.Any(w => candidate.Rects.Select((r, i) => r.Intersect(w.VisualRect).Area > original[i].Intersect(w.VisualRect).Area).Any(b => b)) ? "fixed-occluder" :
                         null;
-                    if (rejection is not null) { audits.Add(new(candidate.Kind, null, rejection, Generation: generation)); return; }
+                    if (rejection == null && indices != null)
+                    {
+                        // 已求解的组也参与投影。联合遮挡需按各窗的新 Z 序计算，不能只核对本次被移动的句柄。
+                        RectI Box(WindowSnapshot w) => indices.TryGetValue(w.Handle, out int i) ? candidate.Rects[i] :
+                            settled.GetValueOrDefault(w.Handle, w.VisualRect);
+                        int Rank(WindowSnapshot w) => indices.TryGetValue(w.Handle, out int i) ?
+                            group[Array.IndexOf(candidate.Order, i)].Window.ZOrder : settledRanks.GetValueOrDefault(w.Handle, w.ZOrder);
+                        foreach (var reference in scene!.References)
+                            if (reference.Measure(desktop!, Box, Rank).Lost > reference.Limit + 1e-9)
+                            { rejection = "visible-reference:" + reference.Rule; break; }
+                    }
+                    if (rejection is not null)
+                    {
+                        audits.Add(new(candidate.Kind, null, rejection, Generation: generation));
+                        // 只有一轴挤到参考内容时仍可改善另一轴。拆开试算后继续走相同的可读性、比例、输入与遮挡检查。
+                        if (rejection.StartsWith("visible-reference:", StringComparison.Ordinal) &&
+                            !candidate.Kind.StartsWith("reference-fit-", StringComparison.Ordinal) && candidate.Order.SequenceEqual(order))
+                        {
+                            foreach (bool horizontal in new[] { true, false })
+                            {
+                                var slots = candidate.Rects.Select((r, i) => horizontal ?
+                                    original[i] with { X = r.X, Width = r.Width } : original[i] with { Y = r.Y, Height = r.Height }).ToArray();
+                                var split = new Candidate(horizontal ? "reference-fit-x" : "reference-fit-y", slots, order);
+                                if (seen.Add(CandidateKey(split))) Evaluate(split, generation);
+                            }
+                        }
+                        return;
+                    }
                     var breakdown = Breakdown(candidate);
                     var score = breakdown.Total;
                     // 先比较主窗能否阅读、副窗能否点到，再用总成本挑摆法。否则少挪几像素就可能压过露出一整扇参考窗的收益。
                     bool followsGesture = groupContext.AllowGestureAssist && gestureIndex >= 0 &&
                         groupContext.GestureTarget == candidate.Rects[gestureIndex] && candidate.Rects[gestureIndex] != original[gestureIndex];
-                    var weight = groupContext.InterventionWeight(followsGesture);
+                    var weight = groupContext.InterventionWeight(followsGesture) * (weights?.Intervention ?? 1);
                     var threshold = baseThreshold / weight;
                     var priority = breakdown.Goal.CompareTo(bestGoal);
                     // 默认居中仅为已值得执行的候选打破近似平局，不能补齐对原位方案的收益门槛。

@@ -49,6 +49,9 @@ public sealed partial class WindowManager
             return new(plan with { Moves = [], Layers = [] }, ["已保留当前文字窗口的阅读位置。"])
                 { Interrupted = caret != 0 && context.WindowHints?.Any(h => h.Handle == caret && h.TextFocus) != true };
 
+        if (plan.Scene is { } scene && (!scene.Allows(current, plan) ||
+            plan.Layers.Count > 0 && !scene.Allows(current, plan with { Moves = [] })))
+            return new(plan with { Moves = [], Layers = [] }, ["当前参照窗的可见区域已变化，本轮保留现场。"]);
         var targetRects = plan.Moves.ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
         var notes = ApplyLayers(plan.Layers, targetRects, automaticForeground).ToList();
         var afterLayers = plan.Layers.Count == 0 ? current : Capture();
@@ -68,6 +71,11 @@ public sealed partial class WindowManager
             accepted = accepted with { Moves = [] };
             readingChanged = afterCaret != 0 && afterCaret != caret;
             notes.Add("层级变化后已保留当前文字窗口的阅读位置。");
+        }
+        if (failed.Length > 0 && accepted.Scene?.Allows(afterLayers, accepted with { Layers = [] }) == false)
+        {
+            accepted = accepted with { Moves = [] };
+            notes.Add("层级未完全实现，已保留后台参照窗的可见区域。");
         }
         bool interrupted = InteractionChanged(automaticForeground);
         if (interrupted)

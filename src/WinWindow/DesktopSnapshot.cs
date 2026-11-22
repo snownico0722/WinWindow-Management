@@ -68,6 +68,10 @@ internal static class DesktopSnapshot
             var pastPlans = capture?.PastDecisions ?? [];
             var livePlans = capture?.LiveDecisions.Where(d => d.Tick - startTick <= frames[^1].ElapsedMs).ToArray() ?? [];
             var plans = pastPlans.Concat(livePlans).Select(d => d.Observation).ToArray();
+            long endTick = startTick + frames[^1].ElapsedMs;
+            var pastSurfaces = capture?.PastSurfaces ?? [];
+            var liveSurfaces = capture?.LiveSurfaces.Where(s => s.Tick <= endTick).ToArray() ?? [];
+            int droppedSurfaces = capture?.DroppedSurfaces ?? 0;
             bool lookbackEnabled = capture?.LookbackEnabled == true;
             int pastRequests = pastPlans.Select(d => d.Observation.RequestId).Distinct().Count();
             int liveRequests = livePlans.Select(d => d.Observation.RequestId).Distinct().Count();
@@ -83,6 +87,7 @@ internal static class DesktopSnapshot
                         writer.WriteLine($"Lookback: {(lookbackEnabled ? "enabled" : "disabled")} | Samples before click: {past.Length} | History span: {(past.Length == 0 ? 0 : startTick - past[0].Tick)} ms");
                         writer.WriteLine($"Previous external foreground: {Handle(previousForeground)}");
                         writer.WriteLine($"Layout requests before click: {pastRequests} | After click: {liveRequests}");
+                        writer.WriteLine($"Surface transitions before click: {pastSurfaces.Length} | After click: {liveSurfaces.Length} | Live limit drops: {droppedSurfaces}");
                         writer.WriteLine($"Monitors: {displays.Length}");
                         foreach (var display in displays)
                             writer.WriteLine($"  {display.Name} | display: {display.Screen} | work area: {display.WorkArea} | primary: {display.Primary}");
@@ -104,14 +109,15 @@ internal static class DesktopSnapshot
                     {
                         writer.WriteLine(JsonSerializer.Serialize(new { Version = 2, SmartLayoutModel = LayoutDispatch.ModelVersion(TidyAlgorithmMode.Smart),
                             ClassicLayoutModel = LayoutDispatch.ModelVersion(TidyAlgorithmMode.Classic), LearningModel = PlacementPreferences.ModelVersion,
-                            Start = start, PreviousForeground = Handle(previousForeground), Mode = mode, Displays = displays,
+                            Start = start, StartTick = startTick, PreviousForeground = Handle(previousForeground), Mode = mode, Displays = displays,
                             LookbackEnabled = lookbackEnabled, LookbackMilliseconds = DesktopSnapshotHistory.LookbackMilliseconds,
-                            SamplesBeforeClick = past.Length, LayoutRequestsBeforeClick = pastRequests, LayoutRequestsAfterClick = liveRequests }));
+                            SamplesBeforeClick = past.Length, LayoutRequestsBeforeClick = pastRequests, LayoutRequestsAfterClick = liveRequests,
+                            SurfaceTransitionsBeforeClick = pastSurfaces.Length, SurfaceTransitionsAfterClick = liveSurfaces.Length, DroppedLiveSurfaceTransitions = droppedSurfaces }));
                         foreach (var frame in frames) writer.WriteLine(JsonSerializer.Serialize(frame));
                     }
                     if (capture != null)
                     {
-                        long earliest = capture.GestureEarliestTick;
+                        long earliest = capture.EarliestTick;
                         var observed = capture.PastGestures.Concat(capture.LiveGestures).Where(g =>
                             g.Event.Tick >= earliest && g.Event.Tick <= startTick + frames[^1].ElapsedMs);
                         foreach (var group in observed.GroupBy(g => g.Session))
@@ -120,6 +126,12 @@ internal static class DesktopSnapshot
                             var events = group.OrderBy(g => g.Event.Tick).Select(g => g.Event.WithinLookback(earliest)).ToArray();
                             writer.WriteLine(JsonSerializer.Serialize(new GestureBatch(1, group.Key, start, events, 0)));
                         }
+                    }
+                    if (capture != null)
+                    {
+                        using var writer = Writer(zip, "surfaces-snapshot.jsonl");
+                        foreach (var observation in pastSurfaces.Concat(liveSurfaces))
+                            writer.WriteLine(JsonSerializer.Serialize(observation));
                     }
                     using (var writer = Writer(zip, "layout-decisions.jsonl"))
                         foreach (var plan in plans) writer.WriteLine(JsonSerializer.Serialize(plan));
