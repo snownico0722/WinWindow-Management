@@ -2,6 +2,67 @@ namespace NeatWin.Core;
 
 internal static partial class IntentLayoutPlanner
 {
+    private static void AddClippedEdgeRepairs(List<Candidate> candidates, VisibleWindow[] windows, RectI[] original,
+        RectI area, TaskLayoutContext context, AttentionTarget[]? goals, int[] order)
+    {
+        if (!context.Preferences.AllowUsefulResize) return;
+        for (int i = 0; i < windows.Length; i++)
+        {
+            var window = windows[i].Window;
+            if (!window.IsResizable || goals?[i].Resizable == false || context.HoldsTextView(window) ||
+                window.Handle == context.GestureAnchor) continue;
+            var rect = original[i];
+            var inside = rect.Intersect(area);
+            if (inside.IsEmpty || inside == rect) continue;
+            // 只修超出工作区的那一边。把整窗平移进屏会把已露出的内容挪到邻窗上；两种代价应在同轮比较。
+            if (inside.Width < rect.Width) Add(rect with { X = inside.X, Width = inside.Width });
+            if (inside.Height < rect.Height) Add(rect with { Y = inside.Y, Height = inside.Height });
+            if (inside.Width < rect.Width && inside.Height < rect.Height) Add(inside);
+            void Add(RectI target)
+            {
+                var frames = (RectI[])original.Clone();
+                frames[i] = target;
+                candidates.Add(new("clipped-edge-repair", frames, order));
+            }
+        }
+    }
+
+    // 两窗已有参考关系时，允许只平移遮挡的一方。沿实际相邻边界求最短让位，保留字号、另一轴和所有其他窗。
+    // 普通切换与多跳导航没有给出并看意图。中心重合时也没有方向依据，不凭枚举顺序选边。
+    private static void AddReferenceClearance(List<Candidate> candidates, VisibleWindow[] windows, RectI[] original,
+        RectI area, int gap, TaskLayoutContext context, AttentionTarget[]? goals, int[] order)
+    {
+        if (context.Focus is not { Main: not 0, Companion: not 0, Evidence: "recent-switch-pair", Switches: >= 2 } focus ||
+            focus.Navigation is { Length: > 0 } || !context.PairPlanningEnabled) return;
+        int main = Array.FindIndex(windows, w => w.Window.Handle == focus.Main);
+        int peer = Array.FindIndex(windows, w => w.Window.Handle == focus.Companion);
+        if (main < 0 || peer < 0 || original[main].Intersect(original[peer]).IsEmpty) return;
+        Add(main, peer);
+        Add(peer, main);
+
+        void Add(int moved, int fixedIndex)
+        {
+            var window = windows[moved].Window;
+            if (goals?[moved].Movable == false || window.Handle == context.GestureAnchor || context.HoldsTextView(window)) return;
+            var rect = original[moved];
+            var other = original[fixedIndex];
+            int dx = Math.Sign((long)rect.Left + rect.Right - other.Left - other.Right);
+            int dy = Math.Sign((long)rect.Top + rect.Bottom - other.Top - other.Bottom);
+            if (dx != 0 && rect.Width <= area.Width)
+                Offer(rect with { X = Math.Clamp(dx < 0 ? other.Left - gap - rect.Width : other.Right + gap, area.Left, area.Right - rect.Width) });
+            if (dy != 0 && rect.Height <= area.Height)
+                Offer(rect with { Y = Math.Clamp(dy < 0 ? other.Top - gap - rect.Height : other.Bottom + gap, area.Top, area.Bottom - rect.Height) });
+
+            void Offer(RectI target)
+            {
+                if (target.Intersect(other).Area >= rect.Intersect(other).Area) return;
+                var frames = (RectI[])original.Clone();
+                frames[moved] = target;
+                candidates.Add(new("reference-clearance", frames, order));
+            }
+        }
+    }
+
     private static void AddAccessRepairs(List<Candidate> candidates, VisibleWindow[] windows, RectI[] original,
         OcclusionMetrics.Exposure[] exposure, WindowSnapshot[] obstacles, RectI area, int gap, int[] order)
     {

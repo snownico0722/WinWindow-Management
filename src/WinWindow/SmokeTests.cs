@@ -110,6 +110,35 @@ internal static class SmokeTests
             "snapshot reports the missing part of surface history when the rolling buffer fills");
     }
 
+    private static async Task CheckTitleRestoreAsync(NeatWin.Windows.WindowManager windows, NeatWin.Core.WindowSnapshot fixture)
+    {
+        var full = fixture.VisualRect with { Y = fixture.WorkArea.Y, Height = fixture.WorkArea.Height };
+        var move = new TidyMove(fixture, full);
+        using var input = new NeatWin.App.AutoTidyManager();
+        bool held = false;
+        using var restore = new NeatWin.App.ReversibleVerticalFillManager(input, _ => false, () => held);
+        windows.ApplyLayout(new([move], [], []));
+        bool At(RectI rect) => windows.Capture().Any(w => w.Handle == fixture.Handle && WindowStateRules.Near(w.VisualRect, rect));
+        await WaitAsync("native restore fixture fills the work area", () => At(full));
+        Native.SetForegroundWindow(fixture.Handle);
+        await WaitAsync("title restore fixture has real foreground", () => Native.GetForegroundWindow() == fixture.Handle);
+        restore.Track([move], true);
+        var title = new PointI(full.Left + full.Width / 2, full.Top + (int)Math.Round(15 * fixture.Dpi / 96d));
+        var press = new PointerObservation("left-down", fixture.Handle, fixture.ProcessId, fixture.Handle, fixture.Handle,
+            title, null, Environment.TickCount64);
+        // 固定按键状态以免无人值守的测试移动真鼠标；命中测试、窗口线程、焦点与放置均走真实 Windows。
+        await restore.PointerChangedAsync(press);
+        Assert(At(full), "a released title press cannot apply its late restore");
+        held = true;
+        await restore.PointerChangedAsync(press with { Point = title with { Y = full.Top + full.Height / 2 } });
+        Assert(At(full), "client-area press leaves the native window filled");
+        await restore.PointerChangedAsync(press);
+        await WaitAsync("held native title press restores the original size", () => windows.Capture().Any(w =>
+            w.Handle == fixture.Handle && w.VisualRect.Height == fixture.VisualRect.Height && w.VisualRect.Width == fixture.VisualRect.Width));
+        windows.ApplyLayout(new([new(windows.Capture().Single(w => w.Handle == fixture.Handle), fixture.VisualRect)], [], []));
+        await WaitAsync("title restore fixture returns to its original bounds", () => At(fixture.VisualRect));
+    }
+
     private static async Task CheckNativeGeometryBatchAsync(NeatWin.Windows.WindowManager windows,
         nint first, nint second, string output, List<Process> processes)
     {
@@ -245,6 +274,7 @@ internal static class SmokeTests
                 restored.GestureWindowSubmittedTick == null, "undoing the native move cannot count as submission for another fixture");
             await WaitAsync("layout undo restores fixture geometry", () => Reached(source.VisualRect));
             await CheckNativeGeometryBatchAsync(layoutWindows, normal.Hwnd, twins.Hwnd, output, processes);
+            await CheckTitleRestoreAsync(layoutWindows, layoutWindows.Capture().Single(w => w.Handle == normal.Hwnd));
             Stop(twins.Process);
             await twins.Process.WaitForExitAsync();
             await manager.SetPinAsync(item, true);

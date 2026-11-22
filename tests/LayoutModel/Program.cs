@@ -6,6 +6,7 @@ using NeatWin.Reference;
 
 var area = new RectI(0, 0, 1920, 1040);
 CoupledDividerChecks.Run(Check);
+ScopedGeometryChecks.Run(Check);
 PlacementShadowChecks.Run(Check);
 SceneModelChecks.Run(Check);
 AttentionWorkspaceChecks.Run(Check);
@@ -1097,9 +1098,9 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                 var activeRules = overrideRules ?? run.Rules ?? CompiledLayoutRules.Default;
                 var keyed = desktop.Zip(frame.Windows.OrderBy(w => w.ZOrder), (window, observed) => (window, observed.AppKey)).ToArray();
                 var observedPair = ctx.GestureAnchor != 0 && ctx.AllowGestureAssist && ctx.GestureAnchor != ctx.Focus?.Main ? null : ctx.Focus;
-                var slotPrefs = activeRules.BindSlots(keyed, observedPair);
+                var slotPrefs = activeRules.BindSlots(keyed, observedPair, ctx.InstanceUses);
                 var mergedPrefs = CompiledLayoutRules.ApplySlots(ctx.Placement ?? [], slotPrefs);
-                ctx = ctx with { AppKeys = keyed.ToDictionary(k => k.window.Handle, k => k.AppKey), Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities, observedPair), Placement = mergedPrefs };
+                ctx = ctx with { AppKeys = keyed.ToDictionary(k => k.window.Handle, k => k.AppKey), Rules = activeRules, RulePairs = activeRules.Bind(keyed, ctx.WindowHints, ctx.Activities, observedPair, ctx.InstanceUses), Placement = mergedPrefs };
                 ctx = ctx with { WindowHints = snapshotRoles.Enrich(run.Session, run.RequestId, frame.Time, desktop, ctx) };
                 var fullDesktop = run.FullDesktop ?? explicitRun;
                 var workingSet = fullDesktop ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);

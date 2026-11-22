@@ -229,3 +229,5 @@ Smart v2.4 的普通候选可在 `Breakdown.Interruption` 查看已经计入总�
 每组的 AxisCoverage 按 Ids 中从零起的 WindowIndex 保存 X、Y、Width、Height 候选值。Generated 是实际试过的值，Feasible 是至少有一个通过约束及反馈检查的方案含有该值。四个轴分别出现，不保证其组合是可行方案。缺字段表示当时没有完整观测。对保留原边界的候选，Held.Axes 表示试着恢复的坐标和尺寸，GainFromMoving 为保留原边界的成本减去对照方案成本。正值表示多动这些边界有模型收益，遇到约束则给出拒绝原因。接缝的评分单位是像素。
 
 DividerRelease 保存完整模式参与求解的原始缩放起止框和工作区，实例由 GestureAnchor 关联。分析工具的 InterventionAssessment 同时列出提交、回执及可关联的人工补调；MissedAssistance 继续列出无提交或无请求的人工摆放。按相同会话、实例、坐标轴核对证据，旧包缺少候选信息时保留未知。几何上更接近一次手工松手，不能换算成实际节省了一次拖动。
+
+v13 请求的 `Signals.InstanceUses` 用会话窗口编号记录求解前识别到的实例用途。v6 个人规则可在 `AppSlots` 用 `Use`，在 `Pairs` 用 `FirstUse` 和 `SecondUse`，可选值为 `reading`、`editing`、`playback`。两个端点可用相同应用键和不同用途。每个端点须在其显示器上唯一命中；旧规则仍按原有唯一应用键匹配。旧快照没有这一项，回放保留未知。用途来自当时可得的滚动、编辑或播放观测，单个应用可以随任务转换用途。

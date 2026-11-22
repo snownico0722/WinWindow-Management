@@ -14,6 +14,10 @@ internal readonly record struct ForegroundReading(nint Root, nint Focus, uint Pi
         Root != 0 && Focus != 0 && LastInput.HasValue && live.Root == Root && live.Focus == Focus &&
         live.Pid == Pid && live.LastInput == LastInput && (Caret || !live.Caret);
 
+    // 输入时间与插入点描述操作状态；它们变化时仍可能是同一个 WPS 控件。
+    internal bool SameControl(ForegroundReading other) =>
+        Root != 0 && Focus != 0 && Root == other.Root && Focus == other.Focus && Pid == other.Pid;
+
     internal static ForegroundReading Read(WindowSnapshot? expected)
     {
         if (expected is not { IsForeground: true, IsManageable: true } ||
@@ -50,12 +54,16 @@ internal sealed class OfficeSurfaceProbe(Func<ForegroundReading, Task<FocusedOff
     internal FocusedOfficeSurface Sample(ForegroundReading target, long now)
     {
         if (target.Root == 0) return default;
+        // 同一个 WPS 外框内也会切换编辑控件。过期任务不得在切回旧 HWND 后覆盖新结果。
+        if (!_cachedTarget.SameControl(target)) _cachedTarget = default;
+        foreach (var pending in _requests)
+            if (pending.Target.Root == target.Root && !pending.Target.SameControl(target)) pending.Retired = true;
         for (int i = _requests.Count - 1; i >= 0; i--)
         {
             var request = _requests[i];
             if (!request.Work.IsCompleted) continue;
             _requests.RemoveAt(i);
-            if (!request.Retired && request.Target == target)
+            if (!request.Retired && request.Target.SameControl(target))
             {
                 _cachedTarget = target;
                 _cached = request.Work.IsCompletedSuccessfully ? request.Work.Result : default;
@@ -63,16 +71,16 @@ internal sealed class OfficeSurfaceProbe(Func<ForegroundReading, Task<FocusedOff
             }
             _ = request.Work.Exception;
         }
-        bool same = _cachedTarget == target;
+        bool same = _cachedTarget.SameControl(target);
         bool busy = _requests.Count >= 2 || _requests.Any(r =>
-            (!r.Retired && r.Target.Root == target.Root && r.Target.Pid == target.Pid) || now - r.Started < 1_500);
+            (!r.Retired && r.Target.SameControl(target)) || now - r.Started < 1_500);
         if (!busy && (!same || now - _lastRefresh >= 2_000))
             _requests.Add(new(target, query?.Invoke(target) ?? Task.Run(() => Read(target)), now));
         return same ? _cached : default;
     }
 
     internal bool JustStarted(nint root, long now) =>
-        _requests.Any(r => !r.Retired && r.Target.Root == root && r.Target != _cachedTarget && now - r.Started < 200);
+        _requests.Any(r => !r.Retired && r.Target.Root == root && !r.Target.SameControl(_cachedTarget) && now - r.Started < 200);
 
     internal void Retire(nint root)
     {
