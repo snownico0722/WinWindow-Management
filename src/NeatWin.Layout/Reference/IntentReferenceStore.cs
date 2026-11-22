@@ -48,6 +48,13 @@ public sealed class IntentReferenceStore
     // Recorder is the only profile writer. The main application is strictly a reader.
     public void Append(WindowAdjustmentObservation observation)
     {
+        AppendAdjustment(observation);
+        Placement.Learn(observation);
+        LearnGeometry(observation);
+    }
+
+    internal void AppendAdjustment(WindowAdjustmentObservation observation)
+    {
         Directory.CreateDirectory(_directory);
         Prune();
         var prefix = $"adjustments-{DateTime.UtcNow:yyyyMMdd}";
@@ -57,7 +64,11 @@ public sealed class IntentReferenceStore
         while (File.Exists(log) && new FileInfo(log).Length > 2 * 1024 * 1024 && index < 1000);
         using (var writer = new StreamWriter(new FileStream(log, FileMode.Append, FileAccess.Write, FileShare.Read)))
             writer.WriteLine(JsonSerializer.Serialize(observation));
-        Placement.Learn(observation);
+    }
+
+    internal void LearnGeometry(WindowAdjustmentObservation observation)
+    {
+        if (LayoutHabits.HasLinkedReversal(observation)) return;
         var sample = IntentEvidence.Extract(observation);
         var relation = IntentEvidence.ExtractRelation(observation);
         if (sample is not null || relation is not null)
@@ -177,13 +188,16 @@ public sealed class IntentReferenceStore
         using (var skill = typeof(IntentReferenceStore).Assembly.GetManifestResourceStream("NeatWin.Layout.LearningSkill")!)
         using (var output = archive.CreateEntry("SKILL.md").Open())
             skill.CopyTo(output);
+        using (var script = typeof(IntentReferenceStore).Assembly.GetManifestResourceStream("NeatWin.Layout.RecordingAnalysis")!)
+        using (var output = archive.CreateEntry("analyze_recording.py").Open())
+            script.CopyTo(output);
         using (var preferences = archive.CreateEntry("placement-v1.json").Open())
             JsonSerializer.Serialize(preferences, Placement.Read());
         using var writer = new StreamWriter(archive.CreateEntry("intent-reference.json").Open());
         writer.Write(JsonSerializer.Serialize(Read(respectEnabled: false)));
     }
 
-    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl", "activity-*.jsonl", "behavior-*.jsonl", "gestures-*.jsonl", "focus-*.jsonl" }
+    private IEnumerable<string> LogFiles() => new[] { "adjustments-*.jsonl", "workspace-*.jsonl", "plans-*.jsonl", "activity-*.jsonl", "behavior-*.jsonl", "gestures-*.jsonl", "focus-*.jsonl", "surfaces-*.jsonl" }
         .SelectMany(pattern => Directory.EnumerateFiles(_directory, pattern));
 
     internal void AppendActivity(ActivitySample sample, WorkspaceFrame? geometry, long geometryTick) =>
@@ -191,6 +205,7 @@ public sealed class IntentReferenceStore
             GeometryTick = geometryTick, Frame = geometry, sample.Processes, sample.Windows, sample.Media, sample.InputIdleMilliseconds, sample.AudioTick, sample.DisplayRequired, sample.Usage, sample.CoUse, sample.FocusCoverage });
     internal void AppendFocusBoundary(string session, string reason, FocusCoverage coverage) =>
         AppendJson("focus", new { Version = 1, Session = session, Time = DateTimeOffset.UtcNow, Reason = reason, FocusCoverage = coverage });
+    internal void AppendSurface(object row) => AppendJson("surfaces", row);
     internal void AppendGestures(GestureBatch batch) => AppendJson("gestures", batch);
     internal void AppendBehavior(WindowBehaviorFrame frame) => AppendJson("behavior", frame);
     public void AppendTransition(WorkspaceTransition observation) => AppendJson("workspace", observation);

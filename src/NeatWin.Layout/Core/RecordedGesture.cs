@@ -22,6 +22,16 @@ public sealed record AxisCorrection(int Submitted, int Released, double Confiden
         return new(submitted, released, confidence);
     }
 
+    // 用松手时的坐标定上限，后续重算不能靠每次挪一点把窗口慢慢推回去。
+    internal int Limit(int current, int target, bool repeated)
+    {
+        int toward = Math.Sign((long)Submitted - Released);
+        if (toward == 0 || (target - (long)current) * toward <= 0) return target;
+        double allowance = repeated ? 0 : Math.Abs((double)Submitted - Released) * (1 - Confidence) / 2;
+        int boundary = Released + toward * (int)Math.Floor(allowance);
+        return toward > 0 ? Math.Min(target, Math.Max(current, boundary)) : Math.Max(target, Math.Min(current, boundary));
+    }
+
     internal double Cost(int current, int candidate) => Confidence * Math.Clamp(
         (Math.Abs(current - (double)Submitted) - Math.Abs(candidate - (double)Submitted)) /
         Math.Max(1, Math.Abs(Released - (double)Submitted)), 0, 1);
@@ -41,6 +51,26 @@ public sealed record PlacementCorrection(AxisCorrection? X, AxisCorrection? Y, A
             Axis(start.Height, end.Height, before?.Height, submitted?.Height, previous?.Height));
         return result is { X: null, Y: null, Width: null, Height: null } ? null : result;
     }
+
+    internal bool MatchesRelease(ManualWindowGesture gesture)
+    {
+        static bool Match(AxisCorrection? axis, int start, int end) =>
+            axis != null && end != start && end == axis.Released && Math.Abs(start - (long)axis.Submitted) <= 3;
+        var start = gesture.StartRect; var end = gesture.EndRect;
+        return gesture.Kind == ManualGestureKind.Move
+            ? Match(X, start.X, end.X) || Match(Y, start.Y, end.Y)
+            : Match(Width, start.Width, end.Width) || Match(Height, start.Height, end.Height);
+    }
+
+    internal RectI Limit(RectI current, RectI target, bool repeated) => new(
+        X?.Limit(current.X, target.X, repeated) ?? target.X,
+        Y?.Limit(current.Y, target.Y, repeated) ?? target.Y,
+        Width?.Limit(current.Width, target.Width, repeated) ?? target.Width,
+        Height?.Limit(current.Height, target.Height, repeated) ?? target.Height);
+
+    internal bool RepeatsRejectedAxis(RectI from, RectI to) =>
+        X?.Cost(from.X, to.X) >= .5 || Y?.Cost(from.Y, to.Y) >= .5 ||
+        Width?.Cost(from.Width, to.Width) >= .5 || Height?.Cost(from.Height, to.Height) >= .5;
 
     internal double Cost(RectI current, RectI candidate) => (X?.Cost(current.X, candidate.X) ?? 0) +
         (Y?.Cost(current.Y, candidate.Y) ?? 0) + (Width?.Cost(current.Width, candidate.Width) ?? 0) +
@@ -92,3 +122,47 @@ internal sealed record GestureEvent(int GestureId, int WindowId, string Stage, l
 }
 
 internal sealed record GestureBatch(int Version, string Session, DateTimeOffset Time, GestureEvent[] Events, int DroppedEvents);
+
+// 两次从系统落点往同方向拖回，短时间内已有足够证据停止重试这一轴。每轴独立计时；输入不会续期。
+internal sealed class RecentReversals(WindowSnapshot window)
+{
+    private sealed record Vote(AxisCorrection Correction, long Tick, bool Repeated);
+    private readonly Vote?[] _axes = new Vote?[4];
+    private const int LifetimeMs = 120_000;
+    internal bool Matches(WindowSnapshot live) => WindowStateRules.Matches(window, live, live.VisualRect);
+
+    internal void Observe(RectI start, RectI end, ManualGestureKind kind, PlacementCorrection? reversal, long tick)
+    {
+        // 从左边框拉宽时 X 也会改变。此次推翻的是宽度，上一轮主动摆放的位置证据仍然有效。
+        if (kind == ManualGestureKind.Move)
+        {
+            Update(0, start.X != end.X, reversal?.X);
+            Update(1, start.Y != end.Y, reversal?.Y);
+        }
+        else
+        {
+            Update(2, start.Width != end.Width, reversal?.Width);
+            Update(3, start.Height != end.Height, reversal?.Height);
+        }
+
+        void Update(int axis, bool changed, AxisCorrection? evidence)
+        {
+            if (!changed) return;
+            var prior = _axes[axis];
+            // 用户后来在该轴选择了不同摆法，就以新的动作重新起算，不需要点撤销。
+            bool same = evidence is { Confidence: >= .65 } && prior?.Correction.Confidence >= .65 && tick - prior.Tick is >= 0 and <= LifetimeMs &&
+                Math.Sign((long)evidence.Released - evidence.Submitted) == Math.Sign((long)prior.Correction.Released - prior.Correction.Submitted);
+            // 一次部分回拖也能说明摆幅过大。排除几像素的抖动，弱信号只短时限幅。
+            _axes[axis] = evidence != null && Math.Abs((long)evidence.Submitted - evidence.Released) >= 6 * Math.Max(96u, window.Dpi) / 96d
+                ? new(evidence, tick, same) : null;
+        }
+    }
+
+    internal PlacementCorrection? Active(long now, bool repeatedOnly = true)
+    {
+        AxisCorrection? Read(int i) => _axes[i] is { } v && (!repeatedOnly || v.Repeated) &&
+            now >= v.Tick && now - v.Tick <= (v.Repeated ? LifetimeMs : 30_000) ? v.Correction : null;
+        var result = new PlacementCorrection(Read(0), Read(1), Read(2), Read(3));
+        return result is { X: null, Y: null, Width: null, Height: null } ? null : result;
+    }
+}

@@ -164,9 +164,8 @@
         <Border Background="{DynamicResource Panel}" CornerRadius="6" Padding="2" Margin="8,0,0,0">
          <StackPanel x:Name="FooterModes" Orientation="Horizontal" AutomationProperties.Name="{DynamicResource Text.ArrangeMode}">
           <RadioButton Style="{StaticResource FooterModeChoice}" GroupName="FooterMode" Content="{DynamicResource Text.Manual}" Tag="Off" IsChecked="True" ToolTip="{DynamicResource Text.ManualHint}" AutomationProperties.Name="{DynamicResource Text.ManualArrange}" Checked="FooterMode_Checked"/>
-          <RadioButton Style="{StaticResource FooterModeChoice}" GroupName="FooterMode" Content="{DynamicResource Text.Light}" Tag="LightAssist" ToolTip="{DynamicResource Text.LightHint}" AutomationProperties.Name="{DynamicResource Text.LightAssist}" Checked="FooterMode_Checked"/>
-          <RadioButton Style="{StaticResource FooterModeChoice}" GroupName="FooterMode" Content="{DynamicResource Text.Full}" Tag="FullAssist" ToolTip="{DynamicResource Text.FullHint}" AutomationProperties.Name="{DynamicResource Text.FullAssist}" Checked="FooterMode_Checked"/>
-          <RadioButton Style="{StaticResource FooterModeChoice}" GroupName="FooterMode" Content="{DynamicResource Text.Auto}" Tag="AutoFullAssist" ToolTip="{DynamicResource Text.AutoHint}" AutomationProperties.Name="{DynamicResource Text.AutoArrange}" Checked="FooterMode_Checked"/>
+          <RadioButton x:Name="FooterLight" Style="{StaticResource FooterModeChoice}" GroupName="FooterMode" Content="{DynamicResource Text.Light}" Tag="Light" ToolTip="{DynamicResource Text.LightHint}" AutomationProperties.Name="{DynamicResource Text.LightAssist}" Checked="FooterMode_Checked" Click="FooterLight_Click"/>
+          <RadioButton Style="{StaticResource FooterModeChoice}" GroupName="FooterMode" Content="{DynamicResource Text.Full}" Tag="AutoFullAssist" ToolTip="{DynamicResource Text.FullHint}" AutomationProperties.Name="{DynamicResource Text.FullAssist}" Checked="FooterMode_Checked"/>
          </StackPanel>
         </Border>
        </StackPanel>
@@ -284,13 +283,13 @@
                 <TextBlock x:Name="LearningModelNumber"/>
               </StackPanel>
             </WrapPanel>
+            <TextBlock Text="{DynamicResource Text.LayoutStrength}" ToolTip="{DynamicResource Text.LayoutStrengthHint}" Style="{StaticResource SectionTitle}" Margin="0,12,0,6"/>
+            <WrapPanel x:Name="StrengthChoices" Margin="0,0,0,6">
+              <RadioButton Style="{StaticResource SettingsChoice}" GroupName="StrengthChoices" Content="{DynamicResource Text.Gentle}" Tag="Gentle" Click="LayoutPreference_Click"/>
+              <RadioButton Style="{StaticResource SettingsChoice}" GroupName="StrengthChoices" Content="{DynamicResource Text.Balanced}" Tag="Balanced" Click="LayoutPreference_Click"/>
+              <RadioButton Style="{StaticResource SettingsChoice}" GroupName="StrengthChoices" Content="{DynamicResource Text.Assertive}" Tag="Assertive" Click="LayoutPreference_Click"/>
+            </WrapPanel>
             <StackPanel x:Name="SmartOptions">
-              <TextBlock Text="{DynamicResource Text.LayoutStrength}" Style="{StaticResource SectionTitle}" Margin="0,12,0,6"/>
-              <WrapPanel x:Name="StrengthChoices" Margin="0,0,0,6">
-                <RadioButton Style="{StaticResource SettingsChoice}" GroupName="StrengthChoices" Content="{DynamicResource Text.Gentle}" Tag="Gentle" Click="LayoutPreference_Click"/>
-                <RadioButton Style="{StaticResource SettingsChoice}" GroupName="StrengthChoices" Content="{DynamicResource Text.Balanced}" Tag="Balanced" Click="LayoutPreference_Click"/>
-                <RadioButton Style="{StaticResource SettingsChoice}" GroupName="StrengthChoices" Content="{DynamicResource Text.Assertive}" Tag="Assertive" Click="LayoutPreference_Click"/>
-              </WrapPanel>
               <CheckBox x:Name="VerticalFill" Content="{DynamicResource Text.VerticalFill}" Click="LayoutPreference_Click"/>
               <CheckBox x:Name="VideoBars" Content="{DynamicResource Text.VideoBars}" Click="LayoutPreference_Click"/>
               <WrapPanel x:Name="VideoChoices" Margin="0,0,0,6">

@@ -19,12 +19,13 @@ public sealed partial class WindowManager
 
     public LayoutApplication ApplyLayout(IntentLayoutPlan plan) => ApplyLayout(plan, null);
 
-    internal LayoutApplication ApplyLayout(IntentLayoutPlan plan, nint? automaticForeground, TaskLayoutContext? context = null, nint gestureWindow = default, ForegroundReading? initialReading = null, ForegroundReading? workspaceReading = null)
+    internal LayoutApplication ApplyLayout(IntentLayoutPlan plan, nint? automaticForeground, TaskLayoutContext? context = null, nint gestureWindow = default, ForegroundReading? initialReading = null, ForegroundReading? workspaceReading = null, Func<TidyMove, bool>? allowsMove = null)
     {
         var current = Capture();
         var needed = plan.Moves.Select(m => m.Window).Concat(plan.Layers.SelectMany(l => l.FrontToBack))
             .GroupBy(w => w.Handle).Select(g => g.First()).ToArray();
-        if (InteractionChanged(automaticForeground))
+        // 求解和松手预览可以早于最近一次回拖。提交整组前再核对，避免只执行旧方案的一半。
+        if (InteractionChanged(automaticForeground) || allowsMove != null && plan.Moves.Any(m => !allowsMove(m)))
             return new(plan with { Moves = [], Layers = [] }, ["检测到新的手动调整，未覆盖窗口位置。"]) { Interrupted = true };
         if (needed.Any(w => !current.Any(c => c.Handle == w.Handle &&
             c.IsManageable && WindowStateRules.Matches(w, c, w.VisualRect))))
@@ -49,6 +50,9 @@ public sealed partial class WindowManager
             return new(plan with { Moves = [], Layers = [] }, ["已保留当前文字窗口的阅读位置。"])
                 { Interrupted = caret != 0 && context.WindowHints?.Any(h => h.Handle == caret && h.TextFocus) != true };
 
+        if (plan.Scene is { } scene && (!scene.Allows(current, plan) ||
+            plan.Layers.Count > 0 && !scene.Allows(current, plan with { Moves = [] })))
+            return new(plan with { Moves = [], Layers = [] }, ["当前参照窗的可见区域已变化，本轮保留现场。"]);
         var targetRects = plan.Moves.ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
         var notes = ApplyLayers(plan.Layers, targetRects, automaticForeground).ToList();
         var afterLayers = plan.Layers.Count == 0 ? current : Capture();
@@ -69,13 +73,20 @@ public sealed partial class WindowManager
             readingChanged = afterCaret != 0 && afterCaret != caret;
             notes.Add("层级变化后已保留当前文字窗口的阅读位置。");
         }
-        bool interrupted = InteractionChanged(automaticForeground);
+        if (failed.Length > 0 && accepted.Scene?.Allows(afterLayers, accepted with { Layers = [] }) == false)
+        {
+            accepted = accepted with { Moves = [] };
+            notes.Add("层级未完全实现，已保留后台参照窗的可见区域。");
+        }
+        bool deferMoves = CanDeferMoves(accepted.Moves);
+        bool interrupted = InteractionChanged(automaticForeground) ||
+            allowsMove != null && accepted.Moves.Any(m => !allowsMove(m));
         if (interrupted)
         {
             accepted = accepted with { Moves = [] };
             notes.Add("检测到新的手动调整，未覆盖窗口位置。");
         }
-        var failures = SubmitMoves(accepted.Moves, notes, gestureWindow, out var firstSubmit, out var gestureSubmit);
+        var failures = SubmitMoves(accepted.Moves, deferMoves && !interrupted, notes, gestureWindow, out var firstSubmit, out var gestureSubmit);
         if (failures.Count > 0)
         {
             var refused = failures.Select(f => f.Move.Window.Handle).ToHashSet();

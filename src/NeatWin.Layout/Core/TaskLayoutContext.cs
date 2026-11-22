@@ -67,10 +67,21 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
 {
     // A workspace event can still carry the last gesture as an anchor without granting
     // another placement adjustment. Live and replay callers set this from the event kind.
+    internal IReadOnlyDictionary<nint, string?>? AppKeys { get; init; }
+    internal ActiveLayoutScene? Scene { get; init; }
+    internal ShadowAxis[]? ShadowAxes { get; init; }
+    internal ShadowReplayProbe? ShadowProbe { get; init; }
+    internal DateTimeOffset? ShadowTime { get; init; }
     internal bool AllowGestureAssist { get; init; } = true;
     internal IReadOnlyDictionary<nint, VideoViewportFit>? VideoFits { get; init; }
+    internal int OriginSide { get; init; }
     internal bool IsWorkspaceObservation { get; init; }
     internal nint FirstPlacementWindow { get; init; }
+    internal nint LocalPlacementWindow { get; init; }
+    // 这次松手直接推翻了系统刚做的动作。辅助最多再动用户接手的窗，免得一次试摆牵动整组。
+    internal nint GeometryOnlyWindow => LocalPlacementWindow != 0 ? LocalPlacementWindow :
+        !ExplicitArrange && AllowGestureAssist && RecentGesture is { } g && GestureAnchor == g.WindowHandle &&
+        Attention?.GetValueOrDefault(GestureAnchor)?.RecentReturn?.MatchesRelease(g) == true ? GestureAnchor : 0;
     internal WorkspaceChangeCause WorkspaceCause { get; init; }
 
     // 这些系数只调节同等可读性下的动作门槛。救回屏外窗口或满足明确手势仍有自己可核对的空间收益。
@@ -84,6 +95,30 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     public bool PairPlanningEnabled => ExplicitArrange || UseWorkingPairs;
     internal bool HoldsTextView(WindowSnapshot window) => !ExplicitArrange && window.IsForeground &&
         WindowHints?.Any(h => h.Handle == window.Handle && h.TextFocus) == true;
+
+    internal static RectI LimitReturn(RectI frame, RectI target, PlacementCorrection? recent, PlacementCorrection? repeated)
+    {
+        var limited = recent?.Limit(frame, target, false) ?? target;
+        return repeated?.Limit(frame, limited, true) ?? limited;
+    }
+
+    internal RectI LimitReturn(WindowSnapshot window, RectI target)
+    {
+        var a = Attention?.GetValueOrDefault(window.Handle);
+        return ExplicitArrange ? target : LimitReturn(window.VisualRect, target, a?.RecentReturn, a?.RepeatedReversal);
+    }
+
+    internal bool RepeatsReversal(WindowSnapshot window, RectI target) => !ExplicitArrange &&
+        Attention?.GetValueOrDefault(window.Handle)?.RepeatedReversal?.RepeatsRejectedAxis(window.VisualRect, target) == true;
+
+    internal bool PreservesReleasedSide(WindowSnapshot window, RectI target)
+    {
+        // 只保护刚选的半屏；在同侧改变大小、贴边和回收屏外部分仍由各自的空间收益决定。
+        int side = Attention?.GetValueOrDefault(window.Handle)?.ManualSide ?? 0;
+        if (ExplicitArrange || window.VisualRect == target || side is not (-1 or 1)) return true;
+        return AttentionLayout.HorizontalSide(window.VisualRect, window.WorkArea) != side ||
+            AttentionLayout.HorizontalSide(target, window.WorkArea) == side;
+    }
 
     internal TaskLayoutContext WithCurrentCorrections(IReadOnlyList<WindowSnapshot> desktop)
     {

@@ -35,7 +35,7 @@ public static class VideoAspectPostProcessor
         var hint = context.VideoHint;
         if (options.AlgorithmMode != TidyAlgorithmMode.Smart ||
             hint is not { Confidence: >= .82, ContentAspectRatio: >= .55 and <= 4.5 } ||
-            !context.Preferences.AllowUsefulResize || context.GestureAnchor != 0 ||
+            context.GestureAnchor != 0 ||
             context.Focus?.OpeningResidentLeft != null || context.Focus?.Navigation is { Length: > 0 })
             return plan;
         var browser = visible.FirstOrDefault(v => v.Window.Handle == hint.WindowHandle)?.Window;
@@ -44,6 +44,8 @@ public static class VideoAspectPostProcessor
         if (context.IsWorkspaceObservation && !desktop.Any(w => w.IsForeground && w.MonitorHandle == browser.MonitorHandle && w.IsManageable))
             return plan;
 
+        var scene = context.Scene?.Monitor == browser.MonitorHandle ? context.Scene : null;
+        if (!(scene?.Settings?.AllowResize ?? context.Preferences.AllowUsefulResize)) return plan;
         var frame = browser.VisualRect;
         var view = hint.ViewportVisualRect;
         if (view.IsEmpty || view.Intersect(frame) != view) return plan;
@@ -94,12 +96,19 @@ public static class VideoAspectPostProcessor
             if (!HasMeaningfulChange(start, rect) || AspectError(rect) >= baselineError) continue;
             // 减少黑边可以缩小外框，但画面要保住。逐窗比较新增遮挡，避免一边腾出的面积抵消另一边刚被挡住的内容。
             double pixels = PicturePixels(rect, front);
-            string? rejection = neighbors.Any(r => rect.Intersect(r).Area > start.Intersect(r).Area) ? "increased-overlap" :
+            string? rejection = context.RepeatsReversal(browser, rect) ? "repeated-manual-reversal" :
+                    context.LimitReturn(browser, rect) != rect ? "manual-return-amplitude" :
+                scene?.Lane?.Allows(browser, rect) == false ? "attention-side-transfer" :
+                !context.PreservesReleasedSide(browser, rect) ? "recent-manual-side" :
+                neighbors.Any(r => rect.Intersect(r).Area > start.Intersect(r).Area) ? "increased-overlap" :
                 pixels + Math.Max(view.Width, view.Height) < referencePixels ? "lost-video-picture" : null;
             var moves = plan.Moves.Where(m => m.Window.Handle != browser.Handle).ToList();
             if (rect != frame) moves.Add(new(browser, rect));
             var candidate = plan with { Moves = moves };
             var after = TaskLayoutSession.Project(desktop, candidate);
+            if (rejection == null && scene?.References.FirstOrDefault(g =>
+                g.Measure(after, w => w.VisualRect, w => w.ZOrder).Lost > g.Limit + 1e-9) is { } protectedView)
+                rejection = "visible-reference:" + protectedView.Rule;
             if (rejection == null && (!IntentLayoutPlanner.TextViewAcceptsPlan(desktop, candidate, context) ||
                 !IntentLayoutPlanner.DesktopRegionsPreserved(projected, after, context, desktop) ||
                 context.RejectedLayouts?.Contains(TaskLayoutSession.LayoutKey(after.Where(w =>

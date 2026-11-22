@@ -37,7 +37,11 @@ public sealed record LayoutFocus(nint Main, nint Companion, int Switches, string
 public sealed record LayoutAttention(double Recency, double Dwell, double Input, double Association, bool Foreground,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double SustainedForeground = 0,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double ManualFloatPreference = 0,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementCorrection? Correction = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementCorrection? Correction = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int ManualSide = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementCorrection? RepeatedReversal = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementCorrection? RecentReturn = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] RectI? RestoreFrame = null)
 {
     public double Weight => Foreground ? 1 : Math.Clamp(Recency * (.70 + .15 * Dwell) + .35 * Input, 0, 1);
 }
@@ -50,8 +54,10 @@ public sealed class ForegroundHistory
     private const int AttentionHalfLifeMilliseconds = 12_000;
     private readonly List<(nint Handle, uint Pid, long Time)> _visits = [];
     private readonly Dictionary<(nint Handle, uint Pid), long> _input = new();
-    private readonly Dictionary<nint, (uint Pid, RectI WorkArea, RectI End, double Strength, long Tick)> _manualPlaces = [];
-    private readonly Dictionary<nint, (TidyMove Move, WindowSnapshot[] Neighbors)> _submitted = [];
+    private sealed record ManualPlace(uint Pid, RectI WorkArea, RectI End, double Strength, long Tick, int Side, long SideTick);
+    private readonly Dictionary<nint, RecentReversals> _reversals = [];
+    private readonly Dictionary<nint, ManualPlace> _manualPlaces = [];
+    private readonly Dictionary<nint, (TidyMove Move, WindowSnapshot[] Neighbors, long Tick)> _submitted = [];
     private readonly Dictionary<nint, (WindowSnapshot Window, WindowSnapshot[] Neighbors, PlacementCorrection Evidence)> _corrections = [];
     private sealed record RememberedNavigation((nint Handle, uint Pid, long Time) Visit, NavigationState Path, long Sampled);
     private RememberedNavigation? _rememberedNavigation;
@@ -97,6 +103,8 @@ public sealed class ForegroundHistory
             if (_visits.Count > 0)
             {
                 var previous = _visits[^1];
+                if (_returning.TryGetValue(previous.Handle, out var priorReturn) && priorReturn.Restored <= now)
+                    _returning.Remove(previous.Handle);
                 if (_created.TryGetValue((previous.Handle, previous.Pid), out var left) && !left.PlacementSeen)
                     _created[(previous.Handle, previous.Pid)] = left with { PlacementSeen = true };
             }
@@ -138,8 +146,128 @@ public sealed class ForegroundHistory
 
     // Use the last working surface even when a taskbar or launcher owned focus in between.
     // A visit token makes the accelerated placement single-use across repeated window events.
+    // 记录当时确实在前台的工作面。打开器退出后仍可短暂继承原侧；后台窗口的旧坐标不能给下一次开窗投票。
+    private (WindowSnapshot Window, long Visit)? _lastWorkingFrame;
+    private ((nint Handle, uint Pid, long Time) Visit, RectI Area, nint Monitor, int Side)? _inheritedLane;
+
+    internal int ObserveWorkingSide(IReadOnlyList<WindowSnapshot> desktop, long now)
+    {
+        lock (_visits)
+        {
+            var front = desktop.FirstOrDefault(w => w.IsForeground);
+            if (front == null || !front.IsManageable || front.IsTopmost || front.WorkArea.IsEmpty || _visits.Count == 0) return 0;
+            var current = _visits[^1];
+            if (current.Handle != front.Handle || current.Pid != front.ProcessId || current.Time > now) return 0;
+            if (_lastWorkingFrame is { } last && (last.Visit != current.Time ||
+                last.Window.Handle != front.Handle || last.Window.ProcessId != front.ProcessId))
+            {
+                _inheritedLane = null;
+                // 允许任务栏或打开器短暂接管焦点。若中间还用过其他工作窗，旧侧别已经不是这次动作的来源。
+                int index = _visits.FindLastIndex(v => v.Time == last.Visit);
+                bool connected = index >= 0 && index + 1 < _visits.Count &&
+                    (_visits[index + 1].Time - last.Visit >= AutomaticLayoutScheduler.SettleMilliseconds ||
+                     ReceivedInput(_visits[index], _visits[index + 1].Time)) &&
+                    current.Time - _visits[index + 1].Time <= 1500 &&
+                    _visits.Skip(index + 1).SkipLast(1).All(v => v.Handle == 0 || !desktop.Any(w => w.IsManageable && w.Handle == v.Handle && w.ProcessId == v.Pid));
+                var key = (front.Handle, front.ProcessId);
+                bool NearVisit(long tick) => tick >= current.Time - 1500 && tick <= now && tick <= current.Time + 750;
+                bool appeared = _created.TryGetValue(key, out var birth) && NearVisit(birth.Time) ||
+                    _shown.TryGetValue(key, out long shown) && NearVisit(shown);
+                var source = last.Window;
+                if (connected && appeared && (source.Handle != front.Handle || source.ProcessId != front.ProcessId) &&
+                    source.MonitorHandle == front.MonitorHandle && source.WorkArea == front.WorkArea)
+                    _inheritedLane = (current, front.WorkArea, front.MonitorHandle, AttentionLayout.HorizontalSide(source.VisualRect, source.WorkArea));
+            }
+            RememberWorkingFrame(front, now);
+            _lastWorkingFrame = (front, current.Time);
+            return _inheritedLane is { } lane && lane.Visit == current && lane.Area == front.WorkArea &&
+                lane.Monitor == front.MonitorHandle && now - current.Time <= AttentionHalfLifeMilliseconds ? lane.Side : 0;
+        }
+    }
+
     internal sealed record Opening(long Visit, WindowSnapshot Incoming, WindowSnapshot Resident, bool ResidentLeft);
     private Opening? _dispatchedOpening;
+
+    // 同一进程内两份文档也可能分居左右。仅保留这个窗口实例上次在前台可用的矩形。
+    private readonly Dictionary<nint, (WindowSnapshot Frame, long Seen)> _workingFrames = [];
+    private readonly Dictionary<nint, (WindowSnapshot Frame, long Minimized, long? Restored)> _returning = [];
+
+    internal void ResetRestoreMemory()
+    {
+        lock (_visits) { _workingFrames.Clear(); _returning.Clear(); }
+    }
+
+    public void MinimizeChanged(nint handle, uint pid, long now, bool restoring)
+    {
+        lock (_visits)
+        {
+            if (restoring)
+            {
+                if (_returning.TryGetValue(handle, out var old) && old.Frame.ProcessId == pid && now >= old.Minimized && old.Restored == null)
+                    _returning[handle] = (old.Frame, old.Minimized, now);
+            }
+            else if (_workingFrames.TryGetValue(handle, out var place) && place.Frame.ProcessId == pid && place.Seen <= now)
+                _returning[handle] = (place.Frame, now, null);
+        }
+    }
+
+    private void RememberWorkingFrame(WindowSnapshot window, long tick)
+    {
+        if (window.Owner != 0 || window.SurfaceState is not (null or "windowed") ||
+            window.VisualRect.IsEmpty || window.VisualRect.Intersect(window.WorkArea).Area < window.VisualRect.Area * .85) return;
+        if (_workingFrames.Count >= 128 && !_workingFrames.ContainsKey(window.Handle))
+        {
+            var oldest = _workingFrames.MinBy(p => p.Value.Seen).Key;
+            _workingFrames.Remove(oldest);
+            _returning.Remove(oldest);
+        }
+        _workingFrames[window.Handle] = (window, tick);
+    }
+
+    private RectI? ReturnFrame(WindowSnapshot front, long tick)
+    {
+        if (!_returning.TryGetValue(front.Handle, out var place) || place.Restored is not long returned ||
+            tick - returned is < 0 or > AttentionHalfLifeMilliseconds || _visits.Count == 0) return null;
+        var visit = _visits[^1];
+        // MINIMIZEEND 和切前台的先后都可能发生。只有同一次恢复、同一块工作区可引用旧位置。
+        if (visit.Handle != front.Handle || visit.Pid != front.ProcessId || Math.Abs(visit.Time - returned) > 1500 ||
+            !WindowStateRules.Matches(place.Frame, front, front.VisualRect)) return null;
+        return place.Frame.VisualRect;
+    }
+
+
+    internal sealed record NewTaskOpening(long Visit, WindowSnapshot Incoming);
+
+    internal NewTaskOpening? NewTaskOpeningFor(IReadOnlyList<WindowSnapshot> desktop, long now)
+    {
+        var front = desktop.FirstOrDefault(w => w.IsForeground);
+        if (front == null || !front.IsManageable || front.IsTopmost || front.NativeUtility || front.Owner != 0 ||
+            front.SurfaceState is not (null or "windowed") || front.WorkArea.IsEmpty ||
+            front.VisualRect.IsEmpty) return null;
+        lock (_visits)
+        {
+            if (_visits.Count == 0) return null;
+            var visit = _visits[^1];
+            var key = (front.Handle, front.ProcessId);
+            // 仅窗口本次生命期的首次前台可授权轻度开窗整理，恢复、切回和应用内短暂表面另有用途。
+            if ((visit.Handle, visit.Pid) != key || now - visit.Time is < 0 or > 750 ||
+                !_created.TryGetValue(key, out var birth) || birth.PlacementSeen ||
+                visit.Time - birth.Time is < 0 or > 1500 || ReceivedInput(visit, now)) return null;
+            return new(visit.Time, front);
+        }
+    }
+
+    internal bool ConsumeLocalOpening(NewTaskOpening opening, IReadOnlyList<WindowSnapshot> snapshot, long now, uint? lastInput)
+    {
+        lock (_visits)
+        {
+            if (NewTaskOpeningFor(snapshot, now) != opening || !lastInput.HasValue ||
+                unchecked((uint)now - lastInput.Value) < now - opening.Visit) return false;
+            var key = (opening.Incoming.Handle, opening.Incoming.ProcessId);
+            _created[key] = _created[key] with { PlacementSeen = true };
+            return true;
+        }
+    }
 
     internal Opening? OpeningFor(IReadOnlyList<WindowSnapshot> desktop, long now)
     {
@@ -148,6 +276,7 @@ public sealed class ForegroundHistory
             if (_visits.Count < 2) return null;
             var visit = _visits[^1];
             var front = desktop.FirstOrDefault(w => w.IsForeground);
+            if (front != null && ReturnFrame(front, now) != null) return null;
             if (front == null || visit.Handle != front.Handle || visit.Pid != front.ProcessId ||
                 now - visit.Time is < 0 or > 750 || !WorkingSurface(front) ||
                 _dispatchedOpening is { } sent && sent.Visit == visit.Time && sent.Incoming.Handle == front.Handle) return null;
@@ -228,19 +357,22 @@ public sealed class ForegroundHistory
             foreach (var key in _shown.Keys.Where(key => key.Handle == handle).ToArray()) _shown.Remove(key);
             _clicks.RemoveAll(click => click.Handle == handle);
             if (_rememberedNavigation?.Path.Hops.Any(hop => hop.Source == handle) == true) _rememberedNavigation = null;
+            _workingFrames.Remove(handle);
+            _returning.Remove(handle);
             _manualPlaces.Remove(handle);
+            _reversals.Remove(handle);
             _submitted.Remove(handle);
             _corrections.Remove(handle);
         }
     }
 
-    internal void Submitted(IntentLayoutPlan plan, IReadOnlyList<WindowSnapshot> before)
+    internal void Submitted(IntentLayoutPlan plan, IReadOnlyList<WindowSnapshot> before, long now)
     {
         if (plan.Moves.Count == 0) return;
         var projected = TaskLayoutSession.Project(before, plan);
         lock (_visits)
             foreach (var move in plan.Moves)
-                _submitted[move.Window.Handle] = (move, ContentNeighbors(move.Window, projected));
+                _submitted[move.Window.Handle] = (move, ContentNeighbors(move.Window, projected), now);
     }
 
     // 邻窗关闭、换屏或可用视野变化时，旧任务里的回拖不能锁死新任务。层级比较只关心内容窗口之间的顺序。
@@ -271,11 +403,24 @@ public sealed class ForegroundHistory
         double intent = 2 * Math.Min(interior, sameOrSmaller) - 1;
         lock (_visits)
         {
+            _returning.Remove(window.Handle);
+            RememberWorkingFrame(window, now);
             if (desktop != null)
             {
                 var neighbors = ContentNeighbors(window, desktop);
-                bool linked = _submitted.Remove(window.Handle, out var last) && SameNeighbors(last.Neighbors, neighbors) &&
+                bool beganAtSubmission = _submitted.Remove(window.Handle, out var last) &&
                     WindowStateRules.Matches(last.Move.Window, window, end) && WindowStateRules.Near(start, last.Move.TargetVisualRect);
+                // 用户很久以后独立改布局不应累计成连续推翻；短时重复证据额外要求起点与近期提交同时吻合。
+                var reversal = beganAtSubmission && now - last.Tick is >= 0 and <= 30_000 ? PlacementCorrection.Observe(start, end, last.Move!.Window.VisualRect,
+                    last.Move.TargetVisualRect, window.Dpi) : null;
+                if (!_reversals.TryGetValue(window.Handle, out var votes) || !votes.Matches(window))
+                {
+                    votes = new(window);
+                    if (reversal != null) _reversals[window.Handle] = votes;
+                    else _reversals.Remove(window.Handle);
+                }
+                votes.Observe(start, end, gesture.Kind, reversal, now);
+                bool linked = beganAtSubmission && SameNeighbors(last.Neighbors, neighbors);
                 _corrections.Remove(window.Handle, out var old);
                 var previous = old.Evidence != null && WindowStateRules.Matches(old.Window, window, end) && SameNeighbors(old.Neighbors, neighbors) ? old.Evidence : null;
                 var evidence = PlacementCorrection.Observe(start, end, linked ? last.Move!.Window.VisualRect : null,
@@ -284,8 +429,47 @@ public sealed class ForegroundHistory
             }
             if (_manualPlaces.Count >= 64 && !_manualPlaces.ContainsKey(window.Handle))
                 _manualPlaces.Remove(_manualPlaces.MinBy(entry => entry.Value.Tick).Key);
-            _manualPlaces[window.Handle] = (window.ProcessId, work, end, intent * Math.Min(1, travel / distance), now);
+            // 大幅横拖到一侧是当下的直接意图。另一扇窗开关、换层或随后贴边几个像素，均不能抹掉这次选择。
+            // 单独保留侧别的原始时间，随后调高度或微调不会无限续期，也不会改变永久习惯。
+            int side = AttentionLayout.HorizontalSide(end, work);
+            long sideTick = now;
+            int dx = end.X - start.X;
+            bool choseSide = gesture.Kind == ManualGestureKind.Move && side != 0 && Math.Sign(dx) == side &&
+                Math.Abs((double)dx) >= work.Width * .16 && Math.Abs((double)dx) >= Math.Abs((double)end.Y - start.Y);
+            if (!choseSide)
+            {
+                var previous = _manualPlaces.GetValueOrDefault(window.Handle);
+                if (previous != null && previous.Pid == window.ProcessId && previous.WorkArea == work && previous.Side == side)
+                    sideTick = previous.SideTick;
+                else side = 0;
+            }
+            _manualPlaces[window.Handle] = new(window.ProcessId, work, end, intent * Math.Min(1, travel / distance), now, side, sideTick);
         }
+    }
+
+    internal RectI LimitLiveReturn(WindowSnapshot window, RectI target, long now)
+    {
+        lock (_visits)
+        {
+            if (!_reversals.TryGetValue(window.Handle, out var votes) || !votes.Matches(window)) return target;
+            return TaskLayoutContext.LimitReturn(window.VisualRect, target, votes.Active(now, false), votes.Active(now));
+        }
+    }
+
+    internal void IgnoreLocalVisit(WindowSnapshot surface)
+    {
+        lock (_visits)
+        {
+            // 截图层或名片可能先收到前台事件，后被认出。把这段临时焦点移出任务序列，收起时继续原任务。
+            _visits.RemoveAll(v => v.Handle == surface.Handle && v.Pid == surface.ProcessId);
+            _input.Remove((surface.Handle, surface.ProcessId));
+            _clicks.RemoveAll(v => v.Handle == surface.Handle && v.Pid == surface.ProcessId);
+        }
+    }
+
+    internal bool RecentlyClicked(WindowSnapshot w, long tick)
+    {
+        lock (_visits) return _clicks.Any(c => c.Handle == w.Handle && c.Pid == w.ProcessId && tick - c.Time is >= 0 and <= 1500);
     }
 
     internal void Interact(nint handle, uint pid, long now, bool click = false)
@@ -481,15 +665,29 @@ public sealed class ForegroundHistory
                 {
                     SustainedForeground = Math.Clamp(((now - foregroundSince) / (double)AttentionHalfLifeMilliseconds - 1) / 2, 0, 1)
                 };
+            if (foreground is { IsManageable: true } && ReturnFrame(foreground, now) is { } restore &&
+                attention.TryGetValue(foreground.Handle, out var restored))
+                attention[foreground.Handle] = restored with { RestoreFrame = restore };
             foreach (var (handle, placed) in _manualPlaces)
             {
                 if (now - placed.Tick is < 0 or > 3 * AttentionHalfLifeMilliseconds ||
                     !valid.TryGetValue(handle, out var target) || target.ProcessId != placed.Pid ||
-                    target.WorkArea != placed.WorkArea || !WindowStateRules.Near(target.VisualRect, placed.End)) continue;
+                    target.WorkArea != placed.WorkArea) continue;
                 var signal = attention.GetValueOrDefault(target.Handle) ?? new(0, 0, 0, 0, target.IsForeground);
                 double strength = 1 - Math.Clamp(((now - placed.Tick) / (double)AttentionHalfLifeMilliseconds - 1) / 2, 0, 1);
-                attention[target.Handle] = signal with { ManualFloatPreference = placed.Strength * strength };
+                bool sameFrame = WindowStateRules.Near(target.VisualRect, placed.End);
+                bool sameSide = now - placed.SideTick is >= 0 and <= 3 * AttentionHalfLifeMilliseconds &&
+                    AttentionLayout.HorizontalSide(target.VisualRect, placed.WorkArea) == placed.Side && placed.Side != 0;
+                if (sameFrame || sameSide)
+                    attention[target.Handle] = signal with { ManualFloatPreference = sameFrame ? placed.Strength * strength : 0,
+                        ManualSide = sameSide ? placed.Side : 0 };
             }
+            foreach (var (handle, votes) in _reversals)
+                if (valid.TryGetValue(handle, out var live) && votes.Matches(live) && votes.Active(now, repeatedOnly: false) is { } recent)
+                {
+                    var signal = attention.GetValueOrDefault(handle) ?? new(0, 0, 0, 0, live.IsForeground);
+                    attention[handle] = signal with { RecentReturn = recent, RepeatedReversal = votes.Active(now) };
+                }
             foreach (var (handle, item) in _corrections.ToArray())
             {
                 if (!valid.TryGetValue(handle, out var w) || !WindowStateRules.Matches(item.Window, w, w.VisualRect) ||
@@ -582,10 +780,16 @@ public sealed class ForegroundHistory
     }
 }
 
+[Flags]
+internal enum HabitAxes { None = 0, Position = 1, Width = 2, Height = 4, All = Position | Width | Height }
+
 public static class LayoutHabits
 {
     internal const double AxisTolerance = 1d / 12;
-    public static LayoutHabit? Observe(WindowAdjustmentObservation o, bool byInstance = false)
+    public static LayoutHabit? Observe(WindowAdjustmentObservation o, bool byInstance = false) =>
+        Observe(o, byInstance, HabitAxes.All);
+
+    internal static LayoutHabit? Observe(WindowAdjustmentObservation o, bool byInstance, HabitAxes allowed)
     {
         bool assisted = o.Outcome == "assisted-release";
         var endpoint = byInstance || assisted ? o.EndContext : o.SettledContext;
@@ -593,17 +797,22 @@ public static class LayoutHabits
         if (!eligible || o.Start == o.End || o.WorkArea != o.StartWorkArea ||
             endpoint is not { Truncated: false } frame || o.StartContext is not { Truncated: false } start ||
             o.WorkArea.IsEmpty) return null;
+        var axes = EditedAxes(o) & allowed;
+        // 回拖表示用户拒绝上一轮在该轴上的改动。长期偏好只收录能独立归因的轴。
+        axes &= ~ReversedAxes(LinkedReversal(o));
+        if (axes == HabitAxes.None) return null;
         var moved = frame.Windows.FirstOrDefault(w => w.Id == o.WindowId);
-        if (moved == null || !moved.Manageable || moved.Rect != o.End || moved.VisibleRatio < .2) return null;
+        // 移动资料卡不等于更改主聊天窗的摆放偏好，即使它们使用同一应用和窗口类。
+        if (moved == null || moved.LocalSurface || start.Windows.Any(w => w.Id == o.WindowId && w.LocalSurface) || !moved.Manageable || moved.Rect != o.End || moved.VisibleRatio < .2) return null;
         string? Key(ObservedWindow w) => byInstance ? w.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) : w.AppKey;
         if (Key(moved) is not { } movedKey) return null;
         // Two live documents can share a persistent application identity. Only a session
         // observation can tell which document the user actually placed.
-        if (!byInstance && frame.Windows.Count(w => w.Manageable && w.WorkArea == o.WorkArea && w.AppKey == movedKey) > 1)
+        if (!byInstance && frame.Windows.Count(w => w.Manageable && !w.LocalSurface && w.WorkArea == o.WorkArea && w.AppKey == movedKey) > 1)
             return null;
         var peers = from w in frame.Windows
-                    where w.Id != moved.Id && w.Manageable && Key(w) != null && w.WorkArea == o.WorkArea && w.VisibleRatio >= .04
-                    let before = start.Windows.FirstOrDefault(v => v.Id == w.Id && v.Rect == w.Rect && v.AppKey == w.AppKey)
+                    where w.Id != moved.Id && w.Manageable && !w.LocalSurface && Key(w) != null && w.WorkArea == o.WorkArea && w.VisibleRatio >= .04
+                    let before = start.Windows.FirstOrDefault(v => !v.LocalSurface && v.Id == w.Id && v.Rect == w.Rect && v.AppKey == w.AppKey)
                     where before != null
                     let gain = w.VisibleRatio - before.VisibleRatio
                     orderby gain descending, w.VisibleRatio descending
@@ -613,7 +822,7 @@ public static class LayoutHabits
         bool paired = peer.Window != null && (peer.Gain >= .04 || peersFound.Length == 1 && peer.Window.VisibleRatio >= .45);
         double center = (moved.Rect.X + moved.Rect.Width / 2d - o.WorkArea.X) / o.WorkArea.Width;
         var partner = paired ? peer.Window : null;
-        if (!byInstance && partner != null && frame.Windows.Count(w => w.Manageable && w.WorkArea == o.WorkArea && w.AppKey == partner.AppKey) > 1)
+        if (!byInstance && partner != null && frame.Windows.Count(w => w.Manageable && !w.LocalSurface && w.WorkArea == o.WorkArea && w.AppKey == partner.AppKey) > 1)
             return null;
         int order = partner == null ? 0 : Math.Sign(moved.Rect.X + moved.Rect.Width / 2d - partner.Rect.X - partner.Rect.Width / 2d);
         int cell = -1;
@@ -627,18 +836,72 @@ public static class LayoutHabits
             Math.Clamp((partner.Rect.X + partner.Rect.Width / 2d - o.WorkArea.X) / o.WorkArea.Width, 0, 1);
         double? partnerWidth = partner == null ? null :
             Math.Clamp(partner.Rect.Width / (double)o.WorkArea.Width, .05, 1);
-        int tolerance = Math.Max(3, (int)Math.Round(4 * o.Dpi / 96d));
-        // 拖一条边也会改变窗口中心。两条边同向移动才给位置偏好投票，宽度和高度各看自己的变化量。
-        int leftDelta = o.End.Left - o.Start.Left, rightDelta = o.End.Right - o.Start.Right;
-        var edited = Math.Abs(o.End.Width - o.Start.Width) > tolerance ? HorizontalEdit.Width : HorizontalEdit.None;
-        if (Math.Sign(leftDelta) == Math.Sign(rightDelta) && Math.Min(Math.Abs(leftDelta), Math.Abs(rightDelta)) > tolerance)
-            edited |= HorizontalEdit.Position;
+        var edited = (HorizontalEdit)(axes & (HabitAxes.Position | HabitAxes.Width));
         return new(o.Time, IntentEvidence.ContextFor(o.WorkArea), movedKey, partner == null ? null : Key(partner),
             Math.Clamp(center, 0, 1), Math.Clamp(moved.Rect.Width / (double)o.WorkArea.Width, .05, 1), order, cell,
             o.AfterRequest != null, partner != null && order != 0 && moved.Rect.VerticalOverlapRatio(partner.Rect) >= .5
                 ? moved.Rect.HorizontalOverlapRatio(partner.Rect) : null,
-            partnerCenter, partnerWidth, Math.Abs(o.Start.Height - o.End.Height) > tolerance
+            partnerCenter, partnerWidth, axes.HasFlag(HabitAxes.Height)
                 ? Math.Clamp(moved.Rect.Height / (double)o.WorkArea.Height, .05, 1) : null, edited);
+    }
+
+    internal static bool HasLinkedReversal(WindowAdjustmentObservation o) => LinkedReversal(o) != null;
+
+    private static PlacementCorrection? LinkedReversal(WindowAdjustmentObservation o) =>
+        o.PriorPlacement is { ElapsedMs: >= 0 and <= 30_000 } prior
+            ? PlacementCorrection.Observe(o.Start, o.End, prior.Before, prior.Submitted, o.Dpi)
+            : null;
+
+    private static HabitAxes ReversedAxes(PlacementCorrection? reversal) =>
+        (reversal?.X != null ? HabitAxes.Position : HabitAxes.None) |
+        (reversal?.Width != null ? HabitAxes.Width : HabitAxes.None) |
+        (reversal?.Height != null ? HabitAxes.Height : HabitAxes.None);
+
+    private static int EditTolerance(uint dpi) => Math.Max(3, (int)Math.Round(4 * dpi / 96d));
+
+    private static HabitAxes EditedAxes(WindowAdjustmentObservation o)
+    {
+        if (o.StartWorkArea != o.WorkArea) return HabitAxes.None;
+        int tolerance = EditTolerance(o.Dpi);
+        // 拖一条边也会改变窗口中心。两条边同向移动才给位置偏好投票，宽度和高度各看自己的变化量。
+        int leftDelta = o.End.Left - o.Start.Left, rightDelta = o.End.Right - o.Start.Right;
+        var edited = Math.Abs(o.End.Width - o.Start.Width) > tolerance ? HabitAxes.Width : HabitAxes.None;
+        if (Math.Sign(leftDelta) == Math.Sign(rightDelta) && Math.Min(Math.Abs(leftDelta), Math.Abs(rightDelta)) > tolerance)
+            edited |= HabitAxes.Position;
+        if (Math.Abs(o.End.Height - o.Start.Height) > tolerance) edited |= HabitAxes.Height;
+        return edited;
+    }
+
+    internal static HabitAxes[] Coalesce(IReadOnlyList<WindowAdjustmentObservation> sequence)
+    {
+        var selected = new HabitAxes[sequence.Count];
+        if (sequence.Any(o => o.Outcome is "cross-monitor" or "monitor-changed" or "identity-changed"))
+            return selected;
+        var edits = sequence.Select(EditedAxes).ToArray();
+        // 微调回拖后的落点仍属于同一轮拒绝，不能靠一次试摆把回拖变成正向偏好。
+        var reversed = sequence.Where(Verified).Aggregate(HabitAxes.None,
+            (axes, o) => axes | (EditedAxes(o) & ReversedAxes(LinkedReversal(o))));
+        foreach (var axis in new[] { HabitAxes.Position, HabitAxes.Width, HabitAxes.Height })
+        {
+            int last = Array.FindLastIndex(edits, edited => (edited & axis) != 0);
+            if (last < 0 || !Verified(sequence[last]) || (reversed & axis) != 0) continue;
+            var final = sequence[last];
+            int first = Enumerable.Range(0, last + 1).First(i => (edits[i] & axis) != 0 && Verified(sequence[i]));
+            var initial = sequence[first];
+            if (initial.StartWorkArea != final.WorkArea) continue;
+            // 一连串试摆仅保留每轴最后的选择。该轴回到起点说明用户撤回这次试摆，其他轴仍可单独取样。
+            double Value(RectI rect) => axis switch
+            {
+                HabitAxes.Position => rect.Left + rect.Width / 2d,
+                HabitAxes.Width => rect.Width,
+                _ => rect.Height,
+            };
+            if (Math.Abs(Value(final.End) - Value(initial.Start)) > EditTolerance(final.Dpi))
+                selected[last] |= axis;
+        }
+        return selected;
+
+        static bool Verified(WindowAdjustmentObservation o) => o.Outcome is "stable" or "assisted-release";
     }
 
     public static LayoutHabit[] Add(IEnumerable<LayoutHabit> history, LayoutHabit sample, bool sessionOnly = false)

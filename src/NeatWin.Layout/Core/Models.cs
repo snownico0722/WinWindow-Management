@@ -18,6 +18,8 @@ public sealed record WindowSnapshot(
     bool IsTopmost = false, string? SurfaceState = null)
 {
     public nint Owner { get; init; }
+    internal bool NativeUtility { get; init; }
+    internal bool IndependentFrame { get; init; }
 }
 
 public sealed record VisibleWindow(

@@ -237,6 +237,9 @@ internal static partial class IntentLayoutPlanner
         {
             var window = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             bool gestureEndpoint = window.Handle == context.GestureAnchor && b == context.GestureTarget;
+            // 只保护用户刚选的半屏。另一扇窗获得焦点或也被拖回同一侧，不能授权把前一扇当成分栏的牺牲品。
+            if (!gestureEndpoint && (!context.PreservesReleasedSide(window, b) || context.RepeatsReversal(window, b))) return false;
+            if (context.Scene?.Lane?.Allows(window, b) == false) return false;
             if (!gestureEndpoint && (a.Width != b.Width || a.Height != b.Height) &&
                 context.VideoFits?.GetValueOrDefault(window.Handle) is { } fit && !fit.Preserves(a, b)) return false;
             bool textView = context.HoldsTextView(window);
@@ -539,6 +542,9 @@ internal static partial class IntentLayoutPlanner
             }
             switching += .8 * accessLoss;
             peripheral += 1.4 * (1 - b.Intersect(area).Area / (double)b.Area);
+            if (context.Scene?.Lane is { Restore: { } restored } returning && returning.Front.Handle == windows[i].Window.Handle)
+                continuity += 3 * profile.SpatialContinuityWeight * (Math.Abs(CenterX(b) - CenterX(restored)) / area.Width +
+                    Math.Abs(CenterY(b) - CenterY(restored)) / area.Height);
             var distance = Math.Sqrt(Math.Pow(CenterX(a) - CenterX(b), 2) + Math.Pow(CenterY(a) - CenterY(b), 2));
             continuity += .35 * profile.SpatialContinuityWeight * distance / Math.Max(300 * scale, Math.Min(area.Width, area.Height));
             reflow += .18 * (Math.Abs(Math.Log(b.Width / (double)a.Width)) + Math.Abs(Math.Log(b.Height / (double)a.Height)));
