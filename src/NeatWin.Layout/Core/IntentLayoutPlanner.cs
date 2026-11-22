@@ -233,7 +233,8 @@ internal static partial class IntentLayoutPlanner
 
                 // 从实际胜出的方案中逐窗试着保留一组原边界。联合解决遮挡仍然可选；没有额外收益的横移或邻窗联动可被删掉。
                 // 最多检查常见小组的每扇窗三次；所有选择沿用本轮证据和提交门槛，不会引发第二次系统摆放。
-                if (best.Kind != "keep" && group.Length <= 8)
+                // 纯几何调用没有打断的观察依据，保留其对明确整理命令选出的完整方案。
+                if (best.Kind != "keep" && group.Length <= 8 && groupContext.Attention != null)
                 {
                     foreach (int i in order.Reverse())
                     {
@@ -243,7 +244,10 @@ internal static partial class IntentLayoutPlanner
                         foreach (var simpler in new[] { start, target with { X = start.X, Width = start.Width },
                             target with { Y = start.Y, Height = start.Height } })
                         {
-                            if (simpler == best.Rects[i]) continue;
+                            // 省一次移动若重新遮住刚露出的正文，不能再声称取得了相同的布局收益。
+                            // 原求解的叠放候选仍照常比较；这里只核验对胜出方案的删减。
+                            if (simpler == best.Rects[i] || order.Any(j => j != i &&
+                                simpler.Intersect(best.Rects[j]).Area > best.Rects[i].Intersect(best.Rects[j]).Area)) continue;
                             var frames = (RectI[])best.Rects.Clone();
                             frames[i] = simpler;
                             var proposal = new Candidate("retain-existing-edges", frames, best.Order);

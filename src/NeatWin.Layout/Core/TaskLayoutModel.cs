@@ -376,7 +376,7 @@ internal static partial class IntentLayoutPlanner
         var frame = w.VisualRect;
         if (frame == target || frame.IsEmpty || target.IsEmpty) return 0;
         // 纯几何调用与早期记录没有访问时序，保留既有的移动/重排成本，不臆造本次视觉打断。
-        if (context.Attention == null && !context.IsWorkspaceObservation && !context.ExplicitArrange &&
+        if (context.Attention == null && !context.IsWorkspaceObservation &&
             context.GestureAnchor == 0 && context.FirstPlacementWindow == 0) return 0;
         var signal = context.Attention?.GetValueOrDefault(w.Handle);
         double dx = Math.Abs(target.Left - (double)frame.Left) / frame.Width;
