@@ -146,7 +146,10 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     BrowserBarObservation? BrowserBars = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    bool VerifiedTaskRepeat = false, Dictionary<int, ReadingInteraction>? ReadingInput = null, long[]? ObservedChangeEvents = null, int OmittedChanges = 0, RecordedDividerRelease? DividerRelease = null)
+    bool VerifiedTaskRepeat = false, Dictionary<int, ReadingInteraction>? ReadingInput = null, long[]? ObservedChangeEvents = null, int OmittedChanges = 0,
+    // 旧记录没有手势起点，保持相同输入的序列化指纹，使跨版本回放可以逐请求配对。
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RecordedDividerRelease? DividerRelease = null)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids, IReadOnlyList<WindowSnapshot>? snapshot = null)
     {
