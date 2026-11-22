@@ -135,6 +135,7 @@ public sealed partial class WindowManager
                 isTopmost,
                 independent && !isToolWindow && !noActivate && visualRect.Area >= 10_000
                     ? (fullScreen ? "fullscreen" : maximized ? "maximized" : "windowed") : null) { Owner = owner, NativeUtility = isToolWindow || noActivate || owner != 0 && !independent,
+                    HasCaption = (style & NativeMethods.WsCaption) == NativeMethods.WsCaption,
                     IndependentFrame = (exStyle & NativeMethods.WsExAppWindow) != 0 ||
                         (style & (NativeMethods.WsMinimizeBox | NativeMethods.WsMaximizeBox)) != 0 });
 

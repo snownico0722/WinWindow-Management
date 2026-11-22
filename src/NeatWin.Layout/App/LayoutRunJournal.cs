@@ -50,7 +50,7 @@ internal sealed class LayoutRunJournal : IDisposable
             var targets = plan.Moves.Select(m => new PlannedWindow(ids[m.Window.Handle], m.TargetVisualRect)).ToArray();
             var layers = plan.Layers.Select(l => l.FrontToBack.Select(w => ids[w.Handle]).ToArray()).ToArray();
             var groups = plan.Groups.Select(g => new PlannedGroup(g.Handles.Select(h => ids[h]).ToArray(),
-                g.Selected, g.StackEvidence, g.Candidates, g.Task)).ToArray();
+                g.Selected, g.StackEvidence, g.Candidates, g.Task, g.AxisCoverage)).ToArray();
             ProjectedPlan? Project(IntentLayoutPlan? p) => p == null ? null : new(
                 p.Moves.Select(m => new PlannedWindow(ids[m.Window.Handle], m.TargetVisualRect)).ToArray(),
                 p.Layers.Select(l => l.FrontToBack.Select(w => ids[w.Handle]).ToArray()).ToArray(),

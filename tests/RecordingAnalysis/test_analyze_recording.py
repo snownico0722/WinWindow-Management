@@ -14,6 +14,31 @@ spec.loader.exec_module(analysis)
 
 
 class RecordingAnalysisTests(unittest.TestCase):
+    def test_axis_evidence_distinguishes_search_ranking_and_unknown(self):
+        groups = [{"Ids": [120, 43], "AxisCoverage": [
+            {"WindowIndex": 1, "Axis": "Width", "Generated": [900, 1040], "Feasible": [900]}]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "replay.txt"
+            row = {"Session": "s", "RequestId": "r", "assumeResizable": True, "CandidateGroups": groups}
+            path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            groups = analysis.merge_replays([path])[("s", "r", True)]["CandidateGroups"]
+        reason = lambda handle, width: analysis.axis_diagnosis(groups, handle, "Width", width, 4)
+        self.assertEqual(reason(43, 902), "feasible-not-selected")
+        self.assertEqual(reason(43, 1042), "generated-but-rejected")
+        self.assertEqual(reason(43, 1200), "axis-not-generated")
+        self.assertEqual(reason(120, 900), "unknown-candidate-coverage")
+
+    def test_interaction_identity_and_sequence_survive_overlapping_exports(self):
+        recording = analysis.Recording()
+        event = {"Sequence": 8, "Session": "s", "Tick": 100, "WindowId": 7, "Kind": "right-down",
+                 "Identity": {"ExecutablePath": r"C:\Tools\Notes.exe", "Title": "项目 · 甲"}}
+        recording.add("interactions", event)
+        recording.add("interactions", {"Version": 1, "Session": "s", "Events": [event], "Dropped": 1})
+        report = recording.report()
+        self.assertEqual(report["Interactions"], [event])
+        self.assertEqual(report["Identities"][7]["Title"], ["项目 · 甲"])
+        self.assertEqual(report["DroppedDiskInteractions"], 1)
+
     def test_overlap_keeps_unique_focus_time_and_deduplicates_co_use(self):
         rect = {"X": -100, "Y": 0, "Width": 100, "Height": 100}
         keys = ["A" * 24, "B" * 24, "B" * 24]

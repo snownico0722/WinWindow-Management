@@ -18,9 +18,9 @@ internal sealed record RecorderStatus(
 
 /// <summary>
 /// Shared recorder engine used by the main application and the legacy standalone recorder UI.
-/// It records geometry, anonymous activity and optional change masks.
+/// It records window geometry, input observations, original window identities and optional change masks.
 /// </summary>
-internal sealed class RecorderSession : IDisposable
+internal sealed partial class RecorderSession : IDisposable
 {
     private readonly DesktopActivity _activity;
     private readonly RecordedUsage _usage = new();
@@ -77,7 +77,7 @@ internal sealed class RecorderSession : IDisposable
     private readonly NativeMethods.WinEventProc _contextCallback;
     private readonly nint _moveHook;
     private readonly nint _contextHook;
-    private readonly nint _foregroundHook;
+    private readonly nint _foregroundHook, _menuHook;
     private readonly System.Windows.Forms.Timer _timer;
     private WorkspaceFrame? _lastContext;
     private Active? _active;
@@ -111,7 +111,7 @@ internal sealed class RecorderSession : IDisposable
         var time = DateTimeOffset.UtcNow;
         bool starting = action != "release";
         // 打开时记录本次选择（局部或独立）及身份。解除可能由销毁或句柄重用触发，不能重新查询系统去猜测原窗口。
-        // 即使启用了快照，暂停长期记录时也只读取已有的匿名键。
+        // 暂停长期记录时仍可为快照读取身份；兼容旧规则只需读取已有的匹配键。
         var item = suppression is { } prior && !starting
             ? prior with { Action = action, Tick = tick, Time = time, ReleaseReason = match.ReleaseReason,
                 ReleasedChildRect = match.ReleasedChildRect, ReleasedHostRect = match.ReleasedHostRect }
@@ -121,7 +121,9 @@ internal sealed class RecorderSession : IDisposable
                 starting ? _activity.AppKey(match.Host, writeDisk) : null,
                 match.Child.VisualRect, match.Host.VisualRect, match.Child.Owner == match.Host.Handle,
                 match.Child.NativeUtility, match.Child.IndependentFrame, match.Child.IsResizable,
-                match.ReleaseReason, match.ReleasedChildRect, match.ReleasedHostRect);
+                match.ReleaseReason, match.ReleasedChildRect, match.ReleasedHostRect, match.ContextPress?.Sequence,
+                starting ? _activity.RawIdentity(match.Child.Handle, match.Child.ProcessId, true) : null,
+                starting ? _activity.RawIdentity(match.Host.Handle, match.Host.ProcessId, true) : null, match.ContextPress?.ReleaseSequence);
         if (action == "suppress")
         {
             if (_observedSurfaces.Count >= MaxObservedSurfaces)
@@ -167,12 +169,14 @@ internal sealed class RecorderSession : IDisposable
             NativeMethods.WinEventOutOfContext | NativeMethods.WinEventSkipOwnProcess);
         _foregroundHook = NativeMethods.SetWinEventHook(0x0003, 0x0003, nint.Zero, _contextCallback, 0, 0,
             NativeMethods.WinEventOutOfContext);
-        _contextHook = NativeMethods.SetWinEventHook(0x8000, 0x800B, nint.Zero, _contextCallback, 0, 0,
+        _menuHook = NativeMethods.SetWinEventHook(4, 7, nint.Zero, _contextCallback, 0, 0,
+            NativeMethods.WinEventOutOfContext | NativeMethods.WinEventSkipOwnProcess);
+        _contextHook = NativeMethods.SetWinEventHook(0x8000, 0x800C, nint.Zero, _contextCallback, 0, 0,
             NativeMethods.WinEventOutOfContext | NativeMethods.WinEventSkipOwnProcess);
 
         try { if (!_paused) _lastContext = Capture(_manager.Capture()); }
         catch (Exception ex) { _error = ex.Message; }
-        if (_contextHook == nint.Zero || _foregroundHook == nint.Zero)
+        if (_contextHook == nint.Zero || _foregroundHook == nint.Zero || _menuHook == nint.Zero)
             _error = LayoutText.Get("MonitorPartial");
         if (_moveHook == nint.Zero)
         {
@@ -202,6 +206,7 @@ internal sealed class RecorderSession : IDisposable
         {
             EndUnobservedGesture("paused", Environment.TickCount64);
             RecordFocusBoundary("pause");
+            FlushInteractions();
             FlushGestureEvents();
         }
         _paused = !_paused;
@@ -232,8 +237,9 @@ internal sealed class RecorderSession : IDisposable
         try
         {
             RecordFocusBoundary("export");
+            FlushInteractions();
             FlushGestureEvents();
-            if (_gestureEvents.Count > 0) throw new IOException(_error);
+            if (_interactionBatch.Count > 0 || _gestureEvents.Count > 0) throw new IOException(_error);
             _store.ExportRecords(temporary);
             File.Move(temporary, destination, overwrite: true);
             _error = null;
@@ -251,6 +257,7 @@ internal sealed class RecorderSession : IDisposable
         if (!_ownsSingleton) throw new InvalidOperationException(LayoutText.Get("RecorderInUse"));
         _gestureEvents.Clear();
         _droppedGestureEvents = 0;
+        _interactionBatch.Clear(); _droppedInteractions = 0; InputHistory.Clear();
         _store.Clear();
         SizeMemory.Clear();
         _instanceHabits = [];
@@ -276,7 +283,11 @@ internal sealed class RecorderSession : IDisposable
             try { _store.Prune(); }
             catch (Exception ex) { _error = LayoutText.Format("RecordCleanupFailed", ex.Message); }
         }
-        if (CanWriteDiagnostics) FlushGestureEvents();
+        if (CanWriteDiagnostics)
+        {
+            if (_interactionBatch.Count >= 128 || Environment.TickCount64 - _lastInteractionFlush >= 1000) FlushInteractions();
+            FlushGestureEvents();
+        }
         SampleActivity();
         FlushPending();
         CaptureContextChange();
@@ -441,12 +452,15 @@ internal sealed class RecorderSession : IDisposable
 
     private void OnContextEvent(nint hook, uint type, nint hwnd, int objectId, int childId, uint thread, uint time)
     {
-        if (_disposed || objectId != 0 || childId != 0) return;
+        if (_disposed) return;
         try
         {
+            ObserveNativeInteraction(type, hwnd, objectId, childId, time);
+            if (objectId != 0 || childId != 0 || type is >= 4 and <= 7 or 0x800C) return;
             if (type == 0x8001)
             {
                 if (_active?.Window.Handle == hwnd) EndUnobservedGesture("destroy-observed", EventTick(time));
+                InputHistory.Retire(hwnd);
                 _identity.Retire(hwnd); _activity.Retire(hwnd); SizeMemory.Retire(hwnd); _lastPlan.Remove(hwnd); _contextDirty = true;
                 WindowRetired?.Invoke(hwnd);
                 return;
@@ -561,7 +575,8 @@ internal sealed class RecorderSession : IDisposable
     internal Func<WindowSnapshot, bool>? IsLocalSurface { get; set; }
 
     internal WorkspaceFrame Capture(IReadOnlyList<WindowSnapshot> windows) =>
-        _identity.Capture(windows, DesktopActivity.Displays(), CanWriteDiagnostics ? w => _activity.AppKey(w, true) : null, IsLocalSurface);
+        _identity.Capture(windows, DesktopActivity.Displays(), CanWriteDiagnostics ? w => _activity.AppKey(w, true) : null, IsLocalSurface,
+            CanWriteDiagnostics || SnapshotInput ? w => _activity.RawIdentity(w.Handle, w.ProcessId, true) : null);
 
     private void SampleActivity()
     {
@@ -711,11 +726,17 @@ internal sealed class RecorderSession : IDisposable
     private PlacementUseObservation? ObservePlacementUse(IReadOnlyList<WindowSnapshot> windows, long tick, LayoutFocus? focus = null)
     {
         // 只用八秒内、仍属于同一窗口及前后台状态的测量。未采样到或共享进程的媒体状态保持未知。
-        if (_latest is not { } sample || tick - sample.Tick is < 0 or > 8_000) return null;
         var current = windows.Where(w => w.IsManageable && IsLocalSurface?.Invoke(w) != true).ToDictionary(w => _identity.Id(w));
-        var front = sample.Frame.Windows.FirstOrDefault(w => w.Foreground && current.TryGetValue(w.Id, out var live) && live.IsForeground);
-        if (front == null) return null;
-        var foreground = current[front.Id];
+        var foreground = current.Values.FirstOrDefault(w => w.IsForeground);
+        if (foreground == null) return null;
+        int frontId = _identity.Id(foreground);
+        var input = InputHistory.Read(current.Values.ToArray(), tick);
+        var scrolling = current.Where(pair => pair.Value.MonitorHandle == foreground.MonitorHandle &&
+            input.GetValueOrDefault(pair.Value.Handle)?.RepeatedScroll == true).Select(pair => pair.Key).ToArray();
+        bool caret = input.GetValueOrDefault(foreground.Handle)?.CaretMotion > 0;
+        var sample = _latest;
+        if (sample == null || tick - sample.Tick is < 0 or > 8_000 || !sample.Frame.Windows.Any(w => w.Id == frontId && w.Foreground))
+            return scrolling.Length > 0 || caret ? new(frontId, 0, caret, [], scrolling) : null;
         focus ??= ReadPlacementFocus?.Invoke(windows, tick);
         int joint = focus is { Evidence: "recent-switch-pair", Switches: >= 2 } && focus.Main == foreground.Handle
             ? current.FirstOrDefault(p => p.Value.Handle == focus.Companion).Key : 0;
@@ -723,8 +744,9 @@ internal sealed class RecorderSession : IDisposable
             live.MonitorHandle == foreground.MonitorHandle && live.WorkArea == foreground.WorkArea &&
             sample.Frame.Windows.Any(w => w.Id == a.Id && w.Foreground == live.IsForeground))
             .Select(a => a.Id).ToArray();
-        if (joint == 0 && _sampleTextFocus != front.Id && playing.Length == 0) return null;
-        return new(front.Id, joint, _sampleTextFocus == front.Id, playing);
+        bool text = caret || _sampleTextFocus == frontId;
+        if (joint == 0 && !text && playing.Length == 0 && scrolling.Length == 0) return null;
+        return new(frontId, joint, text, playing, scrolling);
     }
 
     internal PlacementPreference[] Preferences(IReadOnlyList<WindowSnapshot> windows, LayoutFocus focus, LayoutFocus observedFocus)
@@ -739,7 +761,8 @@ internal sealed class RecorderSession : IDisposable
         var usage = ObservePlacementUse(windows, Environment.TickCount64, observedFocus);
         var ids = usage == null ? null : entries.ToDictionary(e => e.Window.Handle, e => _identity.Id(e.Window));
         return PlacementPreferences.Bind(entries, focus, stored, _instanceHabits, now,
-            ids == null ? null : (window, peer) => usage!.For(ids.GetValueOrDefault(window), ids.GetValueOrDefault(peer)));
+            ids == null ? null : (window, peer) => usage!.For(ids.GetValueOrDefault(window), ids.GetValueOrDefault(peer)),
+            ids == null ? null : window => usage!.UseOf(ids.GetValueOrDefault(window)));
     }
 
     private void PublishStatus() => StatusChanged?.Invoke(Status);
@@ -753,6 +776,7 @@ internal sealed class RecorderSession : IDisposable
         if (_disposed) return;
         EndUnobservedGesture("exit", Environment.TickCount64);
         RecordFocusBoundary("exit");
+        FlushInteractions();
         FlushGestureEvents();
         _disposed = true;
         _timer.Stop();
@@ -761,6 +785,7 @@ internal sealed class RecorderSession : IDisposable
         if (_moveHook != nint.Zero) _ = NativeMethods.UnhookWinEvent(_moveHook);
         if (_contextHook != nint.Zero) _ = NativeMethods.UnhookWinEvent(_contextHook);
         if (_foregroundHook != nint.Zero) _ = NativeMethods.UnhookWinEvent(_foregroundHook);
+        if (_menuHook != nint.Zero) _ = NativeMethods.UnhookWinEvent(_menuHook);
         _pending.Clear();
         if (_ownsSingleton)
         {

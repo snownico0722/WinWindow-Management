@@ -59,7 +59,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         Action<bool>? undoChanged, CancellationToken stopping, ForegroundHistory? focus = null,
         Action<LayoutRunObservation>? snapshotObserver = null, Action<string, GestureEvent>? gestureObserver = null,
         Func<bool>? snapshotWantsGestures = null, Func<nint, uint, long, string, bool>? keepRunning = null,
-        Action<SurfaceEvent>? surfaceObserver = null, Func<bool>? snapshotWantsSurfaces = null)
+        Action<SurfaceEvent>? surfaceObserver = null, Func<bool>? snapshotWantsSurfaces = null,
+        Action<DesktopInteraction>? interactionObserver = null)
     {
         _stopping = stopping;
         _focus = focus ?? new();
@@ -77,7 +78,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _autoTidyManager = new AutoTidyManager();
         _recorder = new RecorderSession(_referenceStore, _settingsStore.RecordingEnabled) {
             VisualSampling = _settingsStore.VisualSampling, GestureObserver = gestureObserver, SnapshotWantsGestures = snapshotWantsGestures,
-            SurfaceObserver = surfaceObserver, SnapshotWantsSurfaces = snapshotWantsSurfaces,
+            InteractionObserver = interactionObserver, SurfaceObserver = surfaceObserver, SnapshotWantsSurfaces = snapshotWantsSurfaces,
             ReadPlacementFocus = (windows, tick) => _focus.Resolve(windows, tick)
         };
         _recorder.WindowRetired = handle =>
@@ -94,11 +95,13 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _surfaceRules = _referenceStore.Rules.Read().SurfaceRules;
         _surfaces = new TaskSurfaces { CaptureOverlay = _recorder.CaptureOverlay, IgnoreVisit = _focus.IgnoreLocalVisit, Role = w => _recorder.SemanticRole(w, default), ChatPurpose = NativeWindowActivity.ChatSurface, AppKey = _recorder.TryReadAppKey,
             Rules = () => _useImportedPlacement ? _surfaceRules : null,
+            ReadContextPress = () => _recorder.InputHistory.ContextAt(Environment.TickCount64),
             JustClicked = w => _focus.RecentlyClicked(w, Environment.TickCount64), Changed = _recorder.SurfaceChanged,
             ResetObserved = _recorder.ResetSurfaceObservations };
         _recorder.IsLocalSurface = w => _surfaces.IsLocal(w) || _recorder.CaptureOverlay(w);
         _workspaceMonitor = new WorkspaceAutoTidyMonitor(fresh => fresh ? _windowManager.Capture() : _windowManager.CaptureCoalesced(),
-            () => _tidyRunning || _autoTidyManager.IsGestureInProgress, _focus, _surfaces);
+            () => _tidyRunning || _autoTidyManager.IsGestureInProgress, _focus, _surfaces, _recorder.WorkspaceChanged);
+        _autoTidyManager.PointerObserved += _recorder.PointerObserved;
         _autoTidyManager.TaskInput += (target, pid, now, click) =>
         {
             // 点击和滚动可以更新任务关系。桌面几何只由独立的空间变化或松手调度，持续操作同一窗口不能再次授权搬动它。
@@ -312,10 +315,16 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         return true;
     }
 
+    internal void RefreshPointerObservation()
+    {
+        _autoTidyManager.SetPointerObservation(_recorder.SnapshotWantsSurfaces?.Invoke() == true);
+        _recorder.ReportInteractionCoverage(_autoTidyManager.PointerHookAvailable);
+    }
     private void ConfigureTaskInput(AutomaticLayoutMode mode)
     {
         _autoTidyManager.SetAttentionInput(AutomaticLayoutPolicy.UsesFullPlanner(mode) ||
             AutomaticLayoutPolicy.WatchesOpenings(mode) || _recorder.CanWriteDiagnostics);
+        RefreshPointerObservation();
         _recorder.PointerCaptureAvailable = _autoTidyManager.TaskInputAvailable;
     }
 
@@ -325,14 +334,15 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         var route = AutomaticLayoutPolicy.Route(request.Mode, request.Trigger);
         if (route == LayoutRoute.LocalOpening && request.LocalOpening is { } local)
         {
-            RunTidy(showActivity: false, LayoutRoute.LocalOpening, "automatic-opening", cause: request.Cause, localOpening: local);
+            var opened = _recorder.WorkspaceChanged(local.Incoming, "confirmed-opening");
+            RunTidy(showActivity: false, LayoutRoute.LocalOpening, "automatic-opening", cause: request.Cause, localOpening: local, changeEvents: opened is long id ? [id] : null);
             return;
         }
         if (route != LayoutRoute.Smart) return;
         var trigger = request.Trigger == LayoutTrigger.AfterGesture ? "automatic-gesture" : "automatic-workspace";
         bool mayReplan = !_placementRetryPending;
         _placementRetryPending = false;
-        RunTidy(showActivity: false, route.Value, trigger, mayReplan, request.Opening, request.Cause);
+        RunTidy(showActivity: false, route.Value, trigger, mayReplan, request.Opening, request.Cause, changeEvents: request.ChangeEvents, omittedChanges: request.OmittedChanges);
     }
 
     private void OnFollowHandRequested(ManualWindowGesture gesture)
@@ -386,7 +396,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
 
     private void RunTidy(bool showActivity, LayoutRoute route = LayoutRoute.ManualAlgorithm, string? source = null,
         bool allowPlacementReplan = false, ForegroundHistory.Opening? opening = null, WorkspaceChangeCause cause = WorkspaceChangeCause.None,
-        ForegroundHistory.NewTaskOpening? localOpening = null)
+        ForegroundHistory.NewTaskOpening? localOpening = null, long[]? changeEvents = null, int omittedChanges = 0)
     {
         if (_stopping.IsCancellationRequested) return;
         if (_tidyRunning || _autoTidyManager.IsGestureInProgress || NativeWindowActivity.IsMoving)
@@ -560,6 +570,9 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     AllowGestureAssist = trigger == "automatic-gesture",
                     IsWorkspaceObservation = workspaceObservation,
                     WorkspaceCause = cause,
+                    TraceCandidateAxes = _recorder.CanWriteDiagnostics || _recorder.SnapshotWantsGestures?.Invoke() == true,
+                    ObservedChangeEvents = changeEvents, OmittedChanges = omittedChanges,
+                    ReadingInput = _recorder.InputHistory.Read(snapshot, capturedAt),
                     OriginSide = workspaceObservation ? _focus.ObserveWorkingSide(snapshot, capturedAt) : 0,
                     FirstPlacementWindow = firstPlacement && opening == null ? front!.Handle : 0,
                     LocalPlacementWindow = localOpening?.Incoming.Handle ?? 0,
@@ -643,7 +656,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             IReadOnlyList<WindowSnapshot> requestedDesktop = snapshot;
             nint reclaimed = 0;
             if ((explicitSmart || AutomaticLayoutPolicy.AllowsAutomaticDismissal(_automaticMode)) &&
-                onlyWindow == 0 && !throughCapture && reclaimContext != null && !application.Interrupted && application.Failures.Count == 0 &&
+                onlyWindow == 0 && !proposed.IsDividerGesture && !throughCapture && reclaimContext != null && !application.Interrupted && application.Failures.Count == 0 &&
                 proposed.Moves.Count == plan.Count && proposed.Layers.Count == layerOrders.Count)
                 reclaimed = _behaviorMonitor.TryReclaim(snapshot, detailed, reclaimContext, effectiveOptions.SmartStrength, foreground, _focus);
             if (reclaimed != 0)

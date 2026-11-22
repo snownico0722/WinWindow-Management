@@ -5,11 +5,13 @@ using NeatWin.Core;
 using NeatWin.Reference;
 
 var area = new RectI(0, 0, 1920, 1040);
+CoupledDividerChecks.Run(Check);
 PlacementShadowChecks.Run(Check);
 SceneModelChecks.Run(Check);
 AttentionWorkspaceChecks.Run(Check);
 VideoFitChecks.Run(Check);
 ReadingFocusChecks.Run(Check);
+DesktopInteractionChecks.Run(Check);
 OpeningPlacementChecks.Run(Check);
 TextViewChecks.Run(Check);
 NavigationChecks.Run(Check);
@@ -1087,7 +1089,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                     PreferReversibleVerticalFill: true, Focus: new(focus?.Handle ?? 0, 0, 0));
                 ctx = (run.Signals?.ApplyToReplay(ctx, run.Version) ?? ctx) with
                 {
-                    AllowGestureAssist = run.Trigger == "automatic-gesture",
+                    AllowGestureAssist = run.Trigger == "automatic-gesture", TraceCandidateAxes = true,
                     // 活动快照探针只复用工作区求解，缺少运行时授权、注意力和触发置信度。
                     IsWorkspaceObservation = run.Trigger is "automatic-workspace" or "automatic-opening" or "offline-activity-probe",
                     LocalPlacementWindow = localOpening ? run.Signals!.FirstPlacementWindow : 0,
@@ -1149,6 +1151,8 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                     Roles = (ctx.WindowHints ?? []).Where(h => h.Role != WindowUseRole.Unknown || h.FloatingAffinity > 0 || h.TextFocus)
                         .Select(h => new { Id = (int)h.Handle, Role = h.Role.ToString(), h.FloatingAffinity, h.TextFocus }),
                     Moves = plan.Moves.Select(m => new { Id = (int)m.Window.Handle, Before = m.Window.VisualRect, After = m.TargetVisualRect }),
+                    CandidateGroups = plan.Groups.Select(g => new { Ids = g.Handles.Select(h => (int)h), g.Selected, g.AxisCoverage, Limits = g.Task?.Limits,
+                        HeldAxes = g.Candidates.Where(c => c.Held != null).Select(c => new { c.Held, c.Rejection }) }),
                     Selected = plan.Groups.Select(g => g.Selected) }));
             }
         }

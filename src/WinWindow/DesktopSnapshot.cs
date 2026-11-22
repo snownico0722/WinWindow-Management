@@ -73,6 +73,10 @@ internal static class DesktopSnapshot
             var pastSurfaces = (capture?.PastSurfaces ?? []).Concat(afterBeginSurfaces.Where(s => s.Tick < startTick))
                 .OrderBy(s => s.Tick).ToArray();
             var liveSurfaces = afterBeginSurfaces.Where(s => s.Tick >= startTick).OrderBy(s => s.Tick).ToArray();
+            var interactions = (capture?.PastInteractions ?? []).Concat(capture?.LiveInteractions.ToArray() ?? [])
+                .Where(e => e.Tick <= endTick).OrderBy(e => e.Tick).ThenBy(e => e.Sequence).ToArray();
+            int droppedInteractions = capture == null ? 0 : Volatile.Read(ref capture.DroppedInteractions);
+            long? interactionDropsThrough = capture?.InteractionDroppedThrough - startTick;
             int droppedSurfaces = capture?.DroppedSurfaces ?? 0;
             bool lookbackEnabled = capture?.LookbackEnabled == true;
             long lookbackCollectionMs = capture is null ? 0 : startTick - capture.EarliestTick;
@@ -96,6 +100,7 @@ internal static class DesktopSnapshot
                         writer.WriteLine($"Previous external foreground: {Handle(previousForeground)}");
                         writer.WriteLine($"Layout requests before click: {pastRequests} | After click: {liveRequests}");
                         writer.WriteLine($"Surface transitions before click: {pastSurfaces.Length} | After click: {liveSurfaces.Length} | Live limit drops: {droppedSurfaces}");
+                        writer.WriteLine($"Interaction events: {interactions.Length} | Live drops: {droppedInteractions} | History lost through (ms): {interactionDropsThrough}");
                         writer.WriteLine($"Monitors: {displays.Length}");
                         foreach (var display in displays)
                             writer.WriteLine($"  {display.Name} | display: {display.Screen} | work area: {display.WorkArea} | primary: {display.Primary}");
@@ -120,6 +125,7 @@ internal static class DesktopSnapshot
                             Start = start, StartTick = startTick, PreviousForeground = Handle(previousForeground), Mode = mode, Displays = displays,
                             LookbackEnabled = lookbackEnabled, LookbackMilliseconds = DesktopSnapshotHistory.LookbackMilliseconds,
                             LookbackCollectionMilliseconds = lookbackCollectionMs, WindowHistorySpanMilliseconds = windowHistorySpanMs,
+                            InteractionEvents = interactions.Length, DroppedLiveInteractions = droppedInteractions, InteractionHistoryDroppedThroughElapsedMs = interactionDropsThrough,
                             SurfaceHistoryDroppedThroughElapsedMs = surfaceHistoryDroppedThrough, SamplesBeforeClick = past.Length, LayoutRequestsBeforeClick = pastRequests, LayoutRequestsAfterClick = liveRequests,
                             SurfaceTransitionsBeforeClick = pastSurfaces.Length, SurfaceTransitionsAfterClick = liveSurfaces.Length, DroppedLiveSurfaceTransitions = droppedSurfaces }));
                         foreach (var frame in frames) writer.WriteLine(JsonSerializer.Serialize(frame));
@@ -142,6 +148,8 @@ internal static class DesktopSnapshot
                         foreach (var observation in pastSurfaces.Concat(liveSurfaces))
                             writer.WriteLine(JsonSerializer.Serialize(observation));
                     }
+                    using (var writer = Writer(zip, "interactions-snapshot.jsonl"))
+                        foreach (var item in interactions) writer.WriteLine(JsonSerializer.Serialize(item));
                     using (var writer = Writer(zip, "layout-decisions.jsonl"))
                         foreach (var plan in plans) writer.WriteLine(JsonSerializer.Serialize(plan));
                 }

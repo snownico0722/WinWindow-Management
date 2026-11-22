@@ -411,7 +411,7 @@ public partial class MainWindow
     {
         bool enabled = _store.Preferences.SnapshotLookbackEnabled;
         SnapshotHistory.SetEnabled(enabled, _hwnd, () => System.Threading.Volatile.Read(ref _snapshotManaged));
-        if (enabled && _hwnd != 0) _ = EnsureLayout();
+        if (_hwnd != 0 && (enabled || _layout != null)) _ = EnsureLayout().RefreshPointerObservationAsync();
     }
 
     private void SnapshotLookback_Click(object sender, RoutedEventArgs e)

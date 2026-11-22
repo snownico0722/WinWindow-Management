@@ -32,7 +32,7 @@ internal static class PlacementShadowChecks
         check(examples is [{ Axes: [{ Axis: PlacementAxis.Width }] }],
             "one distinct release supplies only its resize axis even when the edge moved");
         var findings = PlacementShadowReplay.Analyze(examples, CancellationToken.None);
-        check(findings is [{ Diagnosis: "missing-feasible-candidate" or "lost-on-ranking" }],
+        check(findings is [{ Diagnosis: "missing-feasible-candidate" or "lost-on-ranking" or "candidate-rejected" }],
             "the worker replays the exact baseline and distinguishes feasibility from ranking");
         learner.Publish(findings, 3000);
         check(learner.Bind(desktop, focus, 3100).Length == 0,
@@ -52,6 +52,12 @@ internal static class PlacementShadowChecks
             learner.Bind([main, peer with { ProcessId = 99 }], focus, 4100).Length == 0 &&
             learner.Bind(desktop, focus, 4000 + 3 * PlacementShadowReplay.IntervalMs).Length == 0,
             "corroborated rules bind only within the same live task and expire without new evidence");
+
+        var far = Window(8, new(1780, 960, 100, 60));
+        var near = far with { VisualRect = main.VisualRect };
+        check(learner.Bind([.. desktop, far], focus, 4100).Length == 1 &&
+            learner.Bind([.. desktop, near], focus, 4100).Length == 0,
+            "only a new window intersecting the corrected region invalidates a shadow preference");
 
         var self = frame with { Context = context with { ShadowAxes = bound } };
         learner.Submitted(self, plan, 1000);
