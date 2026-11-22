@@ -957,7 +957,8 @@ internal static class SmokeTests
         // fixtures a working-task history before testing the automatic path.
         async Task UseBothFixturesAsync()
         {
-            foreach (var handle in new[] { second, first })
+            // 一次切换只说明交接，允许保留叠放；来回使用同一对窗口才是本用例要覆盖的并看信号。
+            foreach (var handle in new[] { second, first, second, first })
             {
                 Native.SetForegroundWindow(handle);
                 await WaitAsync("fixture owns real foreground", () => Native.GetForegroundWindow() == handle);
@@ -984,8 +985,13 @@ internal static class SmokeTests
         {
             var frames = Pair();
             var focus = shell.LayoutFocus.Resolve(frames, Environment.TickCount64);
+            var recent = shell.SnapshotHistory.BeginCapture();
+            shell.SnapshotHistory.EndCapture(recent);
+            var decisions = recent.PastDecisions.TakeLast(4).Select(e => $"{e.Observation.Trigger}/{e.Observation.Outcome} " +
+                $"{e.Observation.Signals?.FocusEvidence} {string.Join(",", e.Observation.Groups.Select(g => g.Selected))} " +
+                string.Join(",", e.Observation.ApplyNotes));
             throw new TimeoutException($"{ex.Message}; foreground={Native.GetForegroundWindow()}, task={focus}, " +
-                $"frames={string.Join(" | ", frames.Select(w => $"{w.Handle} {w.VisualRect}"))}, status={status.Text}", ex);
+                $"frames={string.Join(" | ", frames.Select(w => $"{w.Handle} {w.VisualRect}"))}, status={status.Text}, decisions={string.Join(" | ", decisions)}", ex);
         }
         var stable = Pair();
         await Task.Delay(1250);

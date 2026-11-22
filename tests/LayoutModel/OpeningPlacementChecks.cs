@@ -5,6 +5,7 @@ internal static class OpeningPlacementChecks
     internal static void Run(Action<bool, string> check)
     {
         CheckCentralSwitches(check);
+        CheckCoveredHandoff(check);
         CheckOccupiedSide(check);
         CheckOpeningMemory(check);
         CheckRestoreAndPartialReturn(check);
@@ -281,6 +282,28 @@ internal static class OpeningPlacementChecks
         h.Interact(w.Handle, w.ProcessId, 125000);
         h.Resolve([w], 128000, out var expired);
         check(expired[w.Handle].RepeatedReversal == null, "typing does not renew a repeated reversal");
+    }
+
+    private static void CheckCoveredHandoff(Action<bool, string> check)
+    {
+        var area = new RectI(0, 0, 1024, 720);
+        var box = new RectI(87, 90, 482, 413);
+        var main = new WindowSnapshot(1, box, box, area, 1, default, true, true, true, 0, 96, 1001);
+        var source = main with { Handle = 2, ProcessId = 1002, IsForeground = false, ZOrder = 1 };
+        WindowSnapshot[] desktop = [main, source];
+        var visits = new Dictionary<nint, LayoutAttention> { [1] = new(1, .1, .9, 0, true), [2] = new(.97, .05, .9, 1, false) };
+        foreach (bool repeated in new[] { false, true })
+        {
+            var ctx = new TaskLayoutContext(Focus: new(1, 2, repeated ? 3 : 1, repeated ? "recent-switch-pair" : "handoff"),
+                Attention: visits, UseWorkingPairs: true) { IsWorkspaceObservation = true, AllowGestureAssist = false };
+            var plan = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(desktop, true),
+                new(SmartStrength: SmartTidyStrength.Balanced), null, desktop, ctx);
+            var result = TaskLayoutSession.Project(desktop, plan);
+            var exposure = IntentLayoutPlanner.ScreenExposure(result[1].VisualRect, [result[0].VisualRect], area, 96);
+            check(repeated ? exposure.Visible >= .50 && exposure.AccessWidth >= 80 :
+                exposure.AccessWidth >= 80 && AttentionLayout.HorizontalSide(result[0].VisualRect, area) != 1,
+                repeated ? "two repeatedly used, completely covered windows become readable" : "a first handoff exposes a return target without sending the foreground across the screen");
+        }
     }
 
     private static void CheckCentralSwitches(Action<bool, string> check)
