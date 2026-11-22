@@ -389,6 +389,9 @@ internal static partial class IntentLayoutPlanner
         double use = signal == null ? 0 : Math.Max(signal.Input, signal.Dwell * signal.Recency);
         double attention = .25 + Math.Clamp(visible.VisibleRatio, 0, 1) *
             ((w.IsForeground ? .55 : .16) + .70 * use + (hint?.PassiveVisual == true ? .3 : 0));
+        // 每扇窗单独计价。刚滚动过的后台文档也可能在阅读；输入只影响候选方案的打断成本。
+        if (context.IsWorkspaceObservation && context.ReadingInput?.GetValueOrDefault(w.Handle) is { } input)
+            attention += visible.VisibleRatio * (.95 * input.Scrolling + .65 * input.CaretMotion);
         bool release = context.AllowGestureAssist && context.GestureAnchor == w.Handle && (directSnap || context.GestureTarget == target);
         // 刚恢复到陌生一侧时，回到这个实例原先的位置通常比在错误位置读取正文更符合预期。
         bool restoring = context.Scene?.Lane is { Restore: { } remembered } lane && lane.Front.Handle == w.Handle &&

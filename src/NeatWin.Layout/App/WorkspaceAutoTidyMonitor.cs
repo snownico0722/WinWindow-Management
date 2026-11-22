@@ -27,9 +27,10 @@ internal sealed class WorkspaceAutoTidyMonitor : NativeWindow, IDisposable
     internal bool WatchingWorkspace => _hooks.Count != 0;
     internal AutomaticLayoutMode Mode => _scheduler.Mode;
 
-    internal WorkspaceAutoTidyMonitor(Func<bool, IReadOnlyList<WindowSnapshot>> capture, Func<bool> busy, ForegroundHistory focus, TaskSurfaces surfaces)
+    internal WorkspaceAutoTidyMonitor(Func<bool, IReadOnlyList<WindowSnapshot>> capture, Func<bool> busy, ForegroundHistory focus, TaskSurfaces surfaces,
+        Func<WindowSnapshot, string, long?>? recordChange = null)
     {
-        _scheduler = new() { Surfaces = surfaces };
+        _scheduler = new() { Surfaces = surfaces, RecordChange = recordChange };
         _capture = capture; _busy = busy; _focus = focus; _callback = OnWinEvent;
         CreateHandle(new CreateParams { Caption = "NeatWin.AutomaticLayout", Parent = NativeMethods.HwndMessage });
         _timer.Tick += OnTick;

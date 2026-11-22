@@ -14,8 +14,9 @@ using static NeatWin.Windows.NativeMethods;
 namespace NeatWin.Recording;
 
 internal sealed record ProcessActivity(string Instance, long? WorkingSetBytes, double? CpuCores, string? MediaSource, float? AudioPeak = null, float? SharedAudioPeak = null,
-    long? OwnWorkingSetBytes = null, long? OwnPrivateBytes = null, int? DescendantsRead = null, int? DescendantsConsidered = null);
-internal sealed record MediaActivity(string Source, string Playback);
+    long? OwnWorkingSetBytes = null, long? OwnPrivateBytes = null, int? DescendantsRead = null, int? DescendantsConsidered = null, uint? ProcessId = null, string? ExecutablePath = null,
+    DateTime? StartedUtc = null, string? AppUserModelId = null);
+internal sealed record MediaActivity(string Source, string Playback, string? AppUserModelId = null);
 internal sealed record WindowActivity(int Id, string? Process, int? ComparedCells, int? ChangedCells,
     long? ForegroundMs, long? BackgroundVisibleMs, string ActivityHint, RectI? Fragment = null, double? FragmentChange = null,
     string? ApplicationRole = null, double? VisibleRatio = null, double? LargestFragmentRatio = null, long? FocusEventMs = null,
@@ -31,6 +32,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     private sealed record ProcessInfo(string? Path, string? Source, string Instance, DateTime Start);
     private readonly byte[] _ephemeralKey = RandomNumberGenerator.GetBytes(32);
     private readonly Dictionary<uint, ProcessInfo> _process = [];
+    private readonly Dictionary<(uint Pid, nint Hwnd), RawWindowIdentity> _rawWindows = [];
     private readonly Dictionary<(uint Pid, nint Hwnd), string?> _keys = [];
     private readonly Dictionary<(uint Pid, nint Hwnd), (string? App, string Class, WindowUseRole Role)> _roles = [];
     private readonly OfficeSurfaceProbe _officeSurface = new();
@@ -49,6 +51,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
 
     internal void Retire(nint hwnd)
     {
+        foreach (var key in _rawWindows.Keys.Where(k => k.Hwnd == hwnd).ToArray()) _rawWindows.Remove(key);
         foreach (var key in _keys.Keys.Where(k => k.Hwnd == hwnd).ToArray()) _keys.Remove(key);
         foreach (var key in _roles.Keys.Where(k => k.Hwnd == hwnd).ToArray()) _roles.Remove(key);
         _officeSurface.Retire(hwnd);
@@ -58,7 +61,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
 
     internal void Reset()
     {
-        _process.Clear(); _keys.Clear(); _roles.Clear(); _cpu.Clear(); _colors.Clear(); _previous.Clear(); _lastTick = 0;
+        _process.Clear(); _rawWindows.Clear(); _keys.Clear(); _roles.Clear(); _cpu.Clear(); _colors.Clear(); _previous.Clear(); _lastTick = 0;
         _fragments.Clear(); _audio = new();
         _mediaManager = null; _mediaAttempt = 0;
     }
@@ -120,7 +123,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
             if (info.Path == null) return null;
             var name = new StringBuilder(256);
             if (NativeMethods.GetClassName(w.Handle, name, name.Capacity) == 0) return null;
-            var value = store.Key(info.Path + "|" + name, create);
+            var value = store.Key(info.Path.ToUpperInvariant() + "|" + name, create);
             if (value == null) return null;
             if (_keys.Count >= 512) _keys.Clear();
             return _keys[key] = value;
@@ -129,19 +132,50 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         { return null; }
     }
 
+    internal RawWindowIdentity? RawIdentity(nint hwnd, uint pid, bool refreshTitle)
+    {
+        if (pid == 0 || hwnd == 0 || pid == Environment.ProcessId) return null;
+        var key = (pid, hwnd);
+        bool known = _rawWindows.TryGetValue(key, out var info);
+        if (known && !refreshTitle) return info;
+        NativeMethods.GetWindowThreadProcessId(hwnd, out var livePid);
+        if (livePid != pid) return null;
+        if (!known)
+        {
+            var cls = new StringBuilder(256);
+            NativeMethods.GetClassName(hwnd, cls, cls.Capacity);
+            string? app = null, path = null;
+            DateTime? started = null;
+            try
+            {
+                using var process = Process.GetProcessById((int)pid);
+                app = process.ProcessName;
+                var original = Identify(pid, process);
+                path = original.Path; started = original.Start;
+            }
+            catch (Exception e) when (e is Win32Exception or InvalidOperationException or ArgumentException or UnauthorizedAccessException) { }
+            info = new($"0x{hwnd:X}", pid, app, path, started, cls.Length > 0 ? cls.ToString() : null, null);
+            if (_rawWindows.Count >= 1024) _rawWindows.Clear();
+        }
+        // 标题可以在同一 HWND 内变化。展示/改名/快照时读取，滚轮与插入点事件复用最近一次读数。
+        var title = new StringBuilder(Math.Max(256, NativeMethods.GetWindowTextLength(hwnd) + 1));
+        NativeMethods.GetWindowText(hwnd, title, title.Capacity);
+        return _rawWindows[key] = info! with { Title = title.ToString() };
+    }
+
     private ProcessInfo Identify(uint id, Process process)
     {
         var start = process.StartTime.ToUniversalTime();
         if (_process.TryGetValue(id, out var info) && info.Start == start) return info;
         string? path = null;
-        try { path = process.MainModule?.FileName?.ToUpperInvariant(); }
+        try { path = process.MainModule?.FileName; }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or UnauthorizedAccessException) { }
         var source = new StringBuilder(512); uint length = (uint)source.Capacity;
         string? app = null;
         try
         {
             if (GetApplicationUserModelId(process.SafeHandle.DangerousGetHandle(), ref length, source) == 0)
-                app = source.ToString().ToUpperInvariant();
+                app = source.ToString();
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or UnauthorizedAccessException) { }
         if (_process.Count >= 256) _process.Clear();
@@ -301,7 +335,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
         foreach (var id in _cpu.Where(p => p.Value.Tick != now).Select(p => p.Key).ToArray()) _cpu.Remove(id);
         var last = new LastInput { Size = 8 };
         uint? idle = GetLastInputInfo(ref last) ? unchecked((uint)now - last.Time) : null;
-        return new(7, session, now, interval, frame, present, windows.Select(w => w.Playing && w.Process != null && sharedSources.Contains(w.Process)
+        return new(8, session, now, interval, frame, present, windows.Select(w => w.Playing && w.Process != null && sharedSources.Contains(w.Process)
             ? w with { Playing = false } : w).ToArray(), media, idle, audio?.Tick, displayRequired);
     }
 
@@ -340,8 +374,8 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
                 }
                 catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException or UnauthorizedAccessException) { }
             }
-            return new(info.Instance, workingSet, cores, info.Source == null ? null : ResolveKey(info.Source, persistKeys), maxAudio, sharedAudio,
-                ownWorkingSet, ownPrivate, sampledChildren, descendants.Count);
+            return new(info.Instance, workingSet, cores, info.Source == null ? null : ResolveKey(info.Source.ToUpperInvariant(), persistKeys), maxAudio, sharedAudio,
+                ownWorkingSet, ownPrivate, sampledChildren, descendants.Count, pid, info.Path, info.Start, info.Source);
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException or IOException or UnauthorizedAccessException)
         { return null; }
@@ -373,7 +407,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
             {
                 var aumid = item.SourceAppUserModelId;
                 if (!string.IsNullOrWhiteSpace(aumid))
-                    result.Add(new(ResolveKey(aumid.ToUpperInvariant(), persistKeys), item.GetPlaybackInfo().PlaybackStatus.ToString()));
+                    result.Add(new(ResolveKey(aumid.ToUpperInvariant(), persistKeys), item.GetPlaybackInfo().PlaybackStatus.ToString(), aumid));
             }
             return result.ToArray();
         }

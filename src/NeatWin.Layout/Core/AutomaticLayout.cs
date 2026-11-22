@@ -9,6 +9,8 @@ public enum WorkspaceChangeCause { None = 0, Focus = 1, Membership = 2, Geometry
 public enum LayoutRoute { ManualAlgorithm, LightAssist, Smart, FullTiling, LocalOpening }
 public sealed record AutomaticLayoutRequest(AutomaticLayoutMode Mode, LayoutTrigger Trigger)
 {
+    internal long[]? ChangeEvents { get; init; }
+    internal int OmittedChanges { get; init; }
     public WorkspaceChangeCause Cause { get; init; }
     internal ForegroundHistory.Opening? Opening { get; init; }
     internal ForegroundHistory.NewTaskOpening? LocalOpening { get; init; }
@@ -97,6 +99,17 @@ public sealed class AutomaticLayoutScheduler
     private ManualWindowGesture? _release;
     internal ManualWindowGesture? PendingRelease => _release;
     private WorkspaceChangeCause _cause;
+    internal Func<WindowSnapshot, string, long?>? RecordChange { get; init; }
+    private readonly List<long> _changeEvents = [];
+    private int _omittedChanges;
+    private void ClearChangeEvents() { _changeEvents.Clear(); _omittedChanges = 0; }
+    private void Evidence(WindowSnapshot window, string change)
+    {
+        // 只连接经 Normalize、自己动作回声过滤之后实际参与调度的差异。时间上相邻的鼠标输入不是触发源。
+        if (!AutomaticLayoutPolicy.WatchesWorkspace(Mode) || RecordChange?.Invoke(window, change) is not long id) return;
+        _changeEvents.Add(id);
+        if (_changeEvents.Count > 128) { _changeEvents.RemoveAt(0); _omittedChanges++; }
+    }
     public AutomaticLayoutMode Mode { get; private set; }
     public bool HasPending => _pending;
 
@@ -104,7 +117,7 @@ public sealed class AutomaticLayoutScheduler
     {
         Mode = AutomaticLayoutPolicy.Read((int)mode, false);
         _own.Clear(); _manual.Clear(); _pending = false; _foreground = _dragging = 0; _release = null;
-        _cause = WorkspaceChangeCause.None;
+        _cause = WorkspaceChangeCause.None; ClearChangeEvents();
         Surfaces.Reset();
         _observed = [];
         _observed = Normalize(snapshot); _notBefore = now; _lastChange = now; _settleUntil = now;
@@ -112,6 +125,7 @@ public sealed class AutomaticLayoutScheduler
 
     public void RequestCurrent(long now, WorkspaceChangeCause cause = WorkspaceChangeCause.Requested)
     {
+        if (!_pending) ClearChangeEvents();
         if (AutomaticLayoutPolicy.WatchesWorkspace(Mode)) Queue(LayoutTrigger.WorkspaceChange, now, cause);
     }
 
@@ -173,6 +187,7 @@ public sealed class AutomaticLayoutScheduler
             Reset(Mode, [], now);
             return null;
         }
+        if (!_pending) ClearChangeEvents();
         var next = Normalize(snapshot);
         var ignored = new HashSet<nint>();
         var ignoredOrder = new HashSet<nint>();
@@ -229,7 +244,10 @@ public sealed class AutomaticLayoutScheduler
             if (now < navigationSettleUntil || !openingReady && (now - _lastChange < SettleMilliseconds || now < _notBefore)) return null;
         }
         _pending = false; _manual.Clear(); _notBefore = now + MinimumIntervalMilliseconds;
-        return new(Mode, _trigger) { Cause = _cause };
+        var events = _trigger == LayoutTrigger.WorkspaceChange && _changeEvents.Count > 0 ? _changeEvents.ToArray() : null;
+        int omitted = events != null ? _omittedChanges : 0;
+        ClearChangeEvents();
+        return new(Mode, _trigger) { Cause = _cause, ChangeEvents = events, OmittedChanges = omitted };
     }
 
     private void Queue(LayoutTrigger trigger, long now, WorkspaceChangeCause cause = WorkspaceChangeCause.Requested)
@@ -269,16 +287,23 @@ public sealed class AutomaticLayoutScheduler
         for (var i = 0; i < next.Length; i++)
         {
             var w = next[i];
-            if (!old.TryGetValue(w.Handle, out var a) || a.ProcessId != w.ProcessId)
+            if (!old.Remove(w.Handle, out var a) || a.ProcessId != w.ProcessId)
             {
+                if (a != null) Evidence(a, "removed");
+                Evidence(w, "added");
                 changed |= WorkspaceChangeCause.Membership;
                 continue;
             }
-            if (a.IsForeground != w.IsForeground) changed |= WorkspaceChangeCause.Focus;
+            if (a.IsForeground != w.IsForeground)
+            {
+                Evidence(w, w.IsForeground ? "focus-gained" : "focus-lost");
+                changed |= WorkspaceChangeCause.Focus;
+            }
             if (a.WorkArea != w.WorkArea || a.MonitorHandle != w.MonitorHandle || a.Dpi != w.Dpi ||
                 a.IsManageable != w.IsManageable || a.IsResizable != w.IsResizable ||
                 a.IsTopmost != w.IsTopmost || a.FrameInsets != w.FrameInsets || a.SurfaceState != w.SurfaceState)
             {
+                Evidence(w, "state");
                 changed |= WorkspaceChangeCause.WindowState;
                 continue;
             }
@@ -289,13 +314,24 @@ public sealed class AutomaticLayoutScheduler
                 // The planner captures fresh geometry when the request runs.
                 next[i] = w with { VisualRect = a.VisualRect };
             }
-            else changed |= WorkspaceChangeCause.Geometry;
+            else { Evidence(w, "geometry"); changed |= WorkspaceChangeCause.Geometry; }
         }
+        foreach (var removed in old.Values) Evidence(removed, "removed");
         _observed = next;
         // Moving a member within our layer block renumbers unrelated windows. Compare their
         // relative sequence, not raw Z ranks; a real external restack still causes a new decision.
-        if (!before.Where(w => !ignoreOrder.Contains(w.Handle)).Select(w => w.Handle)
-            .SequenceEqual(next.Where(w => !ignoreOrder.Contains(w.Handle)).Select(w => w.Handle))) changed |= WorkspaceChangeCause.Order;
+        var previousOrder = before.Where(w => !ignoreOrder.Contains(w.Handle)).Select(w => w.Handle);
+        var currentOrder = next.Where(w => !ignoreOrder.Contains(w.Handle)).ToArray();
+        if (!previousOrder.SequenceEqual(currentOrder.Select(w => w.Handle)))
+        {
+            // 成员增减本身已有证据；纯层级变化记录相对顺序首次不同的窗口。
+            if (!changed.HasFlag(WorkspaceChangeCause.Membership))
+            {
+                var reordered = previousOrder.Zip(currentOrder).FirstOrDefault(p => p.First != p.Second.Handle);
+                if (reordered.Second != null) Evidence(reordered.Second, "order");
+            }
+            changed |= WorkspaceChangeCause.Order;
+        }
         return changed;
     }
 }
@@ -303,7 +339,7 @@ public sealed class AutomaticLayoutScheduler
 internal static class LayoutDispatch
 {
     internal static string ModelVersion(TidyAlgorithmMode mode) =>
-        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v2.5";
+        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v2.6";
 
     internal static IntentLayoutPlan Create(LayoutRoute route, IReadOnlyList<VisibleWindow> visible,
         TidyOptions options, IntentReferenceDocument? reference, IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext? context)

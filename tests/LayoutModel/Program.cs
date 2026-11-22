@@ -10,6 +10,7 @@ SceneModelChecks.Run(Check);
 AttentionWorkspaceChecks.Run(Check);
 VideoFitChecks.Run(Check);
 ReadingFocusChecks.Run(Check);
+DesktopInteractionChecks.Run(Check);
 OpeningPlacementChecks.Run(Check);
 TextViewChecks.Run(Check);
 NavigationChecks.Run(Check);

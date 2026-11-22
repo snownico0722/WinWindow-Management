@@ -1,13 +1,15 @@
 namespace NeatWin.Core;
 
-// Session-local identifiers only. These DTOs deliberately have no title, process or HWND fields.
+// 数字 ID 保持旧回放与个人规则兼容。原始身份与它并存，便于直接追踪同应用的不同窗口。
+public sealed record RawWindowIdentity(string Handle, uint ProcessId, string? App, string? ExecutablePath,
+    DateTime? ProcessStartedUtc, string? ClassName, string? Title);
 public sealed record ObservedWindow(int Id, RectI Rect, RectI WorkArea, uint Dpi,
     int ZOrder, bool Foreground, bool Topmost, bool Manageable, double VisibleRatio, WindowExposure? Exposure = null,
     string? AppKey = null, bool? Resizable = null, string? SurfaceState = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     int OwnerId = 0,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    bool LocalSurface = false);
+    bool LocalSurface = false, RawWindowIdentity? Identity = null);
 public sealed record WorkspaceFrame(DateTimeOffset Time, ObservedWindow[] Windows, bool Truncated = false,
     RecordedDisplay[]? Displays = null);
 public sealed record WorkspaceTransition(int Version, string Session, string Cause,
@@ -41,7 +43,7 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     RecordedShadowFinding[]? ShadowReplay = null)
 {
-    internal const int CurrentVersion = 10;
+    internal const int CurrentVersion = 11;
 }
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
@@ -71,7 +73,8 @@ public sealed class ObservationIdentityTracker
     }
 
     public WorkspaceFrame Capture(IReadOnlyList<WindowSnapshot> snapshot,
-        RecordedDisplay[]? displays = null, Func<WindowSnapshot, string?>? appKey = null, Func<WindowSnapshot, bool>? isLocalSurface = null)
+        RecordedDisplay[]? displays = null, Func<WindowSnapshot, string?>? appKey = null, Func<WindowSnapshot, bool>? isLocalSurface = null,
+        Func<WindowSnapshot, RawWindowIdentity?>? rawIdentity = null)
     {
         var result = new List<ObservedWindow>();
         var ordered = snapshot.OrderBy(w => w.ZOrder).ToArray();
@@ -85,7 +88,7 @@ public sealed class ObservationIdentityTracker
             var exposure = WindowExposure.Measure(window.VisualRect, screens, front);
             result.Add(new(sampledIds[window.Handle], window.VisualRect, window.WorkArea, window.Dpi, window.ZOrder,
                 window.IsForeground, window.IsTopmost, window.IsManageable, exposure.Visible, exposure,
-                window.IsManageable || window.SurfaceState != null ? appKey?.Invoke(window) : null, window.IsResizable, window.SurfaceState, sampledIds.GetValueOrDefault(window.Owner), isLocalSurface?.Invoke(window) == true));
+                window.IsManageable || window.SurfaceState != null ? appKey?.Invoke(window) : null, window.IsResizable, window.SurfaceState, sampledIds.GetValueOrDefault(window.Owner), isLocalSurface?.Invoke(window) == true, rawIdentity?.Invoke(window)));
         }
         return new(DateTimeOffset.UtcNow, result.ToArray(), snapshot.Count > 64, displays);
     }
@@ -142,7 +145,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     BrowserBarObservation? BrowserBars = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    bool VerifiedTaskRepeat = false)
+    bool VerifiedTaskRepeat = false, Dictionary<int, ReadingInteraction>? ReadingInput = null, long[]? ObservedChangeEvents = null, int OmittedChanges = 0)
 {
     internal static RecordedTaskSignals From(TaskLayoutContext context, IReadOnlyDictionary<nint, int> ids, IReadOnlyList<WindowSnapshot>? snapshot = null)
     {
@@ -193,7 +196,8 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
                 .ToDictionary(a => Id(a.Key), a => a.Value), Id(context.GestureAnchor), video, context.GestureTarget, navigation, context.WorkspaceCause == WorkspaceChangeCause.None ? null : context.WorkspaceCause.ToString(),
             fits?.Count > 0 ? fits : null, Id(context.FirstPlacementWindow), context.OriginSide, shadow is { Length: > 0 } ? shadow : null,
             context.BrowserBarSample is { } sample ? sample.Detail with { WindowId = Id(sample.Window) } : null,
-            context.VerifiedTaskRepeat);
+            context.VerifiedTaskRepeat, context.ReadingInput is { Count: > 0 } input
+                ? input.Where(e => Id(e.Key) != 0).ToDictionary(e => Id(e.Key), e => e.Value) : null, context.ObservedChangeEvents, context.OmittedChanges);
     }
 
     private static ShadowAxis? ReadShadowRule(RecordedShadowRule value) =>
@@ -219,6 +223,9 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         GestureAnchor = GestureAnchor, GestureTarget = GestureTarget,
         ShadowAxes = (ShadowRules ?? []).Select(ReadShadowRule).OfType<ShadowAxis>().ToArray(),
         VerifiedTaskRepeat = VerifiedTaskRepeat,
+        ReadingInput = ReadingInput?.Where(e => e.Key > 0 && e.Value is { Scrolling: >= 0 and <= 1, CaretMotion: >= 0 and <= 1 })
+            .ToDictionary(e => (nint)e.Key, e => e.Value),
+        ObservedChangeEvents = ObservedChangeEvents, OmittedChanges = OmittedChanges,
         // 旧档只保存暗带和算出的比例。可以审查历史决定，但没有足够证据给新引擎重新授权缩窗。
         VideoFits = recordVersion < 10 ? null : VideoFits?.Where(pair => pair.Key > 0 && pair.Value is { IsValid: true })
             .ToDictionary(pair => (nint)pair.Key, pair => pair.Value),

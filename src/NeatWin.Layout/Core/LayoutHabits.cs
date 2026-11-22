@@ -12,19 +12,20 @@ public sealed record LayoutHabit(DateTimeOffset Time, string Display, string App
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? PartnerWidth = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? Height = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] HorizontalEdit? Edited = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementUsage? Usage = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PlacementUsage? Usage = null,
+    RawWindowIdentity? Identity = null, RawWindowIdentity? PartnerIdentity = null);
 
 [JsonConverter(typeof(JsonStringEnumConverter<PlacementUsage>))]
-public enum PlacementUsage { Joint, BackgroundPlayback, ForegroundPlayback, TextFocus }
+public enum PlacementUsage { Joint, BackgroundPlayback, ForegroundPlayback, TextFocus, ScrollReading, BackgroundReading }
 
 // 匿名 ID 只在当前录制会话内有意义。用途取自手势开始前或布局求解前的观察。
-public sealed record PlacementUseObservation(int Foreground, int JointPeer, bool TextFocus, int[] Playing)
+public sealed record PlacementUseObservation(int Foreground, int JointPeer, bool TextFocus, int[] Playing, int[]? Scrolling = null)
 {
     internal bool SupportsPair(int window, int peer)
     {
         if (Foreground == 0 || window != Foreground && peer != Foreground) return false;
         int background = window == Foreground ? peer : window;
-        return background != 0 && (background == JointPeer || HasPlaybackPeer(background));
+        return background != 0 && (background == JointPeer || HasPlaybackPeer(background) || Scrolling?.Contains(background) == true);
     }
 
     internal PlacementUsage? For(int window, int peer = 0)
@@ -33,6 +34,8 @@ public sealed record PlacementUseObservation(int Foreground, int JointPeer, bool
         int background = window == Foreground ? peer : window;
         if (Playing.Contains(Foreground)) return PlacementUsage.ForegroundPlayback;
         if (background != 0 && HasPlaybackPeer(background)) return PlacementUsage.BackgroundPlayback;
+        if (background != 0 && Scrolling?.Contains(background) == true) return PlacementUsage.BackgroundReading;
+        if (Scrolling?.Contains(Foreground) == true) return PlacementUsage.ScrollReading;
         if (background != 0 && background == JointPeer) return PlacementUsage.Joint;
         return TextFocus ? PlacementUsage.TextFocus : null;
     }
@@ -889,7 +892,7 @@ public static class LayoutHabits
             o.AfterRequest != null, partner != null && order != 0 && moved.Rect.VerticalOverlapRatio(partner.Rect) >= .5
                 ? moved.Rect.HorizontalOverlapRatio(partner.Rect) : null,
             partnerCenter, partnerWidth, axes.HasFlag(HabitAxes.Height)
-                ? Math.Clamp(moved.Rect.Height / (double)o.WorkArea.Height, .05, 1) : null, edited, usage);
+                ? Math.Clamp(moved.Rect.Height / (double)o.WorkArea.Height, .05, 1) : null, edited, usage, moved.Identity, partner?.Identity);
     }
 
     internal static bool HasLinkedReversal(WindowAdjustmentObservation o) => LinkedReversal(o) != null;

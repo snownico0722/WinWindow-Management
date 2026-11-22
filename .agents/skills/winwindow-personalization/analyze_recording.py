@@ -62,7 +62,7 @@ def stream_of(name):
         return "plans"
     if name == "gestures.jsonl":
         return "gestures"
-    return next((s for s in ("activity", "focus", "workspace", "plans", "gestures", "adjustments", "behavior", "surfaces")
+    return next((s for s in ("activity", "focus", "workspace", "plans", "gestures", "adjustments", "behavior", "surfaces", "interactions")
                  if name.startswith(s + "-") and name.endswith(".jsonl")), None)
 
 
@@ -82,6 +82,8 @@ class Recording:
         self.boundaries = {}
         self.behavior = {}
         self.surfaces = {}
+        self.interactions = {}
+        self.dropped_interactions = 0
         self.adjustments = {}
         self.gestures = {}
         self.dropped = 0
@@ -89,6 +91,12 @@ class Recording:
         self.plan_evidence = {}
         self.frame_counts = Counter()
         self.display_profiles = set()
+
+    def raw_identity(self, window, identity):
+        if window and identity:
+            for field in ("App", "ExecutablePath", "ClassName", "Title", "Handle", "ProcessId", "ProcessStartedUtc"):
+                if identity.get(field) is not None:
+                    self.ids[window][field].add(identity[field])
 
     def frame(self, frame, source):
         if not frame:
@@ -100,6 +108,7 @@ class Recording:
             self.display_profiles.add(tuple(sorted((tuple(rect(d["Bounds"])), tuple(rect(d["WorkArea"])))
                                                    for d in frame["Displays"])))
         for w in frame.get("Windows", []):
+            self.raw_identity(w["Id"], w.get("Identity"))
             if w.get("AppKey"):
                 self.ids[w["Id"]]["AppKeys"].add(w["AppKey"])
             if w.get("Dpi"):
@@ -139,7 +148,14 @@ class Recording:
                     self.ids[event["WindowId"]]["ExeNames"].add(event["App"].lower())
                 if event not in target["Events"]:
                     target["Events"].append(event)
+        elif stream == "interactions":
+            self.dropped_interactions += row.get("Dropped", 0)
+            for event in row.get("Events", [row]):
+                self.interactions[event["Sequence"]] = event
+                self.raw_identity(event.get("WindowId"), event.get("Identity"))
         elif stream == "surfaces":
+            self.raw_identity(row.get("WindowId"), row.get("ChildIdentity"))
+            self.raw_identity(row.get("HostId"), row.get("HostIdentity"))
             key = (row["Tick"], row["WindowId"], row.get("HostId"), row["Action"])
             for id_field, app_field in (("WindowId", "ChildApp"), ("HostId", "HostApp")):
                 if row.get(id_field) and row.get(app_field):
@@ -172,6 +188,9 @@ class Recording:
                                    "ActualTime": (row.get("Actual") or {}).get("Time"),
                                    "SubmittedChange": bool(targets or row.get("Layers") or row.get("MinimizeTarget")),
                                    "MainId": (row.get("Signals") or {}).get("Main"),
+                                   "ObservedChangeEvents": (row.get("Signals") or {}).get("ObservedChangeEvents"),
+                                   "OmittedChanges": (row.get("Signals") or {}).get("OmittedChanges"),
+                                   "ReadingInput": (row.get("Signals") or {}).get("ReadingInput"),
                                    "TargetWindowIds": targets, "UndoOfRequest": row.get("UndoOfRequest"),
                                    "SceneEffects": row.get("SceneEffects"),
                                    "OriginSide": (row.get("Signals") or {}).get("OriginSide"),
@@ -247,7 +266,10 @@ class Recording:
                 "Gestures": sorted(self.gestures.values(), key=lambda row: row["Tick"]), "DroppedGestureEvents": self.dropped,
                 "BehaviorEvents": [self.behavior[key] for key in sorted(self.behavior)],
                 "SurfaceActions": field_counts(self.surfaces.values(), "Action"),
-                "SurfaceEvents": surface_events}
+                "SurfaceEvents": surface_events,
+                "InteractionKinds": field_counts(self.interactions.values(), "Kind"),
+                "Interactions": sorted(self.interactions.values(), key=lambda e: (e["Tick"], e["Sequence"])),
+                "DroppedDiskInteractions": self.dropped_interactions}
 
     def display_profiles_report(self):
         return [[{"Bounds": b, "WorkArea": w} for b, w in conf] for conf in sorted(self.display_profiles)]

@@ -43,6 +43,8 @@ internal static class NativeMethods
     internal const int WmLButtonDown = 0x0201;
     internal const int WmLButtonUp = 0x0202;
     internal const int WmRButtonDown = 0x0204;
+    internal const int WmRButtonUp = 0x0205;
+    internal const int WmMButtonUp = 0x0208;
     internal const int WmMButtonDown = 0x0207;
     internal const int WmMouseWheel = 0x020A;
     internal const int WmMouseHWheel = 0x020E;
@@ -146,6 +148,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern uint GetDpiForWindow(nint hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int GetWindowTextLength(nint hwnd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern int GetWindowText(nint hwnd, StringBuilder text, int maxCount);

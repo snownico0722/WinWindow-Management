@@ -10,7 +10,7 @@ public sealed record SurfaceRule(string Id, string HostApp, double MaxAreaRatio,
 }
 
 internal sealed record SurfaceMatch(WindowSnapshot Child, WindowSnapshot Host, string Rule, double MaxArea,
-    string? ReleaseReason = null, RectI? ReleasedChildRect = null, RectI? ReleasedHostRect = null);
+    string? ReleaseReason = null, RectI? ReleasedChildRect = null, RectI? ReleasedHostRect = null, ContextPress? ContextPress = null);
 internal enum SurfacePurpose { Unknown, LocalDetail, IndependentTask, CaptureTool }
 
 internal sealed class TaskSurfaces
@@ -24,6 +24,7 @@ internal sealed class TaskSurfaces
     internal Func<WindowSnapshot, string?>? AppKey { get; init; }
     internal Func<SurfaceRule[]?>? Rules { get; init; }
     internal Func<WindowSnapshot, bool>? JustClicked { get; init; }
+    internal Func<ContextPress?>? ReadContextPress { get; init; }
     internal Action<SurfaceMatch, string>? Changed { get; init; }
     internal IEnumerable<WindowSnapshot> Hosts => _local.Values.Select(m => m.Host);
     internal bool IsLocal(WindowSnapshot w) => _local.TryGetValue(w.Handle, out var match) && match.Child.ProcessId == w.ProcessId ||
@@ -37,6 +38,7 @@ internal sealed class TaskSurfaces
     {
         if (desktop.Count == 0) { Reset(); return; }
         var byHandle = desktop.ToDictionary(w => w.Handle);
+        var press = ReadContextPress?.Invoke();
         // 全屏选区可以比原窗口大，翻译结果也可能没有 Owner。用工具窗口自身的证据判断，
         // 来源只用于记录。这样在浏览器或游戏上调用 QQ 热键也不会凭空新增一个桌面任务。
         foreach (var entry in _capture.Values.ToArray())
@@ -63,7 +65,8 @@ internal sealed class TaskSurfaces
             bool hostAlive = h?.ProcessId == m.Host.ProcessId;
             bool promoted = childAlive && hostAlive && w!.ProcessId == h!.ProcessId && w.IsForeground &&
                 Role?.Invoke(h) == WindowUseRole.Chat && ChatPurpose?.Invoke(w) == SurfacePurpose.IndependentTask;
-            if (childAlive && hostAlive && !promoted && w!.Owner == m.Child.Owner && Fits(w, h!, m.MaxArea)) continue;
+            if (childAlive && hostAlive && !promoted && w!.Owner == m.Child.Owner &&
+                (m.ContextPress is { } input ? IsContextPopup(w, h!, input) : Fits(w, h!, m.MaxArea))) continue;
             _local.Remove(m.Child.Handle);
             Changed?.Invoke(m with { ReleaseReason = !childAlive ? "child-left" : !hostAlive ? "host-left" : "detached-or-enlarged",
                 ReleasedChildRect = childAlive ? w!.VisualRect : null, ReleasedHostRect = hostAlive ? h!.VisualRect : null }, "release");
@@ -74,6 +77,10 @@ internal sealed class TaskSurfaces
         {
             if (IsLocal(w) || w.Handle == previous?.Handle || w.VisualRect.IsEmpty) continue;
             var host = byHandle.GetValueOrDefault(w.Owner);
+            // 便签可能只是后台一张小纸片。上下文菜单可以比宿主大，也不一定夺得前台。
+            bool appeared = !_previous.Contains((w.Handle, w.ProcessId));
+            if (host == null && appeared && press != null && byHandle.TryGetValue(press.Root, out var clicked) &&
+                IsContextPopup(w, clicked, press)) host = clicked;
             if (host == null && previous != null && previous.ProcessId != 0 && previous.ProcessId == w.ProcessId &&
                 (w.IsForeground || JustClicked?.Invoke(previous) == true) && !_previous.Contains((w.Handle, w.ProcessId)) && byHandle.TryGetValue(previous.Handle, out var live) && live.ProcessId == previous.ProcessId)
                 host = live;
@@ -97,8 +104,13 @@ internal sealed class TaskSurfaces
             if (custom?.Action == "task") { ReportTask("configured-task"); continue; }
             bool chat = Role?.Invoke(host) == WindowUseRole.Chat;
             double limit = custom?.MaxAreaRatio ?? (chat ? .43 : .30);
-            if (!Fits(w, host, limit)) { ReportTask("separate-size-or-location"); continue; }
             var purpose = chat && w.ProcessId == host.ProcessId ? ChatPurpose?.Invoke(w) : null;
+            if (purpose != SurfacePurpose.IndependentTask && appeared && press != null && IsContextPopup(w, host, press))
+            {
+                var menu = new SurfaceMatch(w, host, "context-click-popup", limit, ContextPress: press);
+                _local[w.Handle] = menu; Changed?.Invoke(menu, "suppress"); continue;
+            }
+            if (!Fits(w, host, limit)) { ReportTask("separate-size-or-location"); continue; }
             if (purpose == SurfacePurpose.IndependentTask) { ReportTask("independent-chat-task"); continue; }
             // 独立聊天、文章、弹出视频都可能比宿主小。只有明确的局部表面证据才取消一次任务变化。
             bool utility = w.NativeUtility || owned && !w.IndependentFrame && !w.IsResizable;
@@ -136,6 +148,19 @@ internal sealed class TaskSurfaces
         "个人资料" or "详细资料" or "联系人资料" or "群成员资料" or "Contact Info" or "Profile Card" => SurfacePurpose.LocalDetail,
         _ => SurfacePurpose.Unknown
     };
+
+    private static bool IsContextPopup(WindowSnapshot child, WindowSnapshot host, ContextPress press)
+    {
+        if (child.Handle == host.Handle || press.Root != host.Handle || press.Pid != host.ProcessId ||
+            child.ProcessId != press.Pid || child.IndependentFrame || child.IsResizable ||
+            child.Owner != 0 && child.Owner != host.Handle || child.WorkArea.IsEmpty) return false;
+        var rect = child.VisualRect;
+        // 菜单可翻到点击点的左上方，故比较点到矩形的距离。整张无边框画布或普通独立编辑窗仍参与整理。
+        double gap = 24 * Math.Max(96u, child.Dpi) / 96d;
+        return !rect.IsEmpty && rect.Area <= child.WorkArea.Area * .18 &&
+            press.Point.X >= rect.Left - gap && press.Point.X <= rect.Right + gap &&
+            press.Point.Y >= rect.Top - gap && press.Point.Y <= rect.Bottom + gap;
+    }
 
     private static bool Fits(WindowSnapshot child, WindowSnapshot host, double limit) =>
         child.MonitorHandle == host.MonitorHandle && !host.VisualRect.IsEmpty && !child.VisualRect.IsEmpty &&

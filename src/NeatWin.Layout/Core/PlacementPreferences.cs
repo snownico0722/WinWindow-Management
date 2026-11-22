@@ -2,7 +2,7 @@ namespace NeatWin.Core;
 
 internal static class PlacementPreferences
 {
-    internal const string ModelVersion = "v2.3";
+    internal const string ModelVersion = "v2.4";
 
     private const double MinimumConfidence = .40;
     private const double ConfidenceMargin = .08;
@@ -21,7 +21,7 @@ internal static class PlacementPreferences
                 var front = group.FirstOrDefault(e => e.Window.IsForeground).Window;
                 if (front == null) continue;
                 var peers = group.Where(e => e.Window.Handle != front.Handle &&
-                    use(front.Handle, e.Window.Handle) == PlacementUsage.BackgroundPlayback).Take(2).ToArray();
+                    use(front.Handle, e.Window.Handle) is PlacementUsage.BackgroundPlayback or PlacementUsage.BackgroundReading).Take(2).ToArray();
                 if (peers.Length != 1 || focus.Companion != 0) continue;
                 observedPeers[front.Handle] = peers[0].Window.Handle;
                 observedPeers[peers[0].Window.Handle] = front.Handle;

@@ -22,6 +22,9 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
     private readonly Queue<Decision> _decisions = new();
     private readonly Queue<Gesture> _gestures = new();
     private readonly Queue<SurfaceEvent> _surfaces = new();
+    private readonly Queue<DesktopInteraction> _interactions = new();
+    private const int MaxPastInteractions = 32_768, MaxLiveInteractions = 4096;
+    private long? _interactionDroppedThrough;
     private PeriodicTimer? _timer;
     private Capture? _capture;
     private long _clearedAt;
@@ -35,6 +38,10 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
         DesktopSnapshot.Sample[] PastWindows, Decision[] PastDecisions, Gesture[] PastGestures,
         SurfaceEvent[] PastSurfaces, long EarliestTick, long? SurfaceDroppedThrough)
     {
+        internal DesktopInteraction[] PastInteractions { get; init; } = [];
+        internal ConcurrentQueue<DesktopInteraction> LiveInteractions { get; } = new();
+        internal long? InteractionDroppedThrough { get; init; }
+        internal int DroppedInteractions;
         internal ConcurrentQueue<Gesture> LiveGestures { get; } = new();
         internal ConcurrentQueue<Decision> LiveDecisions { get; } = new();
         internal ConcurrentQueue<SurfaceEvent> LiveSurfaces { get; } = new();
@@ -143,6 +150,29 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
         }
     }
 
+    internal void ObserveInteraction(DesktopInteraction item)
+    {
+        lock (_gate)
+        {
+            if (item.Tick < _clearedAt) return;
+            if (_timer != null)
+            {
+                Trim(Now);
+                if (_interactions.Count >= MaxPastInteractions)
+                {
+                    long lost = _interactions.Dequeue().Tick;
+                    _interactionDroppedThrough = Math.Max(_interactionDroppedThrough ?? lost, lost);
+                }
+                _interactions.Enqueue(item);
+            }
+            if (_capture is { } capture && item.Tick >= capture.EarliestTick)
+            {
+                if (capture.LiveInteractions.Count < MaxLiveInteractions) capture.LiveInteractions.Enqueue(item);
+                else Interlocked.Increment(ref capture.DroppedInteractions);
+            }
+        }
+    }
+
     internal Capture BeginCapture()
     {
         lock (_gate)
@@ -155,7 +185,11 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
             return _capture = new(DateTimeOffset.Now, tick, enabled, _windows.ToArray(), _decisions.ToArray(),
                 _gestures.Where(gesture => gesture.Event.Tick >= earliest).ToArray(),
                 _surfaces.Where(surface => surface.Tick >= earliest).OrderBy(surface => surface.Tick).ToArray(),
-                earliest, _surfaceDroppedThrough >= earliest ? _surfaceDroppedThrough : null);
+                earliest, _surfaceDroppedThrough >= earliest ? _surfaceDroppedThrough : null)
+            {
+                PastInteractions = _interactions.Where(e => e.Tick >= earliest).ToArray(),
+                InteractionDroppedThrough = _interactionDroppedThrough >= earliest ? _interactionDroppedThrough : null
+            };
         }
     }
 
@@ -169,6 +203,7 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
     {
         var earliest = now - LookbackMilliseconds;
         while (_windows.TryPeek(out var sample) && sample.Tick < earliest) _windows.Dequeue();
+        while (_interactions.TryPeek(out var input) && input.Tick < earliest) _interactions.Dequeue();
         while (_gestures.TryPeek(out var gesture) && gesture.Event.Tick < earliest) _gestures.Dequeue();
         while (_surfaces.TryPeek(out var surface) && surface.Tick < earliest) _surfaces.Dequeue();
         while (_decisions.TryPeek(out var decision) && decision.Tick < earliest) _decisions.Dequeue();
@@ -182,6 +217,7 @@ internal sealed class DesktopSnapshotHistory(Func<long>? clock = null) : IDispos
             _windows.Clear();
             _decisions.Clear();
             _gestures.Clear();
+            _interactions.Clear(); _interactionDroppedThrough = null;
             _surfaces.Clear();
             _surfaceDroppedThrough = null;
         }

@@ -132,13 +132,21 @@ public sealed class IntentEvidenceTests
         });
     }
     [Fact]
-    public void PersistedSchemaContainsNoWindowTitleProcessNameOrPointerHistory()
+    public void RecordedEventRetainsOriginalWindowIdentityAndClick()
     {
-        var json = JsonSerializer.Serialize(Observation);
-        Assert.DoesNotContain("Title", json);
-        Assert.DoesNotContain("Process", json);
-        Assert.DoesNotContain("Pointer", json);
-        Assert.DoesNotContain("Handle", json);
+        var identity = new RawWindowIdentity("0x123", 42, "Sample", @"C:\Test\Sample.exe", null, "WindowClass", "笔记.md");
+        var item = new DesktopInteraction("session", 1, 270, "right-up", 7, 42, identity.Handle,
+            Point: new(13, 57), Identity: identity);
+        WithStore((store, path) =>
+        {
+            store.AppendInteractions("session", [item], 0);
+            var zip = Path.Combine(path, "interactions.zip");
+            store.ExportRecords(zip);
+            using var archive = System.IO.Compression.ZipFile.OpenRead(zip);
+            using var stream = archive.Entries.Single(e => e.Name.StartsWith("interactions-")).Open();
+            using var row = JsonDocument.Parse(stream);
+            Assert.Equal(item, row.RootElement.GetProperty("Events")[0].Deserialize<DesktopInteraction>());
+        });
     }
     [Fact]
     public void OldLogsArePrunedWithoutNeedingAnotherGesture()

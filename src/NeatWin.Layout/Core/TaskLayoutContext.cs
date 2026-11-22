@@ -85,6 +85,9 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     internal nint GeometryOnlyWindow => LocalPlacementWindow != 0 ? LocalPlacementWindow :
         !ExplicitArrange && AllowGestureAssist && RecentGesture is { } g && GestureAnchor == g.WindowHandle &&
         Attention?.GetValueOrDefault(GestureAnchor)?.RecentReturn?.MatchesRelease(g) == true ? GestureAnchor : 0;
+    internal IReadOnlyDictionary<nint, ReadingInteraction>? ReadingInput { get; init; }
+    internal int OmittedChanges { get; init; }
+    internal long[]? ObservedChangeEvents { get; init; }
     internal WorkspaceChangeCause WorkspaceCause { get; init; }
 
     // 这些系数决定相对原位要多少净收益才值得提交，不代替窗口实际几何变化的感知成本。

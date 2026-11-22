@@ -479,7 +479,7 @@ public partial class MainWindow : Window
             _desktop?.SetUndoAvailable(available);
         }));
     }, LayoutFocus, SnapshotHistory.Observe, SnapshotHistory.ObserveGesture, SnapshotHistory.WantsGestures, Manager.KeepsRunning,
-        SnapshotHistory.ObserveSurface, SnapshotHistory.WantsSurfaces);
+        SnapshotHistory.ObserveSurface, SnapshotHistory.WantsSurfaces, SnapshotHistory.ObserveInteraction);
 
     private async void Arrange_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().ArrangeAsync());
     private async void UndoLayout_Click(object sender, RoutedEventArgs e) => await RunAsync(() => EnsureLayout().UndoAsync());
@@ -496,7 +496,7 @@ public partial class MainWindow : Window
         var capture = SnapshotHistory.BeginCapture();
         try
         {
-            _ = EnsureLayout();
+            await EnsureLayout().RefreshPointerObservationAsync();
             ShowStatus(UiText.Get("SnapshotCapturing"));
             var mode = FooterModes.Children.OfType<RadioButton>().FirstOrDefault(choice => choice.IsChecked == true)?.Tag as string ?? "Off";
             var output = await DesktopSnapshot.ExportAsync(Volatile.Read(ref _snapshotManaged), _hwnd,
@@ -507,6 +507,7 @@ public partial class MainWindow : Window
         finally
         {
             SnapshotHistory.EndCapture(capture);
+            if (!_quitting && _layout != null) _ = _layout.RefreshPointerObservationAsync();
             SnapshotButton.IsEnabled = true;
         }
     }
