@@ -20,6 +20,7 @@ public partial class App : Application
 {
     private const int ElevationCancelled = 1223;
     private const string ElevationHandoff = "--elevation-parent";
+    internal const string FixtureControllerArgument = "--fixture-controller";
     private Mutex? _instance;
     private bool _ownsInstance;
     protected override async void OnStartup(StartupEventArgs e)
@@ -145,16 +146,16 @@ public partial class App : Application
     private void OpenFixture(string[] args)
     {
         bool reject = args.Contains("reject");
+        int controllerIndex = Array.IndexOf(args, FixtureControllerArgument);
+        bool hasController = uint.TryParse(args.ElementAtOrDefault(controllerIndex + 1), out uint controllerPid) &&
+            controllerIndex >= 0 && controllerPid is > 0 and < uint.MaxValue;
+        // The current foreground fixture can permit its test controller to activate the next window.
+        void PermitController(object? sender, EventArgs e) => Native.AllowSetForegroundWindow(controllerPid);
         if (!reject)
         {
             Forms.Form form = args.Contains("stall") ? new StalledTarget(args[3])
                 : args.Contains("activity") ? new ActivityTarget() : new Forms.Form();
-            if (form is ActivityTarget && uint.TryParse(args.ElementAtOrDefault(3), out var controllerPid) && controllerPid != 0)
-            {
-                // The fixture can become foreground when shown. Give its test controller a
-                // foreground handoff before the controller verifies the transition to background.
-                form.Activated += (_, _) => Native.AllowSetForegroundWindow(controllerPid);
-            }
+            if (hasController) form.Activated += PermitController;
             form.Text = "窗口测试 · 文档工作区"; form.Width = 640; form.Height = 420;
             form.Controls.Add(new Forms.Label { Text = "WinWindow 原生窗口验证", Dock = Forms.DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleCenter });
             form.FormClosed += (_, _) => Shutdown();
@@ -172,6 +173,7 @@ public partial class App : Application
             Title = "窗口测试 · 拒绝最小化", Width = 640, Height = 420,
             Content = new TextBlock { Text = "WinWindow WPF 兼容性验证", Margin = new Thickness(32), FontSize = 24 }
         };
+        if (hasController) window.Activated += PermitController;
         MainWindow = window; window.Closed += (_, _) => Shutdown();
         window.StateChanged += (_, _) =>
         {

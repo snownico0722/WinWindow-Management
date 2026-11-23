@@ -53,13 +53,11 @@ internal static class SmokeTests
         string file = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".hwnd");
         var args = new List<string> { "--fixture", file };
         if (reject) args.Add("reject");
-        if (activity)
-        {
-            args.Add("activity");
-            args.Add(Environment.ProcessId.ToString());
-        }
+        if (activity) args.Add("activity");
         if (twins) args.Add("twins");
         if (stall is not null) { args.Add("stall"); args.Add(stall); }
+        args.Add(App.FixtureControllerArgument);
+        args.Add(Environment.ProcessId.ToString());
         var process = Start(args.ToArray());
         for (int i = 0; i < 100; i++)
         {
@@ -964,8 +962,12 @@ internal static class SmokeTests
             // 一次切换只说明交接，允许保留叠放；来回使用同一对窗口才是本用例要覆盖的并看信号。
             foreach (var handle in new[] { second, first, second, first })
             {
-                Native.SetForegroundWindow(handle);
-                await WaitAsync("fixture owns real foreground", () => Native.GetForegroundWindow() == handle);
+                await WaitAsync("fixture owns real foreground", () =>
+                {
+                    if (Native.GetForegroundWindow() == handle) return true;
+                    Native.SetForegroundWindow(handle);
+                    return false;
+                });
                 var window = Pair().Single(w => w.Handle == handle);
                 // Model the missing human input at the current monotonic time. Native focus
                 // events still drive the ordinary workspace scheduler and submission guards.
