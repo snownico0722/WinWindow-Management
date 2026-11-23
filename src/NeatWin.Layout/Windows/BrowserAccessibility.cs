@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using Accessibility;
+using System.Windows.Automation;
 using NeatWin.Core;
 
 namespace NeatWin.Windows;
@@ -70,27 +71,60 @@ internal static class BrowserAccessibility
             var (renderer, viewport) = FindViewport(target.Handle);
             if (renderer == 0) return null;
             var iid = typeof(IAccessible).GUID;
-            if (NativeMethods.AccessibleObjectFromWindow(renderer, ObjidClient, ref iid, out var document) < 0 ||
-                document == null || document.get_accRole(0) is not (int)AccessibleRole.Document) return null;
-            string? page = BrowserPageEvidence.UrlKey(document.get_accValue(0));
-            if (page == null) return null;
+            NativeMethods.AccessibleObjectFromWindow(renderer, ObjidClient, ref iid, out var root);
+            var document = DocumentBelow(root);
+            string? PageKey() => BrowserPageEvidence.UrlKey(document?.get_accValue(0));
+            string? page = PageKey();
+            if (page == null)
+            {
+                // 新版 Chromium 可以先提供 UIA 容器，下次才暴露完整 MSAA 文档。
+                // 只在唯一内容视口中找顶层文档，不能把地址栏正在编辑的文字当成已导航的 URL。
+                var element = AutomationElement.FromHandle(renderer);
+                var uiaDoc = element.Current.ControlType == ControlType.Document ? element :
+                    element.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
+                if (uiaDoc == null || !uiaDoc.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern)) return null;
+                var value = (ValuePattern)pattern;
+                page = BrowserPageEvidence.UrlKey(value.Current.Value);
+                if (page == null || NativeMethods.GetForegroundWindow() != expectedForeground || Target(target.Handle) != target ||
+                    FindViewport(target.Handle) != (renderer, viewport) || BrowserPageEvidence.UrlKey(value.Current.Value) != page) return null;
+                return new(target, renderer, viewport, started, page, default, false);
+            }
 
             RectI reading = default;
             bool editing = false;
             try
             {
-                editing = expectedForeground == target.Handle && HasEditableFocus(document);
-                reading = VisibleText(document, viewport);
+                editing = expectedForeground == target.Handle && HasEditableFocus(document!);
+                reading = VisibleText(document!, viewport);
             }
             catch (Exception ex) when (ex is COMException or InvalidCastException or NotImplementedException) { }
 
             // 可访问树可能正在重载。前后文档、标题和视口都相符时才带出区域。
             if (NativeMethods.GetForegroundWindow() != expectedForeground || Target(target.Handle) != target ||
-                FindViewport(target.Handle) != (renderer, viewport) || BrowserPageEvidence.UrlKey(document.get_accValue(0)) != page) return null;
+                FindViewport(target.Handle) != (renderer, viewport) || PageKey() != page) return null;
             return new(target, renderer, viewport, started, page, reading, editing);
         }
         catch (Exception ex) when (ex is COMException or InvalidCastException or NotImplementedException or ArgumentException or
-            InvalidOperationException or System.ComponentModel.Win32Exception) { return null; }
+            InvalidOperationException or ElementNotAvailableException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) { return null; }
+    }
+
+    private static IAccessible? DocumentBelow(IAccessible? root)
+    {
+        // 有的提供程序从渲染 HWND 返回 client/窗格包装层。找到文档就停止，不进入网页内嵌框架。
+        if (root == null) return null;
+        var pending = new Queue<IAccessible>();
+        pending.Enqueue(root);
+        for (int visited = 0; pending.Count > 0 && visited < 16; visited++)
+        {
+            var node = pending.Dequeue();
+            if (node.get_accRole(0) is (int)AccessibleRole.Document) return node;
+            int count = Math.Min(node.accChildCount, 8);
+            if (count <= 0) continue;
+            var children = new object[count];
+            if (NativeMethods.AccessibleChildren(node, 0, count, children, out int read) >= 0)
+                foreach (var child in children.Take(read).OfType<IAccessible>()) pending.Enqueue(child);
+        }
+        return null;
     }
 
     private static bool HasEditableFocus(IAccessible document)
@@ -100,7 +134,7 @@ internal static class BrowserAccessibility
         {
             var focus = node.accFocus;
             if (focus is IAccessible child && !ReferenceEquals(child, node)) { node = child; continue; }
-            if (focus is not int id) return false;
+            if (focus is not int id) return IsEditable(node, 0);
             return IsEditable(node, id);
         }
         return false;

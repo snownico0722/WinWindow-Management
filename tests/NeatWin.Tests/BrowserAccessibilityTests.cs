@@ -3,6 +3,8 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Windows.Automation;
+using Accessibility;
 using NeatWin.Core;
 using NeatWin.Windows;
 
@@ -62,6 +64,7 @@ public sealed class BrowserAccessibilityTests
         {
             var timeout = Stopwatch.StartNew();
             string? lastCaption = null;
+            nint renderer = 0;
             while (timeout.Elapsed < TimeSpan.FromSeconds(18))
             {
                 BrowserWindowTarget? target = null;
@@ -73,14 +76,37 @@ public sealed class BrowserAccessibilityTests
                 }, 0);
                 if (target != null)
                 {
-                    lastCaption = $"{target.Caption}, viewport {BrowserAccessibility.FindViewport(target.Handle)}";
+                    renderer = BrowserAccessibility.FindViewport(target.Handle).Renderer;
+                    lastCaption = target.Caption;
                     var page = await Task.Run(() => BrowserAccessibility.Read(target, NativeMethods.GetForegroundWindow()))
                         .WaitAsync(TimeSpan.FromSeconds(5));
                     if (page is { UrlKey: not null } && page.UrlKey == BrowserPageEvidence.UrlKey(origin + path)) return page;
                 }
                 await Task.Delay(150);
             }
-            throw new TimeoutException($"{browser} did not expose document {path}. Window: {lastCaption ?? "not found"}");
+            var state = renderer == 0 ? "missing content viewport" : await Task.Run(() => Describe(renderer)).WaitAsync(TimeSpan.FromSeconds(5));
+            throw new TimeoutException($"{browser} did not expose document {path}. Window: {lastCaption ?? "not found"}, {state}");
+        }
+
+        static string Describe(nint renderer)
+        {
+            var status = new StringBuilder();
+            try
+            {
+                var iid = typeof(IAccessible).GUID;
+                var hr = NativeMethods.AccessibleObjectFromWindow(renderer, 0xfffffffc, ref iid, out var root);
+                status.Append($"MSAA={hr:X}, role={root?.get_accRole(0)}, children={root?.accChildCount}, hasURL={BrowserPageEvidence.UrlKey(root?.get_accValue(0)) != null}. ");
+            }
+            catch (Exception ex) { status.Append($"MSAA {ex.GetType().Name}/{ex.HResult:X}. "); }
+            try
+            {
+                var root = AutomationElement.FromHandle(renderer);
+                var doc = root.Current.ControlType == ControlType.Document ? root : root.FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
+                status.Append($"UIA={root.Current.ControlType.ProgrammaticName}, document={doc != null}, value={doc?.GetCurrentPropertyValue(ValuePattern.ValueProperty)}");
+            }
+            catch (Exception ex) { status.Append($"UIA {ex.GetType().Name}/{ex.HResult:X}."); }
+            return status.ToString();
         }
 
         async Task ServePages()

@@ -6,6 +6,7 @@ internal static class ContinuingLayoutChecks
     internal static void Run(Action<bool, string> check)
     {
         CheckReadableRectangle(check);
+        CheckRecordedReadingArea(check);
         CheckBackwardIndex(check);
         CheckPortfolio(check);
         CheckDispatch(check);
@@ -31,6 +32,33 @@ internal static class ContinuingLayoutChecks
             trials++;
         }
         check(trials == 1920, "continuation reading rectangles agree with 1,920 exhaustive pixel cases");
+    }
+
+    private static void CheckRecordedReadingArea(Action<bool, string> check)
+    {
+        var bounds = new RectI(-7, 4, 9, 6);
+        RectI[] blockers = [new(-6, 5, 1, 2), new(-4, 7, 3, 1), new(-3, 4, 2, 2)];
+        RectI[][] displays = [[bounds], [new(-7, 4, 4, 6), new(-3, 5, 5, 5)],
+            [new(-7, 4, 3, 6), new(-2, 4, 4, 6)]];
+        foreach (var screens in displays)
+        for (int mask = 0; mask < 8; mask++)
+        {
+            var covers = blockers.Where((_, i) => (mask & (1 << i)) != 0).ToArray();
+            bool Clear(RectI r) => Enumerable.Range(r.Left, r.Width).All(x => Enumerable.Range(r.Top, r.Height).All(y =>
+            {
+                var pixel = new RectI(x, y, 1, 1);
+                return screens.Any(d => !d.Intersect(pixel).IsEmpty) && covers.All(c => c.Intersect(pixel).IsEmpty);
+            }));
+            long largest = 0;
+            for (int x = bounds.Left; x < bounds.Right; x++)
+            for (int y = bounds.Top; y < bounds.Bottom; y++)
+            for (int w = 1; w <= bounds.Right - x; w++)
+            for (int h = 1; h <= bounds.Bottom - y; h++)
+                if (w * h > largest && Clear(new(x, y, w, h))) largest = w * h;
+            var observed = WindowExposure.Measure(bounds, screens, covers).LargestFragment;
+            if (observed.Area != largest || !Clear(observed)) throw new InvalidOperationException("Recorded reading rectangle crosses a blocked pixel or misses a larger rectangle.");
+        }
+        check(true, "recorded reading rectangle matches exhaustive pixels across blockers, monitor seams and monitor gaps");
     }
 
     private static void CheckBackwardIndex(Action<bool, string> check)
@@ -113,7 +141,7 @@ internal static class ContinuingLayoutChecks
 
     private static void CheckDispatch(Action<bool, string> check)
     {
-        int measured = 0, forecasts = 0, changed = 0, improved = 0;
+        int measured = 0, forecasts = 0, changed = 0, improved = 0, explored = 0;
         foreach (int screen in new[] { 1366, 1600, 1920, 2560 })
         foreach (bool mirror in new[] { false, true })
         foreach (double frontWidth in new[] { .38, .49, .58 })
@@ -137,6 +165,13 @@ internal static class ContinuingLayoutChecks
             var baseline = Run(ctx with { DisableContinuation = true });
             var proposed = Run(ctx);
             var trace = proposed.Groups.SingleOrDefault()?.Portfolio?.Continuation;
+            if (screen == 1600 && !mirror && offset == .10 && affinity == .55)
+            {
+                var probe = Run(ctx with { SearchReplayPositions = true });
+                explored += probe.Groups.Sum(g => g.Candidates.Count(c => c.Kind == "replay-translation"));
+                if (proposed.Groups.Any(g => g.Candidates.Any(c => c.Kind == "replay-translation")))
+                    throw new InvalidOperationException("Regular Smart evaluated offline translations.");
+            }
             measured++;
             if (trace == null) continue;
             forecasts++;
@@ -161,6 +196,7 @@ internal static class ContinuingLayoutChecks
                 Run(ctx with { AllowGestureAssist = true }).Groups.Any(g => g.Portfolio?.Continuation != null))
                 throw new InvalidOperationException("Continuation changed geometry outside its recorded benefit or allowed route.");
         }
+        check(explored > 0, $"opt-in replay evaluated {explored} additional background translations");
         check(forecasts > 0 && improved > 0,
             $"Smart sampled {measured} paired desktops, assessed {forecasts}, changed {changed}, improved modeled continuation {improved}");
     }

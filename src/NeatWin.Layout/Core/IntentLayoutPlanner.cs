@@ -5,6 +5,9 @@ namespace NeatWin.Core;
 /// </summary>
 internal static partial class IntentLayoutPlanner
 {
+    static partial void SearchReplayTranslations(TaskLayoutContext context, VisibleWindow[] group, RectI area,
+        Func<Candidate> winner, Action<Candidate> evaluate);
+
     internal static IReadOnlyList<TidyMove> CreatePlan(IReadOnlyList<VisibleWindow> visible,
         TidyOptions options, IntentReferenceDocument? reference = null) =>
         CreateDetailedPlan(visible, options, reference).Moves;
@@ -448,6 +451,10 @@ internal static partial class IntentLayoutPlanner
                         best.Kind == "keep" && needsRescue && candidate.Kind == "rescue"))
                     { best = candidate; bestScore = rank; }
                 }
+
+                // 这个可选的 partial 方法只在离线回放项目中实现。桌面构建会消除整个调用。
+                SearchReplayTranslations(groupContext, group, area, () => best,
+                    proposal => { if (portfolio.Offer(proposal)) Evaluate(proposal, 1); });
 
                 string reputationContext = alternative != null ? "ambiguous-pair" : task.Select(r => r.Purpose)
                     .FirstOrDefault(p => p != null) ?? (group.Length == 1 ? "single" : "workspace");
