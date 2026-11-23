@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.Http;
 using System.Text;
 using System.Windows.Automation;
 using Accessibility;
@@ -37,13 +38,33 @@ public sealed class BrowserAccessibilityTests
         string origin = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}";
         using var stop = new CancellationTokenSource();
         int navigate = 0;
+        var pageLoaded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var serving = ServePages();
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         foreach (var arg in new[] { "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check",
-            "--disable-sync", "--disable-background-networking", "--new-window", origin + "/a" }) start.ArgumentList.Add(arg);
+            "--disable-sync", "--disable-background-networking", "--no-proxy-server", "--remote-debugging-port=0", "about:blank" }) start.ArgumentList.Add(arg);
         using var process = Process.Start(start)!;
         try
         {
+            // 冷启动、新配置欢迎页和浏览器更新可能晚于测试进程启动。由独立配置打开测试标签，
+            // 等到页面脚本真正访问本地服务，再开始计算无障碍读取的超时。
+            string portFile = Path.Combine(profile, "DevToolsActivePort");
+            using var startup = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            int port = 0;
+            while (port == 0)
+            {
+                if (File.Exists(portFile))
+                {
+                    try { int.TryParse((await File.ReadAllLinesAsync(portFile, startup.Token)).FirstOrDefault(), out port); }
+                    catch (IOException) { /* Chromium is still publishing the endpoint. */ }
+                }
+                if (port == 0) await Task.Delay(150, startup.Token);
+            }
+            using var client = new HttpClient(new HttpClientHandler { UseProxy = false });
+            using var tab = await client.PutAsync($"http://127.0.0.1:{port}/json/new?{Uri.EscapeDataString(origin + "/a")}", null, startup.Token);
+            tab.EnsureSuccessStatusCode();
+            await pageLoaded.Task.WaitAsync(startup.Token);
+
             var first = await WaitForPage("/a");
             Volatile.Write(ref navigate, 1);
             var second = await WaitForPage("/b");
@@ -134,7 +155,9 @@ public sealed class BrowserAccessibilityTests
                 string? request = await reader.ReadLineAsync(stop.Token);
                 if (request == null) return;
                 while (!string.IsNullOrEmpty(await reader.ReadLineAsync(stop.Token))) { }
-                string body = request.StartsWith("GET /phase ") ? Volatile.Read(ref navigate).ToString() :
+                bool phase = request.StartsWith("GET /phase ");
+                if (phase) pageLoaded.TrySetResult();
+                string body = phase ? Volatile.Read(ref navigate).ToString() :
                     $"<title>{title}</title><article><p>Reading a sufficiently long line inside a real browser window.</p>" +
                     "<p>A second line of visible reference material for the Windows fixture.</p></article><textarea autofocus></textarea>" +
                     "<script>if(location.pathname=='/a')setInterval(async()=>{if(await(await fetch('/phase')).text()=='1')location.href='/b'},250)</script>";
