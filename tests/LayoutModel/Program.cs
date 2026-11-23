@@ -1034,6 +1034,8 @@ if (args is ["--validate", var candidatePath])
 }
 else if (args is ["--behavior", var zip, var behaviorRules, ..])
     BehaviorReplay.Run(zip, behaviorRules, args.ElementAtOrDefault(3));
+else if (args is ["--search-translations", var searchRecording, ..])
+    Replay(searchRecording, args.ElementAtOrDefault(2), args.ElementAtOrDefault(3), args.ElementAtOrDefault(4), searchPositions: true);
 else if (args is ["--with-continuation" or "--without-continuation", var recording, ..])
     Replay(recording, args.ElementAtOrDefault(2), args.ElementAtOrDefault(3), args.ElementAtOrDefault(4),
         continuation: args[0] == "--with-continuation");
@@ -1049,7 +1051,7 @@ static CompiledLayoutRules? ReadRules(string? path)
     return rules?.IsValid() == true ? rules : throw new InvalidDataException("Invalid layout rules.");
 }
 
-static void Replay(string path, string? rulesPath, string? sessionFilter, string? evaluationPath, bool? continuation = null)
+static void Replay(string path, string? rulesPath, string? sessionFilter, string? evaluationPath, bool? continuation = null, bool searchPositions = false)
 {
     var overrideRules = ReadRules(rulesPath);
     var evaluation = ReadRules(evaluationPath);
@@ -1116,6 +1118,28 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                 var workingSet = fullDesktop ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);
                 var plan = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : localOpening ? LayoutRoute.LocalOpening : LayoutRoute.Smart,
                     workingSet, new(SmartStrength: run.Strength ?? SmartTidyStrength.Balanced), null, desktop, ctx);
+                if (searchPositions && !frame.Truncated && !localOpening && (explicitRun || run.Trigger == "automatic-workspace"))
+                {
+                    var expanded = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : LayoutRoute.Smart,
+                        workingSet, new(SmartStrength: run.Strength ?? SmartTidyStrength.Balanced), null, desktop,
+                        ctx with { SearchReplayPositions = true });
+                    var standardWindows = TaskLayoutSession.Project(desktop, plan);
+                    var expandedWindows = TaskLayoutSession.Project(desktop, expanded);
+                    var screens = displays.Select(d => d.Bounds).ToArray();
+                    RectI Reading(WindowSnapshot w, IReadOnlyList<WindowSnapshot> scene) =>
+                        WindowExposure.Measure(w.VisualRect, screens, scene.Where(o => o.ZOrder < w.ZOrder)
+                            .Select(o => o.VisualRect)).LargestFragment;
+                    Console.WriteLine(JsonSerializer.Serialize(new { ReplayTranslationSearch = true, run.Session, run.RequestId,
+                        InputFingerprint = inputFingerprint, assumeResizable,
+                        Candidates = expanded.Groups.Sum(g => g.Candidates.Count(c => c.Kind == "replay-translation")),
+                        Changed = !standardWindows.Select(w => (w.VisualRect, w.ZOrder)).SequenceEqual(expandedWindows.Select(w => (w.VisualRect, w.ZOrder))),
+                        Windows = standardWindows.Zip(expandedWindows, (a, b) => new { Id = (int)a.Handle, Standard = a.VisualRect,
+                            Expanded = b.VisualRect, StandardLayer = a.ZOrder, ExpandedLayer = b.ZOrder,
+                            StandardReading = Reading(a, standardWindows), ExpandedReading = Reading(b, expandedWindows) }),
+                        StandardContinuations = plan.Groups.Count(g => g.Portfolio?.Continuation != null),
+                        ExpandedContinuations = expanded.Groups.Count(g => g.Portfolio?.Continuation != null),
+                        Selected = expanded.Groups.Select(g => g.Selected) }));
+                }
                 var projected = TaskLayoutSession.Project(desktop, plan);
                 // 衡量 A/B 两个方案时使用完全相同的观察人群。评估规则只看决策前的状态，不参与生成任何候选。
                 var evaluator = evaluation == null || frame.Truncated ? null :
