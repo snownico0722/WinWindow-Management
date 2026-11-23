@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "WinWindow Browser Companion",
+  "description": "Shares tab and page layout signals with the WinWindow desktop app.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "106",
+  "permissions": ["tabs", "scripting", "nativeMessaging"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "service-worker.js" },
+  "action": { "default_title": "WinWindow: toggle page access for this site" }
+}

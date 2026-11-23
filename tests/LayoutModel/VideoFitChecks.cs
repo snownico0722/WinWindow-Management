@@ -35,6 +35,32 @@ internal static class VideoFitChecks
         check(session.Read([repositioned], _ => page)?.Count == 1, "a proportional resize and later translation retain the fit");
         check(session.Read([repositioned], _ => page with { Caption = "video B" }) == null,
             "a changed page invalidates the prior content even at identical outer dimensions");
+        var firstUrl = BrowserPageEvidence.UrlKey("https://example.test/video-a");
+        var secondUrl = BrowserPageEvidence.UrlKey("https://example.test/video-b");
+        var identified = page with { PageKey = firstUrl };
+        session.Submitted(window, target, identified, fit, 0);
+        check(firstUrl?.Length == 64 && firstUrl != secondUrl && session.Read([atTarget], _ => identified)?.Count == 1 &&
+            session.Read([atTarget], _ => identified with { PageKey = secondUrl }) == null,
+            "same-caption browser navigation invalidates an observed fit by document identity");
+
+        var report = new BrowserExtensionSample(1, 1234, Guid.NewGuid(), 1, 2, firstUrl, null,
+            frame.Left, frame.Top, frame.Width, frame.Height, false, false, true, 2, new(.1, .2, .5, .4), false,
+            new(.2, .3, .6, .5), true);
+        var viewport = new RectI(-1900, 120, 1200, 600);
+        var player = report.Video!.Project(viewport);
+        var reading = report.Reading!.Project(viewport);
+        check(report.IsFresh(2000) && !report.IsFresh(3000) && report.MatchesFrame(window) &&
+            !report.MatchesFrame(window with { OuterRect = frame with { X = frame.X + 80 } }) &&
+            !((report with { Video = new(.8, 0, .5, .5) }).IsFresh(2000)) &&
+            BrowserPageEvidence.CanUseContent(report, viewport) && !BrowserPageEvidence.CanUseContent(report, frame),
+            "stale, malformed or differently framed reports cannot contribute browser geometry");
+        var watching = BrowserPageEvidence.Apply(new(window.Handle), window, reading, player, editing: false, playing: true);
+        var editing = BrowserPageEvidence.Apply(new(window.Handle), window with { IsForeground = true }, reading,
+            default, editing: true, playing: false);
+        check(watching is { MediaCompanion: true, PassiveVisual: true, TextFocus: false } &&
+            watching.ProtectedRegions?.Single().Project(frame) == player &&
+            editing.TextFocus && editing.ProtectedRegions?.Single().Project(frame) == reading,
+            "muted video and foreground editing use their measured regions in existing layout protection");
         Submit();
         var reflow = fit with { Aspect = 1.5, Insets = fit.Insets with { Top = 20 } };
         check(session.Repeat(atTarget, page, reflow, 120) && session.Repeat(atTarget, page, reflow, 25_000) &&

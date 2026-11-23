@@ -27,6 +27,14 @@ public partial class App : Application
         base.OnStartup(e);
         try
         {
+            // Chromium launches the registered host with the extension origin. Dispatch it
+            // before single-instance and elevation so it stays a headless, read-only relay.
+            if (e.Args.FirstOrDefault() is { } origin && origin.StartsWith("chrome-extension://", StringComparison.Ordinal))
+            {
+                Shutdown(await Task.Run(() => NeatWin.App.BrowserBridge.RunNativeHostAsync(origin,
+                    NeatWin.App.BrowserBridge.DefaultDirectory, Console.OpenStandardInput())));
+                return;
+            }
             if (e.Args.FirstOrDefault() == "--fixture") { OpenFixture(e.Args); return; }
             if (e.Args.FirstOrDefault() == "--self-test")
             {
