@@ -2,7 +2,9 @@ namespace NeatWin.Core;
 
 // 任务解释只读整理前的现场。下层为不同候选计算同一组需求的满足程度，避免从自己的排布反推用户想并看。
 public sealed record WindowLayoutObjective(double ReadableContent, double PeerExposure, double Ambiguity,
-    double BackgroundDrift, WindowMotionObjective Motion);
+    double BackgroundDrift, WindowMotionObjective Motion,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    WorkingSurfaceObjective? WorkingSurface = null);
 
 public readonly record struct WindowMotionObjective(double Resistance, double ReflowSensitivity, double RecentMove,
     double Timing, RectI? AssistedTarget, RectI? RestoredFrame)
@@ -61,7 +63,10 @@ internal static partial class IntentLayoutPlanner
                 parked = Math.Min(parked, coVisible || configured ? .18 : .45);
                 if (focus.Evidence == "handoff") { joint = .22; parked = .86; }
                 purpose = focus.Evidence == "handoff" || focus.NavigationAncestors is { Length: > 0 } ? "alternate" :
-                    configured || focus.Evidence == "learned-working-pair" || focus.Switches >= 2 ? "read-together" : null;
+                    configured || focus.Evidence == "learned-working-pair" ? "read-together" : null;
+                // 往返说明两窗都重要。已有边缘叠放也支持“轮流使用”；不能用切换次数独自证明同时阅读。
+                if (purpose == null && focus.Switches >= 2)
+                    parked = Math.Max(parked, Math.Min(.85, .25 + a.Intersect(b).Area / (double)Math.Max(1, Math.Min(a.Area, b.Area))));
                 source = focus.Evidence;
                 uncertainty = configured ? .10 : focus.Switches > 0 ? coVisible ? .24 : .38 : .40;
             }
@@ -115,6 +120,7 @@ internal static partial class IntentLayoutPlanner
         }
         double overlay = goals?.FirstOrDefault(t => t.Role == AttentionRole.Main)?.PlacementStability ?? 0;
         var profile = context.Preferences;
+        var surfaces = WorkingSurfaceObjective.Compile(windows, relations, goals, context);
         return windows.Select((visible, i) =>
         {
             var w = visible.Window;
@@ -134,7 +140,7 @@ internal static partial class IntentLayoutPlanner
             var hint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
             return new WindowLayoutObjective(incidental ? .25 * read : read, peerExposure,
                 incidental ? .5 * ambiguity[i] : ambiguity[i], incidental ? .6 : 0,
-                MotionFor(visible, context, hint, Math.Max(overlay, goals?[i].PlacementStability ?? 0)));
+                MotionFor(visible, context, hint, Math.Max(overlay, goals?[i].PlacementStability ?? 0)), surfaces?[i]);
         }).ToArray();
     }
 

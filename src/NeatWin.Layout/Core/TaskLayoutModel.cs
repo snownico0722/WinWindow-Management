@@ -3,7 +3,7 @@ namespace NeatWin.Core;
 internal static partial class IntentLayoutPlanner
 {
     // A known companion may only expose a sliver. Keep the regular automatic working set
-    // for everything else, including fully covered windows and anchored observation regions.
+    // for unrelated fully covered windows and anchored observation regions.
     private static IReadOnlyList<VisibleWindow> IncludeWorkingCompanion(IReadOnlyList<VisibleWindow> visible,
         IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext context)
     {
@@ -28,8 +28,10 @@ internal static partial class IntentLayoutPlanner
             context.WindowHints?.Any(h => h.MediaCompanion && !h.Anchor) != true) return visible;
 
         var monitor = visible.First(v => v.Window.Handle == focus.Main).Window.MonitorHandle;
-        var eligible = new VisibilityAnalyzer().SelectVisibleWorkingSet(desktop, new(0, 1))
-            .Where(v => v.Window.MonitorHandle == monitor).ToArray();
+        // 已知搭档可能被前台完整盖住。只为它补入零可见记录，普通后台窗和被固定前景遮住的窗继续留在原位。
+        var eligible = new VisibilityAnalyzer().SelectForManualArrange(desktop, false)
+            .Where(v => v.Window.MonitorHandle == monitor && (v.VisibleArea > 0 ||
+                v.Window.Handle == focus.Companion && context.HasRecentInput(focus.Companion))).ToArray();
         var companion = ResolveWorkingPair(eligible, context).Focus?.Companion ?? 0;
         var peer = eligible.FirstOrDefault(v => v.Window.Handle == companion);
         if (peer == null || visible.Any(v => v.Window.Handle == companion) ||
@@ -157,7 +159,7 @@ internal static partial class IntentLayoutPlanner
 
     private static bool TaskSafe(VisibleWindow[] windows, RectI[] original, Candidate candidate,
         RectI area, TidyOptions options, TaskLayoutContext context, WindowSnapshot[]? obstacles = null,
-        OcclusionMetrics.Exposure[]? beforeExposure = null, AttentionTarget[]? goals = null)
+        OcclusionMetrics.Exposure[]? beforeExposure = null, AttentionTarget[]? goals = null, WindowLayoutObjective[]? objectives = null)
     {
         if (context.IsWorkspaceObservation && !context.ExplicitArrange && context.GestureAnchor == 0 &&
             context.Focus is { OpeningResidentLeft: null } orderedFocus && goals != null)
@@ -273,8 +275,13 @@ internal static partial class IntentLayoutPlanner
                 bool shrinksReadableArea = b.Width + 3 < usefulWidth || b.Height + 3 < usefulHeight;
                 bool revealsSubstantialContent = before.CenterVisible < .85 && after.CenterVisible >= before.CenterVisible + .15 &&
                     after.Visible * b.Area > before.Visible * a.Area;
+                double centerFloor = goals?[i].Role == AttentionRole.Reference ? .6 : .95;
+                // 未标注内容的交替参考窗可以露任意一侧。正文锁定、显式并读与已标注的监看区域仍有各自的检查。
+                if (goals?[i].Role == AttentionRole.Reference && objectives?[i].WorkingSurface is { } surface &&
+                    !textView && !context.Preferences.ProtectWindowEdges && hint?.ProtectPeriphery != true)
+                    centerFloor *= surface.Simultaneous;
                 if ((shrinksReadableArea && !revealsSubstantialContent) ||
-                    after.CenterVisible + .05 < Math.Min(goals?[i].Role == AttentionRole.Reference ? .6 : .95, before.CenterVisible)) return false;
+                    after.CenterVisible + .05 < Math.Min(centerFloor, before.CenterVisible)) return false;
             }
             if (after.Visible < Math.Min(.035, previous[i].Visible) - .001) return false;
             var access = Math.Min(96 * window.Dpi / 96.0, previous[i].AccessWidth);
@@ -311,6 +318,7 @@ internal static partial class IntentLayoutPlanner
             var w = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             var scale = w.Dpi / 96.0;
             var intent = objectives[i];
+            double simultaneous = intent.WorkingSurface?.Simultaneous ?? 1;
             if (w.Handle == context.GestureAnchor && context.GestureTarget is { } endpoint && b != endpoint)
                 gestureDeficit = 1;
             var blockers = (obstacles ?? []).Where(o => o.ZOrder < windows[rank].Window.ZOrder).Select(o => o.VisualRect);
@@ -346,18 +354,18 @@ internal static partial class IntentLayoutPlanner
                     needWidth = target.WidthFor(b.Width, area.Width);
                     needHeight = target.HeightFor(b.Height, area.Height);
                     double readable = Math.Min(exposedWidth / needWidth, exposedHeight / needHeight);
-                    if (target.Role == AttentionRole.Main) mainDeficit += Missing(readable / .72);
-                    else accessDeficit += Missing(readable / .60);
+                    if (target.Role == AttentionRole.Main) mainDeficit += simultaneous * Missing(readable / .72);
+                    else accessDeficit += simultaneous * Missing(readable / .60);
                     double comfort = (target.Role == AttentionRole.Main ? 2 : 1) *
                         (Missing(exposedWidth / needWidth) + Missing(exposedHeight / needHeight));
-                    comfortDeficit += (1 - stability) * comfort;
+                    comfortDeficit += simultaneous * (1 - stability) * comfort;
                 }
                 if (target.FrameWidth > 0)
                 {
                     // Quantized visibility guards readability. Within a band, attend to the
                     // actual binding width budget, including both over- and under-allocation.
-                    pairCostForWidth += Math.Abs(Math.Min(exposedWidth, target.FrameWidth) - target.Width) /
-                        target.Width + Math.Abs(b.Width - target.FrameWidth) / (double)target.FrameWidth;
+                    pairCostForWidth += simultaneous * (Math.Abs(Math.Min(exposedWidth, target.FrameWidth) - target.Width) /
+                        target.Width + Math.Abs(b.Width - target.FrameWidth) / (double)target.FrameWidth);
                 }
                 if (target.FrameWidth > target.Width)
                 {
@@ -368,12 +376,12 @@ internal static partial class IntentLayoutPlanner
                         candidate.Order.Take(rank).Sum(j => Math.Max(0, (goals?[j].FrameWidth ?? 0) - (goals?[j].Width ?? 0)));
                     var shared = front.Select(r => InnerEdgeOverlap(b, r).Width).DefaultIfEmpty().Max();
                     double waste = outside + Math.Max(0, shared - allowed);
-                    accessDeficit += (int)Math.Ceiling(Math.Max(0, waste - 3 * scale) / Math.Max(1, target.AccessWidth));
+                    accessDeficit += simultaneous * Math.Ceiling(Math.Max(0, waste - 3 * scale) / Math.Max(1, target.AccessWidth));
 
                     // A few hidden edge pixels can preserve an application's useful content
                     // width. Credit frame width only while the central area is fully readable.
                     double edge = Math.Min(1, b.Width / (double)target.FrameWidth);
-                    comfortDeficit += Missing(Math.Min(edge, exposure.CenterVisible));
+                    comfortDeficit += simultaneous * Missing(Math.Min(edge, exposure.CenterVisible));
                 }
                 if (target.LearnedHeight) comfortDeficit += Missing(target.HeightFor(b.Height, area.Height) / (double)b.Height);
                 if (target.LearnedWidth) comfortDeficit += Missing(target.WidthFor(b.Width, area.Width) / (double)b.Width);
@@ -421,11 +429,17 @@ internal static partial class IntentLayoutPlanner
                 Math.Abs(CenterY(a) - CenterY(b)) / area.Height);
             var readingLoss = 3.4 * occlusionLoss + 1.8 * (1 - capacity);
             var accessLoss = Math.Max(0, 1 - exposure.AccessWidth / Math.Max(1, Math.Min(140 * scale, b.Width * .30)));
-            information += intent.ReadableContent * readingLoss;
+            information += simultaneous * intent.ReadableContent * readingLoss;
+            if (intent.WorkingSurface is { } surface)
+            {
+                // 前面衡量同时阅读，另一种用途衡量此刻实际露出和切回来可用的宽高。各候选使用同一个事前分母。
+                information += (1 - .6 * simultaneous) * surface.ExposureLoss(b, exposure);
+                reflow += (1 - simultaneous) * surface.FrameLoss(b);
+            }
             // Read-together and quick-switch interpretations share the title/access outcome.
             // Ambiguous evidence also charges the worse residual of the two interpretations.
-            uncertainty += intent.Ambiguity * Math.Max(.35 * readingLoss, accessLoss);
-            information += intent.PeerExposure * thirdPartyLoss;
+            uncertainty += intent.Ambiguity * Math.Max(simultaneous * .35 * readingLoss, accessLoss);
+            information += simultaneous * intent.PeerExposure * thirdPartyLoss;
             if (context.VideoHint is { Confidence: >= .82, ContentAspectRatio: >= .55 and <= 4.5 } video && video.WindowHandle == w.Handle)
             {
                 var chromeX = Math.Max(0, a.Width - video.ViewportVisualRect.Width);
@@ -479,7 +493,9 @@ internal static partial class IntentLayoutPlanner
                 double unpermitted = choice?.Overlap is double permitted && permitted > 0 && !InnerEdgeOverlap(a, b).IsEmpty
                     ? Math.Max(0, a.HorizontalOverlapRatio(b) - permitted)
                     : rawOverlap;
-                information += (2.6 * (r.Joint - .5 * r.Parked) * unpermitted) / n;
+                double concurrent = Math.Max(objectives[r.First].WorkingSurface?.Simultaneous ?? 1,
+                    objectives[r.Second].WorkingSurface?.Simultaneous ?? 1);
+                information += concurrent * (2.6 * (r.Joint - .5 * r.Parked) * unpermitted) / n;
             }
             var dx = CenterX(oa) - CenterX(ob); var dy = CenterY(oa) - CenterY(ob);
             // Inside a larger background window, a smaller window's center can be to either
@@ -597,16 +613,26 @@ internal static partial class IntentLayoutPlanner
             var groupContext = ResolveWorkingPair(group, context);
             var goals = AttentionLayout.Targets(group, groupContext, options.SmartStrength);
             AttentionLayout.SetRestingCenter(group, goals, beforeObstacles, groupContext);
-            if (!TaskSafe(group, original, c, area, options, groupContext, afterObstacles, goals: goals)) return false;
+            var task = trace.Task?.Relations ?? InferTask(group, original, groupContext);
+            var demands = trace.Task?.Objectives ?? CompileObjectives(group, task, groupContext, goals);
+            if (!TaskSafe(group, original, c, area, options, groupContext, afterObstacles, goals: goals, objectives: demands)) return false;
             for (var i = 0; i < group.Length; i++)
                 foreach (var obstacle in afterObstacles)
                     if (after[i].Intersect(obstacle.VisualRect).Area >
                         before[i].Intersect(previousObstacleRects.GetValueOrDefault(obstacle.Handle)).Area) return false;
-            var task = trace.Task?.Relations ?? InferTask(group, original, groupContext);
-            var demands = trace.Task?.Objectives ?? CompileObjectives(group, task, groupContext, goals);
             var hint = new IntentHint((int)Math.Round(8 * group[0].Window.Dpi / 96.0), 0, 0);
             var changed = EffectiveBreakdown(TaskCost(group, original, c, task, demands, area, groupContext, hint, afterObstacles, goals), options.SmartStrength, task);
             var plannedCost = EffectiveBreakdown(TaskCost(group, original, new("planned", before, order), task, demands, area, groupContext, hint, beforeObstacles, goals), options.SmartStrength, task);
+            if (demands.Any(o => o.WorkingSurface != null) && groupContext.Scene is { } scene)
+            {
+                // 后处理也按完整桌面比较，否则可能在参考窗硬上限内抹去刚取得的露出收益。
+                foreach (var reference in scene.References.Where(r => !trace.Handles.Contains(r.Window.Handle)))
+                {
+                    double Price(WindowSnapshot[] desk) => reference.ExposurePrice(reference.Measure(desk, w => w.VisualRect, w => w.ZOrder).After);
+                    plannedCost = plannedCost with { InformationLoss = plannedCost.InformationLoss + Price(plannedDesktop) };
+                    changed = changed with { InformationLoss = changed.InformationLoss + Price(refinedDesktop) };
+                }
+            }
             if (groupContext.Scene?.Settings?.Weights is { } weights)
             {
                 changed = weights.Apply(changed);

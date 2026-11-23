@@ -27,6 +27,14 @@ internal static class CoupledDividerChecks
             check(Plan(ctx with { SizeFloors = [new(2, 940, 0)] }, main, peer).Moves.Count == (delta > 0 ? 0 : 1) &&
                 Plan(ctx, main, peer with { IsResizable = false }).Moves.Count == 0,
                 "an independent native minimum or a fixed peer cannot be squeezed");
+            if (delta > 0)
+            {
+                int floor = expected.Width + 1;
+                var clamped = Plan(ctx with { SizeFloors = [new(2, floor, 0)] }, main, peer);
+                check(clamped.Moves is [{ Window.Handle: 2 } partial] &&
+                    partial.TargetVisualRect == Flip(new(960 + delta - 1, 80, floor, 850)) &&
+                    clamped.Layers.Count == 0, "crossing the readable divider limit by one pixel retains all safe travel");
+            }
             var ids = new Dictionary<nint, int> { [1] = 1, [2] = 2 };
             var replay = RecordedTaskSignals.From(ctx, ids).ApplyToReplay(new()) with { TraceCandidateAxes = true };
             check(Plan(replay, main with { ProcessId = 0 }, peer with { ProcessId = 0 }).Moves.Single().TargetVisualRect == expected,

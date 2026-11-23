@@ -56,7 +56,6 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private readonly TaskSurfaces _surfaces;
     private SurfaceRule[]? _surfaceRules;
     private bool _tidyRunning;
-    private long _manualBrowserDeadline;
     private readonly ForegroundHistory _focus;
 
     internal NeatWinApplicationContext(string directory, Action<string> report, Action<RecorderStatus>? recorderChanged,
@@ -115,7 +114,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _focus.Interact(target, pid, now, click);
             _recorder.RecordPointer(target, pid);
         };
-        _manualArrangeTimer.Tick += (_, _) => RunTidy(showActivity: true, LayoutRoute.ManualAlgorithm);
+        _manualArrangeTimer.Tick += (_, _) => RunTidy();
         _placementShadowTimer.Tick += OnPlacementShadowTick;
         _placementShadowTimer.Start();
         _browserTimer.Tick += (_, _) => _browser.ObserveForeground();
@@ -419,11 +418,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private bool AllowsCurrentReturn(TidyMove move) =>
         _focus.LimitLiveReturn(move.Window, move.TargetVisualRect, Environment.TickCount64) == move.TargetVisualRect;
 
-    internal void RunTidy()
-    {
-        _manualBrowserDeadline = Environment.TickCount64 + 140;
-        RunTidy(showActivity: true, LayoutRoute.ManualAlgorithm);
-    }
+    internal void RunTidy() => RunTidy(showActivity: true, LayoutRoute.ManualAlgorithm);
 
     private void RunTidy(bool showActivity, LayoutRoute route = LayoutRoute.ManualAlgorithm, string? source = null,
         bool allowPlacementReplan = false, ForegroundHistory.Opening? opening = null, WorkspaceChangeCause cause = WorkspaceChangeCause.None,
@@ -478,11 +473,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 return;
             }
             long capturedAt = Environment.TickCount64;
-            if (smart && _browser.Prepare(snapshot, explicitSmart) && capturedAt < _manualBrowserDeadline)
-            {
-                _manualArrangeTimer.Start();
-                return;
-            }
+            // 本次整理立即使用已有证据，新页面读完后供下次真实请求使用。
+            if (smart) _browser.Prepare(snapshot, explicitSmart);
             if (workspaceObservation && _focus.NavigationFor(snapshot, capturedAt)?.SettleUntil > capturedAt)
             {
                 _workspaceMonitor.RequestCurrent(cause);
@@ -816,6 +808,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         "video-current" => LayoutText.Get("PreservePlacement"),
         "learned-position" or "shadow-placement" => LayoutText.Get("LearnedPosition"),
         "attention-layout" or "attention-side-stack" => LayoutText.Get("AttentionLayout"),
+        "layered-workspace" => LayoutText.Get("LayeredWorkspace"),
         "working-overlap" => LayoutText.Get("WorkingOverlap"),
         "working-pair" => LayoutText.Get("WorkingPair"), "working-region" => LayoutText.Get("WatchedRegion"),
         "task-vertical-fill" => LayoutText.Get("ReversibleFill"),

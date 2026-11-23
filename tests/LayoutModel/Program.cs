@@ -5,6 +5,7 @@ using NeatWin.Core;
 using NeatWin.Reference;
 
 var area = new RectI(0, 0, 1920, 1040);
+LayeredWorkspaceChecks.Run(Check);
 CoupledDividerChecks.Run(Check);
 ScopedGeometryChecks.Run(Check);
 PlacementShadowChecks.Run(Check);
@@ -19,6 +20,7 @@ NavigationChecks.Run(Check);
 PlacementPreferenceChecks.Run(Check);
 SemanticLayoutChecks.Run(Check);
 SolverPortfolioChecks.Run(Check);
+ContinuingLayoutChecks.Run(Check);
 GeneralLayoutChecks.Run(Check);
 GesturePreviewChecks.Run(Check);
 var home = new RectI(560, 100, 810, 700);
@@ -1032,6 +1034,9 @@ if (args is ["--validate", var candidatePath])
 }
 else if (args is ["--behavior", var zip, var behaviorRules, ..])
     BehaviorReplay.Run(zip, behaviorRules, args.ElementAtOrDefault(3));
+else if (args is ["--with-continuation" or "--without-continuation", var recording, ..])
+    Replay(recording, args.ElementAtOrDefault(2), args.ElementAtOrDefault(3), args.ElementAtOrDefault(4),
+        continuation: args[0] == "--with-continuation");
 else if (args.Length > 0)
     Replay(args[0], args.ElementAtOrDefault(1), args.ElementAtOrDefault(2), args.ElementAtOrDefault(3));
 
@@ -1044,7 +1049,7 @@ static CompiledLayoutRules? ReadRules(string? path)
     return rules?.IsValid() == true ? rules : throw new InvalidDataException("Invalid layout rules.");
 }
 
-static void Replay(string path, string? rulesPath, string? sessionFilter, string? evaluationPath)
+static void Replay(string path, string? rulesPath, string? sessionFilter, string? evaluationPath, bool? continuation = null)
 {
     var overrideRules = ReadRules(rulesPath);
     var evaluation = ReadRules(evaluationPath);
@@ -1094,6 +1099,8 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                 {
                     ShadowTime = frame.Time,
                     AllowGestureAssist = run.Trigger == "automatic-gesture", TraceCandidateAxes = true,
+                    DisableContinuation = run.Trigger == "offline-activity-probe" ||
+                        (continuation.HasValue ? !continuation.Value : run.Version < LayoutRunObservation.ContinuationVersion),
                     // 活动快照探针只复用工作区求解，缺少运行时授权、注意力和触发置信度。
                     IsWorkspaceObservation = run.Trigger is "automatic-workspace" or "automatic-opening" or "offline-activity-probe",
                     LocalPlacementWindow = localOpening ? run.Signals!.FirstPlacementWindow : 0,

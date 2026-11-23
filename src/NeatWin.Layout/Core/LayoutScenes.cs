@@ -75,6 +75,11 @@ internal sealed class ReferenceExposure
         return pieces;
     }
 
+    // 在允许损失的范围内，少遮住仍有收益。用工作区内的实际面积计价，大窗边缘几个像素不等同于遮住整扇小窗。
+    internal double ExposurePrice(double after) =>
+        3 * (Math.Sqrt(Before) - Math.Sqrt(Math.Max(0, after))) *
+        Math.Min(1, Window.VisualRect.Area / (double)Math.Max(1, Window.WorkArea.Area));
+
     internal (double After, double Lost) Measure(IReadOnlyList<WindowSnapshot> desktop,
         Func<WindowSnapshot, RectI> box, Func<WindowSnapshot, int> order)
     {

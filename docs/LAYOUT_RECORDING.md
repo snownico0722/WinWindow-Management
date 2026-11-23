@@ -249,3 +249,20 @@ v13 请求的 `Signals.InstanceUses` 用会话窗口编号记录求解前识别�
 每个参与搜索的组可含 `Portfolio`。`Rectangles` 是本组像素外框表，每行依次为 X、Y、宽、高。`Ballots[].Frames[i]` 指向组内第 i 扇窗的矩形，窗口身份对应同组 `Ids[i]`。`Order` 按前到后保存组内下标。整组几何与顺序相同的提案在 `Sources` 下合并。`Feasible` 表示通过求解约束，`Eligible` 还要求达到主动出手门槛。`Rank` 为加入算法信誉前的排序成本。`Representatives` 按来源给出代表提案下标，`WithoutReputation` 与 `Selected` 便于逐次核对信誉有没有改变选择。`Hypotheses` 给出双窗歧义的解释权重。绕过搜索的请求和旧版本可能缺少该组信息。
 
 `Signals.SolverRatings` 保存决策前实际使用的信誉。决策后的证据单列于导出的 `solver-feedback-v1.json`，用 `RequestId` 连接，`GroupIndex` 指向原请求的组。`Edits` 记录用户改变的组内窗口、轴、起止值和容差，`Votes` 是各算法在这些轴上相对接近松手位置的程度。`Kept` 表示系统在该组没有提交几何或层级变化。长期记录最多保留最近 1024 次可归因纠正。暂停时的新样本仅在本次运行中参与学习，主动导出的当前快照可以包含追溯期内的样本。导出可能只覆盖反馈和请求中的一方。旧记录缺少反馈属于未知，不能解释为满意。
+
+## v17 工作尺寸与可见面积
+
+组内参与工作尺寸比较的窗口可在 `Task.Objectives[].WorkingSurface` 找到 `Width`、`Height`、`Value`、`Simultaneous`。宽高是本轮 DPI 下的工作目标像素；总量允许超过工作区。`Value` 记录该窗的使用权重，`Simultaneous` 表示下层对同时阅读成本采用的系数。结合候选外框、当时的窗口层级及工作区裁切，可比较各窗实际露出的面积与切回后的尺寸。已标注区域另见原有的区域指标。
+
+`layered-workspace` 的完整坐标可从 `Portfolio` 解出。它可以和其他算法提出相同布局。中缝手势的 `divider-error-pixels` 是松手后尚未被搭档吸收的像素数，非零也可能代表可执行的部分联动。旧快照、单窗和连续导航等路径可以没有工作尺寸字段，离线回放仍可用旧现场重新求解。
+
+## v18 双窗后续可达性
+
+`Portfolio.Continuation` 记录组内主窗和搭档下标 `MainIndex`、`PeerIndex`，以及仅即时求解的 `Immediate` 和最后选择的 `Selected`。两个值均索引 `Ballots`。`RankBudget` 是相对即时评分允许的让步。`Reachability` 以求解时参与评估的候选下标为键。`Alternation` 表示两窗切到前台后均有模型所需的连续阅读区域。`CompareFromMain` 和 `CompareFromPeer` 保存可达的并读候选下标。指向自身表示无需移动，指向另一候选表示可保持前台外框、只平移一次后台，空值表示在模型及有限候选中未找到见证。
+
+旧录制默认继续使用旧的单次决策。可对同一份记录执行以下配对重算。输出保持相同的 `RequestId` 和 `InputFingerprint`，可按 `CandidateGroups[].Portfolio.Continuation` 追踪状态和见证。现场执行和用户动作继续看实际回执、补摆与撤销。反事实终点未提交到系统。
+
+```powershell
+dotnet run --project tests/LayoutModel -c Release -- --without-continuation recording.zip
+dotnet run --project tests/LayoutModel -c Release -- --with-continuation recording.zip
+```

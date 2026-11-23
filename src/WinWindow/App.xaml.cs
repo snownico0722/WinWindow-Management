@@ -32,7 +32,7 @@ public partial class App : Application
             if (e.Args.FirstOrDefault() is { } origin && origin.StartsWith("chrome-extension://", StringComparison.Ordinal))
             {
                 Shutdown(await Task.Run(() => NeatWin.App.BrowserBridge.RunNativeHostAsync(origin,
-                    NeatWin.App.BrowserBridge.DefaultDirectory, Console.OpenStandardInput())));
+                    NeatWin.App.BrowserBridge.DefaultDirectory, Console.OpenStandardInput(), Console.OpenStandardOutput())));
                 return;
             }
             if (e.Args.FirstOrDefault() == "--fixture") { OpenFixture(e.Args); return; }

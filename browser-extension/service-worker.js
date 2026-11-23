@@ -4,6 +4,8 @@ const grantedSites = new Set();
 let port;
 let timer;
 let measuring = false;
+let probing = false;
+let changedWhileBusy = false;
 
 function site(url) {
   try {
@@ -81,7 +83,8 @@ async function sample(window, channel) {
     chrome.tabs.get(tab.id), chrome.windows.get(window.id), urlKey(tab.url),
   ]);
   if (port !== channel || !currentTab.active || currentTab.url !== tab.url || currentTab.windowId !== window.id ||
-      currentWindow.state !== window.state || currentWindow.width !== window.width || currentWindow.height !== window.height ||
+      currentWindow.state !== window.state || currentWindow.left !== window.left || currentWindow.top !== window.top ||
+      currentWindow.width !== window.width || currentWindow.height !== window.height ||
       Date.now() - sampledAt > 900) return;
   channel.postMessage({
     version: 1, sampledAt, session, tabId: tab.id, windowId: window.id, urlKey: key, documentId,
@@ -113,21 +116,50 @@ async function publish() {
   }
 }
 
+function probe(changed) {
+  if (!port) return;
+  if (probing || measuring) {
+    changedWhileBusy ||= changed;
+    return;
+  }
+  probing = true;
+  port.postMessage(changed ? "changed" : "poll");
+}
+
 function refresh() {
-  void publish().catch(() => {});
+  probe(true);
 }
 
 function connect() {
   if (port) return;
   const channel = chrome.runtime.connectNative(hostName);
   port = channel;
+  channel.onMessage.addListener(async answer => {
+    if (port !== channel) return;
+    try {
+      if (answer === "sample") await publish();
+    } catch {
+      // A window may close between enumeration and measurement.
+    } finally {
+      if (port === channel) {
+        probing = false;
+        if (changedWhileBusy) {
+          changedWhileBusy = false;
+          refresh();
+        }
+      }
+    }
+  });
   channel.onDisconnect.addListener(() => {
     void chrome.runtime.lastError;
     port = undefined;
+    probing = false;
+    changedWhileBusy = false;
     clearInterval(timer);
     setTimeout(connect, 2500);
   });
-  timer = setInterval(refresh, 600);
+  // Idle probes never enumerate tabs or run content scripts without a live desktop reply.
+  timer = setInterval(() => probe(false), 1000);
   refresh();
 }
 

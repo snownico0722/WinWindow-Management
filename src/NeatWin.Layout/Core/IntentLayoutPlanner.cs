@@ -39,7 +39,8 @@ internal static partial class IntentLayoutPlanner
             var monitor = primary.Window.MonitorHandle;
             var taskWindows = visible.Where(v => v.Window.MonitorHandle == monitor && !v.Window.VisualRect.IsEmpty && !v.Window.WorkArea.IsEmpty &&
                 (v.Window.Handle == focus.Main || v.Window.Handle == focus.Companion || focus.IsNavigationAncestor(v.Window.Handle) ||
-                 v.VisibleRatio > 0 && taskContext.HasRecentInput(v.Window.Handle))).ToArray();
+                 v.VisibleRatio > 0 && (taskContext.HasRecentInput(v.Window.Handle) ||
+                    taskContext.Scene?.PrefersGlance(v.Window.Handle, taskContext) == true))).ToArray();
             // Only invite bystanders that physically cover a working surface (or its needed
             // expansion). Other background windows stay in the occlusion model as obstacles.
             var targets = AttentionLayout.Targets(taskWindows, taskContext with { Focus = focus }, options.SmartStrength)!;
@@ -118,9 +119,29 @@ internal static partial class IntentLayoutPlanner
                 var stackSignal = StackSignal(group, original);
                 TaskCostBreakdown StandardCost(Candidate c) => EffectiveBreakdown(
                     TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, goals), options.SmartStrength, task);
-                TaskCostBreakdown Breakdown(Candidate c)
+                bool priceExternal = demands.Any(o => o.WorkingSurface != null);
+                (double Cost, string? Rejection) MeasureReferences(Candidate candidate)
+                {
+                    if (indices == null) return (0, null);
+                    // 已落位窗口和交错层级也参与遮挡并集，以完整桌面的实际露出给后台参照计价。
+                    RectI Box(WindowSnapshot w) => indices.TryGetValue(w.Handle, out int i) ? candidate.Rects[i] :
+                        settled.GetValueOrDefault(w.Handle, w.VisualRect);
+                    int Rank(WindowSnapshot w) => indices.TryGetValue(w.Handle, out int i) ?
+                        group[Array.IndexOf(candidate.Order, i)].Window.ZOrder : settledRanks.GetValueOrDefault(w.Handle, w.ZOrder);
+                    double cost = 0;
+                    foreach (var reference in scene!.References)
+                    {
+                        var view = reference.Measure(desktop!, Box, Rank);
+                        if (view.Lost > reference.Limit + 1e-9) return (cost, "visible-reference:" + reference.Rule);
+                        if (priceExternal && !indices.ContainsKey(reference.Window.Handle)) cost += reference.ExposurePrice(view.After);
+                    }
+                    return (cost, null);
+                }
+                TaskCostBreakdown Breakdown(Candidate c, double? referenceCost = null)
                 {
                     var cost = StandardCost(c);
+                    if (priceExternal) cost = cost with { InformationLoss = cost.InformationLoss +
+                        (referenceCost ?? MeasureReferences(c).Cost) };
                     if (alternative != null)
                     {
                         // 歧义代价同时考虑一起读和轮流看；所有算法按同一组事前解释比价。
@@ -205,6 +226,7 @@ internal static partial class IntentLayoutPlanner
                 }
                 if (!localOnly || groupContext.PreferReversibleVerticalFill)
                     AddVerticalFillCandidates(candidates, group, original, groupContext);
+                AddLayeredSurfaces(candidates, group, original, goals, demands, area, order, obstacles, allowResize: !localOnly);
                 if (!localOnly)
                 {
                     alternative?.Propose(candidates, original, goals!, area, order);
@@ -212,7 +234,7 @@ internal static partial class IntentLayoutPlanner
                     AddOrderedChain(candidates, group, original, goals, demands, groupContext, area, hint.GapPixels, order);
                 }
                 if (goals != null)
-                    AddAttentionLayouts(candidates, group, original, goals, area, obstacles, hint.GapPixels, order, strength, groupContext, Breakdown);
+                    AddAttentionLayouts(candidates, group, original, goals, area, obstacles, hint.GapPixels, order, strength, groupContext, c => Breakdown(c));
                 var portfolio = new PortfolioBuilder();
                 candidates = candidates.Where(portfolio.Offer).ToList();
                 var best = candidates[0]; var baselineBreakdown = Breakdown(best);
@@ -288,7 +310,8 @@ internal static partial class IntentLayoutPlanner
                                 withCost = Breakdown(best).Total;
                             }
                             hold = new(i, mask, withCost, null);
-                            if (order.Any(j => j != i && simpler.Intersect(best.Rects[j]).Area > target.Intersect(best.Rects[j]).Area))
+                            if (order.Any(j => j != i && (demands[i].WorkingSurface == null || demands[j].WorkingSurface == null) &&
+                                simpler.Intersect(best.Rects[j]).Area > target.Intersect(best.Rects[j]).Area))
                             {
                                 var blocked = (RectI[])best.Rects.Clone();
                                 blocked[i] = simpler;
@@ -370,21 +393,13 @@ internal static partial class IntentLayoutPlanner
                         !LayerOrderSafe(group, candidate, order)
                         ? "layer-preserve-foreground-or-occluded" : !candidate.Order.SequenceEqual(order) &&
                         !WindowLayerSafety.CanReorder(candidate.Order.Select(i => group[i].Window).ToArray(), desktop ?? all.Select(v => v.Window).ToArray(), targetLookup)
-                        ? "layer-band-or-interleaved-window" : !TaskSafe(group, original, candidate, area, options, groupContext, obstacles, beforeExposure, goals) ? "geometry-budget" :
+                        ? "layer-band-or-interleaved-window" : !TaskSafe(group, original, candidate, area, options, groupContext, obstacles, beforeExposure, goals, demands) ? "geometry-budget" :
                         HitsOutsideGroup(settled, group, original, candidate.Rects) ? "other-group" :
                         blockers.Any(w => candidate.Rects.Select((r, i) => r.Intersect(w.VisualRect).Area > original[i].Intersect(w.VisualRect).Area).Any(b => b)) ? "fixed-occluder" :
                         null;
-                    if (rejection == null && indices != null)
-                    {
-                        // 已求解的组也参与投影。联合遮挡需按各窗的新 Z 序计算，不能只核对本次被移动的句柄。
-                        RectI Box(WindowSnapshot w) => indices.TryGetValue(w.Handle, out int i) ? candidate.Rects[i] :
-                            settled.GetValueOrDefault(w.Handle, w.VisualRect);
-                        int Rank(WindowSnapshot w) => indices.TryGetValue(w.Handle, out int i) ?
-                            group[Array.IndexOf(candidate.Order, i)].Window.ZOrder : settledRanks.GetValueOrDefault(w.Handle, w.ZOrder);
-                        foreach (var reference in scene!.References)
-                            if (reference.Measure(desktop!, Box, Rank).Lost > reference.Limit + 1e-9)
-                            { rejection = "visible-reference:" + reference.Rule; break; }
-                    }
+                    double referenceCost = 0;
+                    if (rejection == null)
+                        (referenceCost, rejection) = MeasureReferences(candidate);
                     if (rejection is not null)
                     {
                         audits.Add(new(candidate.Kind, null, rejection, Generation: generation, Held: axes != null ? hold : null));
@@ -402,7 +417,7 @@ internal static partial class IntentLayoutPlanner
                         }
                         return;
                     }
-                    var breakdown = Breakdown(candidate);
+                    var breakdown = Breakdown(candidate, referenceCost);
                     var score = breakdown.Total;
                     axes?.Observe(candidate.Rects, breakdown.Feedback == 0);
                     groupContext.ShadowProbe?.Observe(group, candidate.Rects, breakdown.Feedback);
@@ -437,8 +452,11 @@ internal static partial class IntentLayoutPlanner
                 string reputationContext = alternative != null ? "ambiguous-pair" : task.Select(r => r.Purpose)
                     .FirstOrDefault(p => p != null) ?? (group.Length == 1 ? "single" : "workspace");
                 if (group.Length >= 3) reputationContext = "multi-window";
+                var continuation = alternative == null ? null :
+                    PairContinuation.Create(alternative.Main, alternative.Peer, group, goals!, area, obstacles, groupContext);
                 var decision = portfolio.Finish(best, bestScore, reputationContext, .10 * minimumThreshold,
-                    groupContext.SolverRatings, groupContext.ShadowTime ?? DateTimeOffset.UtcNow, alternative?.Alternatives);
+                    groupContext.SolverRatings, groupContext.ShadowTime ?? DateTimeOffset.UtcNow, alternative?.Alternatives,
+                    continuation, continuationBudget: .25 * minimumThreshold);
                 best = decision.Chosen;
                 for (var i = 0; i < group.Length; i++)
                 {

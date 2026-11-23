@@ -15,6 +15,7 @@ internal sealed class BrowserBridge : IDisposable
     private const string ManifestFile = "native-host.json";
     private const string EndpointFile = "endpoint.json";
     private const int TokenLength = 32;
+    private long _lastDemand = -10_000;
     private const int MaxMessage = 4096;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly UdpClient _socket;
@@ -56,6 +57,8 @@ internal sealed class BrowserBridge : IDisposable
 
     internal BrowserExtensionSample[] Read(long now)
     {
+        // 短时间内可能还有真实的整理请求。让扩展预热下一轮，后台空闲后停止测量页面。
+        Volatile.Write(ref _lastDemand, Environment.TickCount64);
         lock (_gate) return _latest.Values.Where(sample => sample.IsFresh(now)).ToArray();
     }
 
@@ -69,6 +72,12 @@ internal sealed class BrowserBridge : IDisposable
                 byte[] packet = datagram.Buffer;
                 if (packet.Length <= TokenLength || packet.Length > TokenLength + MaxMessage ||
                     !CryptographicOperations.FixedTimeEquals(_token, packet.AsSpan(0, TokenLength))) continue;
+                if (packet.Length == TokenLength + 1 && packet[TokenLength] <= 1)
+                {
+                    bool wanted = packet[TokenLength] == 1 || Environment.TickCount64 - Volatile.Read(ref _lastDemand) <= 2500;
+                    await _socket.SendAsync(new byte[] { wanted ? (byte)1 : (byte)0 }, datagram.RemoteEndPoint).ConfigureAwait(false);
+                    continue;
+                }
                 BrowserExtensionSample? sample;
                 try { sample = JsonSerializer.Deserialize<BrowserExtensionSample>(packet.AsSpan(TokenLength), Json); }
                 catch (JsonException) { continue; }
@@ -88,7 +97,7 @@ internal sealed class BrowserBridge : IDisposable
         catch (Exception ex) when (ex is ObjectDisposedException or SocketException) { }
     }
 
-    internal static async Task<int> RunNativeHostAsync(string origin, string directory, Stream input)
+    internal static async Task<int> RunNativeHostAsync(string origin, string directory, Stream input, Stream output)
     {
         try
         {
@@ -104,6 +113,19 @@ internal sealed class BrowserBridge : IDisposable
                 if (length is 0 or > MaxMessage) return 1;
                 await input.ReadExactlyAsync(packet.AsMemory(TokenLength, (int)length)).ConfigureAwait(false);
                 if (!File.Exists(Path.Combine(directory, ManifestFile))) return 0;
+                // Chromium 的轻量探针只询问桌面实例。连接中继本身不代表 WinWindow 正在运行。
+                var body = packet.AsMemory(TokenLength, (int)length);
+                bool changed = body.Span.SequenceEqual("\"changed\""u8);
+                if (changed || body.Span.SequenceEqual("\"poll\""u8))
+                {
+                    bool wanted = await WantsSampleAsync(directory, changed).ConfigureAwait(false);
+                    var reply = JsonSerializer.SerializeToUtf8Bytes(wanted ? "sample" : "idle");
+                    BinaryPrimitives.WriteUInt32LittleEndian(header, (uint)reply.Length);
+                    await output.WriteAsync(header).ConfigureAwait(false);
+                    await output.WriteAsync(reply).ConfigureAwait(false);
+                    await output.FlushAsync().ConfigureAwait(false);
+                    continue;
+                }
                 if (ReadEndpoint(directory) is not { } endpoint) continue;
                 Convert.FromHexString(endpoint.Token).CopyTo(packet, 0);
                 await relay.SendAsync(packet.AsMemory(0, TokenLength + (int)length),
@@ -113,6 +135,24 @@ internal sealed class BrowserBridge : IDisposable
         catch (EndOfStreamException) { return 0; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or
             KeyNotFoundException or JsonException or SocketException) { return 1; }
+    }
+
+    private static async Task<bool> WantsSampleAsync(string directory, bool changed)
+    {
+        if (ReadEndpoint(directory) is not { } endpoint) return false;
+        using var probe = new UdpClient(AddressFamily.InterNetwork);
+        probe.Connect(IPAddress.Loopback, endpoint.Port);
+        var message = new byte[TokenLength + 1];
+        Convert.FromHexString(endpoint.Token).CopyTo(message, 0);
+        message[^1] = changed ? (byte)1 : (byte)0;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
+        try
+        {
+            await probe.SendAsync(message, timeout.Token).ConfigureAwait(false);
+            var reply = await probe.ReceiveAsync(timeout.Token).ConfigureAwait(false);
+            return reply.Buffer is [1];
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or SocketException) { return false; }
     }
 
     private static Endpoint? ReadEndpoint(string directory)

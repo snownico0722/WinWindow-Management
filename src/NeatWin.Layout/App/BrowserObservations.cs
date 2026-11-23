@@ -41,7 +41,7 @@ internal sealed class BrowserObservations(string directory) : IDisposable
                 if (request.Work.IsCompletedSuccessfully && request.Work.Result is { } page)
                 {
                     if (_accessibility.Count >= 24 && !_accessibility.ContainsKey(page.Target.Handle)) _accessibility.Clear();
-                    _accessibility[page.Target.Handle] = (page, now);
+                    _accessibility[page.Target.Handle] = (page, request.Started);
                 }
                 else _accessibility.Remove(request.Target.Handle);
             }
@@ -54,7 +54,7 @@ internal sealed class BrowserObservations(string directory) : IDisposable
         _requests.Add(new(target, now, _visit, Task.Run(() => BrowserAccessibility.Read(target, foreground))));
     }
 
-    internal bool Prepare(IReadOnlyList<WindowSnapshot> desktop, bool manual)
+    internal void Prepare(IReadOnlyList<WindowSnapshot> desktop, bool manual)
     {
         var foreground = NativeMethods.GetForegroundWindow();
         var target = BrowserAccessibility.Target(foreground);
@@ -69,9 +69,6 @@ internal sealed class BrowserObservations(string directory) : IDisposable
         _samples.Clear();
         var reports = _bridge?.Read(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         if (reports is { Length: > 0 }) BindReports(desktop, reports, foreground);
-        return manual && target != null && !_samples.ContainsKey(target.Handle) &&
-            (!_accessibility.TryGetValue(target.Handle, out var cached) || cached.Page.Target != target) &&
-            _requests.Any(request => request.Target == target && Environment.TickCount64 - request.Started < 180);
     }
 
     private void BindReports(IReadOnlyList<WindowSnapshot> desktop, BrowserExtensionSample[] reports, nint foreground)
@@ -95,7 +92,8 @@ internal sealed class BrowserObservations(string directory) : IDisposable
 
     private AccessibleBrowserPage? ReadNative(WindowSnapshot window)
     {
-        if (!_accessibility.TryGetValue(window.Handle, out var cached) || cached.Page.Target.Pid != window.ProcessId ||
+        if (!_accessibility.TryGetValue(window.Handle, out var cached) || Environment.TickCount64 - cached.At > 1500 ||
+            cached.Page.Target.Pid != window.ProcessId ||
             cached.Page.Target.Caption != BrowserAccessibility.Caption(window.Handle) ||
             BrowserAccessibility.FindViewport(window.Handle).Renderer != cached.Page.Renderer) return null;
         return cached.Page;
@@ -103,7 +101,7 @@ internal sealed class BrowserObservations(string directory) : IDisposable
 
     internal string? PageKey(WindowSnapshot window, long started)
     {
-        // 未刷新期间保留当前原生页面身份。标题、子窗、PID 或启动时间改变会立即清空匹配。
+        // 同标题后台换页时，过期的原生身份不能否决新标签样本。
         var page = ReadNative(window);
         if (page?.Started != started) page = null;
         if (_samples.TryGetValue(window.Handle, out var report) &&
@@ -124,15 +122,13 @@ internal sealed class BrowserObservations(string directory) : IDisposable
     internal TaskWindowHint[] Bind(IReadOnlyList<WindowSnapshot> desktop, TaskWindowHint[] hints, nint initialPlacement)
     {
         var byWindow = hints.ToDictionary(h => h.Handle);
-        long now = Environment.TickCount64;
         foreach (var window in desktop.Where(w => w.IsManageable && (_accessibility.ContainsKey(w.Handle) || _samples.ContainsKey(w.Handle))))
         {
             var (_, viewport) = BrowserAccessibility.FindViewport(window.Handle);
             if (viewport.IsEmpty) continue;
             RectI reading = default, video = default;
             bool editing = false, playing = false, audible = false;
-            if (_accessibility.TryGetValue(window.Handle, out var cached) && now - cached.At <= 1500 &&
-                ReadNative(window) is { } native && native.Viewport == viewport)
+            if (ReadNative(window) is { } native && native.Viewport == viewport)
             {
                 reading = native.Reading;
                 editing = window.IsForeground && native.Editing;

@@ -59,6 +59,7 @@
   <data name="AttentionLayout" xml:space="preserve"><value>Fit windows to the current task</value></data>
   <data name="WorkingPair" xml:space="preserve"><value>Main and companion side by side</value></data>
   <data name="WatchedRegion" xml:space="preserve"><value>Expose preferred region</value></data>
+  <data name="LayeredWorkspace" xml:space="preserve"><value>Layered working windows</value></data>
   <data name="WorkingOverlap" xml:space="preserve"><value>Partially overlapping pair</value></data>
   <data name="IdleMinimizeRequested" xml:space="preserve"><value>Requested minimization of one idle window.</value></data>
   <data name="IdleMinimizeVerified" xml:space="preserve"><value>Minimized one idle window.</value></data>

@@ -45,7 +45,8 @@ public sealed record LayoutRunObservation(int Version, string Session, string Re
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     RecordedShadowFinding[]? ShadowReplay = null)
 {
-    internal const int CurrentVersion = 16;
+    internal const int ContinuationVersion = 18;
+    internal const int CurrentVersion = ContinuationVersion;
 }
 
 /// <summary>Maps native identities only in memory; destroying a window retires its ID.</summary>
@@ -240,6 +241,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
         ReplayDivider = DividerRelease,
         ShadowAxes = (ShadowRules ?? []).Select(ReadShadowRule).OfType<ShadowAxis>().ToArray(),
         VerifiedTaskRepeat = VerifiedTaskRepeat,
+        DisableContinuation = context.DisableContinuation || recordVersion < LayoutRunObservation.ContinuationVersion,
         ReadingInput = ReadingInput?.Where(e => e.Key > 0 && e.Value is { Scrolling: >= 0 and <= 1, CaretMotion: >= 0 and <= 1 })
             .ToDictionary(e => (nint)e.Key, e => e.Value),
         ObservedChangeEvents = ObservedChangeEvents, OmittedChanges = OmittedChanges,

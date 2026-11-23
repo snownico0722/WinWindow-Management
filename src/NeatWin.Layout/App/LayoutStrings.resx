@@ -59,6 +59,7 @@
   <data name="AttentionLayout" xml:space="preserve"><value>按当前任务分配空间</value></data>
   <data name="WorkingPair" xml:space="preserve"><value>主副窗口并排</value></data>
   <data name="WatchedRegion" xml:space="preserve"><value>露出常用区域</value></data>
+  <data name="LayeredWorkspace" xml:space="preserve"><value>保留工作尺寸叠放</value></data>
   <data name="WorkingOverlap" xml:space="preserve"><value>主副窗边缘重叠</value></data>
   <data name="IdleMinimizeRequested" xml:space="preserve"><value>已请求收起一个静置窗口。</value></data>
   <data name="IdleMinimizeVerified" xml:space="preserve"><value>已收起一个静置窗口。</value></data>
