@@ -7,6 +7,7 @@ namespace NeatWin.Windows;
 
 public sealed partial class WindowManager
 {
+    internal static volatile Func<nint, bool>? CaptureFilterForTests;
     private IReadOnlyList<WindowSnapshot>? _cachedSnapshot;
     private long _cachedTick = long.MinValue;
 
@@ -42,10 +43,12 @@ public sealed partial class WindowManager
         var shell = NativeMethods.GetShellWindow();
         var ownProcessId = (uint)Environment.ProcessId;
         var zOrder = 0;
+        var includeWindow = CaptureFilterForTests;
 
         var success = NativeMethods.EnumWindows((hwnd, data) =>
         {
-            if (hwnd == shell || !NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd))
+            if (includeWindow?.Invoke(hwnd) == false || hwnd == shell ||
+                !NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd))
             {
                 return true;
             }

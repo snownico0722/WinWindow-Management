@@ -359,7 +359,12 @@ internal static class SmokeTests
             Assert(new StateStore(data).Preferences.Language == "en", "the display language survives a restart");
             SelectLanguage("zh-CN");
             await WaitAsync("Chinese applies without restarting", () => Equals(arrange.Content, "整理桌面"));
-            await CheckArrangeButtonAsync(shell, layoutWindows, item.Hwnd, stubborn.Hwnd);
+            // GitHub's interactive runner can open its own windows between executable tests.
+            // Scope this two-window scenario on both the UI and layout worker, using the real fixture HWNDs.
+            if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
+                NeatWin.Windows.WindowManager.CaptureFilterForTests = hwnd => hwnd == item.Hwnd || hwnd == stubborn.Hwnd;
+            try { await CheckArrangeButtonAsync(shell, layoutWindows, item.Hwnd, stubborn.Hwnd); }
+            finally { NeatWin.Windows.WindowManager.CaptureFilterForTests = null; }
             await shell.Manager.RefreshAsync();
             var chosen = shell.Manager.Items.First(x => x.Hwnd == item.Hwnd);
             var game = await FixtureAsync(output, false, activity: true);
