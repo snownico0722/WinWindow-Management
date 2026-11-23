@@ -266,3 +266,9 @@ v13 请求的 `Signals.InstanceUses` 用会话窗口编号记录求解前识别�
 dotnet run --project tests/LayoutModel -c Release -- --without-continuation recording.zip
 dotnet run --project tests/LayoutModel -c Release -- --with-continuation recording.zip
 ```
+
+### 离线搜索与连续阅读区域
+
+用 `dotnet run --project tests/LayoutModel -c Release -- --search-translations recording.zip` 对照同一份录制的正常结果与扩大搜索后的结果。工具对完整的手动或工作区快照额外尝试后台平移，沿用实时求解器的授权、目标和评分；每组最多尝试 192 次。配对行包含相同输入指纹、候选数量、两组坐标、层级及当前层级下的最大连续阅读区。两边分别报告参与后续可达性评估的组数，便于识别扩充候选触及原有预算的情况。保留没有变化的请求。坐标变化仅供研究，用户是否减少补摆仍需后续操作证据。额外搜索只编入回放工具。
+
+新快照的 `LargestFragment` 表示所有可见像素中最大的连续轴对齐矩形；它能跨越切割算法的人为分界，也能跨越相接的显示器，不能穿过屏幕间隙或上层窗口。旧快照仍保存当时测得的碎片。后台切到前台后的可读性仍由两种层级分别检查。
