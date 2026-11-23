@@ -14,7 +14,8 @@ namespace NeatWin.App;
 /// danmaku and transient controls are treated as sparse bright noise, and three captures must agree
 /// before a black-bar hint is emitted.
 /// </summary>
-internal sealed class BrowserVideoBlackBarDetector
+internal sealed class BrowserVideoBlackBarDetector(Func<WindowSnapshot, long, string?>? browserPage = null,
+    Func<WindowSnapshot, RectI?>? playerViewport = null)
 {
     private const int FrameDelayMilliseconds = 28;
 
@@ -77,12 +78,20 @@ internal sealed class BrowserVideoBlackBarDetector
 
         var page = ReadPage(window);
         if (page is null) return null;
+        var sampleRect = clientRect;
+        if (playerViewport?.Invoke(window) is { } player)
+        {
+            // 小窗视频或推荐流的一条视频不足以改变整扇浏览器的尺寸。
+            sampleRect = player.Intersect(clientRect);
+            if (sampleRect.Width < Math.Max(480, clientRect.Width * .7) ||
+                sampleRect.Height < Math.Max(270, clientRect.Height * .5)) return null;
+        }
         var foreground = NativeMethods.GetForegroundWindow();
         var inputBefore = LastInputTime();
         bool CaptureStillCurrent() => !NativeWindowActivity.IsMoving &&
             NativeMethods.GetForegroundWindow() == foreground && GeometryMatches(window) &&
             TryGetClientScreenRect(window.Handle, out var current) && current == clientRect;
-        RectI ToScreen(RectI rect) => rect with { X = rect.X + clientRect.X, Y = rect.Y + clientRect.Y };
+        RectI ToScreen(RectI rect) => rect with { X = rect.X + sampleRect.X, Y = rect.Y + sampleRect.Y };
 
         FramePixels? previous = null;
         bool pictureMotion = false;
@@ -91,7 +100,7 @@ internal sealed class BrowserVideoBlackBarDetector
         {
             if (!CaptureStillCurrent() ||
                 (i > 0 && !OwnsViewport(window.Handle, ToScreen(detections[i - 1].ViewportClientRect))) ||
-                Capture(clientRect) is not { } frame) return null;
+                Capture(sampleRect) is not { } frame) return null;
 
             var detected = Analyze(frame);
             if (detected is null)
@@ -101,7 +110,7 @@ internal sealed class BrowserVideoBlackBarDetector
                 if (i == 0 && Fits.SettledViewport(window, page, now) is { } settled &&
                     CaptureStillCurrent() && LastInputTime() == inputBefore && ReadPage(window) == page &&
                     OwnsViewport(window.Handle, settled) &&
-                    FillsViewport(frame, settled with { X = settled.X - clientRect.X, Y = settled.Y - clientRect.Y }))
+                    FillsViewport(frame, settled with { X = settled.X - sampleRect.X, Y = settled.Y - sampleRect.Y }))
                     Fits.ObserveUnbarred(window, page, now);
                 return null;
             }
@@ -114,7 +123,7 @@ internal sealed class BrowserVideoBlackBarDetector
             if (i + 1 < FrameCount) Thread.Sleep(FrameDelayMilliseconds);
         }
 
-        if (StableBars(detections, clientRect) is not { } bars ||
+        if (StableBars(detections, sampleRect) is not { } bars ||
             page != ReadPage(window) || !CaptureStillCurrent()) return null;
         var hint = new VideoBlackBarHint(window.Handle, bars.Orientation, bars.ContentAspectRatio,
             ToScreen(bars.ViewportClientRect), bars.Confidence);
@@ -191,7 +200,7 @@ internal sealed class BrowserVideoBlackBarDetector
         _lastDetection = null;
     }
 
-    internal static VideoPageIdentity? ReadPage(WindowSnapshot window)
+    internal VideoPageIdentity? ReadPage(WindowSnapshot window)
     {
         NativeMethods.GetWindowThreadProcessId(window.Handle, out uint pid);
         if (pid == 0 || pid != window.ProcessId) return null;
@@ -202,7 +211,8 @@ internal sealed class BrowserVideoBlackBarDetector
         try
         {
             using var process = Process.GetProcessById((int)pid);
-            return new(pid, process.StartTime.ToUniversalTime().Ticks, cls.ToString(), caption.ToString());
+            long started = process.StartTime.ToUniversalTime().Ticks;
+            return new(pid, started, cls.ToString(), caption.ToString(), browserPage?.Invoke(window, started));
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {

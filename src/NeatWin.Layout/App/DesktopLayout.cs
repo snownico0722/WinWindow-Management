@@ -43,7 +43,7 @@ internal sealed class DesktopLayout : IDisposable
         var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
         var behavior = settings.LoadBehaviorConfiguration();
         return settings.RecordingEnabled || settings.LoadAutomaticLayoutMode() != AutomaticLayoutMode.Off ||
-            behavior.Learn || behavior.Enabled is { Length: > 0 };
+            behavior.Learn || behavior.Enabled is { Length: > 0 } || BrowserBridge.IsConfigured(directory);
     }
 
     private async Task RunAsync(Action<NeatWinApplicationContext> action)

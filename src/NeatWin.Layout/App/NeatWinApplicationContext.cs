@@ -15,10 +15,12 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
     private readonly SettingsStore _settingsStore;
     private readonly string _preferencesPath;
     private readonly CancellationToken _stopping;
-    private readonly BrowserVideoBlackBarDetector _videoBlackBarDetector = new();
+    private readonly BrowserObservations _browser;
+    private readonly BrowserVideoBlackBarDetector _videoBlackBarDetector;
     private readonly Control _dispatch = new();
     private readonly System.Windows.Forms.Timer _manualArrangeTimer = new() { Interval = 150 };
     private readonly System.Windows.Forms.Timer _placementShadowTimer = new() { Interval = PlacementShadowReplay.IntervalMs };
+    private readonly System.Windows.Forms.Timer _browserTimer = new() { Interval = 425 };
     private readonly SolverFeedbackSession _solverFeedback = new();
     private readonly PlacementShadowReplay _placementShadow = new();
     private PlacementShadowReplay.Example[]? _placementShadowBatch;
@@ -68,6 +70,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _report = report;
         _undoChanged = undoChanged;
         _recorderChanged = recorderChanged;
+        _browser = new(directory);
+        _videoBlackBarDetector = new(_browser.PageKey, _browser.PlayerViewport);
         _ = _dispatch.Handle; // Own the WinForms message queue without creating a settings form.
         _settingsStore = new SettingsStore(Path.Combine(directory, "settings.json"));
         _preferencesPath = Path.Combine(directory, "human-factors.json");
@@ -113,6 +117,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         _manualArrangeTimer.Tick += (_, _) => RunTidy();
         _placementShadowTimer.Tick += OnPlacementShadowTick;
         _placementShadowTimer.Start();
+        _browserTimer.Tick += (_, _) => _browser.ObserveForeground();
+        _browserTimer.Start();
         _autoTidyManager.GestureStarted += handle =>
         {
             _journal.MarkGesture(handle);
@@ -184,6 +190,8 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
             _gesturePreview.Clear();
             _manualArrangeTimer.Dispose();
             _placementShadowTimer.Dispose();
+            _browserTimer.Dispose();
+            _browser.Dispose();
             ClearPlacementShadow();
             _autoTidyManager.TidyRequested -= OnFollowHandRequested;
             _workspaceMonitor.Dispose(); _verticalFillManager.Dispose(); _autoTidyManager.Dispose(); _journal.Dispose(); _behaviorMonitor.Dispose();
@@ -465,13 +473,15 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 return;
             }
             long capturedAt = Environment.TickCount64;
+            // 本次整理立即使用已有证据，新页面读完后供下次真实请求使用。
+            if (smart) _browser.Prepare(snapshot, explicitSmart);
             if (workspaceObservation && _focus.NavigationFor(snapshot, capturedAt)?.SettleUntil > capturedAt)
             {
                 _workspaceMonitor.RequestCurrent(cause);
                 return;
             }
             if (smart && _smartBehaviorOptions.RemoveVideoBlackBars && trigger == "automatic-workspace" &&
-                _videoBlackBarDetector.Fits.AwaitingGeometry(snapshot, BrowserVideoBlackBarDetector.ReadPage, capturedAt))
+                _videoBlackBarDetector.Fits.AwaitingGeometry(snapshot, _videoBlackBarDetector.ReadPage, capturedAt))
             {
                 _workspaceMonitor.RequestCurrent(cause);
                 return;
@@ -570,6 +580,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                 liveHints = WindowUseRoles.Bind(snapshot, liveHints, focus, attention, placements,
                     window => window.Handle == front?.Handle ? frontRole : _recorder.SemanticRole(window, reading), reading.Caret ? reading.Root : 0, activities,
                     reading.Root, firstPlacement ? front!.Handle : 0, _taskPreferences.Profile);
+                liveHints = _browser.Bind(snapshot, liveHints, firstPlacement ? front!.Handle : 0);
                 if (liveHints.Any(h => h.InitialTextPlacement)) initialReading = reading;
                 if (_useImportedPlacement && _lastRules != null && !ReferenceEquals(rules, _lastRules))
                     _taskSession.Invalidate();
@@ -603,7 +614,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     VideoHint = videoHint is { Confidence: >= .82 } ? videoHint with { Tendency = _smartBehaviorOptions.VideoBlackBarTendency } : null,
                     BrowserBarSample = browserBars,
                     VideoFits = _smartBehaviorOptions.RemoveVideoBlackBars
-                        ? _videoBlackBarDetector.Fits.Read(snapshot, BrowserVideoBlackBarDetector.ReadPage) : null,
+                        ? _videoBlackBarDetector.Fits.Read(snapshot, _videoBlackBarDetector.ReadPage) : null,
                     Rules = _useImportedPlacement ? rules : rules with { Pairs = [], RolePairs = [], AppSlots = [], Scenes = null, SurfaceRules = null }, Activities = activities, InstanceUses = instanceUses,
                     AppKeys = _useImportedPlacement && rules.Scenes is { Length: > 0 } ? snapshot.Where(w => w.IsManageable || w.SurfaceState != null)
                         .ToDictionary(w => w.Handle, w => _recorder.TryReadAppKey(w)) : null,

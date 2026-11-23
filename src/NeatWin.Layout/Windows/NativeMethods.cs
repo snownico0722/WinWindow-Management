@@ -12,6 +12,11 @@ internal static class NativeMethods
     internal static extern int AccessibleObjectFromWindow(nint window, uint objectId, ref Guid id,
         [MarshalAs(UnmanagedType.Interface)] out Accessibility.IAccessible? accessible);
 
+    [DllImport("oleacc.dll")]
+    internal static extern int AccessibleChildren(Accessibility.IAccessible container, int start, int count,
+        [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2, ArraySubType = UnmanagedType.Struct)] object[] children,
+        out int obtained);
+
     internal const int GwlStyle = -16;
     internal const int GwlExStyle = -20;
     internal const long WsChild = 0x40000000L;
@@ -84,6 +89,10 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool EnumWindows(EnumWindowsProc enumFunc, nint lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EnumChildWindows(nint parent, EnumWindowsProc enumFunc, nint lParam);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

@@ -50,7 +50,7 @@ public sealed record VideoViewportFit(double Aspect, FrameInsets Insets)
         Math.Abs(Insets.Top - other.Insets.Top) <= 12 && Math.Abs(Insets.Bottom - other.Insets.Bottom) <= 12;
 }
 
-internal sealed record VideoPageIdentity(uint Pid, long Started, string Class, string Caption);
+internal sealed record VideoPageIdentity(uint Pid, long Started, string Class, string Caption, string? PageKey = null);
 
 // 只保留本次运行中确实提交过的尺寸。下一次读到相符的真实外框后才能作为求解依据，窗口标题不进入记录。
 internal sealed class VideoFitSession

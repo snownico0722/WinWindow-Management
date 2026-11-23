@@ -9,6 +9,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
     <EmbeddedResource Include="../../docs/LAYOUT_RECORDING.md" LogicalName="NeatWin.Layout.RecordingGuide" />
     <EmbeddedResource Include="../../.agents/skills/winwindow-personalization/SKILL.md" LogicalName="NeatWin.Layout.LearningSkill" />
     <EmbeddedResource Include="../../.agents/skills/winwindow-personalization/analyze_recording.py" LogicalName="NeatWin.Layout.RecordingAnalysis" />
