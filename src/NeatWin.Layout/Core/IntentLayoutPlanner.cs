@@ -452,8 +452,11 @@ internal static partial class IntentLayoutPlanner
                 string reputationContext = alternative != null ? "ambiguous-pair" : task.Select(r => r.Purpose)
                     .FirstOrDefault(p => p != null) ?? (group.Length == 1 ? "single" : "workspace");
                 if (group.Length >= 3) reputationContext = "multi-window";
+                var continuation = alternative == null ? null :
+                    PairContinuation.Create(alternative.Main, alternative.Peer, group, goals!, area, obstacles, groupContext);
                 var decision = portfolio.Finish(best, bestScore, reputationContext, .10 * minimumThreshold,
-                    groupContext.SolverRatings, groupContext.ShadowTime ?? DateTimeOffset.UtcNow, alternative?.Alternatives);
+                    groupContext.SolverRatings, groupContext.ShadowTime ?? DateTimeOffset.UtcNow, alternative?.Alternatives,
+                    continuation, continuationBudget: .25 * minimumThreshold);
                 best = decision.Chosen;
                 for (var i = 0; i < group.Length; i++)
                 {
