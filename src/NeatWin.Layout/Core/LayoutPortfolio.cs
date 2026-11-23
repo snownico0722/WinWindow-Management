@@ -4,7 +4,11 @@ namespace NeatWin.Core;
 public sealed record SolverBallot(int[] Frames, int[] Order, string[] Sources, bool Feasible, bool Eligible, double? Rank);
 public sealed record SolverPortfolio(string Context, int[][] Rectangles, SolverBallot[] Ballots,
     Dictionary<string, int> Representatives, int WithoutReputation, int Selected, double MaximumSpread,
-    IntentAlternative[]? Hypotheses);
+    IntentAlternative[]? Hypotheses)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ContinuationDecision? Continuation { get; init; }
+}
 public sealed record IntentAlternative(string Intent, double Weight);
 public sealed record SolverRating(string Context, string Family, double Balance, double Evidence, DateTimeOffset Updated)
 {
@@ -61,7 +65,8 @@ internal static partial class IntentLayoutPlanner
         }
 
         internal (Candidate Chosen, SolverPortfolio Portfolio) Finish(Candidate best, double bestRank, string context,
-            double maxSpread, SolverRating[]? ratings, DateTimeOffset now, IntentAlternative[]? hypotheses)
+            double maxSpread, SolverRating[]? ratings, DateTimeOffset now, IntentAlternative[]? hypotheses,
+            PairContinuation? continuation = null, double continuationBudget = 0)
         {
             int original = _ids[best], selected = original;
             var reps = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -91,6 +96,34 @@ internal static partial class IntentLayoutPlanner
                 }
             }
 
+            ContinuationDecision? future = null;
+            if (continuation != null)
+            {
+                var placements = _entries.Select((entry, id) => (entry, id))
+                    .Where(p => p.entry.Rank.HasValue && p.entry.Candidate.Order.AsSpan().SequenceEqual([0, 1]))
+                    .Select(p => new ContinuationPlacement(p.id, p.entry.Candidate.Rects[continuation.Main],
+                        p.entry.Candidate.Rects[continuation.Peer])).ToArray();
+                // 超过预算时不截断候选，避免把漏算的后继当成不可达。
+                if (placements.Length <= 128 && placements.Any(p => p.Id == selected))
+                {
+                    var reachable = continuation.Evaluate(placements);
+                    var immediate = selected;
+                    var originalMain = _entries[0].Candidate.Rects[continuation.Main];
+                    bool frontAlreadyMoves = _entries[immediate].Candidate.Rects[continuation.Main] != originalMain;
+                    // 预留后路只在近似平局时有权改变顺序。它不能让原位胜出的请求开始搬窗。
+                    // 如果即时方案允许前台留在原位，展望后续也不能额外搬动它。
+                    if (_entries[immediate].Eligible)
+                        selected = placements.Where(p => _entries[p.Id].Eligible &&
+                            (frontAlreadyMoves || p.Main == originalMain) &&
+                            _entries[p.Id].Rank <= bestRank + continuationBudget &&
+                            reachable[p.Id].Improves(reachable[immediate], p.Id, immediate))
+                            .OrderByDescending(p => reachable[p.Id].Coverage(p.Id))
+                            .ThenBy(p => _entries[p.Id].Rank)
+                            .Select(p => p.Id).DefaultIfEmpty(immediate).First();
+                    future = new(continuation.Main, continuation.Peer, immediate, selected, continuationBudget, reachable);
+                }
+            }
+
             var rectangles = new List<int[]>();
             var indices = new Dictionary<RectI, int>();
             int Intern(RectI r)
@@ -102,7 +135,9 @@ internal static partial class IntentLayoutPlanner
             }
             var ballots = _entries.Select(e => new SolverBallot(e.Candidate.Rects.Select(Intern).ToArray(), e.Candidate.Order,
                 e.Sources.ToArray(), e.Rank.HasValue, e.Eligible, e.Rank)).ToArray();
-            return (selected == original ? best : _entries[selected].Candidate, new(context, rectangles.ToArray(), ballots, reps, original, selected, maxSpread, hypotheses));
+            return (selected == original ? best : _entries[selected].Candidate,
+                new SolverPortfolio(context, rectangles.ToArray(), ballots, reps, original, selected, maxSpread, hypotheses)
+                    { Continuation = future });
         }
     }
 

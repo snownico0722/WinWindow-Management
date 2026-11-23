@@ -255,3 +255,14 @@ v13 请求的 `Signals.InstanceUses` 用会话窗口编号记录求解前识别�
 组内参与工作尺寸比较的窗口可在 `Task.Objectives[].WorkingSurface` 找到 `Width`、`Height`、`Value`、`Simultaneous`。宽高是本轮 DPI 下的工作目标像素；总量允许超过工作区。`Value` 记录该窗的使用权重，`Simultaneous` 表示下层对同时阅读成本采用的系数。结合候选外框、当时的窗口层级及工作区裁切，可比较各窗实际露出的面积与切回后的尺寸。已标注区域另见原有的区域指标。
 
 `layered-workspace` 的完整坐标可从 `Portfolio` 解出。它可以和其他算法提出相同布局。中缝手势的 `divider-error-pixels` 是松手后尚未被搭档吸收的像素数，非零也可能代表可执行的部分联动。旧快照、单窗和连续导航等路径可以没有工作尺寸字段，离线回放仍可用旧现场重新求解。
+
+## v18 双窗后续可达性
+
+`Portfolio.Continuation` 记录组内主窗和搭档下标 `MainIndex`、`PeerIndex`，以及仅即时求解的 `Immediate` 和最后选择的 `Selected`。两个值均索引 `Ballots`。`RankBudget` 是相对即时评分允许的让步。`Reachability` 以求解时参与评估的候选下标为键。`Alternation` 表示两窗切到前台后均有模型所需的连续阅读区域。`CompareFromMain` 和 `CompareFromPeer` 保存可达的并读候选下标。指向自身表示无需移动，指向另一候选表示可保持前台外框、只平移一次后台，空值表示在模型及有限候选中未找到见证。
+
+旧录制默认继续使用旧的单次决策。可对同一份记录执行以下配对重算。输出保持相同的 `RequestId` 和 `InputFingerprint`，可按 `CandidateGroups[].Portfolio.Continuation` 追踪状态和见证。现场执行和用户动作继续看实际回执、补摆与撤销。反事实终点未提交到系统。
+
+```powershell
+dotnet run --project tests/LayoutModel -c Release -- --without-continuation recording.zip
+dotnet run --project tests/LayoutModel -c Release -- --with-continuation recording.zip
+```
