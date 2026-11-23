@@ -797,6 +797,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
         "video-current" => LayoutText.Get("PreservePlacement"),
         "learned-position" or "shadow-placement" => LayoutText.Get("LearnedPosition"),
         "attention-layout" or "attention-side-stack" => LayoutText.Get("AttentionLayout"),
+        "layered-workspace" => LayoutText.Get("LayeredWorkspace"),
         "working-overlap" => LayoutText.Get("WorkingOverlap"),
         "working-pair" => LayoutText.Get("WorkingPair"), "working-region" => LayoutText.Get("WatchedRegion"),
         "task-vertical-fill" => LayoutText.Get("ReversibleFill"),

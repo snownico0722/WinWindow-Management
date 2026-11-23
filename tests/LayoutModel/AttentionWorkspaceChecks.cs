@@ -224,13 +224,23 @@ internal static class AttentionWorkspaceChecks
             largePrint, SmartTidyStrength.Balanced)!;
         check(rowTargets.All(t => t.FrameWidth == 0), "a pair already reading in separate rows keeps its full reading width");
         var trio = new[] { Window(1, 120, 80, 940, 780), Window(2, 680, 140, 800, 585), Window(3, 860, 250, 800, 590) };
-        var stacked = Balanced(trio, comparisonContext);
+        // 三窗都需要同时阅读时，侧列仍是可用解。普通来回切换可以保留原高度并上下内叠。
+        var stacked = Balanced(trio, comparisonContext with { PairHints =
+            [new(1, 2, TaskRelation.JointView), new(1, 3, TaskRelation.JointView)] });
         var frames = TaskLayoutSession.Project(trio, stacked).Select(w => w.VisualRect).ToArray();
         check(stacked.Groups.Any(g => g.Candidates.Any(c => c.Kind == "attention-side-stack" && c.Rejection == null)) &&
             frames[1].Left == frames[2].Left && frames[1].Bottom <= frames[2].Top &&
             frames[0].Intersect(frames[1]).IsEmpty && frames[0].Intersect(frames[2]).IsEmpty &&
             frames[0].Width >= 900 && Math.Min(frames[1].Width, frames[2].Width) >= 800,
             "two active references can share a readable side column alongside the main window");
+        var everyday = TaskLayoutSession.Project(trio, Balanced(trio, comparisonContext));
+        var exposedTrio = new VisibilityAnalyzer().SelectForManualArrange(everyday, false);
+        var beforeTrio = new VisibilityAnalyzer().SelectForManualArrange(trio, false);
+        check(everyday[0].VisualRect == trio[0].VisualRect &&
+            everyday.Skip(1).Zip(trio.Skip(1)).All(p => p.First.VisualRect.Height >= p.Second.VisualRect.Height) &&
+            exposedTrio.Skip(1).Sum(v => v.VisibleArea) > beforeTrio.Skip(1).Sum(v => v.VisibleArea) &&
+            exposedTrio.Skip(1).All(v => v.VisibleRatio > .25),
+            "three alternately used surfaces expose more background in total and keep both reference frames usable");
         var navigationTask = comparisonContext with { Focus = new(1, 2, 0, "handoff", [3, 2]) };
         check(!Balanced(trio, navigationTask).Groups.SelectMany(g => g.Candidates).Any(c => c.Kind == "attention-side-stack"),
             "a three-hop navigation task never becomes a main window with two tiled references");

@@ -5,6 +5,7 @@ using NeatWin.Core;
 using NeatWin.Reference;
 
 var area = new RectI(0, 0, 1920, 1040);
+LayeredWorkspaceChecks.Run(Check);
 CoupledDividerChecks.Run(Check);
 ScopedGeometryChecks.Run(Check);
 PlacementShadowChecks.Run(Check);

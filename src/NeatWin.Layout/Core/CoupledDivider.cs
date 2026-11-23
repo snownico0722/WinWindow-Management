@@ -47,8 +47,9 @@ internal static partial class IntentLayoutPlanner
         var peer = neighbor.Window;
         if (ctx.Focus is { Companion: not 0 } focus && focus.Companion != peer.Handle) return null;
         var old = peer.VisualRect;
-        var target = fromLeft ? old with { Width = old.Width + delta } :
-            old with { X = old.X + delta, Width = old.Width - delta };
+        RectI Follow(int travel) => fromLeft ? old with { Width = old.Width + travel } :
+            old with { X = old.X + travel, Width = old.Width - travel };
+        var target = Follow(delta);
         var members = new[] { source.Handle, peer.Handle };
         // 松手已完成主窗的调整。若搭档无法承接，保留松手结果，此次手势不会升级为第三扇窗的布局请求。
         string? blocked = null;
@@ -56,33 +57,54 @@ internal static partial class IntentLayoutPlanner
         var pairContext = ctx with { Focus = ctx.Focus! with { Companion = peer.Handle }, GestureTarget = end };
         var group = new[] { visible.First(v => v.Window.Handle == source.Handle), neighbor }.OrderBy(v => v.Window.ZOrder).ToArray();
         var baseline = group.Select(v => v.Window.VisualRect).ToArray();
-        var frames = group.Select(v => v.Window.Handle == peer.Handle ? target : v.Window.VisualRect).ToArray();
+        var frames = baseline.ToArray();
+        int peerIndex = Array.FindIndex(group, v => v.Window.Handle == peer.Handle);
         var others = desktop.Where(w => !members.Contains(w.Handle)).ToArray();
         var proposal = new Candidate("coupled-divider", frames, [0, 1]);
-        var planned = new IntentLayoutPlan([new(peer, target)], [], []);
+        var goals = AttentionLayout.Targets(group, pairContext, options.SmartStrength);
+        bool Fits(RectI frame)
+        {
+            frames[peerIndex] = frame;
+            return !frame.IsEmpty && frame.Intersect(g.WorkArea) == frame && ctx.LimitReturn(peer, frame) == frame &&
+                TaskSafe(group, baseline, proposal, g.WorkArea, options, pairContext, others, goals: goals);
+        }
+        int residual = 0;
         if (!ctx.Preferences.AllowUsefulResize || ctx.Scene?.Settings?.AllowResize == false || !peer.IsResizable ||
             hint?.Anchor == true || hint?.PassiveVisual == true || hint?.MediaCompanion == true ||
             hint != null && WindowUseRoles.IsFloating(hint.Role) || ctx.VideoHint?.WindowHandle == peer.Handle ||
             ctx.VideoFits?.ContainsKey(peer.Handle) == true) blocked = "protected-peer";
-        else if (target.IsEmpty || target.Intersect(g.WorkArea) != target ||
-            ctx.LimitReturn(peer, target) != target ||
-            !TaskSafe(group, baseline, proposal, g.WorkArea, options, pairContext, others,
-                goals: AttentionLayout.Targets(group, pairContext, options.SmartStrength))) blocked = "geometry-budget";
-        else if (ctx.RejectedLayouts?.Contains(TaskLayoutSession.LayoutKey(TaskLayoutSession.Project(desktop, planned)
+        else if (!Fits(target))
+        {
+            // 用户已经把前景拉到松手位置。邻窗缩到可读边界就停，剩余位移允许形成内叠。
+            // 只在内边单轴收缩时搜索，不会为了让接缝对齐而移动外边、改变其他窗口或推翻拒绝记录。
+            int lo = 0, hi = target.Width < old.Width ? Math.Min(Math.Abs(delta), old.Width - 1) : 0;
+            while (lo < hi)
+            {
+                int mid = lo + (hi - lo + 1) / 2;
+                if (Fits(Follow(Math.Sign(delta) * mid))) lo = mid;
+                else hi = mid - 1;
+            }
+            target = Follow(Math.Sign(delta) * lo);
+            residual = Math.Abs(delta) - lo;
+            if (lo == 0 || !Fits(target)) blocked = "geometry-budget";
+        }
+        frames[peerIndex] = target;
+        var planned = new IntentLayoutPlan([new(peer, target)], [], []);
+        if (blocked == null && ctx.RejectedLayouts?.Contains(TaskLayoutSession.LayoutKey(TaskLayoutSession.Project(desktop, planned)
             .Where(w => members.Contains(w.Handle)))) == true) blocked = "rejected-layout";
-        else if (others.Any(w => w.ZOrder > peer.ZOrder &&
+        else if (blocked == null && (others.Any(w => w.ZOrder > peer.ZOrder &&
             target.Intersect(w.VisualRect).Area > old.Intersect(w.VisualRect).Area) ||
             ctx.Scene?.References.Any(r => r.Measure(desktop, w => w.Handle == peer.Handle ? target : w.VisualRect,
-                w => w.ZOrder).Lost > r.Limit + 1e-9) == true) blocked = "third-window-exposure";
+                w => w.ZOrder).Lost > r.Limit + 1e-9) == true)) blocked = "third-window-exposure";
         ctx.ShadowProbe?.Observe(group, baseline, 0);
-        ctx.ShadowProbe?.Observe(group, frames, blocked == null ? 0 : double.PositiveInfinity);
+        ctx.ShadowProbe?.Observe(group, frames, blocked == null ? residual : double.PositiveInfinity);
         var keep = new LayoutCandidateTrace("keep", Math.Abs(delta), null);
         // 这里的两种结果用接缝误差像素比较，和通用候选分数无关。真实窗口的位置仍由提交回执核对。
         var axes = ctx.TraceCandidateAxes ? new LayoutAxisEvidence() : null;
         axes?.Observe([end, old], true);
         if (!target.IsEmpty) axes?.Observe([end, target], blocked == null);
         var trace = new LayoutGroupTrace(members, blocked == null ? proposal.Kind : "keep", 0,
-            [keep, new(proposal.Kind, blocked == null ? 0 : null, blocked)], new([], "divider-error-pixels", ["release-preserves-outer-edges"]), axes?.Export());
+            [keep, new(proposal.Kind, blocked == null ? residual : null, blocked)], new([], "divider-error-pixels", ["release-preserves-outer-edges"]), axes?.Export());
         return new(blocked == null ? planned.Moves : [], [], [trace]) { IsDividerGesture = true };
     }
 }
