@@ -959,6 +959,26 @@ internal static class SmokeTests
         bool HasOtherWindows(IEnumerable<NeatWin.Core.WindowSnapshot> windows) =>
             windows.Any(w => !IsFixture(w) && !w.VisualRect.Intersect(area).IsEmpty);
         NeatWin.Core.WindowSnapshot[] Pair() => layout.Capture().Where(IsFixture).ToArray();
+        async Task UseBothFixturesAsync()
+        {
+            // 一次切换只说明交接，允许保留叠放；来回使用同一对窗口才是本用例要覆盖的并看信号。
+            foreach (var handle in new[] { second, first, second, first })
+            {
+                Native.SetForegroundWindow(handle);
+                await WaitAsync("fixture owns real foreground", () => Native.GetForegroundWindow() == handle);
+                var window = Pair().Single(w => w.Handle == handle);
+                // Model the missing human input at the current monotonic time. Native focus
+                // events still drive the ordinary workspace scheduler and submission guards.
+                var now = Environment.TickCount64;
+                shell.LayoutFocus.Visit(handle, window.ProcessId, now);
+                shell.LayoutFocus.Interact(handle, window.ProcessId, now);
+                await Task.Delay(180);
+            }
+        }
+        await UseBothFixturesAsync();
+        shell.ShowShell();
+        await WaitAsync("workbench owns input before manual arrangement", () =>
+            Native.GetForegroundWindow() == new WindowInteropHelper(shell).Handle);
         static OcclusionMetrics.Exposure Exposure(NeatWin.Core.WindowSnapshot w, IReadOnlyList<NeatWin.Core.WindowSnapshot> windows) =>
             IntentLayoutPlanner.ScreenExposure(w.VisualRect, windows.Where(c => c.ZOrder < w.ZOrder).Select(c => c.VisualRect),
                 w.WorkArea, w.Dpi);
@@ -1006,24 +1026,6 @@ internal static class SmokeTests
             Pair().Any(a => a.Handle == w.Handle && WindowStateRules.Near(a.VisualRect, w.VisualRect))), 8000);
         var modes = ((Panel)shell.FindName("FooterModes")).Children.OfType<RadioButton>().ToArray();
         RadioButton Mode(AutomaticLayoutMode mode) => modes.Single(b => Equals(b.Tag, mode.ToString()));
-        // This runner arranges native fixtures without a user at the keyboard. Give the two
-        // fixtures a working-task history before testing the automatic path.
-        async Task UseBothFixturesAsync()
-        {
-            // 一次切换只说明交接，允许保留叠放；来回使用同一对窗口才是本用例要覆盖的并看信号。
-            foreach (var handle in new[] { second, first, second, first })
-            {
-                Native.SetForegroundWindow(handle);
-                await WaitAsync("fixture owns real foreground", () => Native.GetForegroundWindow() == handle);
-                var window = Pair().Single(w => w.Handle == handle);
-                // Model the missing human input at the current monotonic time. Native focus
-                // events still drive the ordinary workspace scheduler and submission guards.
-                var now = Environment.TickCount64;
-                shell.LayoutFocus.Visit(handle, window.ProcessId, now);
-                shell.LayoutFocus.Interact(handle, window.ProcessId, now);
-                await Task.Delay(180);
-            }
-        }
         shell.ShowShell();
         await WaitAsync("workbench owns input before enabling automation", () =>
             Native.GetForegroundWindow() == new WindowInteropHelper(shell).Handle);
