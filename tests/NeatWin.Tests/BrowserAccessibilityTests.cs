@@ -80,7 +80,11 @@ public sealed class BrowserAccessibilityTests
                     lastCaption = target.Caption;
                     var page = await Task.Run(() => BrowserAccessibility.Read(target, NativeMethods.GetForegroundWindow()))
                         .WaitAsync(TimeSpan.FromSeconds(5));
-                    if (page is { UrlKey: not null } && page.UrlKey == BrowserPageEvidence.UrlKey(origin + path)) return page;
+                    if (page is { UrlKey: not null } && page.UrlKey == BrowserPageEvidence.UrlKey(origin + path))
+                    {
+                        if (!page.Reading.IsEmpty && (NativeMethods.GetForegroundWindow() != target.Handle || page.Editing)) return page;
+                        lastCaption += $" (document matched, reading={page.Reading}, editing={page.Editing})";
+                    }
                 }
                 await Task.Delay(150);
             }
@@ -131,7 +135,8 @@ public sealed class BrowserAccessibilityTests
                 if (request == null) return;
                 while (!string.IsNullOrEmpty(await reader.ReadLineAsync(stop.Token))) { }
                 string body = request.StartsWith("GET /phase ") ? Volatile.Read(ref navigate).ToString() :
-                    $"<title>{title}</title><article>Reading a sufficiently long line inside a real browser window.</article>" +
+                    $"<title>{title}</title><article><p>Reading a sufficiently long line inside a real browser window.</p>" +
+                    "<p>A second line of visible reference material for the Windows fixture.</p></article><textarea autofocus></textarea>" +
                     "<script>if(location.pathname=='/a')setInterval(async()=>{if(await(await fetch('/phase')).text()=='1')location.href='/b'},250)</script>";
                 byte[] bytes = Encoding.UTF8.GetBytes(body);
                 await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {bytes.Length}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"), stop.Token);

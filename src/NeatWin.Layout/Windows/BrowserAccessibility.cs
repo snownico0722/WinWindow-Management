@@ -73,35 +73,42 @@ internal static class BrowserAccessibility
             var iid = typeof(IAccessible).GUID;
             NativeMethods.AccessibleObjectFromWindow(renderer, ObjidClient, ref iid, out var root);
             var document = DocumentBelow(root);
-            string? PageKey() => BrowserPageEvidence.UrlKey(document?.get_accValue(0));
-            string? page = PageKey();
-            if (page == null)
+            Func<string?> readKey;
+            RectI reading = default;
+            bool editing = false;
+            string? page = BrowserPageEvidence.UrlKey(document?.get_accValue(0));
+            if (page != null)
             {
-                // 新版 Chromium 可以先提供 UIA 容器，下次才暴露完整 MSAA 文档。
-                // 只在唯一内容视口中找顶层文档，不能把地址栏正在编辑的文字当成已导航的 URL。
+                readKey = () => BrowserPageEvidence.UrlKey(document!.get_accValue(0));
+                try
+                {
+                    editing = expectedForeground == target.Handle && HasEditableFocus(document!);
+                    reading = VisibleText(document!, viewport);
+                }
+                catch (Exception ex) when (ex is COMException or InvalidCastException or NotImplementedException) { }
+            }
+            else
+            {
+                // 有些版本先暴露 UIA 容器。文档身份只取自网页文档，地址栏可能含尚未访问的文本。
                 var element = AutomationElement.FromHandle(renderer);
                 var uiaDoc = element.Current.ControlType == ControlType.Document ? element :
                     element.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
                 if (uiaDoc == null || !uiaDoc.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern)) return null;
                 var value = (ValuePattern)pattern;
-                page = BrowserPageEvidence.UrlKey(value.Current.Value);
-                if (page == null || NativeMethods.GetForegroundWindow() != expectedForeground || Target(target.Handle) != target ||
-                    FindViewport(target.Handle) != (renderer, viewport) || BrowserPageEvidence.UrlKey(value.Current.Value) != page) return null;
-                return new(target, renderer, viewport, started, page, default, false);
+                readKey = () => BrowserPageEvidence.UrlKey(value.Current.Value);
+                page = readKey();
+                if (page == null) return null;
+                try
+                {
+                    editing = expectedForeground == target.Handle && HasEditableFocus(uiaDoc);
+                    reading = VisibleText(uiaDoc, viewport);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or ElementNotAvailableException or COMException) { }
             }
 
-            RectI reading = default;
-            bool editing = false;
-            try
-            {
-                editing = expectedForeground == target.Handle && HasEditableFocus(document!);
-                reading = VisibleText(document!, viewport);
-            }
-            catch (Exception ex) when (ex is COMException or InvalidCastException or NotImplementedException) { }
-
-            // 可访问树可能正在重载。前后文档、标题和视口都相符时才带出区域。
+            // 读取范围时用户可能已换页。仅在文档、视口及前台都仍然一致时使用这些区域。
             if (NativeMethods.GetForegroundWindow() != expectedForeground || Target(target.Handle) != target ||
-                FindViewport(target.Handle) != (renderer, viewport) || PageKey() != page) return null;
+                FindViewport(target.Handle) != (renderer, viewport) || readKey() != page) return null;
             return new(target, renderer, viewport, started, page, reading, editing);
         }
         catch (Exception ex) when (ex is COMException or InvalidCastException or NotImplementedException or ArgumentException or
@@ -125,6 +132,44 @@ internal static class BrowserAccessibility
                 foreach (var child in children.Take(read).OfType<IAccessible>()) pending.Enqueue(child);
         }
         return null;
+    }
+
+    private static bool HasEditableFocus(AutomationElement document)
+    {
+        var focused = AutomationElement.FocusedElement;
+        if (focused == null || focused.Current.ControlType != ControlType.Edit || focused.Current.IsPassword ||
+            !focused.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern) || ((ValuePattern)pattern).Current.IsReadOnly) return false;
+        var ancestor = focused;
+        for (int depth = 0; ancestor != null && depth < 20; depth++)
+        {
+            if (Automation.Compare(ancestor, document)) return true;
+            ancestor = TreeWalker.RawViewWalker.GetParent(ancestor);
+        }
+        return false;
+    }
+
+    private static RectI VisibleText(AutomationElement document, RectI viewport)
+    {
+        if (!document.TryGetCurrentPattern(TextPattern.Pattern, out var pattern)) return default;
+        RectI result = default;
+        int lines = 0;
+        foreach (var range in ((TextPattern)pattern).GetVisibleRanges().Take(16))
+        foreach (var box in range.GetBoundingRectangles().Take(72))
+        {
+            if (box.IsEmpty) continue;
+            var visible = RectI.FromEdges((int)Math.Floor(box.Left), (int)Math.Floor(box.Top),
+                (int)Math.Ceiling(box.Right), (int)Math.Ceiling(box.Bottom)).Intersect(viewport);
+            IncludeLine(visible, viewport, ref result, ref lines);
+        }
+        return lines >= 2 ? result : default;
+    }
+
+    private static void IncludeLine(RectI visible, RectI viewport, ref RectI result, ref int lines)
+    {
+        if (visible.Width < Math.Max(100, viewport.Width / 6) || visible.Height < 10) return;
+        result = result.IsEmpty ? visible : RectI.FromEdges(Math.Min(result.Left, visible.Left),
+            Math.Min(result.Top, visible.Top), Math.Max(result.Right, visible.Right), Math.Max(result.Bottom, visible.Bottom));
+        lines++;
     }
 
     private static bool HasEditableFocus(IAccessible document)
@@ -159,12 +204,7 @@ internal static class BrowserAccessibility
             {
                 node.accLocation(out int x, out int y, out int w, out int h, id);
                 var visible = new RectI(x, y, w, h).Intersect(viewport);
-                if (visible.Width >= Math.Max(100, viewport.Width / 6) && visible.Height >= 10)
-                {
-                    result = result.IsEmpty ? visible : RectI.FromEdges(Math.Min(result.Left, visible.Left),
-                        Math.Min(result.Top, visible.Top), Math.Max(result.Right, visible.Right), Math.Max(result.Bottom, visible.Bottom));
-                    lines++;
-                }
+                IncludeLine(visible, viewport, ref result, ref lines);
             }
             if (id != 0 || nodes.Count > 56 || node.accChildCount <= 0) continue;
             var children = new object[Math.Min(node.accChildCount, 16)];
