@@ -14,8 +14,8 @@ public sealed record WorkingSurfaceObjective(int Width, int Height, double Value
     internal double FrameLoss(RectI frame)
     {
         // 宽度变小通常会改变换行、表格列与工具栏。切回后依然要付这个代价，单纯损失一个边缘条带则不会。
-        return 5 * Value * (Math.Max(0, Math.Log(Width / (double)frame.Width)) +
-            .6 * Math.Max(0, Math.Log(Height / (double)frame.Height)));
+        return 5 * Value * (Math.Max(0, Math.Log(Width / (double)Math.Max(1, frame.Width))) +
+            .6 * Math.Max(0, Math.Log(Height / (double)Math.Max(1, frame.Height))));
     }
 
     internal static bool IsGlanceSurface(nint handle, TaskLayoutContext ctx) =>
@@ -23,11 +23,9 @@ public sealed record WorkingSurfaceObjective(int Width, int Height, double Value
         ctx.WindowHints?.Any(h => h.Handle == handle && !h.Anchor && (h.PassiveVisual || h.MediaCompanion)) == true;
 
     internal static WorkingSurfaceObjective?[]? Compile(VisibleWindow[] group, TaskEvidence[] task,
-        AttentionTarget[]? goals, TaskLayoutContext ctx)
+        AttentionTarget[]? goals, TaskLayoutContext ctx, ContentViewport?[] content)
     {
-        if (goals == null || group.Length < 2 || ctx.GeometryOnlyWindow != 0 || ctx.GestureAnchor != 0 ||
-            ctx.VideoHint != null || ctx.Focus?.Evidence == "handoff" || ctx.Focus?.Navigation is { Length: > 0 } ||
-            ctx.Focus?.NavigationAncestors is { Length: > 0 } || ctx.Scene?.Lane != null) return null;
+        if (goals == null || group.Length < 2 || ctx.GeometryOnlyWindow != 0 || ctx.GestureAnchor != 0) return null;
         var members = Enumerable.Range(0, group.Length).Where(i =>
             goals[i].Role is AttentionRole.Main or AttentionRole.Reference or AttentionRole.Return ||
             IsGlanceSurface(group[i].Window.Handle, ctx)).ToArray();
@@ -60,7 +58,15 @@ public sealed record WorkingSurfaceObjective(int Width, int Height, double Value
                 + (h?.PassiveVisual == true ? .25 : 0);
             // 当前正文被顶层工具挡住与主动留给搭档的叠放性质不同，前者仍要恢复可读性。
             if (g.Role == AttentionRole.Main) simultaneous = Math.Max(simultaneous, 1 - group[i].VisibleRatio);
-            result[i] = new(working[i].Width, working[i].Height, value, simultaneous);
+            var (width, height) = working[i];
+            if (content[i] is { } measured)
+            {
+                // The measured picture, rather than its bars or browser chrome, is the working surface.
+                var picture = measured.Content(w.VisualRect);
+                width = picture.Width;
+                height = picture.Height;
+            }
+            result[i] = new(width, height, value, simultaneous);
         }
         return result;
     }
@@ -146,8 +152,10 @@ internal static partial class IntentLayoutPlanner
                     seed[i] = r;
                     candidates.Add(new("layered-workspace", seed, order));
                 }
-                var exposure = ScreenExposure(r, front, area, group[i].Window.Dpi);
-                double price = surface.ExposureLoss(r, exposure) + surface.FrameLoss(r) + objectives[i].Motion.Cost(frame, r);
+                var content = objectives[i].Content?.Content(r) ?? r;
+                var exposure = ScreenExposure(content, front, area, group[i].Window.Dpi);
+                double price = surface.ExposureLoss(content, exposure) + surface.FrameLoss(content) +
+                    objectives[i].Motion.Cost(frame, r);
                 if (price < best) { best = price; spread[i] = r; }
             }
             if (group.Length > 8 && spread[i] != frame)

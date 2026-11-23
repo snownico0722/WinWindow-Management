@@ -15,6 +15,8 @@ public sealed record VideoViewportFit(double Aspect, FrameInsets Insets)
     internal bool IsValid => Aspect is >= .55 and <= 4.5 && Insets.Left >= 0 && Insets.Right >= 0 && Insets.Top >= 0 && Insets.Bottom >= 0 &&
         (long)Insets.Left + Insets.Right < int.MaxValue && (long)Insets.Top + Insets.Bottom < int.MaxValue;
 
+    internal ContentViewport Geometry => new(Aspect, Insets);
+
     private int MarginX => Insets.Left + Insets.Right;
     private int MarginY => Insets.Top + Insets.Bottom;
 

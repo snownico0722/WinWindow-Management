@@ -239,8 +239,7 @@ internal static class AttentionLayout
         // 工作区观察有时仍带着上一手的锚点。上面的同侧叠放依旧有效，真正的松手辅助由独立手势请求处理。
         if (context.GestureAnchor != 0 || context.Focus?.OpeningResidentLeft != null) return null;
         if (HasReadableColumns(group, targets, exposed, obstacles, context)) return "existing-readable-columns";
-        // 黑边属于特定视频窗口。已有可读分栏时由后续视频步骤校正比例，其他窗口无需仅因这次测量重新摆位。
-        if (group.Length < 2 || context.VideoHint != null) return null;
+        if (group.Length < 2) return null;
         // 在两个居中窗之间切回一次，可能只是翻回刚才看的内容。两边都有输入，或多次切换且各自有停留，才有更强的并排使用证据。
         if (group.Length == 2 && context.Focus is { Evidence: "recent-switch-pair" } focus &&
             !(focus.Companion != 0 && (group.All(v => context.Attention?.GetValueOrDefault(v.Window.Handle)?.Input >= .35) ||

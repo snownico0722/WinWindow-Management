@@ -48,7 +48,8 @@ public static class VideoAspectPostProcessor
         if (!(scene?.Settings?.AllowResize ?? context.Preferences.AllowUsefulResize)) return plan;
         var frame = browser.VisualRect;
         var view = hint.ViewportVisualRect;
-        if (view.IsEmpty || view.Intersect(frame) != view) return plan;
+        if (VideoViewportFit.From(frame, hint) is not { } fit) return plan;
+        var geometry = fit.Geometry;
         var projected = TaskLayoutSession.Project(desktop, plan);
         // 检测到黑边能否决一个会盖住视频的摆法，但不能给其他窗的移动凭空增加收益。
         if (!IntentLayoutPlanner.DesktopRegionsPreserved(desktop, projected, context))
@@ -68,18 +69,15 @@ public static class VideoAspectPostProcessor
         int chromeX = frame.Width - view.Width, chromeY = frame.Height - view.Height;
         double PicturePixels(RectI rect, IEnumerable<RectI> covers)
         {
-            int vw = Math.Max(1, rect.Width - chromeX), vh = Math.Max(1, rect.Height - chromeY);
-            int pw = Math.Max(1, (int)Math.Round(Math.Min(vw, vh * hint.ContentAspectRatio)));
-            int ph = Math.Max(1, (int)Math.Round(Math.Min(vh, vw / hint.ContentAspectRatio)));
-            var picture = new RectI(rect.X + view.X - frame.X + (vw - pw) / 2, rect.Y + view.Y - frame.Y + (vh - ph) / 2, pw, ph);
-            return IntentLayoutPlanner.ScreenExposure(picture, covers, area, browser.Dpi).Visible * picture.Area;
+            var picture = geometry.Content(rect);
+            return picture.IsEmpty ? 0 :
+                IntentLayoutPlanner.ScreenExposure(picture, covers, area, browser.Dpi).Visible * picture.Area;
         }
 
         double originalPixels = PicturePixels(frame, desktop.Where(w => w.ZOrder < browser.ZOrder).Select(w => w.VisualRect));
         double plannedPixels = PicturePixels(start, front);
         double referencePixels = Math.Max(originalPixels, plannedPixels);
-        double AspectError(RectI rect) => Math.Abs(Math.Log(Math.Max(1, rect.Width - chromeX) /
-            (double)Math.Max(1, rect.Height - chromeY) / hint.ContentAspectRatio));
+        double AspectError(RectI rect) => geometry.AspectError(rect);
         double baselineError = AspectError(start);
         var best = start;
         var visibleBrowser = visible.First(v => v.Window.Handle == browser.Handle);

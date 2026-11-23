@@ -4,7 +4,10 @@ namespace NeatWin.Core;
 public sealed record WindowLayoutObjective(double ReadableContent, double PeerExposure, double Ambiguity,
     double BackgroundDrift, WindowMotionObjective Motion,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    WorkingSurfaceObjective? WorkingSurface = null);
+    WorkingSurfaceObjective? WorkingSurface = null)
+{
+    internal ContentViewport? Content { get; init; }
+}
 
 public readonly record struct WindowMotionObjective(double Resistance, double ReflowSensitivity, double RecentMove,
     double Timing, RectI? AssistedTarget, RectI? RestoredFrame)
@@ -25,6 +28,10 @@ public readonly record struct WindowMotionObjective(double Resistance, double Re
 
 internal static partial class IntentLayoutPlanner
 {
+    private static ContentViewport? MeasuredContent(WindowSnapshot window, TaskLayoutContext context) =>
+        context.VideoHint is { } hint && window.Handle == hint.WindowHandle
+            ? VideoViewportFit.From(window.VisualRect, hint)?.Geometry : null;
+
     private static TaskEvidence[] InferTask(VisibleWindow[] windows, RectI[] rects, TaskLayoutContext context)
     {
         var evidence = new List<TaskEvidence>();
@@ -120,7 +127,8 @@ internal static partial class IntentLayoutPlanner
         }
         double overlay = goals?.FirstOrDefault(t => t.Role == AttentionRole.Main)?.PlacementStability ?? 0;
         var profile = context.Preferences;
-        var surfaces = WorkingSurfaceObjective.Compile(windows, relations, goals, context);
+        var content = windows.Select(v => MeasuredContent(v.Window, context)).ToArray();
+        var surfaces = WorkingSurfaceObjective.Compile(windows, relations, goals, context, content);
         return windows.Select((visible, i) =>
         {
             var w = visible.Window;
@@ -140,7 +148,8 @@ internal static partial class IntentLayoutPlanner
             var hint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
             return new WindowLayoutObjective(incidental ? .25 * read : read, peerExposure,
                 incidental ? .5 * ambiguity[i] : ambiguity[i], incidental ? .6 : 0,
-                MotionFor(visible, context, hint, Math.Max(overlay, goals?[i].PlacementStability ?? 0)), surfaces?[i]);
+                MotionFor(visible, context, hint, Math.Max(overlay, goals?[i].PlacementStability ?? 0)), surfaces?[i])
+                { Content = content[i] };
         }).ToArray();
     }
 
