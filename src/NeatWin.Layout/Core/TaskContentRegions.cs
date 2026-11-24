@@ -15,6 +15,28 @@ public sealed record TaskContentRegion(double X, double Y, double Width, double 
         window.Y + (int)Math.Round((Y + Height) * window.Height));
 }
 
+// Measured content is centered inside a viewport with fixed frame insets.
+internal readonly record struct ContentViewport(double Aspect, FrameInsets Insets)
+{
+    internal RectI Viewport(RectI frame) => new(frame.X + Insets.Left, frame.Y + Insets.Top,
+        Math.Max(0, frame.Width - Insets.Left - Insets.Right), Math.Max(0, frame.Height - Insets.Top - Insets.Bottom));
+
+    internal RectI Content(RectI frame)
+    {
+        var view = Viewport(frame);
+        if (view.IsEmpty) return view;
+        int width = Math.Max(1, (int)Math.Round(Math.Min(view.Width, view.Height * Aspect)));
+        int height = Math.Max(1, (int)Math.Round(Math.Min(view.Height, view.Width / Aspect)));
+        return new(view.X + (view.Width - width) / 2, view.Y + (view.Height - height) / 2, width, height);
+    }
+
+    internal double AspectError(RectI frame)
+    {
+        var view = Viewport(frame);
+        return Math.Abs(Math.Log(Math.Max(1, view.Width) / (double)Math.Max(1, view.Height) / Aspect));
+    }
+}
+
 internal static partial class IntentLayoutPlanner
 {
     private static readonly TaskContentRegion[] EdgeRegions =
@@ -29,7 +51,7 @@ internal static partial class IntentLayoutPlanner
     }
 
     private static bool ProtectsVideo(TaskLayoutContext context) => context.IsWorkspaceObservation && !context.ExplicitArrange &&
-        context.GestureAnchor == 0 && context.VideoHint is { Confidence: >= .82, ContentAspectRatio: >= .55 and <= 4.5 };
+        context.GestureAnchor == 0 && context.VideoHint is { Confidence: >= .82 and <= 1, ContentAspectRatio: >= .55 and <= 4.5 };
 
     private static bool HasRegionProtection(TaskLayoutContext context) => ProtectsVideo(context) || context.Preferences.ProtectWindowEdges ||
         context.WindowHints?.Any(h => h.ProtectPeriphery || h.ProtectedRegions?.Length > 0) == true;

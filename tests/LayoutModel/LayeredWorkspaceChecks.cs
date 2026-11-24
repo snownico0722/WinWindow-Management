@@ -50,6 +50,8 @@ internal static class LayeredWorkspaceChecks
                 $"one immovable reading surface consumes the budget without reshuffling the hidden peer ({display})");
         }
 
+        CheckHandoffAndVideo(check);
+
         var surface = new WorkingSurfaceObjective(1200, 800, 1, .2);
         var screen = new RectI(0, 0, 1920, 1080);
         var background = new RectI(560, 50, 1200, 800);
@@ -60,5 +62,74 @@ internal static class LayeredWorkspaceChecks
         check(Math.Abs(surface.ExposureLoss(background, seen) - surface.ExposureLoss(shrunk, exposed)) < 1e-8 &&
             surface.FrameLoss(background) < surface.FrameLoss(shrunk),
             "equal visible pixels receive equal exposure credit while the wider return frame retains separate value");
+    }
+
+    private static void CheckHandoffAndVideo(Action<bool, string> check)
+    {
+        foreach (var (scale, mirror) in new[] { (1, false), (1, true), (2, false) })
+        {
+            var area = new RectI(-1920 * scale, 30, 1920 * scale, 1040 * scale);
+            WindowSnapshot Window(int id, bool right, int y, int height)
+            {
+                var frame = new RectI(area.Left + (right != mirror ? 960 * scale : 0), area.Top + y * scale,
+                    960 * scale, height * scale);
+                return new(id, frame, frame, area, 1, default, true, id == 2, true, 2 - id, (uint)(96 * scale), (uint)id);
+            }
+            var editor = Window(1, false, 40, 880);
+            var media = Window(2, true, 60, 910);
+            var task = new TaskLayoutContext(UseWorkingPairs: true, Focus: new(2, 1, 1, "handoff"),
+                Attention: new Dictionary<nint, LayoutAttention> { [1] = new(.9, .9, .9, .8, false), [2] = new(1, 1, 1, .8, true) },
+                WindowHints: [new(1, Role: WindowUseRole.Editor)])
+                { IsWorkspaceObservation = true };
+            IntentLayoutPlan Plan(WindowSnapshot[] desktop, TaskLayoutContext ctx) =>
+                LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectVisibleWorkingSet(desktop, includeStackAccess: true),
+                    new(), null, desktop, ctx);
+            WindowLayoutObjective Objective(IntentLayoutPlan plan, nint id)
+            {
+                var group = plan.Groups.Single(g => g.Handles.Contains(id));
+                return group.Task!.Objectives![Array.IndexOf(group.Handles, id)];
+            }
+            WindowSnapshot[] opened = [media, editor];
+            var opening = Plan(opened, task);
+            var reading = TaskLayoutSession.Project(opened, opening);
+            var browser = reading.Single(w => w.Handle == media.Handle);
+            var frame = browser.VisualRect;
+            var viewport = new RectI(frame.X + 30 * scale, frame.Y + 120 * scale, frame.Width - 60 * scale, 620 * scale);
+            var hint = new VideoBlackBarHint(media.Handle, VideoBlackBarOrientation.Horizontal, 16d / 9, viewport, .95);
+            var video = Plan(reading, task with { VideoHint = hint });
+            var after = TaskLayoutSession.Project(reading, video);
+            var fitted = after.Single(w => w.Handle == media.Handle);
+            var fit = VideoViewportFit.From(frame, hint)!;
+            check(Objective(opening, 1).WorkingSurface is { } source &&
+                Objective(video, 1).WorkingSurface == source &&
+                Objective(video, 2).WorkingSurface is { } pictureSurface &&
+                pictureSurface.Width == fit.Geometry.Content(frame).Width &&
+                pictureSurface.Height == fit.Geometry.Content(frame).Height,
+                $"handoff keeps its return frame objective when a media viewport is measured (scale {scale}, mirrored {mirror})");
+            check(after.Single(w => w.Handle == editor.Handle).VisualRect == editor.VisualRect && video.Layers.Count == 0 &&
+                fitted.VisualRect.Height < frame.Height && fit.Fits(fitted.VisualRect) &&
+                fit.Geometry.Content(fitted.VisualRect).Area >= fit.Geometry.Content(frame).Area - viewport.Width,
+                $"removing bars preserves both the usable picture and the editor frame (scale {scale}, mirrored {mirror})");
+
+            var local = Plan(reading, task with { LocalPlacementWindow = editor.Handle, VideoHint = hint });
+            check(local.Moves.All(m => m.Window.Handle == editor.Handle) && local.Layers.Count == 0,
+                "a measured viewport cannot expand permission beyond the locally authorized window");
+
+            var returned = new[] { after.Single(w => w.Handle == editor.Handle) with { IsForeground = true, ZOrder = 0 },
+                fitted with { IsForeground = false, ZOrder = 1 } };
+            var editing = Plan(returned, task with { Focus = new(1, 2, 2), WindowHints = [new(1, Role: WindowUseRole.Editor, TextFocus: true)],
+                VideoFits = new Dictionary<nint, VideoViewportFit> { [media.Handle] = fit } });
+            check(editing.Moves.Count == 0 && editing.Layers.Count == 0,
+                $"switching back and typing keeps the editor frame and the fitted browser (scale {scale}, mirrored {mirror})");
+
+            foreach (var invalid in new[] { hint with { WindowHandle = 50 }, hint with { Confidence = .4 },
+                hint with { ViewportVisualRect = viewport with { Width = frame.Width + 1 } } })
+            {
+                var ignored = Plan(opened, task with { VideoHint = invalid });
+                check(Objective(ignored, 1) == Objective(opening, 1) && Objective(ignored, 2) == Objective(opening, 2) &&
+                    ignored.Moves.SequenceEqual(opening.Moves) && ignored.Layers.Count == opening.Layers.Count,
+                    "an absent, weak, or out-of-frame measurement has no influence on the layout");
+            }
+        }
     }
 }

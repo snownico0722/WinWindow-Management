@@ -183,6 +183,7 @@ internal static partial class IntentLayoutPlanner
         {
             var window = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
             bool gestureEndpoint = window.Handle == context.GestureAnchor && b == context.GestureTarget;
+            var content = objectives == null ? MeasuredContent(window, context) : objectives[i].Content;
             // 只保护用户刚选的半屏。另一扇窗获得焦点或也被拖回同一侧，不能授权把前一扇当成分栏的牺牲品。
             if (!gestureEndpoint && (!context.PreservesReleasedSide(window, b) || context.RepeatsReversal(window, b))) return false;
             if (context.Scene?.Lane?.Allows(window, b) == false) return false;
@@ -212,7 +213,7 @@ internal static partial class IntentLayoutPlanner
             }
             if (goals != null && (!goals[i].Movable && (a != b && !gestureEndpoint || Array.IndexOf(candidate.Order, i) != i) ||
                 !goals[i].Resizable && !gestureEndpoint && (a.Width != b.Width || a.Height != b.Height) &&
-                !(candidate.Kind == "refined" && context.VideoHint?.WindowHandle == window.Handle))) return false;
+                !(candidate.Kind == "refined" && content != null))) return false;
             if (window.Handle == context.GestureAnchor && a != b && !gestureEndpoint) return false;
             var bleed = BleedBudget(window, context);
             // A fixed/resize-disabled window larger than the work area cannot fit entirely.
@@ -262,15 +263,13 @@ internal static partial class IntentLayoutPlanner
                     usefulWidth = Math.Min(usefulWidth, reference.Width * .65);
                     usefulHeight = Math.Min(usefulHeight, reference.Height * .70);
                 }
-                if (context.VideoHint is { Confidence: >= .82, ContentAspectRatio: >= .55 and <= 4.5 } video &&
-                    video.WindowHandle == window.Handle && !video.ViewportVisualRect.IsEmpty)
+                if (content is { } measured)
                 {
-                    // The known letterbox area can be removed while the video itself keeps its size.
-                    var viewport = video.ViewportVisualRect;
-                    double barWidth = Math.Max(0, viewport.Width - viewport.Height * video.ContentAspectRatio);
-                    double barHeight = Math.Max(0, viewport.Height - viewport.Width / video.ContentAspectRatio);
-                    usefulWidth = Math.Min(usefulWidth, a.Width - barWidth);
-                    usefulHeight = Math.Min(usefulHeight, a.Height - barHeight);
+                    // Keep the picture size, allowing the measured letterbox area to go away.
+                    var viewport = measured.Viewport(a);
+                    var picture = measured.Content(a);
+                    usefulWidth = Math.Min(usefulWidth, a.Width - viewport.Width + picture.Width);
+                    usefulHeight = Math.Min(usefulHeight, a.Height - viewport.Height + picture.Height);
                 }
                 bool shrinksReadableArea = b.Width + 3 < usefulWidth || b.Height + 3 < usefulHeight;
                 bool revealsSubstantialContent = before.CenterVisible < .85 && after.CenterVisible >= before.CenterVisible + .15 &&
@@ -348,17 +347,18 @@ internal static partial class IntentLayoutPlanner
                 double stability = Math.Max(overlay, target.PlacementStability);
                 double exposedWidth = Math.Min(exposure.UsefulWidth, b.Width);
                 double exposedHeight = exposure.UsefulHeight(b);
-                if (target.Role is AttentionRole.Main or AttentionRole.Reference &&
-                    context.VideoHint?.WindowHandle != w.Handle)
+                if (target.Role is AttentionRole.Main or AttentionRole.Reference && intent.Content == null)
                 {
                     needWidth = target.WidthFor(b.Width, area.Width);
                     needHeight = target.HeightFor(b.Height, area.Height);
                     double readable = Math.Min(exposedWidth / needWidth, exposedHeight / needHeight);
-                    if (target.Role == AttentionRole.Main) mainDeficit += simultaneous * Missing(readable / .72);
+                    bool main = target.Role == AttentionRole.Main;
+                    // A task can alternate with its source and still need a full view of the active content.
+                    if (main) mainDeficit += Missing(readable / .72);
                     else accessDeficit += simultaneous * Missing(readable / .60);
-                    double comfort = (target.Role == AttentionRole.Main ? 2 : 1) *
+                    double comfort = (main ? 2 : simultaneous) *
                         (Missing(exposedWidth / needWidth) + Missing(exposedHeight / needHeight));
-                    comfortDeficit += simultaneous * (1 - stability) * comfort;
+                    comfortDeficit += (1 - stability) * comfort;
                 }
                 if (target.FrameWidth > 0)
                 {
@@ -388,10 +388,19 @@ internal static partial class IntentLayoutPlanner
                 if (target.AccessWidth > 0 && target.Role is AttentionRole.Return or AttentionRole.Reference or AttentionRole.Waiting)
                     accessDeficit += Missing(exposure.AccessWidth / (double)target.AccessWidth);
             }
-            var capacity = Math.Pow(Math.Min(1, b.Width / Math.Max(1, needWidth)), .65) *
-                Math.Pow(Math.Min(1, b.Height / Math.Max(1, needHeight)), .35);
-            var contentVisibility = (context.Preferences.ProtectWindowEdges || windowHint?.ProtectPeriphery == true) ? exposure.Visible :
-                .65 * exposure.CenterVisible + .35 * exposure.Visible;
+            var content = intent.Content;
+            var proposedContent = content?.Content(b) ?? b;
+            var contentExposure = content == null ? exposure : ScreenExposure(proposedContent, front.Concat(blockers), area, w.Dpi);
+            if (content is { } measured)
+            {
+                var measuredContent = measured.Content(a);
+                needWidth = measuredContent.Width;
+                needHeight = measuredContent.Height;
+            }
+            var capacity = Math.Pow(Math.Min(1, proposedContent.Width / Math.Max(1, needWidth)), .65) *
+                Math.Pow(Math.Min(1, proposedContent.Height / Math.Max(1, needHeight)), .35);
+            var contentVisibility = (context.Preferences.ProtectWindowEdges || windowHint?.ProtectPeriphery == true) ? contentExposure.Visible :
+                .65 * contentExposure.CenterVisible + .35 * contentExposure.Visible;
             double occlusionLoss = 1 - contentVisibility;
             double thirdPartyLoss = occlusionLoss;
             if (context.PairPlanningEnabled && !context.Preferences.ProtectWindowEdges && windowHint?.ProtectPeriphery != true)
@@ -420,7 +429,7 @@ internal static partial class IntentLayoutPlanner
                 }
                 if (remainingFront is not null)
                 {
-                    var remaining = ScreenExposure(b, remainingFront.Concat(blockers), area, w.Dpi);
+                    var remaining = ScreenExposure(proposedContent, remainingFront.Concat(blockers), area, w.Dpi);
                     thirdPartyLoss = 1 - (.65 * remaining.CenterVisible + .35 * remaining.Visible);
                     occlusionLoss = Math.Min(occlusionLoss, thirdPartyLoss + .12 * allowedFraction);
                 }
@@ -433,20 +442,16 @@ internal static partial class IntentLayoutPlanner
             if (intent.WorkingSurface is { } surface)
             {
                 // 前面衡量同时阅读，另一种用途衡量此刻实际露出和切回来可用的宽高。各候选使用同一个事前分母。
-                information += (1 - .6 * simultaneous) * surface.ExposureLoss(b, exposure);
-                reflow += (1 - simultaneous) * surface.FrameLoss(b);
+                information += (1 - .6 * simultaneous) * surface.ExposureLoss(proposedContent, contentExposure);
+                reflow += (1 - simultaneous) * surface.FrameLoss(proposedContent);
             }
             // Read-together and quick-switch interpretations share the title/access outcome.
             // Ambiguous evidence also charges the worse residual of the two interpretations.
             uncertainty += intent.Ambiguity * Math.Max(simultaneous * .35 * readingLoss, accessLoss);
             information += simultaneous * intent.PeerExposure * thirdPartyLoss;
-            if (context.VideoHint is { Confidence: >= .82, ContentAspectRatio: >= .55 and <= 4.5 } video && video.WindowHandle == w.Handle)
-            {
-                var chromeX = Math.Max(0, a.Width - video.ViewportVisualRect.Width);
-                var chromeY = Math.Max(0, a.Height - video.ViewportVisualRect.Height);
-                var aspect = Math.Max(1, b.Width - chromeX) / (double)Math.Max(1, b.Height - chromeY);
-                information += 1.5 * Math.Abs(Math.Log(aspect / video.ContentAspectRatio));
-            }
+            // The aspect adjustment is local to this window. An ordinary candidate can earn
+            // picture exposure, but a better fit alone does not pay for moving other windows.
+            if (content is { } shape) information += 1.5 * Math.Max(0, shape.AspectError(b) - shape.AspectError(a));
             switching += .8 * accessLoss;
             peripheral += 1.4 * (1 - b.Intersect(area).Area / (double)b.Area);
             if (context.Scene?.Lane is { Restore: { } restored } returning && returning.Front.Handle == windows[i].Window.Handle)

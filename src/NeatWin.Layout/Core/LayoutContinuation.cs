@@ -36,7 +36,8 @@ internal static partial class IntentLayoutPlanner
         {
             // 只对已在使用的双窗做反事实。开窗、导航、显式规则和手势继续由对应的求解入口负责。
             if (context.DisableContinuation || !context.IsWorkspaceObservation || context.ExplicitArrange ||
-                context.AllowGestureAssist || context.FirstPlacementWindow != 0 || context.VideoHint != null ||
+                context.AllowGestureAssist || context.FirstPlacementWindow != 0 ||
+                group.Any(v => MeasuredContent(v.Window, context) != null) ||
                 context.Focus?.Evidence != "recent-switch-pair" || context.Focus.Switches < 2 ||
                 context.Focus.Companion != group[peer].Window.Handle ||
                 !group[main].Window.IsForeground || main != 0 ||
