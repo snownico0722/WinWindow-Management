@@ -149,6 +149,7 @@ public partial class WindowRow : UserControl
         if (_item is { ClickThrough: false }) Execute("through");
     }
     private void Background_Click(object sender, RoutedEventArgs e) => Execute("background");
+    private void GameResolution_Click(object sender, RoutedEventArgs e) => Execute("game-resolution");
     private void Mute_Click(object sender, RoutedEventArgs e) => Execute("mute");
     private void Park_Click(object sender, RoutedEventArgs e) => Execute("park");
     private void Remove_Click(object sender, RoutedEventArgs e) => Execute("remove");
@@ -161,6 +162,9 @@ public partial class WindowRow : UserControl
         if (_item is null) { e.Handled = true; return; }
         RememberItem.IsChecked = _item.Remembered;
         RememberItem.IsEnabled = !_item.IsBusy && (_item.IsAvailable || _item.Remembered);
+        bool isUnityWindow = _item.IsAvailable && string.Equals(_item.Identity?.ClassName, "UnityWndClass", StringComparison.Ordinal);
+        GameResolutionItem.Visibility = isUnityWindow ? Visibility.Visible : Visibility.Collapsed;
+        GameResolutionItem.IsEnabled = isUnityWindow && !_item.IsBusy;
     }
 
     private void Opacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)

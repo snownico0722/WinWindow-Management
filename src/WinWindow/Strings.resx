@@ -274,4 +274,34 @@
   <data name="LayoutStrengthHint" xml:space="preserve"><value>影响已授权范围内的整理幅度</value></data>
   <data name="LegacyLightHint" xml:space="preserve"><value>沿用原来的松手辅助。再次选择轻度可启用新任务开窗辅助</value></data>
   <data name="LegacyFullHint" xml:space="preserve"><value>沿用原来的松手后同组整理。再次选择轻度可改为单窗辅助</value></data>
+  <data name="GameResolutionTitle" xml:space="preserve"><value>游戏分辨率实验</value></data>
+  <data name="GameResolutionExperiment" xml:space="preserve"><value>游戏分辨率实验…</value></data>
+  <data name="GameResolutionIntro" xml:space="preserve"><value>分别验证 Windows 显示器输出模式与 Unity 启动时的渲染尺寸请求。A 会临时改变显示器输出；B 只在下次启动时生效，保持桌面分辨率不变。</value></data>
+  <data name="GameResolutionOutputTitle" xml:space="preserve"><value>A · Windows 显示器输出模式</value></data>
+  <data name="GameResolutionCurrentMode" xml:space="preserve"><value>当前显示器：{0}</value></data>
+  <data name="GameResolutionSelectMode" xml:space="preserve"><value>选择目标分辨率（当前游戏所在显示器）</value></data>
+  <data name="GameResolutionApplyOutput" xml:space="preserve"><value>应用输出分辨率</value></data>
+  <data name="GameResolutionRestoreOutput" xml:space="preserve"><value>恢复桌面分辨率</value></data>
+  <data name="GameResolutionUnityTitle" xml:space="preserve"><value>B · Unity 游戏渲染尺寸（启动参数）</value></data>
+  <data name="GameResolutionUnityHint" xml:space="preserve"><value>使用 -window-mode borderless 与 -screen-width / -screen-height。它不会主动改变 Windows 桌面分辨率；是否被原神接受，需要重启后实测。</value></data>
+  <data name="GameResolutionCopyArgs" xml:space="preserve"><value>复制启动参数</value></data>
+  <data name="GameResolutionLaunchUnity" xml:space="preserve"><value>退出游戏后直接启动</value></data>
+  <data name="GameResolutionLaunchHint" xml:space="preserve"><value>先完全退出当前游戏，此按钮才会启用。会直接启动当前窗口对应的 EXE；如果需要官方启动器会话，请复制参数到你使用的启动器。</value></data>
+  <data name="GameResolutionNotUnity" xml:space="preserve"><value>当前窗口不是 UnityWndClass，不能使用 Unity 启动参数实验。</value></data>
+  <data name="GameResolutionAlreadyActive" xml:space="preserve"><value>显示器已经是这个分辨率。</value></data>
+  <data name="GameResolutionWrongDisplay" xml:space="preserve"><value>目标模式不属于当前游戏所在的显示器。</value></data>
+  <data name="GameResolutionModeFailed" xml:space="preserve"><value>Windows 拒绝了显示模式切换（代码 {0}）。</value></data>
+  <data name="GameResolutionReadFailed" xml:space="preserve"><value>读取显示器模式失败。</value></data>
+  <data name="GameResolutionVerifyFailed" xml:space="preserve"><value>显示器模式切换后未能验证目标分辨率，已尝试回滚。</value></data>
+  <data name="GameResolutionRestoreVerifyFailed" xml:space="preserve"><value>恢复后未能验证原始显示器分辨率，恢复记录已保留。</value></data>
+  <data name="GameResolutionExternalChange" xml:space="preserve"><value>检测到显示器模式已被其他操作改变，未覆盖该设置。</value></data>
+  <data name="GameResolutionRestored" xml:space="preserve"><value>已恢复桌面分辨率：{0} × {1}</value></data>
+  <data name="GameResolutionApplied" xml:space="preserve"><value>已切换显示器输出到 {0}；退出全屏或游戏结束后自动恢复。</value></data>
+  <data name="GameResolutionJournalInvalid" xml:space="preserve"><value>显示器恢复记录无法解析，未执行新的显示模式修改。</value></data>
+  <data name="GameResolutionRestorePending" xml:space="preserve"><value>显示器分辨率恢复暂未完成，恢复记录已保留：{0}</value></data>
+  <data name="GameResolutionArgsCopied" xml:space="preserve"><value>Unity 启动参数已复制。</value></data>
+  <data name="GameResolutionLaunchWait" xml:space="preserve"><value>请先完全退出当前游戏，再启动参数实验。</value></data>
+  <data name="GameResolutionExecutableMissing" xml:space="preserve"><value>找不到当前游戏程序，无法直接启动。</value></data>
+  <data name="GameResolutionLaunchFailed" xml:space="preserve"><value>无法启动游戏程序。</value></data>
+  <data name="GameResolutionLaunchStarted" xml:space="preserve"><value>已使用 Unity Borderless 参数启动游戏。</value></data>
 </root>

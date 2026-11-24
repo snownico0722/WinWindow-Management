@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private const string PinInactiveGeometry = "M5.2,2.2 L10.8,2.2 M10,2.2 L10,6.8 L12.4,9.5 L9.6,9.5 M6,2.2 L6,4.4 M3.6,9.5 L6.8,9.5 M8,11.2 L8,14.5 M2.5,2.5 L13.5,13.5";
 
     private readonly StateStore _store;
+    private readonly GameResolutionExperiment _gameResolution;
     internal WindowManager Manager { get; }
     private readonly bool _testMode;
     private readonly ListCollectionView _view, _pickView;
@@ -31,6 +32,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _pinReinforceTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _opacityTimer = new() { Interval = TimeSpan.FromMilliseconds(70) };
     private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(4.5) };
+    private readonly DispatcherTimer _gameResolutionTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly Dictionary<WindowItem, int> _pendingOpacity = new();
     private readonly Dictionary<string, TextBox> _keyEditors;
     private DesktopIntegration? _desktop;
@@ -56,7 +58,7 @@ public partial class MainWindow : Window
 
     internal MainWindow(StateStore store, bool testMode = false)
     {
-        _store = store; _testMode = testMode; Manager = new(store);
+        _store = store; _testMode = testMode; Manager = new(store); _gameResolution = new(store.DirectoryPath);
         ApplyLanguage(store.Preferences.Language);
         InitializeComponent();
         foreach (var choice in LanguageChoices.Children.OfType<RadioButton>())
@@ -97,6 +99,14 @@ public partial class MainWindow : Window
         _opacityTimer.Tick += (_, _) => DrainOpacity();
         _pickerTimer.Tick += (_, _) => UpdatePickerOutline();
         _statusTimer.Tick += (_, _) => DismissStatus();
+        _gameResolutionTimer.Tick += (_, _) =>
+        {
+            try
+            {
+                if (_gameResolution.TryRestoreIfTargetLeavesFullscreen() is { } message) ShowStatus(message);
+            }
+            catch (Exception error) { ShowStatus(error.Message); }
+        };
         SourceInitialized += OnSourceInitialized;
         Loaded += async (_, _) => await InitializeAsync();
         Activated += (_, _) =>
@@ -184,7 +194,16 @@ public partial class MainWindow : Window
     internal Task InitializeAsync() => _initialization ??= InitializeCoreAsync();
     private Task InitializeCoreAsync() => RunAsync(async () =>
     {
-        if (!_testMode) await Manager.RecoverPreviousSessionAsync();
+        if (!_testMode)
+        {
+            try
+            {
+                if (_gameResolution.RecoverStaleLease() is { } message) ShowStatus(message);
+            }
+            catch (Exception error) { ShowStatus(UiText.Format("GameResolutionRestorePending", error.Message)); }
+            await Manager.RecoverPreviousSessionAsync();
+            _gameResolutionTimer.Start();
+        }
         await Manager.RefreshAsync();
         if (_quitting) return;
         if (DesktopLayout.NeedsBackgroundSession(LayoutDirectory)) await LoadLayoutSettingsAsync();
@@ -300,6 +319,12 @@ public partial class MainWindow : Window
             case "through": await Manager.SetClickThroughAsync(item, !item.ClickThrough); break;
             case "mute": await Manager.SetMuteAsync(item, !item.Muted); break;
             case "background": await Manager.SetBackgroundEnabledAsync(item, !item.BackgroundEnabled); break;
+            case "game-resolution":
+                if (item.Identity is { } gameIdentity && Native.Matches(gameIdentity))
+                    new GameResolutionDialog(gameIdentity, _gameResolution) { Owner = this }.ShowDialog();
+                else
+                    ShowStatus(UiText.Get("IdentityUnavailable"));
+                break;
             case "park":
                 if (item.IsMinimized || item.IsHidden)
                 {
@@ -794,6 +819,9 @@ public partial class MainWindow : Window
     internal async Task QuitAsync()
     {
         if (_quitting) return;
+        _gameResolutionTimer.Stop();
+        try { _ = _gameResolution.RestoreNow(); }
+        catch (Exception error) { _desktop?.Notify(UiText.Format("GameResolutionRestorePending", error.Message)); }
         _quitting = true; HideHoverPreview(); SnapshotHistory.Dispose(); _layout?.Dispose(); AddPopup.IsOpen = false; _flash?.Dispose(); _flash = null;
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
         CancelPicker(); SaveGeometry(); ApplyOwnPolicy();
@@ -804,7 +832,7 @@ public partial class MainWindow : Window
 
     internal void Cleanup()
     {
-        _pickerTimer.Stop(); _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
+        _pickerTimer.Stop(); _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop(); _gameResolutionTimer.Stop();
         _flash?.Dispose(); _flash = null;
         HideHoverPreview(); _hoverOutline?.Dispose(); _hoverOutline = null;
         SnapshotHistory.Dispose();

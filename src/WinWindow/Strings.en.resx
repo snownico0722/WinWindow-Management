@@ -274,4 +274,34 @@
   <data name="LayoutStrengthHint" xml:space="preserve"><value>Controls how much the layout can change within the selected mode</value></data>
   <data name="LegacyLightHint" xml:space="preserve"><value>Uses your previous gesture assistance. Select Light again to also assist when a new task window opens.</value></data>
   <data name="LegacyFullHint" xml:space="preserve"><value>Uses your previous group arrangement after gestures. Select Light again for single-window assistance.</value></data>
+  <data name="GameResolutionTitle" xml:space="preserve"><value>Game resolution experiment</value></data>
+  <data name="GameResolutionExperiment" xml:space="preserve"><value>Game resolution experiment…</value></data>
+  <data name="GameResolutionIntro" xml:space="preserve"><value>Test the Windows display output mode and Unity's startup render-size request separately. A temporarily changes the monitor output. B applies only on the next launch and is intended to keep the desktop resolution unchanged.</value></data>
+  <data name="GameResolutionOutputTitle" xml:space="preserve"><value>A · Windows display output mode</value></data>
+  <data name="GameResolutionCurrentMode" xml:space="preserve"><value>Current display: {0}</value></data>
+  <data name="GameResolutionSelectMode" xml:space="preserve"><value>Choose a target mode for the display used by this game</value></data>
+  <data name="GameResolutionApplyOutput" xml:space="preserve"><value>Apply display resolution</value></data>
+  <data name="GameResolutionRestoreOutput" xml:space="preserve"><value>Restore desktop resolution</value></data>
+  <data name="GameResolutionUnityTitle" xml:space="preserve"><value>B · Unity render size (startup arguments)</value></data>
+  <data name="GameResolutionUnityHint" xml:space="preserve"><value>Uses -window-mode borderless with -screen-width / -screen-height. It does not intentionally change the Windows desktop mode; whether Genshin accepts the request must be verified after restarting the game.</value></data>
+  <data name="GameResolutionCopyArgs" xml:space="preserve"><value>Copy startup arguments</value></data>
+  <data name="GameResolutionLaunchUnity" xml:space="preserve"><value>Launch after the game exits</value></data>
+  <data name="GameResolutionLaunchHint" xml:space="preserve"><value>This button becomes available after the current game has fully exited. It starts the executable detected from this window. If your launcher session is required, copy the arguments into the launcher you use.</value></data>
+  <data name="GameResolutionNotUnity" xml:space="preserve"><value>This window is not UnityWndClass; Unity startup arguments are unavailable.</value></data>
+  <data name="GameResolutionAlreadyActive" xml:space="preserve"><value>The display is already using this resolution.</value></data>
+  <data name="GameResolutionWrongDisplay" xml:space="preserve"><value>The selected mode does not belong to the display used by this game.</value></data>
+  <data name="GameResolutionModeFailed" xml:space="preserve"><value>Windows rejected the display mode change (code {0}).</value></data>
+  <data name="GameResolutionReadFailed" xml:space="preserve"><value>Could not read the display mode.</value></data>
+  <data name="GameResolutionVerifyFailed" xml:space="preserve"><value>The target display mode could not be verified after switching. A rollback was attempted.</value></data>
+  <data name="GameResolutionRestoreVerifyFailed" xml:space="preserve"><value>The original display mode could not be verified after rollback. The recovery journal was kept.</value></data>
+  <data name="GameResolutionExternalChange" xml:space="preserve"><value>The display mode changed elsewhere. The newer setting was left untouched.</value></data>
+  <data name="GameResolutionRestored" xml:space="preserve"><value>Restored desktop resolution: {0} × {1}</value></data>
+  <data name="GameResolutionApplied" xml:space="preserve"><value>Display output changed to {0}. It will restore when the game exits fullscreen or closes.</value></data>
+  <data name="GameResolutionJournalInvalid" xml:space="preserve"><value>The display recovery journal is invalid. No new display-mode change was attempted.</value></data>
+  <data name="GameResolutionRestorePending" xml:space="preserve"><value>Display restoration is still pending; its recovery journal was kept: {0}</value></data>
+  <data name="GameResolutionArgsCopied" xml:space="preserve"><value>Unity startup arguments copied.</value></data>
+  <data name="GameResolutionLaunchWait" xml:space="preserve"><value>Fully exit the current game before launching the argument experiment.</value></data>
+  <data name="GameResolutionExecutableMissing" xml:space="preserve"><value>The detected game executable could not be found.</value></data>
+  <data name="GameResolutionLaunchFailed" xml:space="preserve"><value>Could not start the game executable.</value></data>
+  <data name="GameResolutionLaunchStarted" xml:space="preserve"><value>Started the game with Unity Borderless arguments.</value></data>
 </root>
