@@ -51,6 +51,8 @@ internal static class LayeredWorkspaceChecks
         }
 
         CheckHandoffAndVideo(check);
+        CheckReturnAfterResize(check);
+        CheckBackgroundBrowser(check);
 
         var surface = new WorkingSurfaceObjective(1200, 800, 1, .2);
         var screen = new RectI(0, 0, 1920, 1080);
@@ -62,6 +64,46 @@ internal static class LayeredWorkspaceChecks
         check(Math.Abs(surface.ExposureLoss(background, seen) - surface.ExposureLoss(shrunk, exposed)) < 1e-8 &&
             surface.FrameLoss(background) < surface.FrameLoss(shrunk),
             "equal visible pixels receive equal exposure credit while the wider return frame retains separate value");
+    }
+
+    private static void CheckBackgroundBrowser(Action<bool, string> check)
+    {
+        var area = new RectI(0, 0, 2000, 1080);
+        var front = new RectI(830, 54, 1150, 1000);
+        var rear = new RectI(390, 48, 1220, 974);
+        WindowSnapshot[] desktop = [new(1, front, front, area, 1, default, true, true, true, 0),
+            new(2, rear, rear, area, 1, default, true, false, true, 1)];
+        var task = new TaskLayoutContext(UseWorkingPairs: true, Focus: new(1, 2, 0, "opening-resident-left"),
+            Attention: new Dictionary<nint, LayoutAttention> { [1] = new(1, .02, 0, 0, true), [2] = new(.99, 1, .8, 0, false) },
+            WindowHints: [new(1, Role: WindowUseRole.Browser, TextFocus: true), new(2, Role: WindowUseRole.Browser)])
+            { IsWorkspaceObservation = true };
+        var plan = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectVisibleWorkingSet(desktop, includeStackAccess: true),
+            new(), null, desktop, task);
+        var result = TaskLayoutSession.Project(desktop, plan);
+        check(result[0].VisualRect == front && result[1].VisualRect.Width >= rear.Width && plan.Layers.Count == 0,
+            "an overlapping background browser retains its reading width when narrowing it only removes covered pixels");
+    }
+
+    private static void CheckReturnAfterResize(Action<bool, string> check)
+    {
+        var area = new RectI(0, 0, 2000, 1120);
+        var frame = new RectI(880, 60, 1000, 1020);
+        var main = new WindowSnapshot(1, frame, frame, area, 1, default, true, true, true, 0, 96, 101);
+        var context = new TaskLayoutContext(UseWorkingPairs: true, Focus: new(1, 2, 1, "handoff"), GestureAnchor: 1,
+            Attention: new Dictionary<nint, LayoutAttention> { [1] = new(1, .8, .9, .9, true), [2] = new(.9, .4, .9, .7, false) });
+        foreach (var strip in new[] { 112, 8 })
+        {
+            var box = new RectI(frame.Right - 1060 + strip, frame.Top + 96, 1060, 904);
+            var peer = new WindowSnapshot(2, box, box, area, 1, default, true, false, true, 1, 96, 102);
+            WindowSnapshot[] desktop = [main, peer];
+            var plan = LayoutDispatch.Create(LayoutRoute.Smart, new VisibilityAnalyzer().SelectForManualArrange(desktop, true),
+                new(), null, desktop, context);
+            var projected = TaskLayoutSession.Project(desktop, plan);
+            var seen = IntentLayoutPlanner.ScreenExposure(projected[1].VisualRect, [projected[0].VisualRect], area, 96);
+            check(projected[0].VisualRect == frame && plan.Layers.Count == 0 &&
+                (strip == 112 ? projected[1].VisualRect == box : seen.AccessWidth >= 96 || seen.UsefulWidth >= 96),
+                $"a foreground resize leaves a usable return strip alone and reveals a nearly buried peer (strip {strip})");
+        }
     }
 
     private static void CheckHandoffAndVideo(Action<bool, string> check)

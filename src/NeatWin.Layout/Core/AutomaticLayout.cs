@@ -180,11 +180,12 @@ public sealed class AutomaticLayoutScheduler
         IReadOnlySet<nint>? markedByNeatWin = null, bool desktopFocused = false, long navigationSettleUntil = 0, bool openingReady = false,
         bool newTaskOpeningReady = false)
     {
-        // The desktop and taskbar are excluded from window capture. Clear the last app and
-        // queued plan here, so activating the shell cannot arrange the previous task.
+        // 桌面、任务栏和托盘取得焦点时取消待执行动作。采样暂停不等于工作窗口全部关闭。
         if (desktopFocused)
         {
-            Reset(Mode, [], now);
+            _pending = false; _release = null; _foreground = _dragging = 0; _manual.Clear();
+            _cause = WorkspaceChangeCause.None; ClearChangeEvents();
+            Surfaces.Reset();
             return null;
         }
         if (!_pending) ClearChangeEvents();
@@ -339,7 +340,7 @@ public sealed class AutomaticLayoutScheduler
 internal static class LayoutDispatch
 {
     internal static string ModelVersion(TidyAlgorithmMode mode) =>
-        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v3.4";
+        mode == TidyAlgorithmMode.Classic ? "Classic v1.0" : "Smart v3.5";
 
     internal static IntentLayoutPlan Create(LayoutRoute route, IReadOnlyList<VisibleWindow> visible,
         TidyOptions options, IntentReferenceDocument? reference, IReadOnlyList<WindowSnapshot> desktop, TaskLayoutContext? context)

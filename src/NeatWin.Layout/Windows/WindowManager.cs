@@ -25,17 +25,6 @@ public sealed partial class WindowManager
         return Capture();
     }
     private const int SwShowMaximized = 3;
-    private static readonly HashSet<string> SystemClasses = new(StringComparer.Ordinal)
-    {
-        "Progman",
-        "WorkerW",
-        "Shell_TrayWnd",
-        "Shell_SecondaryTrayWnd",
-        // 输入法宿主可能与浏览器同进程。按辅助窗口自己的类名排除，保留承载正文的应用窗口。
-        "IME",
-        "MSCTFIME UI",
-    };
-
     public IReadOnlyList<WindowSnapshot> Capture()
     {
         var result = new List<WindowSnapshot>();
@@ -285,7 +274,7 @@ public sealed partial class WindowManager
     {
         var className = new StringBuilder(256);
         _ = NativeMethods.GetClassName(hwnd, className, className.Capacity);
-        return SystemClasses.Contains(className.ToString());
+        return WindowClassification.IsSystemSurface(className.ToString());
     }
 
     private static nint VisibleOwner(nint hwnd)

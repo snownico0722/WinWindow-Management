@@ -3,6 +3,11 @@ namespace NeatWin.Core;
 // 进程、窗口类和标题只在这里解释为应用角色。浏览器角色与可读取渲染视口的进程各有适用范围。
 internal static class WindowClassification
 {
+    // 托盘溢出和输入法属于系统辅助表面。按窗口类识别，普通资源管理器和浏览器仍是工作窗口。
+    internal static bool IsSystemSurface(string? windowClass) => windowClass is
+        "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or
+        "TopLevelWindowForOverflowXamlIsland" or "NotifyIconOverflowWindow" or "IME" or "MSCTFIME UI";
+
     private static string ProcessKey(string? executable)
     {
         // 现场可传 ProcessName，离线记录也可传 Windows 路径。仅剥一层 .exe，保留 chrome.helper 等名称。

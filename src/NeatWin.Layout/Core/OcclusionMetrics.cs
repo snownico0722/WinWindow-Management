@@ -8,6 +8,7 @@ namespace NeatWin.Core;
 internal static class OcclusionMetrics
 {
     internal const double HorizontalInsetFraction = .18;
+    internal const double UsefulHeightFraction = .45;
 
     internal sealed record Exposure(double Visible, double CenterVisible, int AccessWidth, int UsefulWidth)
     {
@@ -28,7 +29,7 @@ internal static class OcclusionMetrics
         var band = new RectI(rect.X, rect.Y, rect.Width,
             Math.Min(rect.Height, Math.Max(1, (int)Math.Round(28 * dpi / 96.0))));
         int access = ClearWidth(band, blockers, .65);
-        int useful = ClearWidth(rect, blockers, .45);
+        int useful = ClearWidth(rect, blockers, UsefulHeightFraction);
         return new(pieces.Sum(r => r.Area) / (double)rect.Area,
             VisiblePieces(center, blockers).Sum(r => r.Area) / (double)Math.Max(1, center.Area), access, useful);
     }

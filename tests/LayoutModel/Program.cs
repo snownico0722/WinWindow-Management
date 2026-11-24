@@ -34,11 +34,25 @@ void Check(bool condition, string description)
 }
 
 {
+    Check(WindowClassification.IsSystemSurface("TopLevelWindowForOverflowXamlIsland") &&
+        WindowClassification.IsSystemSurface("NotifyIconOverflowWindow") && !WindowClassification.IsSystemSurface("CabinetWClass"),
+        "both notification overflow classes suspend automatic placement while ordinary Explorer remains a task");
     var scheduler = new AutomaticLayoutScheduler();
     scheduler.Reset(AutomaticLayoutMode.AutoFullAssist, windows, 0);
     scheduler.RequestCurrent(10);
     Check(scheduler.Observe(windows, 500, busy: false, desktopFocused: true) is null && !scheduler.HasPending,
         "focusing the desktop cancels queued app layout even with the mouse released");
+    scheduler.Observe(windows, 600, busy: false);
+    Check(!scheduler.HasPending && scheduler.Observe(windows, 1200, false) is null,
+        "returning from the notification area to the same desktop leaves all existing frames alone");
+    scheduler.Observe([], 1300, false, desktopFocused: true);
+    var added = windows.Append(Window(3, home)).ToArray();
+    scheduler.Observe(added, 1400, false);
+    Check(scheduler.Observe(added, 2000, false)?.Cause.HasFlag(WorkspaceChangeCause.Membership) == true,
+        "a real app opened from the notification area still generates a membership change");
+
+    scheduler.Reset(AutomaticLayoutMode.AutoFullAssist, windows, 0);
+    scheduler.Observe([], 500, false, desktopFocused: true);
     var returned = windows.Select(w => w with { IsForeground = w.Handle == 2 }).ToArray();
     scheduler.Observe(returned, 700, busy: true);
     var held = scheduler.Observe(returned, 3000, busy: true);
@@ -1082,6 +1096,8 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
             // gestures label the observation and never enter this prediction.
             var inputFingerprint = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(
                 new { run.Before, run.Trigger, run.Signals, run.Strength, run.FullDesktop })));
+            bool shellForeground = run.Trigger.StartsWith("automatic-", StringComparison.Ordinal) &&
+                WindowClassification.IsSystemSurface(frame.Windows.FirstOrDefault(w => w.Foreground)?.Identity?.ClassName);
             var areas = frame.Windows.Select(w => w.WorkArea).Distinct().ToArray();
             bool explicitRun = run.Trigger == "explicit";
             bool localOpening = run.Trigger == "automatic-opening";
@@ -1116,9 +1132,9 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                 ctx = ctx with { WindowHints = snapshotRoles.Enrich(run.Session, run.RequestId, frame.Time, desktop, ctx) };
                 var fullDesktop = run.FullDesktop ?? explicitRun;
                 var workingSet = fullDesktop ? analyzer.SelectForManualArrange(desktop, true) : analyzer.SelectVisibleWorkingSet(desktop, includeStackAccess: true);
-                var plan = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : localOpening ? LayoutRoute.LocalOpening : LayoutRoute.Smart,
+                var plan = shellForeground ? new IntentLayoutPlan([], [], []) : LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : localOpening ? LayoutRoute.LocalOpening : LayoutRoute.Smart,
                     workingSet, new(SmartStrength: run.Strength ?? SmartTidyStrength.Balanced), null, desktop, ctx);
-                if (searchPositions && !frame.Truncated && !localOpening && (explicitRun || run.Trigger == "automatic-workspace"))
+                if (searchPositions && !shellForeground && !frame.Truncated && !localOpening && (explicitRun || run.Trigger == "automatic-workspace"))
                 {
                     var expanded = LayoutDispatch.Create(explicitRun ? LayoutRoute.ManualAlgorithm : LayoutRoute.Smart,
                         workingSet, new(SmartStrength: run.Strength ?? SmartTidyStrength.Balanced), null, desktop,
@@ -1170,7 +1186,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                     }
                 }
                 Console.WriteLine(JsonSerializer.Serialize(new { run.Session, run.RequestId, run.Trigger, assumeResizable, frame.Truncated,
-                    BeforeTime = frame.Time, InputFingerprint = inputFingerprint,
+                    BeforeTime = frame.Time, InputFingerprint = inputFingerprint, SuspendedForShell = shellForeground,
                     BarEvidence = run.Signals?.BrowserBars?.Decision ?? (run.Signals?.Video != null ? "legacy-bars-only" : null),
                     VerifiedTaskRepeat = run.Signals?.VerifiedTaskRepeat == true,
                     ProjectedWindows = desktop.Zip(projected, (before, after) =>

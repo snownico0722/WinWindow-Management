@@ -299,7 +299,7 @@ internal static partial class IntentLayoutPlanner
 
     private static TaskCostBreakdown TaskCost(VisibleWindow[] windows, RectI[] original, Candidate candidate,
         TaskEvidence[] relations, WindowLayoutObjective[] objectives, RectI area, TaskLayoutContext context, IntentHint hint,
-        WindowSnapshot[]? obstacles = null, AttentionTarget[]? goals = null)
+        WindowSnapshot[] obstacles, AttentionTarget[]? goals, OcclusionMetrics.Exposure[] beforeExposure)
     {
         var profile = context.Preferences;
         double mainDeficit = 0, accessDeficit = 0, comfortDeficit = 0, interruption = 0;
@@ -320,8 +320,15 @@ internal static partial class IntentLayoutPlanner
             double simultaneous = intent.WorkingSurface?.Simultaneous ?? 1;
             if (w.Handle == context.GestureAnchor && context.GestureTarget is { } endpoint && b != endpoint)
                 gestureDeficit = 1;
-            var blockers = (obstacles ?? []).Where(o => o.ZOrder < windows[rank].Window.ZOrder).Select(o => o.VisualRect);
+            var blockers = obstacles.Where(o => o.ZOrder < windows[rank].Window.ZOrder).Select(o => o.VisualRect);
             var exposure = ScreenExposure(b, front.Concat(blockers), area, w.Dpi);
+            bool automaticBackground = context.IsAutomaticBackground(w);
+            // 已经露出的正文可以作返回入口。原先完全被埋住的窗口仍优先露出标题，方便安全地激活。
+            bool bodyReachable = automaticBackground && goals?[i].Role == AttentionRole.Return &&
+                OcclusionMetrics.UsefulHeightFraction * Math.Min(a.Height, b.Height) >= 32 * scale;
+            int retainedWidth = bodyReachable ? Math.Min(beforeExposure[i].UsefulWidth, exposure.UsefulWidth) : 0;
+            double AccessFraction(double wanted) => Math.Min(1, Math.Max(exposure.AccessWidth / Math.Max(1, wanted),
+                retainedWidth / Math.Max(1, Math.Min(wanted, 96 * scale))));
             var windowHint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
             interruption += intent.Motion.Cost(a, b);
             var geometricSmall = a.Area < area.Area * .15;
@@ -381,12 +388,13 @@ internal static partial class IntentLayoutPlanner
                     // A few hidden edge pixels can preserve an application's useful content
                     // width. Credit frame width only while the central area is fully readable.
                     double edge = Math.Min(1, b.Width / (double)target.FrameWidth);
-                    comfortDeficit += simultaneous * Missing(Math.Min(edge, exposure.CenterVisible));
+                    double center = exposure.CenterVisible * (automaticBackground ? Math.Min(1, b.Area / (double)a.Area) : 1);
+                    comfortDeficit += simultaneous * Missing(Math.Min(edge, center));
                 }
                 if (target.LearnedHeight) comfortDeficit += Missing(target.HeightFor(b.Height, area.Height) / (double)b.Height);
                 if (target.LearnedWidth) comfortDeficit += Missing(target.WidthFor(b.Width, area.Width) / (double)b.Width);
                 if (target.AccessWidth > 0 && target.Role is AttentionRole.Return or AttentionRole.Reference or AttentionRole.Waiting)
-                    accessDeficit += Missing(exposure.AccessWidth / (double)target.AccessWidth);
+                    accessDeficit += Missing(AccessFraction(target.AccessWidth));
             }
             var content = intent.Content;
             var proposedContent = content?.Content(b) ?? b;
@@ -401,7 +409,10 @@ internal static partial class IntentLayoutPlanner
                 Math.Pow(Math.Min(1, proposedContent.Height / Math.Max(1, needHeight)), .35);
             var contentVisibility = (context.Preferences.ProtectWindowEdges || windowHint?.ProtectPeriphery == true) ? contentExposure.Visible :
                 .65 * contentExposure.CenterVisible + .35 * contentExposure.Visible;
-            double occlusionLoss = 1 - contentVisibility;
+            // 后台缩窗会改变可见比例的分母。以原工作面的面积为下限，实际多露出的内容才有收益。
+            double extent = automaticBackground ? Math.Min(1, proposedContent.Area /
+                (double)Math.Max(1, (content?.Content(a) ?? a).Area)) : 1;
+            double occlusionLoss = 1 - extent * contentVisibility;
             double thirdPartyLoss = occlusionLoss;
             if (context.PairPlanningEnabled && !context.Preferences.ProtectWindowEdges && windowHint?.ProtectPeriphery != true)
             {
@@ -430,14 +441,14 @@ internal static partial class IntentLayoutPlanner
                 if (remainingFront is not null)
                 {
                     var remaining = ScreenExposure(proposedContent, remainingFront.Concat(blockers), area, w.Dpi);
-                    thirdPartyLoss = 1 - (.65 * remaining.CenterVisible + .35 * remaining.Visible);
+                    thirdPartyLoss = 1 - extent * (.65 * remaining.CenterVisible + .35 * remaining.Visible);
                     occlusionLoss = Math.Min(occlusionLoss, thirdPartyLoss + .12 * allowedFraction);
                 }
             }
             continuity += intent.BackgroundDrift * (Math.Abs(CenterX(a) - CenterX(b)) / area.Width +
                 Math.Abs(CenterY(a) - CenterY(b)) / area.Height);
             var readingLoss = 3.4 * occlusionLoss + 1.8 * (1 - capacity);
-            var accessLoss = Math.Max(0, 1 - exposure.AccessWidth / Math.Max(1, Math.Min(140 * scale, b.Width * .30)));
+            var accessLoss = 1 - AccessFraction(Math.Min(140 * scale, b.Width * .30));
             information += simultaneous * intent.ReadableContent * readingLoss;
             if (intent.WorkingSurface is { } surface)
             {
@@ -626,8 +637,9 @@ internal static partial class IntentLayoutPlanner
                     if (after[i].Intersect(obstacle.VisualRect).Area >
                         before[i].Intersect(previousObstacleRects.GetValueOrDefault(obstacle.Handle)).Area) return false;
             var hint = new IntentHint((int)Math.Round(8 * group[0].Window.Dpi / 96.0), 0, 0);
-            var changed = EffectiveBreakdown(TaskCost(group, original, c, task, demands, area, groupContext, hint, afterObstacles, goals), options.SmartStrength, task);
-            var plannedCost = EffectiveBreakdown(TaskCost(group, original, new("planned", before, order), task, demands, area, groupContext, hint, beforeObstacles, goals), options.SmartStrength, task);
+            var observedExposure = MeasureBeforeExposure(group, original, area, desktop.Where(w => !trace.Handles.Contains(w.Handle)).ToArray());
+            var changed = EffectiveBreakdown(TaskCost(group, original, c, task, demands, area, groupContext, hint, afterObstacles, goals, observedExposure), options.SmartStrength, task);
+            var plannedCost = EffectiveBreakdown(TaskCost(group, original, new("planned", before, order), task, demands, area, groupContext, hint, beforeObstacles, goals, observedExposure), options.SmartStrength, task);
             if (demands.Any(o => o.WorkingSurface != null) && groupContext.Scene is { } scene)
             {
                 // 后处理也按完整桌面比较，否则可能在参考窗硬上限内抹去刚取得的露出收益。
