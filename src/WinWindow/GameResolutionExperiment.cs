@@ -241,7 +241,7 @@ internal sealed class GameResolutionExperiment
             if (!IsSameProcessAlive(lease)) return RestoreLease(lease);
             if (!Native.Matches(lease.Identity)) return null;
 
-            bool fullscreen = IsFullscreen(lease.Identity);
+            bool fullscreen = IsFullscreen(lease.Identity, lease.DeviceName);
             if (fullscreen)
             {
                 _notFullscreenSinceUtc = default;
@@ -314,7 +314,7 @@ internal sealed class GameResolutionExperiment
         }
     }
 
-    private static bool IsFullscreen(WindowIdentity identity)
+    private static bool IsFullscreen(WindowIdentity identity, string deviceName)
     {
         if (!Native.Matches(identity)) return true; // Unknown window state: wait for process exit.
         if (Native.IsIconic(identity.Hwnd) || !Native.IsWindowVisible(identity.Hwnd)) return false;
@@ -322,7 +322,11 @@ internal sealed class GameResolutionExperiment
 
         try
         {
-            var bounds = Screen.FromHandle(identity.Hwnd).Bounds;
+            // Resolve the monitor captured by the lease, not whichever display happens
+            // to contain the center of an oversized window after a mode switch.
+            var screen = Screen.AllScreens.FirstOrDefault(x =>
+                string.Equals(x.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase));
+            var bounds = (screen ?? Screen.FromHandle(identity.Hwnd)).Bounds;
             const int tolerance = 2;
             // Unity may retain its pre-switch outer bounds briefly. A window that still
             // covers the active monitor is fullscreen for this lease, even if its far edge
