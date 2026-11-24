@@ -73,7 +73,9 @@ public partial class GameResolutionDialog : Window
         {
             string message = await System.Threading.Tasks.Task.Run(() => _experiment.ApplyOutputMode(_identity, mode));
             SetStatus(message);
-            CurrentModeText.Text = UiText.Format("GameResolutionCurrentMode", _experiment.GetCurrentMode(_identity.Hwnd).ToString());
+            if (Native.IsWindow(_identity.Hwnd))
+                if (Native.IsWindow(_identity.Hwnd))
+                CurrentModeText.Text = UiText.Format("GameResolutionCurrentMode", _experiment.GetCurrentMode(_identity.Hwnd).ToString());
             RestoreOutputButton.IsEnabled = _experiment.HasLease;
         }
         catch (Exception error) { SetStatus(error.Message); }

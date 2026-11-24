@@ -2,7 +2,7 @@
 
 This branch adds an opt-in experiment for Unity windows. It is intentionally separate from the normal window-management path and does not inject into the game, patch game files, or write game memory.
 
-Open a Unity window's row context menu and choose **Game resolution experiment**.
+Add the Unity game window to WinWindow's managed list, open that row's context menu, and choose **Game resolution experiment**.
 
 ## A · Windows display output mode
 

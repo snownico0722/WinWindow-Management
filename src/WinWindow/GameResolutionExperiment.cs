@@ -40,7 +40,7 @@ internal sealed class GameResolutionExperiment
     private DateTime _appliedAtUtc;
     private DateTime _notFullscreenSinceUtc;
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode, Pack = 4)]
     private struct DevMode
     {
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string? DeviceName;
