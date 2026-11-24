@@ -73,6 +73,18 @@ jobs:
             if (Test-Path $log) { Get-Content $log }
             if ($p.ExitCode -ne 0) { throw "Smoke tests failed for $($entry.Name) ($($p.ExitCode))" }
           }
+      - name: Upload experimental build and test results
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: WinWindow-game-resolution-experiment
+          path: |
+            artifacts/WinWindow-win-x64.exe
+            artifacts/NoFocusLoss-LICENSE.txt
+            artifacts/MinHook-LICENSE.txt
+            TestResults/
+          if-no-files-found: error
+          retention-days: 7
       - name: Attach standalone executables to GitHub Release
         if: env.CREATE_RELEASE == 'true' || github.event_name == 'release' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-assets]')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
         uses: actions/github-script@v7
