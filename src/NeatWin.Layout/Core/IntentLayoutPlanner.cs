@@ -121,7 +121,7 @@ internal static partial class IntentLayoutPlanner
                 var beforeExposure = MeasureBeforeExposure(group, original, area, obstacles);
                 var stackSignal = StackSignal(group, original);
                 TaskCostBreakdown StandardCost(Candidate c) => EffectiveBreakdown(
-                    TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, goals), options.SmartStrength, task);
+                    TaskCost(group, original, c, task, demands, area, groupContext, hint, obstacles, goals, beforeExposure), options.SmartStrength, task);
                 bool priceExternal = demands.Any(o => o.WorkingSurface != null);
                 (double Cost, string? Rejection) MeasureReferences(Candidate candidate)
                 {

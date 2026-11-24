@@ -175,7 +175,10 @@ internal static partial class IntentLayoutPlanner
             attention += visible.VisibleRatio * (.95 * input.Scrolling + .65 * input.CaretMotion);
         double repeat = Math.Clamp(signal?.RecentSystemPlacement ?? 0, 0, 1);
         bool initial = context.FirstPlacementWindow == w.Handle || hint?.InitialTextPlacement == true;
-        return new(attention + 12 * stability + 1.8 * repeat, reading ? 1.25 : .55, repeat,
+        // 自动整理时，后台正文的换行、列宽与控件会随着宽度一起变。切回用户已经摆好的窗口，这项代价仍然存在。
+        bool background = !initial && context.IsAutomaticBackground(w);
+        double reflowSensitivity = (reading ? 1.25 : .55) + (background ? 2 : 0);
+        return new(attention + 12 * stability + 1.8 * repeat, reflowSensitivity, repeat,
             initial ? .30 : context.ExplicitArrange ? .45 : 1,
             context.AllowGestureAssist && context.GestureAnchor == w.Handle ? context.GestureTarget : null,
             context.Scene?.Lane is { } lane && lane.Front.Handle == w.Handle ? lane.Restore : null);
