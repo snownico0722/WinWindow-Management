@@ -28,7 +28,7 @@ The second section builds this Unity player argument set for the selected size:
 
 Unity documents `-screen-width`, `-screen-height`, `-screen-fullscreen`, and the Windows `-window-mode borderless|exclusive` option as standalone-player startup arguments. Fullscreen Window / Borderless can render at a script-selected resolution and scale to the native display. This experiment uses Borderless so the Windows desktop mode should remain unchanged.
 
-These arguments only take effect when the player starts. They cannot be injected into an already-running Unity player through this feature. The dialog can copy the arguments for a launcher, or start the executable path detected from the selected window after that process has exited. If the game requires a launcher session, use the copy action with the launcher you normally use. The game may ignore or override Unity defaults; acceptance by Genshin is not assumed until verified on the user's machine.
+These arguments only take effect when the player starts. They cannot be injected into an already-running Unity player through this feature. The dialog copies the arguments for a launcher. WinWindow deliberately does not launch the game executable itself: WinWindow normally runs elevated, and directly starting the game from that process could unintentionally change the game's privilege level. Paste the copied arguments into the launcher you normally use. The game may ignore or override Unity defaults; acceptance by Genshin is not assumed until verified on the user's machine.
 
 ## Manual verification matrix
 

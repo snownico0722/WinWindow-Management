@@ -1,10 +1,7 @@
 using System;
-using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Threading;
 
 namespace WinWindow;
 
@@ -12,8 +9,7 @@ public partial class GameResolutionDialog : Window
 {
     private readonly WindowIdentity _identity;
     private readonly GameResolutionExperiment _experiment;
-    private readonly DispatcherTimer _processTimer = new() { Interval = TimeSpan.FromMilliseconds(700) };
-    private bool _isUnity, _launchStarted;
+    private readonly bool _isUnity;
 
     internal GameResolutionDialog(WindowIdentity identity, GameResolutionExperiment experiment)
     {
@@ -22,11 +18,7 @@ public partial class GameResolutionDialog : Window
         InitializeComponent();
 
         _isUnity = string.Equals(identity.ClassName, "UnityWndClass", StringComparison.Ordinal);
-        if (!_isUnity)
-        {
-            CopyUnityArgsButton.IsEnabled = false;
-            LaunchUnityButton.IsEnabled = false;
-        }
+        CopyUnityArgsButton.IsEnabled = _isUnity;
 
         try
         {
@@ -49,17 +41,12 @@ public partial class GameResolutionDialog : Window
             SetStatus(error.Message);
             ApplyOutputButton.IsEnabled = false;
             CopyUnityArgsButton.IsEnabled = false;
-            LaunchUnityButton.IsEnabled = false;
         }
 
         RestoreOutputButton.IsEnabled = experiment.HasLease;
         UnityLaunchHint.Text = _isUnity
             ? UiText.Get("GameResolutionLaunchHint")
             : UiText.Get("GameResolutionNotUnity");
-        _processTimer.Tick += (_, _) => UpdateLaunchAvailability();
-        _processTimer.Start();
-        Closed += (_, _) => _processTimer.Stop();
-        UpdateLaunchAvailability();
     }
 
     private DisplayModeOption? SelectedMode => ModeBox.SelectedItem as DisplayModeOption;
@@ -69,7 +56,6 @@ public partial class GameResolutionDialog : Window
         UpdateUnityArguments();
         ApplyOutputButton.IsEnabled = SelectedMode is not null;
         CopyUnityArgsButton.IsEnabled = _isUnity && SelectedMode is not null;
-        UpdateLaunchAvailability();
     }
 
     private void UpdateUnityArguments()
@@ -116,49 +102,6 @@ public partial class GameResolutionDialog : Window
             SetStatus(UiText.Get("GameResolutionArgsCopied"));
         }
         catch (Exception error) { SetStatus(error.Message); }
-    }
-
-    private void LaunchUnity_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_isUnity || SelectedMode is not { } mode) return;
-        if (IsOriginalProcessRunning())
-        {
-            SetStatus(UiText.Get("GameResolutionLaunchWait"));
-            return;
-        }
-
-        try
-        {
-            string executable = _identity.ProcessPath;
-            if (!File.Exists(executable)) throw new FileNotFoundException(UiText.Get("GameResolutionExecutableMissing"), executable);
-            var start = new ProcessStartInfo(executable)
-            {
-                UseShellExecute = false,
-                WorkingDirectory = Path.GetDirectoryName(executable) ?? Environment.CurrentDirectory
-            };
-            foreach (string argument in GameResolutionExperiment.UnityBorderlessArguments(mode))
-                start.ArgumentList.Add(argument);
-            Process.Start(start) ?? throw new InvalidOperationException(UiText.Get("GameResolutionLaunchFailed"));
-            _launchStarted = true;
-            SetStatus(UiText.Get("GameResolutionLaunchStarted"));
-        }
-        catch (Exception error) { SetStatus(error.Message); }
-        UpdateLaunchAvailability();
-    }
-
-    private bool IsOriginalProcessRunning()
-    {
-        try { return Native.MatchesProcess(_identity); }
-        catch { return true; }
-    }
-
-    private void UpdateLaunchAvailability()
-    {
-        RestoreOutputButton.IsEnabled = _experiment.HasLease;
-        LaunchUnityButton.IsEnabled = _isUnity && !_launchStarted && SelectedMode is not null &&
-            !IsOriginalProcessRunning() && File.Exists(_identity.ProcessPath);
-        if (_isUnity && IsOriginalProcessRunning())
-            UnityLaunchHint.Text = UiText.Get("GameResolutionLaunchHint");
     }
 
     private void SetStatus(string message) => StatusText.Text = message;

@@ -284,9 +284,7 @@
   <data name="GameResolutionRestoreOutput" xml:space="preserve"><value>恢复桌面分辨率</value></data>
   <data name="GameResolutionUnityTitle" xml:space="preserve"><value>B · Unity 游戏渲染尺寸（启动参数）</value></data>
   <data name="GameResolutionUnityHint" xml:space="preserve"><value>使用 -window-mode borderless 与 -screen-width / -screen-height。它不会主动改变 Windows 桌面分辨率；是否被原神接受，需要重启后实测。</value></data>
-  <data name="GameResolutionCopyArgs" xml:space="preserve"><value>复制启动参数</value></data>
-  <data name="GameResolutionLaunchUnity" xml:space="preserve"><value>退出游戏后直接启动</value></data>
-  <data name="GameResolutionLaunchHint" xml:space="preserve"><value>先完全退出当前游戏，此按钮才会启用。会直接启动当前窗口对应的 EXE；如果需要官方启动器会话，请复制参数到你使用的启动器。</value></data>
+  <data name="GameResolutionCopyArgs" xml:space="preserve"><value>复制启动参数</value></data>    <data name="GameResolutionLaunchHint" xml:space="preserve"><value>退出游戏后，将复制的参数粘贴到你使用的启动器的启动参数栏，再重新启动游戏。WinWindow 不会从管理员进程直接启动游戏，以免意外改变游戏的权限级别。</value></data>
   <data name="GameResolutionNotUnity" xml:space="preserve"><value>当前窗口不是 UnityWndClass，不能使用 Unity 启动参数实验。</value></data>
   <data name="GameResolutionAlreadyActive" xml:space="preserve"><value>显示器已经是这个分辨率。</value></data>
   <data name="GameResolutionWrongDisplay" xml:space="preserve"><value>目标模式不属于当前游戏所在的显示器。</value></data>
@@ -299,9 +297,4 @@
   <data name="GameResolutionApplied" xml:space="preserve"><value>已切换显示器输出到 {0}；退出全屏或游戏结束后自动恢复。</value></data>
   <data name="GameResolutionJournalInvalid" xml:space="preserve"><value>显示器恢复记录无法解析，未执行新的显示模式修改。</value></data>
   <data name="GameResolutionRestorePending" xml:space="preserve"><value>显示器分辨率恢复暂未完成，恢复记录已保留：{0}</value></data>
-  <data name="GameResolutionArgsCopied" xml:space="preserve"><value>Unity 启动参数已复制。</value></data>
-  <data name="GameResolutionLaunchWait" xml:space="preserve"><value>请先完全退出当前游戏，再启动参数实验。</value></data>
-  <data name="GameResolutionExecutableMissing" xml:space="preserve"><value>找不到当前游戏程序，无法直接启动。</value></data>
-  <data name="GameResolutionLaunchFailed" xml:space="preserve"><value>无法启动游戏程序。</value></data>
-  <data name="GameResolutionLaunchStarted" xml:space="preserve"><value>已使用 Unity Borderless 参数启动游戏。</value></data>
-</root>
+  <data name="GameResolutionArgsCopied" xml:space="preserve"><value>Unity 启动参数已复制。</value></data></root>
