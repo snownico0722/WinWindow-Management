@@ -182,6 +182,8 @@ internal static partial class IntentLayoutPlanner
         foreach (var i in candidate.Order)
         {
             var window = windows[i].Window; var a = original[i]; var b = candidate.Rects[i];
+            // 松手后的快照已经包含用户亲自改出的大小。普通自动候选不能再把铺满工作区的外框改成分栏。
+            if (a != b && context.HoldsWorkAreaFrame(window)) return false;
             bool gestureEndpoint = window.Handle == context.GestureAnchor && b == context.GestureTarget;
             var content = objectives == null ? MeasuredContent(window, context) : objectives[i].Content;
             // 只保护用户刚选的半屏。另一扇窗获得焦点或也被拖回同一侧，不能授权把前一扇当成分栏的牺牲品。

@@ -95,7 +95,8 @@ internal static class AttentionLayout
                 role = AttentionRole.Background;
             var hint = context.WindowHints?.FirstOrDefault(h => h.Handle == w.Handle);
             double floating = Math.Max(Floating(hint), role == AttentionRole.Main ? transition : 0);
-            bool movable = !waiting && context.GestureAnchor != w.Handle && hint?.Anchor != true && !context.HoldsTextView(w);
+            bool movable = !waiting && context.GestureAnchor != w.Handle && hint?.Anchor != true && !context.HoldsTextView(w) &&
+                !context.HoldsWorkAreaFrame(w);
             bool resize = movable && w.IsResizable && profile.AllowUsefulResize && context.VideoHint?.WindowHandle != w.Handle &&
                 !(context.RecentGesture is { } g && !context.ExplicitArrange && g.WindowHandle == w.Handle &&
                   (g.StartRect.Width != g.EndRect.Width || g.StartRect.Height != g.EndRect.Height));
@@ -217,6 +218,13 @@ internal static class AttentionLayout
             context.PairHints?.Any(h => h.Relation != TaskRelation.Automatic) == true ||
             context.RulePairs?.Any(p => !p.OnlyWhenPaired) == true) return null;
         var area = group[0].Window.WorkArea;
+        // 只切回几乎铺满、已清楚可见的前台窗时，藏在后面的资料也无需跟着重新分栏。
+        const WorkspaceChangeCause activation = WorkspaceChangeCause.Focus | WorkspaceChangeCause.Order;
+        if (context.WorkspaceCause != WorkspaceChangeCause.None && (context.WorkspaceCause & ~activation) == 0)
+        {
+            int front = Array.FindIndex(group, v => v.Window.IsForeground && context.HoldsWorkAreaFrame(v.Window));
+            if (front >= 0 && exposed[front].Visible >= .95) return "existing-work-area-frame";
+        }
         if (context.Scene?.Lane is { Restore: { } remembered } restoring &&
             HorizontalSide(restoring.Front.VisualRect, area) != HorizontalSide(remembered, area)) return null;
         // 同侧打开的正文可以沿用原位叠放。开窗碰撞、最近来回切换，都不能单独证明另一栏空闲。
