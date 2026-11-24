@@ -55,6 +55,9 @@ public sealed record TaskWindowHint(nint Handle, bool PassiveVisual = false,
     WindowUseRole Role = WindowUseRole.Unknown, double FloatingAffinity = 0, bool TextFocus = false, bool InitialTextPlacement = false);
 public sealed record WindowSizeFloor(nint Handle, int MinWidth, int MinHeight);
 
+// 诊断只观察候选。会改变生成和排序的 ShadowAxes 以及求解时间归求解上下文所有。
+internal readonly record struct LayoutDiagnostics(bool TraceCandidateAxes = false, ShadowReplayProbe? ShadowProbe = null);
+
 public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDisplay[]? Displays = null,
     ViewingCalibration? Calibration = null, TaskPairHint[]? PairHints = null,
     TaskWindowHint[]? WindowHints = null, ManualWindowGesture? RecentGesture = null,
@@ -72,9 +75,8 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     internal SolverRating[]? SolverRatings { get; init; }
     internal ActiveLayoutScene? Scene { get; init; }
     internal ShadowAxis[]? ShadowAxes { get; init; }
-    internal ShadowReplayProbe? ShadowProbe { get; init; }
     internal DateTimeOffset? ShadowTime { get; init; }
-    internal bool TraceCandidateAxes { get; init; }
+    internal LayoutDiagnostics Diagnostics { get; init; }
     internal bool DisableContinuation { get; init; }
     internal bool SearchReplayPositions { get; init; }
     internal RecordedDividerRelease? ReplayDivider { get; init; }

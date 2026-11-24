@@ -36,7 +36,7 @@ internal static class ScopedGeometryChecks
             replayed.InstanceUses[22] == "playback", "recorded rule selectors retain observations for a later offline import");
         IntentLayoutPlan Plan(WindowSnapshot[] windows, LayoutFocus visit) => LayoutDispatch.Create(LayoutRoute.Smart,
             new VisibilityAnalyzer().SelectVisibleWorkingSet(windows, includeStackAccess: true), new(), null, windows,
-            new(Focus: visit, UseWorkingPairs: true) { TraceCandidateAxes = true });
+            new(Focus: visit, UseWorkingPairs: true) { Diagnostics = new(TraceCandidateAxes: true) });
         var pair = Plan([main, peer], focus);
         check(pair.Groups.SelectMany(g => g.Candidates).Any(c => c.Kind == "reference-clearance" && c.Rejection == null) &&
             !Plan([main, peer], focus with { Evidence = "handoff" }).Groups.SelectMany(g => g.Candidates).Any(c => c.Kind == "reference-clearance"),

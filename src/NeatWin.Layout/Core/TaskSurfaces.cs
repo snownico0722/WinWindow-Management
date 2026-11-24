@@ -140,14 +140,7 @@ internal sealed class TaskSurfaces
             w.VisualRect.Intersect(w.WorkArea).Area >= w.WorkArea.Area * .95;
     }
 
-    internal static SurfacePurpose ChatCaption(string caption) => caption.Trim() switch
-    {
-        "微信音视频通话" or "语音通话" or "视频通话" or "WeChat Call" or "Voice Call" or "Video Call" => SurfacePurpose.IndependentTask,
-        "QQ截图" or "QQ截屏" or "微信截图" or "微信截屏" or "截图翻译" or "截屏翻译" or "屏幕翻译" or
-            "截图" or "截屏" or "贴图" or "Screen Capture" or "Screenshot Translation" => SurfacePurpose.CaptureTool,
-        "个人资料" or "详细资料" or "联系人资料" or "群成员资料" or "Contact Info" or "Profile Card" => SurfacePurpose.LocalDetail,
-        _ => SurfacePurpose.Unknown
-    };
+    internal static SurfacePurpose ChatCaption(string caption) => WindowClassification.ChatCaption(caption);
 
     private static bool IsContextPopup(WindowSnapshot child, WindowSnapshot host, ContextPress press)
     {

@@ -10,6 +10,15 @@ internal static class ReadingFocusChecks
         WindowSnapshot main = new(1, rect, rect, work, 1, default, true, true, true, 0, 96, uint.MaxValue - 1);
         WindowSnapshot source = main with { Handle = 2, IsForeground = false, ZOrder = 1, ProcessId = uint.MaxValue - 2 };
         WindowUseRole Role(string exe, string className, FocusedOfficeSurface surface = 0) => WindowUseRoles.Identify(exe, className, surface);
+        check(Role(@"C:\Apps\Arc.EXE", "Chrome_WidgetWin_1") == WindowUseRole.Browser &&
+            Role("opera_gx", "Chrome_WidgetWin_1") == WindowUseRole.Browser &&
+            !WindowClassification.SupportsChromiumViewport("arc") && WindowClassification.SupportsChromiumViewport("Opera_GX.exe") &&
+            !WindowClassification.SupportsChromiumViewport("firefox") && WindowClassification.IsBrowserProcess("firefox.exe"),
+            "browser roles include Arc and Opera GX while renderer sampling keeps its supported process list");
+        check(!WindowClassification.IsBrowserProcess("chrome.helper") && !WindowClassification.SupportsChromiumViewport("chrome.helper.exe") &&
+            !WindowClassification.IsCaptureToolProcess("qq.helper") && Role("chrome.helper.exe", "Chrome_WidgetWin_1") == WindowUseRole.Unknown &&
+            Role("Microsoft.Notes", "Windows.UI.Core.CoreWindow") == WindowUseRole.Note,
+            "dotted process names keep their identity when supplied as names or executables");
         check(Role("WeChat.exe", "WeChatMainWndForPC") == WindowUseRole.Chat &&
             Role("Weixin.exe", "Qt51514QWindowIcon") == WindowUseRole.Chat &&
             Role("QQ.exe", "Chrome_WidgetWin_1") == WindowUseRole.Chat &&

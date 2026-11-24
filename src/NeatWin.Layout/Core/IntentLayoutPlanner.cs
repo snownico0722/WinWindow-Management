@@ -23,7 +23,7 @@ internal static partial class IntentLayoutPlanner
         if (!taskContext.ExplicitArrange && (taskContext.VerifiedRepeat ||
             (taskContext.VerifiedTaskRepeat && taskContext.Scene?.Settings?.ReconsiderSettled != true)))
         {
-            if (!taskContext.TraceCandidateAxes) return new([], [], []);
+            if (!taskContext.Diagnostics.TraceCandidateAxes) return new([], [], []);
             var reason = taskContext.VerifiedRepeat ? "verified-exact-repeat" : "verified-task-repeat";
             return new([], [], [new(visible.Select(v => v.Window.Handle).ToArray(), "keep", 0, [], new([], "search-skipped", [reason]))]);
         }
@@ -251,7 +251,7 @@ internal static partial class IntentLayoutPlanner
                 HashSet<RectI>? localTargets = localPlacement >= 0 ? [original[localPlacement]] : null;
                 int gestureIndex = Array.FindIndex(group, v => v.Window.Handle == groupContext.GestureAnchor);
                 var shadowAxes = (groupContext.ShadowAxes ?? []).Where(axis => handles.Contains(axis.Window)).ToArray();
-                var axes = groupContext.TraceCandidateAxes ? new LayoutAxisEvidence() : null;
+                var axes = groupContext.Diagnostics.TraceCandidateAxes ? new LayoutAxisEvidence() : null;
                 axes?.Observe(original, true);
                 HeldLayoutAxes? hold = null;
                 double fullRank = double.NegativeInfinity;
@@ -348,7 +348,7 @@ internal static partial class IntentLayoutPlanner
                     }
                     else portfolio.Offer(candidate);
                     axes?.Observe(candidate.Rects, false);
-                    groupContext.ShadowProbe?.Observe(group, candidate.Rects, double.PositiveInfinity);
+                    groupContext.Diagnostics.ShadowProbe?.Observe(group, candidate.Rects, double.PositiveInfinity);
                     RectI[]? fitted = null, held = null;
                     if (groupContext.VideoFits is { Count: > 0 } fits)
                     for (int i = 0; i < group.Length; i++)
@@ -423,7 +423,7 @@ internal static partial class IntentLayoutPlanner
                     var breakdown = Breakdown(candidate, referenceCost);
                     var score = breakdown.Total;
                     axes?.Observe(candidate.Rects, breakdown.Feedback == 0);
-                    groupContext.ShadowProbe?.Observe(group, candidate.Rects, breakdown.Feedback);
+                    groupContext.Diagnostics.ShadowProbe?.Observe(group, candidate.Rects, breakdown.Feedback);
                     // 松手位置提供摆放意图。补齐落点的收益依然要和原位比较，不能给整组窗口无条件让位。
                     bool followsGesture = groupContext.AllowGestureAssist && gestureIndex >= 0 &&
                         groupContext.GestureTarget == candidate.Rects[gestureIndex] && candidate.Rects[gestureIndex] != original[gestureIndex];

@@ -87,7 +87,7 @@ public static class VideoAspectPostProcessor
             * .20 * (scene?.Settings?.Weights?.Interruption ?? 1);
         double bestCost = baselineError + Interruption(start);
         var audits = new List<LayoutCandidateTrace> { new("video-current", bestCost, null, null) };
-        var videoAxes = context.TraceCandidateAxes ? new LayoutAxisEvidence() : null;
+        var videoAxes = context.Diagnostics.TraceCandidateAxes ? new LayoutAxisEvidence() : null;
         videoAxes?.Observe([start], true);
         string selected = "video-current";
         foreach (var tendency in Enum.GetValues<VideoBlackBarTendency>())
@@ -123,7 +123,7 @@ public static class VideoAspectPostProcessor
             double change = Math.Abs(rect.Width - start.Width) / (double)area.Width + Math.Abs(rect.Height - start.Height) / (double)area.Height;
             double cost = AspectError(rect) + Interruption(rect) + .04 * change - .015 * Math.Clamp((pixels - plannedPixels) / Math.Max(1, plannedPixels), 0, 1) +
                 (tendency == hint.Tendency ? 0 : .01);
-            context.ShadowProbe?.Observe([visibleBrowser], [rect], rejection == null ? 0 : double.PositiveInfinity);
+            context.Diagnostics.ShadowProbe?.Observe([visibleBrowser], [rect], rejection == null ? 0 : double.PositiveInfinity);
             videoAxes?.Observe([rect], rejection == null);
             audits.Add(new(kind, cost, rejection, null));
             if (rejection == null && cost < bestCost) { best = rect; bestCost = cost; selected = kind; }

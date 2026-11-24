@@ -19,11 +19,6 @@ internal sealed class BrowserVideoBlackBarDetector(Func<WindowSnapshot, long, st
 {
     private const int FrameDelayMilliseconds = 28;
 
-    private static readonly HashSet<string> BrowserProcesses = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "chrome", "msedge", "firefox", "brave", "vivaldi", "opera", "opera_gx", "arc",
-    };
-
     internal VideoFitSession Fits { get; } = new();
     internal BrowserBarObservation? LastObservation { get; private set; }
     internal nint ObservationWindow { get; private set; }
@@ -231,7 +226,7 @@ internal sealed class BrowserVideoBlackBarDetector(Func<WindowSnapshot, long, st
             }
 
             using var process = Process.GetProcessById((int)processId);
-            return BrowserProcesses.Contains(process.ProcessName);
+            return WindowClassification.IsBrowserProcess(process.ProcessName);
         }
         catch
         {
