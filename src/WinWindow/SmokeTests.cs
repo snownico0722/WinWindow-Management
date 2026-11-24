@@ -216,6 +216,9 @@ internal static class SmokeTests
         try
         {
             Assert(Native.ToAlpha(0) == 0 && Native.ToAlpha(100) == 255 && Enumerable.Range(0, 101).All(x => Native.ToPercent(Native.ToAlpha(x)) == x), "opacity accepts zero and round-trips 0–100");
+            Assert(GameResolutionExperiment.FormatUnityBorderlessArguments(new(@"\\.\DISPLAY1", 1920, 1080, 32, 60)) ==
+                "-screen-fullscreen 1 -window-mode borderless -screen-width 1920 -screen-height 1080",
+                "Unity Borderless startup arguments preserve the selected render dimensions");
             Assert(!OwnWindowPolicy.Topmost(false, false, true, false) && OwnWindowPolicy.Topmost(false, false, true, true) && OwnWindowPolicy.Topmost(false, true, false, false), "manual, focus and compact topmost are independent");
             Assert(!OwnWindowPolicy.Enforce(false, false, true, false, true) && !OwnWindowPolicy.Enforce(true, true, true, false, true) && !OwnWindowPolicy.Enforce(true, false, false, false, true), "hidden, minimized and focus-only windows never enforce absolute topmost");
             Assert(DesktopIntegration.ParseHotkey("Win+Ctrl+Shift+R") == (14u, 82u) && DesktopIntegration.ParseHotkey("") == (0u, 0u), "hotkey parsing and disabled bindings");
