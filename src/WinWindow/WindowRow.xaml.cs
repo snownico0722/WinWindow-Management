@@ -164,6 +164,7 @@ public partial class WindowRow : UserControl
         RememberItem.IsEnabled = !_item.IsBusy && (_item.IsAvailable || _item.Remembered);
         bool isUnityWindow = _item.IsAvailable && string.Equals(_item.Identity?.ClassName, "UnityWndClass", StringComparison.Ordinal);
         GameResolutionItem.Visibility = isUnityWindow ? Visibility.Visible : Visibility.Collapsed;
+        GameResolutionCopySeparator.Visibility = isUnityWindow ? Visibility.Visible : Visibility.Collapsed;
         GameResolutionItem.IsEnabled = isUnityWindow && !_item.IsBusy;
     }
 

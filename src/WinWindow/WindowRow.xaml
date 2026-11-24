@@ -10,7 +10,7 @@
         <MenuItem Header="{DynamicResource Text.ResetWindow}" Click="Reset_Click"/>
         <Separator/>
         <MenuItem x:Name="GameResolutionItem" Header="{DynamicResource Text.GameResolutionExperiment}" Click="GameResolution_Click" Visibility="Collapsed"/>
-        <Separator/>
+        <Separator x:Name="GameResolutionCopySeparator"/>
         <MenuItem Header="{DynamicResource Text.CopyWindowInfo}" Click="Copy_Click"/>
       </ContextMenu>
     </Border.ContextMenu>
