@@ -104,6 +104,8 @@ internal sealed class GameResolutionExperiment
     [DllImport("user32.dll", EntryPoint = "ChangeDisplaySettingsExW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern int ChangeDisplaySettingsEx(string deviceName, ref DevMode mode, nint hwnd, uint flags, nint parameter);
 
+    internal static int NativeDevModeSize => Marshal.SizeOf<DevMode>();
+
     public GameResolutionExperiment(string dataDirectory)
     {
         _journalPath = Path.Combine(dataDirectory, "DisplayModeLease.json");
