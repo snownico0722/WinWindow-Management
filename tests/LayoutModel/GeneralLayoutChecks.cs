@@ -98,6 +98,7 @@ internal static class GeneralLayoutChecks
                 new(id, rect, rect, area, 1, default, true, true, true, 0, (uint)dpi, (uint)(200 + id));
         }
 
+        CheckWorkAreaFrames(check);
         CheckSeveralWindows(check);
 
         var crowded = new RectI(0, 0, 1600, 860);
@@ -128,6 +129,56 @@ internal static class GeneralLayoutChecks
             var hints = WindowUseRoles.Bind(windows, [], focus, attention, [], w => WindowUseRoles.Identify(
                 rename ? $"custom-view-{w.Handle}.exe" : $"sample-tool-{w.Handle}.exe", "AppWindow"));
             return Solve(windows, new(Focus: focus, Attention: attention, WindowHints: hints, UseWorkingPairs: true));
+        }
+    }
+
+    private static void CheckWorkAreaFrames(Action<bool, string> check)
+    {
+        foreach (var (area, dpi) in new[] { (new RectI(0, 40, 1600, 900), 96u), (new RectI(-2880, -160, 2880, 1560), 192u) })
+        {
+            var frame = Shape(area, .009, 0, .982, .99);
+            WindowSnapshot W(int id, RectI r) =>
+                new(id, r, r, area, 1, default, true, id == 1, true, id - 1, dpi, (uint)id, SurfaceState: "windowed");
+            var desktop = new[] { W(1, frame), W(2, Shape(area, 0, .06, .56, .88)) };
+            var task = new TaskLayoutContext(UseWorkingPairs: true, Focus: new(1, 2, 1, "recent-switch-pair"),
+                Attention: new Dictionary<nint, LayoutAttention> { [1] = new(1, 1, 1, 0, true), [2] = new(.9, .9, .8, .5, false) })
+                { IsWorkspaceObservation = true, WorkspaceCause = WorkspaceChangeCause.Focus | WorkspaceChangeCause.Order };
+            var plan = Plan(desktop, task);
+            check(plan.Moves.Count == 0 && plan.Layers.Count == 0 &&
+                plan.Groups.Any(g => g.Task?.Limits.Contains("existing-work-area-frame") == true),
+                $"activating a nearly full work area leaves both the foreground and its covered peer in place at {dpi} DPI");
+
+            var opening = task with { WorkspaceCause = WorkspaceChangeCause.Membership, LocalPlacementWindow = 1,
+                VideoHint = new(1, VideoBlackBarOrientation.Horizontal, 2.4, frame, 1) };
+            var visible = new VisibilityAnalyzer().SelectForManualArrange(desktop, true);
+            var local = LayoutDispatch.Create(LayoutRoute.LocalOpening, visible, new(), null, desktop, opening);
+            var video = LayoutDispatch.Create(LayoutRoute.Smart, visible, new(), null, desktop, opening with { LocalPlacementWindow = 0 });
+            check(local.Moves.Count == 0 && !video.Moves.Any(m => m.Window.Handle == 1),
+                "a new task opening and a measured video fit respect a nearly full work area");
+
+            var tiled = LayoutDispatch.Create(LayoutRoute.FullTiling, visible, new(), null, desktop, task);
+            check(tiled.Moves.Any(m => m.Window.Handle == 1 && m.TargetVisualRect.Width < frame.Width * .8) &&
+                !WindowStateRules.FillsWorkArea(frame with { Width = area.Width / 2 }, area, dpi) &&
+                !WindowStateRules.FillsWorkArea(frame with { X = area.Left - area.Width / 8 }, area, dpi),
+                "explicit tiling can split a windowed frame, and half-screen or displaced frames remain adjustable");
+
+            var release = new ManualWindowGesture(1, frame with { Width = frame.Width / 2 }, frame, area, ManualGestureKind.Resize, [], 450, 0);
+            var follow = FollowHandAssistant.Decide(release, visible, new(), SmartInteractionContext.Empty, SmartPersonalizationState.Default);
+            check(!follow.ShouldApply && follow.TargetRect == frame, "light assistance keeps the nearly full frame chosen at release");
+            var background = desktop[0] with { IsForeground = false, ZOrder = 1 };
+            var front = desktop[1] with { IsForeground = true, ZOrder = 0 };
+            var switched = Plan([front, background], task with { Focus = new(2, 1, 3), WorkspaceCause = WorkspaceChangeCause.Membership });
+            check(switched.Moves.All(m => m.Window.Handle != background.Handle),
+                "opening another task preserves the near-full return frame in the background");
+
+            var ordinary = new VisibleWindow(front, front.VisualRect.Area, front.VisualRect.Area, 1);
+            var b = ordinary.Window.VisualRect;
+            double Cost(RectI target, bool observe) => IntentLayoutPlanner.AttentionInterruption(ordinary, target,
+                task with { IsWorkspaceObservation = observe }, null);
+            var small = b with { X = b.X + 12 };
+            var large = b with { Width = b.Width / 2 };
+            check(Cost(small, true) == Cost(small, false) && Cost(large, true) > Cost(large, false),
+                "an ordinary frame pays extra for a large automatic resize while small adjustments keep their existing cost");
         }
     }
 

@@ -3,6 +3,17 @@ namespace NeatWin.Core;
 /// <summary>Identity and geometry contract shared by settling and undo planning.</summary>
 public static class WindowStateRules
 {
+    // 普通窗口也可能已经占满工作区。逐边检查可排除半屏、跨屏和偏向一侧的大窗，任务栏不计入可用范围。
+    internal static bool FillsWorkArea(RectI frame, RectI area, uint dpi)
+    {
+        if (area.IsEmpty || frame.IsEmpty) return false;
+        double scale = dpi > 0 ? dpi / 96d : 1;
+        bool NearEdge(long inset, int span) =>
+            inset >= -4 * scale && inset <= Math.Min(32 * scale, .025 * span);
+        return NearEdge((long)frame.Left - area.Left, area.Width) && NearEdge((long)area.Right - frame.Right, area.Width) &&
+            NearEdge((long)frame.Top - area.Top, area.Height) && NearEdge((long)area.Bottom - frame.Bottom, area.Height);
+    }
+
     public static bool Matches(WindowSnapshot expected, WindowSnapshot actual, RectI target, int tolerance = 3) =>
         actual.Handle == expected.Handle && actual.ProcessId == expected.ProcessId && actual.Owner == expected.Owner &&
         actual.MonitorHandle == expected.MonitorHandle && actual.WorkArea == expected.WorkArea &&

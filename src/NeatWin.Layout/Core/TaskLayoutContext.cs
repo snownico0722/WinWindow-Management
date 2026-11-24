@@ -107,8 +107,11 @@ public sealed record TaskLayoutContext(TaskLayoutProfile? Profile = null, TaskDi
     internal DateTimeOffset? NavigationObservedAt { get; init; }
     public TaskLayoutProfile Preferences => (Profile ?? new()).Normalize();
     public bool PairPlanningEnabled => ExplicitArrange || UseWorkingPairs;
-    internal bool IsAutomaticBackground(WindowSnapshot window) => !ExplicitArrange && !window.IsForeground &&
-        window.Handle != GestureAnchor && (IsWorkspaceObservation || GestureAnchor != 0);
+    internal bool IsAutomaticLayout => !ExplicitArrange && (IsWorkspaceObservation || GestureAnchor != 0);
+    internal bool IsAutomaticBackground(WindowSnapshot window) => IsAutomaticLayout && !window.IsForeground && window.Handle != GestureAnchor;
+
+    internal bool HoldsWorkAreaFrame(WindowSnapshot window) => IsAutomaticLayout &&
+        WindowStateRules.FillsWorkArea(window.VisualRect, window.WorkArea, window.Dpi);
 
     internal bool HoldsTextView(WindowSnapshot window) => !ExplicitArrange && window.IsForeground &&
         WindowHints?.Any(h => h.Handle == window.Handle && h.TextFocus) == true;

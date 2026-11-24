@@ -12,6 +12,9 @@ public sealed record WindowLayoutObjective(double ReadableContent, double PeerEx
 public readonly record struct WindowMotionObjective(double Resistance, double ReflowSensitivity, double RecentMove,
     double Timing, RectI? AssistedTarget, RectI? RestoredFrame)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool PriceLargeChanges { get; init; }
+
     internal double Cost(RectI frame, RectI target, bool directSnap = false)
     {
         if (Resistance == 0 || frame == target || frame.IsEmpty || target.IsEmpty) return 0;
@@ -19,6 +22,14 @@ public readonly record struct WindowMotionObjective(double Resistance, double Re
         double dy = Math.Abs(target.Top - (double)frame.Top) / frame.Height;
         double change = dx + dy + ReflowSensitivity * Math.Abs(Math.Log(target.Width / (double)frame.Width)) +
             .35 * Math.Abs(Math.Log(target.Height / (double)frame.Height));
+        if (PriceLargeChanges)
+        {
+            // 用前后外框的交并比同时衡量平移、放缩。只对超过三分之一的差异逐渐加价，避免微调被反复计费。
+            long overlap = frame.Intersect(target).Area;
+            double changed = 1 - overlap / ((double)frame.Area + target.Area - overlap);
+            double excess = Math.Max(0, changed - 1d / 3);
+            change += 2 * excess * excess;
+        }
         static double Mid(RectI r) => r.X + .5 * r.Width;
         bool returning = RestoredFrame is { } old && Math.Abs(Mid(target) - Mid(old)) < Math.Abs(Mid(frame) - Mid(old));
         double timing = directSnap || AssistedTarget == target ? .18 : returning ? .30 : Timing;
@@ -181,6 +192,7 @@ internal static partial class IntentLayoutPlanner
         return new(attention + 12 * stability + 1.8 * repeat, reflowSensitivity, repeat,
             initial ? .30 : context.ExplicitArrange ? .45 : 1,
             context.AllowGestureAssist && context.GestureAnchor == w.Handle ? context.GestureTarget : null,
-            context.Scene?.Lane is { } lane && lane.Front.Handle == w.Handle ? lane.Restore : null);
+            context.Scene?.Lane is { } lane && lane.Front.Handle == w.Handle ? lane.Restore : null)
+            { PriceLargeChanges = !initial && context.IsAutomaticLayout };
     }
 }

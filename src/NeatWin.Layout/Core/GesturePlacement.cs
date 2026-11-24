@@ -11,7 +11,7 @@ internal static class GesturePlacement
         if (context.ExplicitArrange || context.GestureAnchor == 0 || context.GestureTarget.HasValue ||
             context.RecentGesture is not { } gesture || gesture.WindowHandle != context.GestureAnchor ||
             visible.FirstOrDefault(v => v.Window.Handle == gesture.WindowHandle) is not { } moved ||
-            moved.Window.VisualRect != gesture.EndRect || moved.Window.WorkArea != gesture.WorkArea ||
+            moved.Window.VisualRect != gesture.EndRect || moved.Window.WorkArea != gesture.WorkArea || context.HoldsWorkAreaFrame(moved.Window) ||
             context.WindowHints?.Any(h => h.Handle == gesture.WindowHandle && h.Anchor) == true) return context;
         var window = moved.Window;
         var a = gesture.EndRect;

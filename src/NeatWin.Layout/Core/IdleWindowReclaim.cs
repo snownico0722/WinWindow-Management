@@ -41,7 +41,7 @@ internal sealed class IdleWindowReclaim
         };
         foreach (var (id, w) in present)
         {
-            if (!_lastUse.ContainsKey(id) || w.IsForeground ||
+            if (!_lastUse.ContainsKey(id) || w.IsForeground || context.HoldsWorkAreaFrame(w) ||
                 protectedHandles.Contains(w.Handle) || context.Attention?.GetValueOrDefault(w.Handle)?.Weight > .20)
                 _lastUse[id] = tick;
             else

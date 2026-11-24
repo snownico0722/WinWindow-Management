@@ -40,7 +40,8 @@ public static class VideoAspectPostProcessor
             return plan;
         var browser = visible.FirstOrDefault(v => v.Window.Handle == hint.WindowHandle)?.Window;
         if (browser is not { IsManageable: true, IsResizable: true, IsTopmost: false } || browser.SurfaceState == "fullscreen" ||
-            context.WindowHints?.Any(h => h.Handle == browser.Handle && h.Anchor) == true || context.HoldsTextView(browser)) return plan;
+            context.WindowHints?.Any(h => h.Handle == browser.Handle && h.Anchor) == true || context.HoldsTextView(browser) ||
+            context.HoldsWorkAreaFrame(browser)) return plan;
         if (context.IsWorkspaceObservation && !desktop.Any(w => w.IsForeground && w.MonitorHandle == browser.MonitorHandle && w.IsManageable))
             return plan;
 

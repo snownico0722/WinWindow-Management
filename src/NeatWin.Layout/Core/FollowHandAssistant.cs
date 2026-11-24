@@ -21,7 +21,8 @@ internal static class FollowHandAssistant
     {
         personalization = personalization.Normalize();
         var moved = visibleWindows.FirstOrDefault(item => item.Window.Handle == gesture.WindowHandle);
-        if (moved is null || gesture.StartRect.IsEmpty || gesture.EndRect.IsEmpty)
+        if (moved is null || gesture.StartRect.IsEmpty || gesture.EndRect.IsEmpty ||
+            WindowStateRules.FillsWorkArea(gesture.EndRect, gesture.WorkArea, moved.Window.Dpi))
         {
             return new FollowHandDecision(false, gesture.EndRect, FollowHandTargetKind.None, 0);
         }
