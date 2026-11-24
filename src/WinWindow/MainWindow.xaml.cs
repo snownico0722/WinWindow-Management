@@ -33,6 +33,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _opacityTimer = new() { Interval = TimeSpan.FromMilliseconds(70) };
     private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(4.5) };
     private readonly DispatcherTimer _gameResolutionTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private bool _gameResolutionPolling;
     private readonly Dictionary<WindowItem, int> _pendingOpacity = new();
     private readonly Dictionary<string, TextBox> _keyEditors;
     private DesktopIntegration? _desktop;
@@ -99,13 +100,17 @@ public partial class MainWindow : Window
         _opacityTimer.Tick += (_, _) => DrainOpacity();
         _pickerTimer.Tick += (_, _) => UpdatePickerOutline();
         _statusTimer.Tick += (_, _) => DismissStatus();
-        _gameResolutionTimer.Tick += (_, _) =>
+        _gameResolutionTimer.Tick += async (_, _) =>
         {
+            if (_gameResolutionPolling) return;
+            _gameResolutionPolling = true;
             try
             {
-                if (_gameResolution.TryRestoreIfTargetLeavesFullscreen() is { } message) ShowStatus(message);
+                if (await Task.Run(_gameResolution.TryRestoreIfTargetLeavesFullscreen) is { } message)
+                    ShowStatus(message);
             }
             catch (Exception error) { ShowStatus(error.Message); }
+            finally { _gameResolutionPolling = false; }
         };
         SourceInitialized += OnSourceInitialized;
         Loaded += async (_, _) => await InitializeAsync();
@@ -198,7 +203,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                if (_gameResolution.RecoverStaleLease() is { } message) ShowStatus(message);
+                if (await Task.Run(_gameResolution.RecoverStaleLease) is { } message) ShowStatus(message);
             }
             catch (Exception error) { ShowStatus(UiText.Format("GameResolutionRestorePending", error.Message)); }
             await Manager.RecoverPreviousSessionAsync();
@@ -820,7 +825,7 @@ public partial class MainWindow : Window
     {
         if (_quitting) return;
         _gameResolutionTimer.Stop();
-        try { _ = _gameResolution.RestoreNow(); }
+        try { _ = await Task.Run(_gameResolution.RestoreNow); }
         catch (Exception error) { _desktop?.Notify(UiText.Format("GameResolutionRestorePending", error.Message)); }
         _quitting = true; HideHoverPreview(); SnapshotHistory.Dispose(); _layout?.Dispose(); AddPopup.IsOpen = false; _flash?.Dispose(); _flash = null;
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
