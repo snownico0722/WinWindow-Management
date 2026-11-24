@@ -60,7 +60,7 @@ internal sealed class PlacementShadowReplay
     {
         internal IntentLayoutPlan Solve(ShadowAxis[]? axes = null, ShadowReplayProbe? probe = null) =>
             LayoutDispatch.Create(Route, Visible, Options, Reference, Desktop,
-                Context with { ShadowAxes = axes, ShadowProbe = probe, ShadowTime = Time });
+                Context with { ShadowAxes = axes, ShadowTime = Time, Diagnostics = Context.Diagnostics with { ShadowProbe = probe } });
     }
 
     private sealed record Submission(Frame Frame, TidyMove[] Moves, WindowSnapshot[] Projected, long Tick);

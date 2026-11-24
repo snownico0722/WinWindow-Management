@@ -104,37 +104,44 @@ internal static partial class IntentLayoutPlanner
         foreach (var w in before)
         {
             var regions = ProtectedRegions(w, context);
-            if (ProtectsVideo(context) && context.VideoHint is { } video && w.Handle == video.WindowHandle)
+            ContentViewport? picture = null;
+            if (context.VideoHint?.WindowHandle == w.Handle && ProtectsVideo(context))
             {
-                // 黑边测量给出的是采样当时的屏幕坐标。用当时的窗口把视口换为相对坐标，才能比较移动前后同一块内容的遮挡。
-                var frame = measuredDesktop?.FirstOrDefault(item => item.Handle == w.Handle)?.VisualRect ?? w.VisualRect;
-                var view = video.ViewportVisualRect;
-                if (!view.IsEmpty && frame.Intersect(view) == view)
-                {
-                    double x = (view.Left - frame.Left) / (double)frame.Width, y = (view.Top - frame.Top) / (double)frame.Height;
-                    regions = [.. regions, new(x, y, Math.Min(1 - x, view.Width / (double)frame.Width),
-                        Math.Min(1 - y, view.Height / (double)frame.Height))];
-                }
+                // 采样外框决定四边留白。分栏和二次拟合之后仍从同一次测量投影，只保护真正的画面。
+                var sampled = measuredDesktop?.FirstOrDefault(item => item.Handle == w.Handle) ?? w;
+                picture = MeasuredContent(sampled, context);
             }
-            if (regions.Length == 0) continue;
+            if (regions.Length == 0 && picture == null) continue;
             if (!next.TryGetValue(w.Handle, out var target)) return false;
             var blockersBefore = before.Where(b => b.ZOrder < w.ZOrder).Select(b => b.VisualRect);
             var blockersAfter = after.Where(b => b.ZOrder < target.ZOrder).Select(b => b.VisualRect);
-            if (!RegionsPreserved(w.VisualRect, target.VisualRect, blockersBefore, blockersAfter, w.WorkArea, regions)) return false;
+            if (picture is { } measured && !PreservesVisibility(measured.Content(w.VisualRect), measured.Content(target.VisualRect),
+                blockersBefore, blockersAfter, w.WorkArea, 1)) return false;
+            if (regions.Length > 0 && !RegionsPreserved(w.VisualRect, target.VisualRect, blockersBefore, blockersAfter,
+                w.WorkArea, regions)) return false;
         }
         return true;
     }
 
     internal static double RegionVisibility(RectI window, TaskContentRegion region,
-        IEnumerable<RectI> blockers, RectI area)
+        IEnumerable<RectI> blockers, RectI area) => VisibleFraction(region.Project(window), blockers, area);
+
+    private static double VisibleFraction(RectI r, IEnumerable<RectI> blockers, RectI area)
     {
-        var r = region.Project(window);
         if (r.IsEmpty) return 0;
         var visible = r.Intersect(area);
         if (visible.IsEmpty) return 0;
         var pieces = new List<RectI> { visible };
         foreach (var blocker in blockers) pieces = RectRegion.Subtract(pieces, blocker, maxFragments: 512);
         return pieces.Sum(p => p.Area) / (double)r.Area;
+    }
+
+    private static bool PreservesVisibility(RectI original, RectI target, IEnumerable<RectI> before,
+        IEnumerable<RectI> after, RectI area, double minimumVisible)
+    {
+        double floor = Math.Min(minimumVisible, VisibleFraction(original, before, area));
+        // 半个百分点容纳投影取整，在同一尺度上核对用户标注的区域和实测画面。
+        return VisibleFraction(target, after, area) + .005 >= floor;
     }
 
     internal static bool RegionsPreserved(RectI original, RectI target,
@@ -145,9 +152,8 @@ internal static partial class IntentLayoutPlanner
         foreach (var region in regions)
         {
             if (!region.IsValid) continue;
-            var floor = Math.Min(region.MinimumVisible, RegionVisibility(original, region, before, area));
-            // Half a percentage point for rasterization; not a tradeable utility weight.
-            if (RegionVisibility(target, region, after, area) + .005 < floor) return false;
+            if (!PreservesVisibility(region.Project(original), region.Project(target), before, after, area, region.MinimumVisible))
+                return false;
         }
         return true;
     }

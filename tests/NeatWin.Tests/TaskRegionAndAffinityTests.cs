@@ -126,6 +126,41 @@ public sealed class TaskRegionAndAffinityTests
             [front with { VisualRect = new(0, 0, 100, 800) }, back], context));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MeasuredPictureAllowsBarsButProtectsImageAndExplicitRegions(bool sideBars)
+    {
+        var media = W(2, new(100, 100, 1040, 840));
+        var viewport = new RectI(130, 180, 960, 720);
+        var hint = new VideoBlackBarHint(media.Handle, sideBars ? VideoBlackBarOrientation.Vertical : VideoBlackBarOrientation.Horizontal,
+            sideBars ? 1 : 16d / 9, viewport, .95);
+        var context = new TaskLayoutContext(VideoHint: hint) { IsWorkspaceObservation = true };
+        var front = W(1, new(1300, 0, 100, 100));
+        var bar = sideBars ? new RectI(130, 180, 60, 720) : new RectI(130, 180, 960, 60);
+        var image = sideBars ? bar with { X = 250 } : bar with { Y = 270 };
+        bool Allows(RectI cover, TaskLayoutContext task) => IntentLayoutPlanner.DesktopRegionsPreserved(
+            [front, media], [front with { VisualRect = cover }, media], task);
+        Assert.True(Allows(bar, context));
+        Assert.False(Allows(image, context));
+        Assert.False(Allows(bar, context with { WindowHints = [new(media.Handle, ProtectedRegions: [new(0, 0, 1, 1)])] }));
+    }
+
+    [Fact]
+    public void RefinementProjectsAsymmetricInsetsFromTheSampledFrame()
+    {
+        var media = W(2, new(100, 100, 1040, 840));
+        var context = new TaskLayoutContext(VideoHint: new(media.Handle, VideoBlackBarOrientation.Horizontal,
+            16d / 9, new(130, 180, 960, 720), .95)) { IsWorkspaceObservation = true };
+        var front = W(1, new(1500, 0, 100, 100));
+        var placed = media with { VisualRect = new(300, 150, 800, 840) };
+        // 新视口 720×720，画面 720×405。顶部黑边截止到 y=387，采样视口则在旧窗口上。
+        bool Allows(int y) => IntentLayoutPlanner.DesktopRegionsPreserved([front, placed],
+            [front with { VisualRect = new(330, y, 720, 60) }, placed], context, [front, media]);
+        Assert.True(Allows(325));
+        Assert.False(Allows(390));
+    }
+
     [Fact]
     public void RegionProtectionFollowsTheProposedLayerOrder()
     {

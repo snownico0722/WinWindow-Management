@@ -1100,7 +1100,7 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
                 ctx = (run.Signals?.ApplyToReplay(ctx, run.Version) ?? ctx) with
                 {
                     ShadowTime = frame.Time,
-                    AllowGestureAssist = run.Trigger == "automatic-gesture", TraceCandidateAxes = true,
+                    AllowGestureAssist = run.Trigger == "automatic-gesture", Diagnostics = new(TraceCandidateAxes: true),
                     DisableContinuation = run.Trigger == "offline-activity-probe" ||
                         (continuation.HasValue ? !continuation.Value : run.Version < LayoutRunObservation.ContinuationVersion),
                     // 活动快照探针只复用工作区求解，缺少运行时授权、注意力和触发置信度。

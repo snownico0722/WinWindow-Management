@@ -17,7 +17,7 @@ internal static class CoupledDividerChecks
             var peer = Make(2, other);
             var gesture = new ManualWindowGesture(1, start, end, area, ManualGestureKind.Resize, [], 400, 0) { ProcessId = 1 };
             var ctx = new TaskLayoutContext(RecentGesture: gesture, GestureAnchor: 1, Focus: new(1, 2, 2),
-                Attention: new Dictionary<nint, LayoutAttention>(), UseWorkingPairs: true) { TraceCandidateAxes = true };
+                Attention: new Dictionary<nint, LayoutAttention>(), UseWorkingPairs: true) { Diagnostics = new(TraceCandidateAxes: true) };
             IntentLayoutPlan Plan(TaskLayoutContext c, params WindowSnapshot[] windows) => LayoutDispatch.Create(LayoutRoute.Smart,
                 new VisibilityAnalyzer().SelectVisibleWorkingSet(windows, includeStackAccess: true), new(), null, windows, c);
             var plan = Plan(ctx, main, peer);
@@ -36,7 +36,7 @@ internal static class CoupledDividerChecks
                     clamped.Layers.Count == 0, "crossing the readable divider limit by one pixel retains all safe travel");
             }
             var ids = new Dictionary<nint, int> { [1] = 1, [2] = 2 };
-            var replay = RecordedTaskSignals.From(ctx, ids).ApplyToReplay(new()) with { TraceCandidateAxes = true };
+            var replay = RecordedTaskSignals.From(ctx, ids).ApplyToReplay(new()) with { Diagnostics = new(TraceCandidateAxes: true) };
             check(Plan(replay, main with { ProcessId = 0 }, peer with { ProcessId = 0 }).Moves.Single().TargetVisualRect == expected,
                 "the exported resize endpoints reproduce the same divider without native handles");
             var unrelated = Make(3, new(870, 950, 300, 80));

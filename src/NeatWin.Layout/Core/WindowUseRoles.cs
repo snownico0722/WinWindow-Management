@@ -9,49 +9,11 @@ internal enum FocusedOfficeSurface { Unknown, Document, Grid, Canvas }
 
 internal static class WindowUseRoles
 {
-    private static bool QtFrame(string? name) => name?.StartsWith("Qt", StringComparison.Ordinal) == true &&
-        name.EndsWith("QWindowIcon", StringComparison.Ordinal);
-
     internal static bool IsSharedOfficeFrame(string? executable, string? windowClass) =>
-        QtFrame(windowClass) && Path.GetFileNameWithoutExtension(executable)?.ToLowerInvariant() is "wps" or "et" or "wpp";
+        WindowClassification.IsSharedOfficeFrame(executable, windowClass);
 
-    internal static WindowUseRole Identify(string? executable, string? windowClass,
-        FocusedOfficeSurface surface = FocusedOfficeSurface.Unknown)
-    {
-        if (windowClass is "#32770" or "Progman" or "WorkerW") return WindowUseRole.Unknown;
-        if (windowClass is "CabinetWClass" or "ExploreWClass") return WindowUseRole.FileManager;
-        if (windowClass is "Notepad" or "Notepad++" or "WordPadClass") return WindowUseRole.Editor;
-        string app = Path.GetFileNameWithoutExtension(executable)?.ToLowerInvariant() ?? "";
-        if (IsSharedOfficeFrame(app, windowClass))
-            return surface switch
-            {
-                FocusedOfficeSurface.Grid when app is "wps" or "et" => WindowUseRole.Spreadsheet,
-                FocusedOfficeSurface.Canvas when app is "wps" or "wpp" => WindowUseRole.Presentation,
-                FocusedOfficeSurface.Document when app == "wpp" => WindowUseRole.Presentation,
-                FocusedOfficeSurface.Document when app == "wps" => WindowUseRole.Document,
-                _ => WindowUseRole.Unknown
-            };
-        return app switch
-        {
-            "chrome" or "msedge" or "firefox" or "brave" or "vivaldi" or "opera" => WindowUseRole.Browser,
-            "notepad" or "notepad++" or "wordpad" or "typora" or "sublime_text" => WindowUseRole.Editor,
-            "winword" or "wps" when windowClass == "OpusApp" => WindowUseRole.Document,
-            "excel" or "et" when windowClass == "XLMAIN" => WindowUseRole.Spreadsheet,
-            "powerpnt" or "wpp" when windowClass == "PPTFrameClass" => WindowUseRole.Presentation,
-            "wechat" or "weixin" when windowClass is "WeChatMainWndForPC" or "ChatWnd" || QtFrame(windowClass) => WindowUseRole.Chat,
-            "qq" or "tim" when windowClass is "TXGuiFoundation" or "Chrome_WidgetWin_1" => WindowUseRole.Chat,
-            "code" or "code - insiders" or "cursor" or "obsidian" when windowClass == "Chrome_WidgetWin_1" => WindowUseRole.Editor,
-            "devenv" or "rider64" or "idea64" when windowClass?.StartsWith("HwndWrapper", StringComparison.Ordinal) == true ||
-                windowClass == "SunAwtFrame" => WindowUseRole.Editor,
-            "windowsterminal" when windowClass == "CASCADIA_HOSTING_WINDOW_CLASS" => WindowUseRole.Editor,
-            "papertodo" when windowClass?.StartsWith("HwndWrapper", StringComparison.Ordinal) == true => WindowUseRole.Note,
-            "microsoft.notes" when windowClass == "Windows.UI.Core.CoreWindow" => WindowUseRole.Note,
-            "lark" or "feishu" or "dingtalk" or "discord" when windowClass == "Chrome_WidgetWin_1" => WindowUseRole.Chat,
-            "telegram" when QtFrame(windowClass) => WindowUseRole.Chat,
-            "totalcmd64" or "totalcmd" or "doublecmd" => WindowUseRole.FileManager,
-            _ => WindowUseRole.Unknown
-        };
-    }
+    internal static WindowUseRole Identify(string? executable, string? windowClass, FocusedOfficeSurface surface = FocusedOfficeSurface.Unknown) =>
+        WindowClassification.Identify(executable, windowClass, surface);
 
     internal static bool IsFloating(WindowUseRole? role) =>
         role == WindowUseRole.FloatingEditor;

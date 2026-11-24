@@ -602,7 +602,7 @@ internal sealed class NeatWinApplicationContext : ApplicationContext
                     AllowGestureAssist = trigger == "automatic-gesture",
                     IsWorkspaceObservation = workspaceObservation,
                     WorkspaceCause = cause,
-                    TraceCandidateAxes = _recorder.CanWriteDiagnostics || _recorder.SnapshotWantsGestures?.Invoke() == true,
+                    Diagnostics = new(TraceCandidateAxes: _recorder.CanWriteDiagnostics || _recorder.SnapshotWantsGestures?.Invoke() == true),
                     ObservedChangeEvents = changeEvents, OmittedChanges = omittedChanges,
                     ReadingInput = _recorder.InputHistory.Read(snapshot, capturedAt),
                     OriginSide = workspaceObservation ? _focus.ObserveWorkingSide(snapshot, capturedAt) : 0,

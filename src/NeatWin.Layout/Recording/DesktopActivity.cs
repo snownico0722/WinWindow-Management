@@ -96,8 +96,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
     internal bool CaptureOverlay(WindowSnapshot window)
     {
         if (!TaskSurfaces.CanBeCaptureTool(window)) return false;
-        var app = Identity(window).App?.ToLowerInvariant();
-        if (app is not ("qq" or "tim" or "wechat" or "weixin" or "qqscreenshot")) return false;
+        if (!WindowClassification.IsCaptureToolProcess(Identity(window).App)) return false;
         return TaskSurfaces.IsCaptureTool(window, NativeWindowActivity.ChatSurface(window));
     }
 

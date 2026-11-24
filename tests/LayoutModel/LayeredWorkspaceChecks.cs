@@ -15,7 +15,7 @@ internal static class LayeredWorkspaceChecks
                 new(id, r, r, area, 1, default, resizable, id == 1, true, id - 1, dpi, (uint)(3000 + id));
             var task = new TaskLayoutContext(UseWorkingPairs: true, Focus: new(1, 2, 3),
                 Attention: new Dictionary<nint, LayoutAttention> { [1] = new(1, 1, .9, .9, true), [2] = new(.9, .8, .9, .8, false) })
-                { IsWorkspaceObservation = true, TraceCandidateAxes = true };
+                { IsWorkspaceObservation = true, Diagnostics = new(TraceCandidateAxes: true) };
             IntentLayoutPlan Plan(WindowSnapshot[] ws, TaskLayoutContext ctx) => LayoutDispatch.Create(LayoutRoute.Smart,
                 new VisibilityAnalyzer().SelectVisibleWorkingSet(ws, includeStackAccess: true), new(), null, ws, ctx);
             var front = W(1, Frame(0, .08, .64, .83), false);

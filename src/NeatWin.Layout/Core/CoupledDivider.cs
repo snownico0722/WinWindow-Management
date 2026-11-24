@@ -96,11 +96,11 @@ internal static partial class IntentLayoutPlanner
             target.Intersect(w.VisualRect).Area > old.Intersect(w.VisualRect).Area) ||
             ctx.Scene?.References.Any(r => r.Measure(desktop, w => w.Handle == peer.Handle ? target : w.VisualRect,
                 w => w.ZOrder).Lost > r.Limit + 1e-9) == true)) blocked = "third-window-exposure";
-        ctx.ShadowProbe?.Observe(group, baseline, 0);
-        ctx.ShadowProbe?.Observe(group, frames, blocked == null ? residual : double.PositiveInfinity);
+        ctx.Diagnostics.ShadowProbe?.Observe(group, baseline, 0);
+        ctx.Diagnostics.ShadowProbe?.Observe(group, frames, blocked == null ? residual : double.PositiveInfinity);
         var keep = new LayoutCandidateTrace("keep", Math.Abs(delta), null);
         // 这里的两种结果用接缝误差像素比较，和通用候选分数无关。真实窗口的位置仍由提交回执核对。
-        var axes = ctx.TraceCandidateAxes ? new LayoutAxisEvidence() : null;
+        var axes = ctx.Diagnostics.TraceCandidateAxes ? new LayoutAxisEvidence() : null;
         axes?.Observe([end, old], true);
         if (!target.IsEmpty) axes?.Observe([end, target], blocked == null);
         var trace = new LayoutGroupTrace(members, blocked == null ? proposal.Kind : "keep", 0,

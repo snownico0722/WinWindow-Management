@@ -36,7 +36,7 @@ internal static class BrowserAccessibility
         try
         {
             using var process = Process.GetProcessById((int)pid);
-            return process.ProcessName.ToLowerInvariant() is "chrome" or "msedge" or "brave" or "vivaldi" or "opera" or "opera_gx";
+            return WindowClassification.SupportsChromiumViewport(process.ProcessName);
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
     }
