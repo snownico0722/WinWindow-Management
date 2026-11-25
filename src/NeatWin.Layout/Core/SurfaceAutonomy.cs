@@ -57,6 +57,11 @@ internal static partial class SurfaceAutonomy
             : normalized;
     }
 
+    internal static bool IsTransientMenu(string? executable, string windowClass, bool ownedMenu, bool noActivate, bool isToolWindow) =>
+        ownedMenu && (windowClass is "#32768" or "ComboLBox" or "Auto-Suggest Dropdown" or "PopupHost" or "DropDown" ||
+            noActivate && isToolWindow && WindowClassification.IsBrowserProcess(executable) &&
+            windowClass is "Chrome_WidgetWin_1" or "MozillaWindowClass");
+
     // Tier 0A：根本不是工作面或真实桌面遮挡物（如 18×18 事件靶、豆包输入法浮条、浏览器左下角无标题 URL 悬浮状态条、右下角通知气泡、底层壁纸挂件）。
     // 在采集入口直接丢弃，既防止污染 BeforeExposure 诱导主窗口跳变，也避免破坏 SolverFeedback 同伴窗口比对。
     internal static bool IsGhostSurface(string? executable, string? windowClass, RectI visualRect, RectI outerRect,

@@ -19,7 +19,10 @@ public sealed record WindowSnapshot(
 {
     public nint Owner { get; init; }
     // 从属菜单属于宿主的交互区域，仍会实际遮住邻窗。
-    internal bool IsLocalTo(WindowSnapshot host) => !IsManageable && Owner != 0 && Owner == host.Handle;
+    internal nint LocalRoot { get; init; }
+    internal bool IsTransientMenu { get; init; }
+    internal bool IsLocalTo(WindowSnapshot host) =>
+        !IsManageable && host.Handle != 0 && (Owner == host.Handle || LocalRoot == host.Handle);
     internal bool NativeUtility { get; init; }
     internal bool HasCaption { get; init; }
     internal bool IndependentFrame { get; init; }

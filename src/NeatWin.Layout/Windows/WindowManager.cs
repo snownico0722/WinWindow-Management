@@ -168,19 +168,18 @@ public sealed partial class WindowManager
             // Tier 0A & Tier 0B：在采集入口剥除 18×18 事件靶、输入法浮条、浏览器无标题状态栏与瞬态贴靠栏/启动器浮层，
             // 彻底杜绝幽灵窗口污染遮挡几何或导致 SolverFeedback 丢失。
             bool ownedMenu = owner != 0 && !hasCaption && !isResizable && !clickThrough;
-            if (SurfaceAutonomy.IsGhostSurface(processName, className, visualRect, outerRect, workArea, dpi,
+            bool excludedSurface = SurfaceAutonomy.IsGhostSurface(processName, className, visualRect, outerRect, workArea, dpi,
                     hwnd == foreground, isTopmost, isResizable, isToolWindow, clickThrough, isLayered, hasCaption, hasTitleText, owner, noActivate) ||
-                SurfaceAutonomy.IsTransientWorkspaceFreezeOverlay(processName, className, visualRect, workArea, isTopmost, isToolWindow))
-            {
-                return true;
-            }
+                SurfaceAutonomy.IsTransientWorkspaceFreezeOverlay(processName, className, visualRect, workArea, isTopmost, isToolWindow);
+            bool possibleCapture = excludedSurface && WindowClassification.IsCaptureToolProcess(processName);
+            if (excludedSurface && !possibleCapture) return true;
 
             uint parentPid = ResolveParentProcessId(processId);
             string? parentProcessName = parentPid != 0 && parentPid != processId ? ResolveProcessName(parentPid) : null;
             bool isChatFamily = WindowClassification.Identify(processName, className) == WindowUseRole.Chat ||
                 WindowClassification.IsCrossProcessChatHelper(processName, parentProcessName);
             SurfacePurpose chatPurpose = SurfacePurpose.Unknown;
-            if (isChatFamily && hasTitleText)
+            if ((isChatFamily || possibleCapture) && hasTitleText)
             {
                 var titleBuf = new StringBuilder(128);
                 if (NativeMethods.GetWindowText(hwnd, titleBuf, titleBuf.Capacity) > 0)
@@ -207,7 +206,7 @@ public sealed partial class WindowManager
                 Math.Max(0, outerRect.Right - visualRect.Right),
                 Math.Max(0, outerRect.Bottom - visualRect.Bottom));
 
-            result.Add(new WindowSnapshot(
+            var window = new WindowSnapshot(
                 hwnd,
                 visualRect,
                 outerRect,
@@ -217,7 +216,7 @@ public sealed partial class WindowManager
                 isResizable,
                 hwnd == foreground,
                 isManageable,
-                zOrder++,
+                zOrder,
                 dpi,
                 processId,
                 isTopmost,
@@ -225,11 +224,18 @@ public sealed partial class WindowManager
                     ? (fullScreen ? "fullscreen" : maximized || nearFullGame ? "maximized" : "windowed") : null)
             {
                 Owner = owner,
+                IsTransientMenu = SurfaceAutonomy.IsTransientMenu(processName, className, ownedMenu, noActivate, isToolWindow),
                 NativeUtility = isToolWindow || noActivate || exemptPopup || owner != 0 && !independent,
                 HasCaption = hasCaption,
                 IndependentFrame = !exemptPopup && ((exStyle & NativeMethods.WsExAppWindow) != 0 ||
                     (style & (NativeMethods.WsMinimizeBox | NativeMethods.WsMaximizeBox)) != 0)
-            });
+            };
+            // 全屏取景仍交给 TaskSurfaces。截图本身不发起整理，独立变化可以沿用原工作窗。
+            if (!excludedSurface || TaskSurfaces.IsCaptureTool(window, chatPurpose))
+            {
+                result.Add(window);
+                zOrder++;
+            }
 
             return true;
         }, nint.Zero);
@@ -239,9 +245,9 @@ public sealed partial class WindowManager
             throw new Win32Exception(Marshal.GetLastWin32Error(), "EnumWindows failed.");
         }
 
-        _cachedSnapshot = result;
+        _cachedSnapshot = TaskSurfaces.ResolveLocalRoots(result);
         _cachedTick = Environment.TickCount64;
-        return result;
+        return _cachedSnapshot;
     }
 
     public void Apply(IReadOnlyList<TidyMove> plan) => SubmitMoves(plan, CanDeferMoves(plan), [], 0, out _, out _);

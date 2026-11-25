@@ -211,8 +211,9 @@ public sealed class AutomaticLayoutScheduler
         }
         var changed = UpdateObserved(next, ignored, ignoredOrder);
         if (now >= _ownUntil) _own.Clear();
+        bool menuOpen = Surfaces.HasOpenMenu(snapshot, _foreground);
         // 轻度档只放行经独立开窗证据确认的事件。普通前台、层级或几何变化只更新现场。
-        if (AutomaticLayoutPolicy.WatchesOpenings(Mode) && newTaskOpeningReady && !busy && !_localForeground &&
+        if (AutomaticLayoutPolicy.WatchesOpenings(Mode) && newTaskOpeningReady && !busy && !_localForeground && !menuOpen &&
             now >= navigationSettleUntil)
             return new(Mode, LayoutTrigger.NewTaskOpening) { Cause = WorkspaceChangeCause.Membership };
         if (changed != WorkspaceChangeCause.None)
@@ -240,7 +241,8 @@ public sealed class AutomaticLayoutScheduler
         {
             if (busy) { _lastChange = now; return null; }
             // 临时表面的停留不续期。原任务若已有真实变化，浮层离开即可依据原时钟判断。
-            if (_localForeground && !_captureForeground) return null;
+            // 菜单关闭后再看邻窗真实剩余的遮挡。已经发生的独立变更仍保留在待处理请求里。
+            if (menuOpen || _localForeground && !_captureForeground) return null;
             // 已确认的开窗碰撞可以抢在常规静稳期之前处理。导航静默期仍优先，让用户有时间点开下一层内容。
             if (now < navigationSettleUntil || !openingReady && (now - _lastChange < SettleMilliseconds || now < _notBefore)) return null;
         }

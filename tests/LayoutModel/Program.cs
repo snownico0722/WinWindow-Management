@@ -1105,10 +1105,10 @@ static void Replay(string path, string? rulesPath, string? sessionFilter, string
             if (localOpening && run.Signals is not { FirstPlacementWindow: > 0 }) continue;
             foreach (bool assumeResizable in new[] { true, false })
             {
-                var desktop = frame.Windows.OrderBy(w => w.ZOrder).Select(w => new WindowSnapshot(w.Id, w.Rect, w.Rect,
+                var desktop = TaskSurfaces.ResolveLocalRoots(frame.Windows.OrderBy(w => w.ZOrder).Select(w => new WindowSnapshot(w.Id, w.Rect, w.Rect,
                     w.WorkArea, Array.IndexOf(areas, w.WorkArea) + 1, default, w.Resizable ?? (assumeResizable && w.Manageable),
                     w.Foreground, w.Manageable && !w.LocalSurface, w.ZOrder, w.Dpi, IsTopmost: w.Topmost,
-                    SurfaceState: w.LocalSurface ? null : w.SurfaceState) { Owner = w.OwnerId }).ToArray();
+                    SurfaceState: w.LocalSurface ? null : w.SurfaceState) { Owner = w.OwnerId }).ToArray());
                 var displays = areas.Select((a, i) => new TaskDisplay(i + 1, a,
                     frame.Displays?.FirstOrDefault(d => d.WorkArea == a)?.Bounds ?? a)).ToArray();
                 var focus = desktop.FirstOrDefault(w => w.IsForeground);

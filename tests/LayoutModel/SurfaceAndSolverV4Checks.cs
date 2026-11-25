@@ -52,7 +52,7 @@ internal static class SurfaceAndSolverV4Checks
         check(!surfaces.IsLocal(qqSubChat) && events.Any(e => e.Child == 1527 && e.Action == "task"),
             "detached resizable QQ subchat window remains an independent task eligible for side-by-side arrangement");
 
-        // 5. SolverFeedback ignores !IsManageable Snap Bar / IME overlays during post-plan user reversal
+        // 只跳过有明确菜单证据的临时表面。相同几何的置顶窗会改变回拖上下文。
         var w1 = Make(10, 10, new(345, 128, 1169, 1252), fg: true, z: 0);
         var w2 = Make(7, 20, new(1179, 103, 1381, 1123), fg: false, z: 1);
         var portfolio = new SolverPortfolio("workspace",
@@ -62,13 +62,21 @@ internal static class SurfaceAndSolverV4Checks
         var plan = new IntentLayoutPlan([new(w1, new(345, 128, 1169, 1252))], [],
             [new([10, 7], "attention-layout", 0, [], null, null, portfolio)]);
         var fbSession = new SolverFeedbackSession();
-        fbSession.Submitted("req-115", [w1 with { VisualRect = new(345, 57, 1169, 1252) }, w2], plan, 1_000);
-        var snapOverlay = Make(999, 30, new(0, 0, 2560, 450), fg: false, resizable: false, topmost: true, manageable: false, z: 0);
+        var beforePlacement = new[] { w1 with { VisualRect = new(345, 57, 1169, 1252) }, w2 };
+        var pinned = Make(999, 30, new(0, 0, 2560, 450), fg: false, resizable: false, topmost: true, manageable: false, z: 0);
         var gesture = new ManualWindowGesture(10, new(345, 128, 1169, 1252), new(345, 57, 1169, 1252), work,
             ManualGestureKind.Move, [], 600, 10, ReleasedTick: 2_500) { ProcessId = w1.ProcessId };
-        var feedback = fbSession.Observe(gesture, [snapOverlay, w1 with { VisualRect = new(345, 57, 1169, 1252), ZOrder = 1 }, w2 with { ZOrder = 2 }], 2_600, DateTimeOffset.UnixEpoch);
+        SolverFeedback? WithSurface(WindowSnapshot surface)
+        {
+            fbSession.Submitted("req-115", beforePlacement, plan, 1_000);
+            return fbSession.Observe(gesture, [surface, beforePlacement[0] with { ZOrder = 1 }, w2 with { ZOrder = 2 }],
+                2_600, DateTimeOffset.UnixEpoch);
+        }
+        var feedback = WithSurface(pinned with { Owner = w1.Handle, IsTransientMenu = true });
         check(feedback != null && feedback.Votes["keep"] > feedback.Votes["attention-layout"],
-            "SolverFeedback captures user drag-back vote even when a transient non-manageable Snap Bar overlay is present");
+            "an identified transient menu does not interrupt a real drag-back vote");
+        check(WithSurface(pinned) == null,
+            "a newly visible fixed occluder makes a drag-back ambiguous");
 
         // 6. Browser expanded bookmarks menu & Self-Occlusion Immunity (owned menus and sticky notes)
         check(!SurfaceAutonomy.IsGhostSurface("chrome.exe", "Chrome_WidgetWin_1", new(736, 214, 501, 1141), new(736, 214, 501, 1141),
@@ -100,6 +108,48 @@ internal static class SurfaceAndSolverV4Checks
         check(observed[0].VisibleRatio == 1 &&
             observed[1].VisibleArea == neighbor.VisualRect.Area - menu.VisualRect.Intersect(neighbor.VisualRect).Area,
             "an owned menu protects its host and remains a real occluder for the adjacent task");
+
+        var firstMenu = menu with { VisualRect = new(720, 0, 220, 800), IsTransientMenu = true };
+        var secondMenu = menu with { Handle = 3701, Owner = firstMenu.Handle, IsTransientMenu = true };
+        host = host with { ZOrder = 2 };
+        neighbor = neighbor with { ZOrder = 3 };
+        firstMenu = firstMenu with { ZOrder = 1 };
+        WindowSnapshot[] openMenus = [secondMenu, firstMenu, host, neighbor];
+        var layered = TaskSurfaces.ResolveLocalRoots(openMenus);
+        var nestedVisibility = new VisibilityAnalyzer().SelectForManualArrange(layered, true);
+        check(layered[0].Owner == firstMenu.Handle && layered[0].IsLocalTo(host) && nestedVisibility[0].VisibleRatio == 1 &&
+            nestedVisibility[1].VisibleArea == neighbor.VisualRect.Area - secondMenu.VisualRect.Intersect(neighbor.VisualRect).Area,
+            "nested bookmark menus keep their direct owner, exempt the root host and still cover the adjacent task");
+        var independentOwner = firstMenu with { IndependentFrame = true };
+        check(!TaskSurfaces.ResolveLocalRoots([secondMenu, independentOwner, host])[0].IsLocalTo(host),
+            "submenu ownership does not cross an independently usable task frame");
+        check(SurfaceAutonomy.IsTransientMenu("chrome", "Chrome_WidgetWin_1", ownedMenu: true, noActivate: true, isToolWindow: true) &&
+            !SurfaceAutonomy.IsTransientMenu("qqkit", "Qt51519QWindowIcon", ownedMenu: true, noActivate: false, isToolWindow: true) &&
+            !SurfaceAutonomy.IsTransientMenu("papertodo", "HwndWrapper[PaperTodo;]", ownedMenu: true, noActivate: true, isToolWindow: true),
+            "an owned nonactivating menu is distinguished from an interactive viewer");
+
+        var scheduler = new AutomaticLayoutScheduler();
+        scheduler.Reset(AutomaticLayoutMode.AutoFullAssist, [host, neighbor], 0);
+        check(scheduler.Observe(openMenus, 50, false) == null && !scheduler.HasPending,
+            "opening unactivated bookmark menus keeps the observed workspace stable");
+        var resizedNeighbor = neighbor with { VisualRect = neighbor.VisualRect with { Width = 960 } };
+        WindowSnapshot[] changedAlongsideMenu = [secondMenu, firstMenu, host, resizedNeighbor];
+        check(scheduler.Observe(changedAlongsideMenu, 100, false) == null &&
+            scheduler.Observe(changedAlongsideMenu, 800, false) == null && scheduler.HasPending &&
+            scheduler.Observe([host, resizedNeighbor], 850, false) is { Cause: WorkspaceChangeCause.Geometry },
+            "a pending real change waits for the menu to close before dispatch");
+        scheduler.Reset(AutomaticLayoutMode.AutoFullAssist, [host, neighbor], 1000);
+        var closedWithoutChange = scheduler.Observe(openMenus, 1050, false) == null &&
+            scheduler.Observe([host, neighbor], 1800, false) == null && !scheduler.HasPending;
+        check(closedWithoutChange, "dismissal of an unactivated menu does not dispatch on its own");
+        var secondDisplay = neighbor with { MonitorHandle = 2, IsForeground = true };
+        var backgroundHost = host with { IsForeground = false };
+        var otherDisplayResized = secondDisplay with { VisualRect = resizedNeighbor.VisualRect };
+        scheduler.Reset(AutomaticLayoutMode.AutoFullAssist, [backgroundHost, secondDisplay], 2000);
+        WindowSnapshot[] otherDisplayWorking = [secondMenu, firstMenu, backgroundHost, otherDisplayResized];
+        check(scheduler.Observe(otherDisplayWorking, 2050, false) == null &&
+            scheduler.Observe(otherDisplayWorking, 2550, false) is { Cause: WorkspaceChangeCause.Geometry },
+            "a menu on another display does not block real changes on the working display");
 
         // 独立穷举作对照。原先固定不相交的 A/C 顺序，会丢掉 C、B、A 这个独有的可见结果。
         var frames = new RectI[] { new(0, 0, 300, 400), new(400, 0, 300, 400),

@@ -20,7 +20,7 @@ internal sealed class SolverFeedbackSession
         if (id == null || applied == null) return;
         var groups = applied.Groups.Where(g => g.Portfolio is { Representatives.Count: > 1 }).ToArray();
         if (groups.Length == 0) return;
-        var projected = TaskLayoutSession.Project(desktop, applied).ToArray();
+        var projected = TaskLayoutSession.Project(desktop.Where(w => !w.IsTransientMenu).ToArray(), applied);
         // 后处理、截断或输入保护可能改变实际提交。只有完整胜出提案确实进入执行，才可把后来的补摆归到本轮。
         groups = groups.Where(g =>
         {
@@ -52,10 +52,10 @@ internal sealed class SolverFeedbackSession
         if (g?.Portfolio == null || old == null || end == null || !end.IsForeground || end.ProcessId != gesture.ProcessId ||
             !WindowStateRules.Matches(old, end, gesture.EndRect) || !WindowStateRules.Near(old.VisualRect, gesture.StartRect) ||
             gesture.WorkArea != old.WorkArea) return null;
-        // 拉边框会临时唤起系统贴靠栏。比对可管理同伴，保留身份、几何和相对层序检查。
-        var peers = round.Projected.Where(w => w.IsManageable && w.MonitorHandle == old.MonitorHandle && w.Handle != old.Handle)
+        // 采集已过滤系统贴靠栏。这里只跳过确认的临时菜单，置顶监看窗等真实遮挡变化会使回拖无法归因。
+        var peers = round.Projected.Where(w => w.MonitorHandle == old.MonitorHandle && w.Handle != old.Handle)
             .OrderBy(w => w.ZOrder).ToArray();
-        var current = live.Where(w => w.IsManageable && w.MonitorHandle == old.MonitorHandle && w.Handle != old.Handle)
+        var current = live.Where(w => !w.IsTransientMenu && w.MonitorHandle == old.MonitorHandle && w.Handle != old.Handle)
             .OrderBy(w => w.ZOrder).ToArray();
         if (peers.Length != current.Length || peers.Where((w,i) => !WindowStateRules.Matches(w, current[i], w.VisualRect)).Any()) return null;
 

@@ -28,11 +28,45 @@ internal sealed class TaskSurfaces
     internal Func<ContextPress?>? ReadContextPress { get; init; }
     internal Action<SurfaceMatch, string>? Changed { get; init; }
     internal IEnumerable<WindowSnapshot> Hosts => _local.Values.Select(m => m.Host);
-    internal bool IsLocal(WindowSnapshot w) => _local.TryGetValue(w.Handle, out var match) && match.Child.ProcessId == w.ProcessId ||
-        IsCaptureOverlay(w);
-    internal nint LocalHostHandle(WindowSnapshot w) =>
-        _local.TryGetValue(w.Handle, out var match) && match.Child.ProcessId == w.ProcessId ? match.Host.Handle : 0;
+    private SurfaceMatch? LocalMatch(WindowSnapshot w) =>
+        _local.TryGetValue(w.Handle, out var match) && match.Child.ProcessId == w.ProcessId ? match : null;
+    internal bool IsLocal(WindowSnapshot w) => w.IsTransientMenu || LocalMatch(w) != null || IsCaptureOverlay(w);
     internal bool IsCaptureOverlay(WindowSnapshot w) => _capture.TryGetValue(w.Handle, out var tool) && tool.Child.ProcessId == w.ProcessId;
+    private bool IsMenu(WindowSnapshot w) => !IsCaptureOverlay(w) && (w.IsTransientMenu || LocalMatch(w)?.ContextPress != null);
+
+    internal bool HasOpenMenu(IReadOnlyList<WindowSnapshot> desktop, nint foreground) =>
+        desktop.FirstOrDefault(w => w.Handle == foreground) is { } work &&
+        desktop.Any(w => w.MonitorHandle == work.MonitorHandle && IsMenu(w));
+
+    internal IReadOnlyList<WindowSnapshot> PrepareForLayout(IReadOnlyList<WindowSnapshot> desktop, nint? workingForeground = null) =>
+        ResolveLocalRoots(desktop.Where(w => workingForeground == null || !IsCaptureOverlay(w)).Select(w => IsLocal(w)
+            ? w with
+            {
+                IsManageable = false,
+                SurfaceState = null,
+                IsForeground = workingForeground == null && w.IsForeground,
+                Owner = w.Owner != 0 ? w.Owner : LocalMatch(w)?.Host.Handle ?? 0,
+                IsTransientMenu = IsMenu(w),
+            }
+            : workingForeground == null ? w : w with { IsForeground = w.Handle == workingForeground }).ToArray());
+
+    internal static IReadOnlyList<WindowSnapshot> ResolveLocalRoots(IReadOnlyList<WindowSnapshot> desktop)
+    {
+        if (!desktop.Any(w => !w.IsManageable && w.Owner != 0)) return desktop;
+        var byHandle = desktop.ToDictionary(w => w.Handle);
+        return desktop.Select(w =>
+        {
+            if (w.IsManageable || w.Owner == 0) return w;
+            // 保留原生直接 owner 供层序检查。遇到独立任务框即停止，不越过它认领自己的菜单。
+            nint root = w.Owner;
+            int remaining = byHandle.Count;
+            while (remaining-- > 0 && byHandle.TryGetValue(root, out var parent) && !parent.IsManageable &&
+                !parent.IndependentFrame && parent.Owner != 0 && byHandle.ContainsKey(parent.Owner))
+                root = parent.Owner;
+            nint localRoot = remaining >= 0 && root != w.Owner ? root : 0;
+            return w.LocalRoot == localRoot ? w : w with { LocalRoot = localRoot };
+        }).ToArray();
+    }
     private HashSet<(nint Handle, uint Pid)> _previous = [];
     internal Action? ResetObserved { get; init; }
     internal void Reset() { _local.Clear(); _capture.Clear(); _previous.Clear(); ResetObserved?.Invoke(); }
@@ -95,7 +129,7 @@ internal sealed class TaskSurfaces
         bool rulesRead = false;
         foreach (var w in desktop)
         {
-            if (IsLocal(w) || w.Handle == previous?.Handle || w.VisualRect.IsEmpty) continue;
+            if (LocalMatch(w) != null || IsCaptureOverlay(w) || w.Handle == previous?.Handle || w.VisualRect.IsEmpty) continue;
             var host = byHandle.GetValueOrDefault(w.Owner);
             bool appeared = !_previous.Contains((w.Handle, w.ProcessId));
             if (host == null && appeared && press != null && byHandle.TryGetValue(press.Root, out var clicked) &&
