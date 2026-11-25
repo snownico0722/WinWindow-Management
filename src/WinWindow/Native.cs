@@ -10,6 +10,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -66,6 +67,7 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint hwnd, uint command);
     [DllImport("user32.dll")] internal static extern bool GetWindowRect(nint hwnd, out Rect rect);
+    [DllImport("user32.dll")] private static extern nint MonitorFromPoint(Point point, uint flags);
     [DllImport("user32.dll")] internal static extern nint MonitorFromWindow(nint hwnd, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
     [DllImport("user32.dll", SetLastError = true)] internal static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint key);
@@ -247,6 +249,62 @@ internal static class Native
         return rect.Right > rect.Left && rect.Bottom > rect.Top;
     }
 
+    public static bool TryGetTitleControlsAnchor(nint target, out Rect frame)
+    {
+        frame = default;
+        if (DwmGetWindowAttribute(target, 14, out int cloaked, sizeof(int)) == 0 && cloaked != 0)
+            return false;
+        if (!TryGetFrameBounds(target, out frame)) return false;
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(MonitorFromWindow(target, 2), ref info)) return false;
+        // 最大化仍有标题栏。独占显示区域的全屏窗口无需覆盖工具条。
+        if (!IsZoomed(target) && frame.Left <= info.Monitor.Left && frame.Top <= info.Monitor.Top &&
+            frame.Right >= info.Monitor.Right && frame.Bottom >= info.Monitor.Bottom) return false;
+        return Overlaps(frame, info.Work);
+    }
+
+    public static Point TitleControlAnchor(nint target, Rect frame, int stripHeight)
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        int height = (int)Math.Ceiling(stripHeight * GetDpiForWindow(target) / 96.0);
+        // 工作区内有余量时贴在顶栏上方，把原来的拖动区和应用自身按钮留给目标。
+        int y = GetMonitorInfo(MonitorFromWindow(target, 2), ref info) && frame.Top - height >= info.Work.Top
+            ? frame.Top - height : frame.Top;
+        return new Point { X = frame.Left + 6, Y = y };
+    }
+
+    public static Rect OverlayBounds(nint hwnd, Point anchor, int width, int height)
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(MonitorFromPoint(anchor, 2), ref info)) return default;
+        var dpi = GetDpiForWindow(hwnd);
+        int w = (int)Math.Ceiling(width * dpi / 96.0), h = (int)Math.Ceiling(height * dpi / 96.0);
+        int x = Math.Clamp(anchor.X, info.Work.Left, Math.Max(info.Work.Left, info.Work.Right - w));
+        int y = Math.Clamp(anchor.Y, info.Work.Top, Math.Max(info.Work.Top, info.Work.Bottom - h));
+        return new Rect { Left = x, Top = y, Right = x + w, Bottom = y + h };
+    }
+
+    public static bool PositionWindowControl(nint hwnd, nint target, Rect bounds)
+    {
+        bool badge = target == 0;
+        bool topmost = badge || IsTopmost(target);
+        if (!SetOwnTopmost(hwnd, topmost)) return false;
+        bool inLayer = badge || GetWindow(hwnd, 2) == target;
+        if (inLayer && GetWindowRect(hwnd, out var current) &&
+            (current.Left, current.Top, current.Right, current.Bottom) ==
+            (bounds.Left, bounds.Top, bounds.Right, bounds.Bottom)) return true;
+        nint after = inLayer ? 0 : GetWindow(target, 3);
+        // 插在目标正上方，仍让挡住目标的窗口盖住按钮。跨过置顶层边界时用 HWND_TOP 保留现有层。
+        if (after != 0 && IsTopmost(after) != topmost) after = 0;
+        if (after == hwnd) inLayer = true;
+        const uint noZOrder = 4, noOwnerZOrder = 0x0200;
+        return SetWindowPos(hwnd, after, bounds.Left, bounds.Top, bounds.Right - bounds.Left,
+            bounds.Bottom - bounds.Top, NoActivate | noOwnerZOrder | (inLayer ? noZOrder : 0));
+    }
+
+    public static void ConfigureWindowControl(nint hwnd) =>
+        SetStyleBits(hwnd, ToolWindow | NoActivateStyle, ToolWindow | NoActivateStyle);
+
     public static void ConfigureOverlay(nint hwnd)
     {
         if (hwnd == 0 || !IsWindow(hwnd)) return;
@@ -282,7 +340,7 @@ internal static class Native
             nint handle = OpenProcess(0x1000, false, pid);
             if (handle != 0)
             {
-                try { var b = new StringBuilder(32768); uint size = (uint)b.Capacity; if (QueryFullProcessImageName(handle, 0, b, ref size)) path = b.ToString(); }
+                try { path = ReadProcessPath(handle) ?? path; }
                 finally { CloseHandle(handle); }
             }
             return new(hwnd.ToInt64(), (int)pid, started, path, ClassName(hwnd));
@@ -295,6 +353,80 @@ internal static class Native
         var current = Identity(identity.Hwnd);
         return current is not null && current.ProcessId == identity.ProcessId && current.ProcessStarted == identity.ProcessStarted && current.ClassName == identity.ClassName;
     }
+    private static string? ReadProcessPath(nint process)
+    {
+        var path = new StringBuilder(32768);
+        uint size = (uint)path.Capacity;
+        return QueryFullProcessImageName(process, 0, path, ref size) ? path.ToString() : null;
+    }
+
+    public static bool CanLaunchApplication(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) ||
+            !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+            return false;
+        using var current = Process.GetCurrentProcess();
+        var processes = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(path));
+        try
+        {
+            foreach (var process in processes)
+            {
+                try
+                {
+                    if (process.SessionId != current.SessionId) continue;
+                    nint handle = OpenProcess(0x1000, false, (uint)process.Id);
+                    // 同名进程的路径无法读取时保守等待，避免重复启动。
+                    if (handle == 0)
+                    {
+                        if (!process.HasExited) return false;
+                        continue;
+                    }
+                    try
+                    {
+                        var runningPath = ReadProcessPath(handle);
+                        if (runningPath is null || string.Equals(runningPath, path, StringComparison.OrdinalIgnoreCase))
+                            return false;
+                    }
+                    finally { CloseHandle(handle); }
+                }
+                catch (InvalidOperationException) { } // The process exited during enumeration.
+                catch (Win32Exception e) when (e.NativeErrorCode is 87 or 1168) { }
+            }
+            return true;
+        }
+        finally { foreach (var process in processes) process.Dispose(); }
+    }
+
+    public static Task<bool> LaunchApplicationAsync(string path)
+    {
+        var result = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try { result.SetResult(LaunchApplication(path)); }
+            catch (Exception e) { result.SetException(e); }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return result.Task;
+    }
+
+    private static bool LaunchApplication(string path)
+    {
+        if (!File.Exists(path)) throw new InvalidOperationException(UiText.Get("ApplicationPathUnavailable"));
+        if (!CanLaunchApplication(path)) return false;
+
+        // 让桌面资源管理器按当前用户的正常权限启动，避免继承 WinWindow 的管理员令牌。
+        var shellType = Type.GetTypeFromProgID("Shell.Application", throwOnError: true)!;
+        dynamic shell = Activator.CreateInstance(shellType)!;
+        dynamic windows = shell.Windows();
+        object location = 0, root = null!;
+        const int desktopClass = 8, needDispatch = 1;
+        dynamic? desktop = windows.FindWindowSW(ref location, ref root, desktopClass, out int _, needDispatch);
+        if (desktop is null) throw new InvalidOperationException(UiText.Get("ApplicationShellUnavailable"));
+        desktop.Document.Application.ShellExecute(path, "", Path.GetDirectoryName(path), "open", Normal);
+        return true;
+    }
+
     internal static bool MatchesProcess(WindowIdentity identity)
     {
         nint process = OpenProcess(0x1000, false, (uint)identity.ProcessId);

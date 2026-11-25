@@ -12,6 +12,8 @@ internal sealed class WindowManager
     private readonly StateStore _store;
     private readonly Dictionary<WindowItem, Task> _operations = new();
     private readonly HashSet<int> _backgroundOperations = new();
+    private readonly HashSet<string> _launching = new(StringComparer.OrdinalIgnoreCase);
+    private long _nextLaunchCheck;
     private bool _refreshing, _rulesActive;
     private volatile bool _stopping;
     private Task<int>? _shutdown;
@@ -99,6 +101,12 @@ internal sealed class WindowManager
                 if (live is null && !item.IsManaged && item.Original is null) { Items.Remove(item); continue; }
                 item.Title = live?.Title ?? Native.Title(item.Hwnd);
                 item.IsMinimized = Native.IsIconic(item.Hwnd); item.IsHidden = !Native.IsWindowVisible(item.Hwnd);
+                if (item.IsCollapsedToIcon && !item.IsHidden && !item.IsMinimized)
+                {
+                    // 应用自己重新显示了窗口，结束这次收起，避免退出时还原到过期位置。
+                    Track(item, s => s.Parked = false);
+                    item.IsCollapsedToIcon = false;
+                }
                 item.Pinned = Native.IsTopmost(item.Hwnd);
                 item.ClickThrough = (Native.Style(item.Hwnd) & Native.Transparent) != 0;
                 if (Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte alpha, out uint flags) && (flags & 2) != 0) item.Opacity = Native.ToPercent(alpha);
@@ -109,7 +117,9 @@ internal sealed class WindowManager
             if (_stopping) return;
             if (removed) Journal();
             _rulesActive = true;
-            ApplyRules(); Changed?.Invoke();
+            ApplyRules();
+            await RefreshLaunchAvailabilityAsync();
+            if (!_stopping) Changed?.Invoke();
         }
         finally { _refreshing = false; }
     }
@@ -129,10 +139,50 @@ internal sealed class WindowManager
                 _ = ApplyRuleAsync(item, rule);
             }
             else if (placeholder is null)
-                Items.Add(new() { Title = rule.Title, RuleId = rule.Id, IsAvailable = false, Pinned = rule.Pinned, Opacity = rule.Opacity, ClickThrough = rule.ClickThrough, Muted = rule.Muted, BackgroundEnabled = rule.KeepRunning });
+                Items.Add(new() { Title = rule.Title, RuleId = rule.Id, SavedProcessPath = rule.ProcessPath ?? "", IsAvailable = false, Pinned = rule.Pinned, Opacity = rule.Opacity, ClickThrough = rule.ClickThrough, Muted = rule.Muted, BackgroundEnabled = rule.KeepRunning });
         }
         foreach (var pending in Items.Where(x => x.Identity is null && !_store.Preferences.Rules.Any(r => r.Id == x.RuleId)).ToArray()) Items.Remove(pending);
     }
+    internal async Task RefreshLaunchAvailabilityAsync()
+    {
+        if (_stopping) return;
+        var pending = Items.Where(item => item.Identity is null)
+            .ToLookup(item => item.SavedProcessPath, StringComparer.OrdinalIgnoreCase);
+        if (pending.Count == 0 || Environment.TickCount64 < _nextLaunchCheck) return;
+        _nextLaunchCheck = Environment.TickCount64 + 800;
+        var paths = pending.Select(group => group.Key).ToArray();
+        var available = await Task.Run(() => paths.Where(Native.CanLaunchApplication).ToArray());
+        if (_stopping) return;
+        var launchable = available.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var group in pending)
+            foreach (var item in group)
+                item.CanLaunch = launchable.Contains(group.Key) && !_launching.Contains(group.Key);
+    }
+
+    public async Task LaunchAsync(WindowItem item)
+    {
+        string path = item.SavedProcessPath;
+        if (_stopping || !item.CanLaunch || !Items.Contains(item) || !_launching.Add(path)) return;
+        try
+        {
+            foreach (var row in Items.Where(row => string.Equals(row.SavedProcessPath, path, StringComparison.OrdinalIgnoreCase)))
+                row.CanLaunch = false;
+            bool launched = await Native.LaunchApplicationAsync(path);
+            if (launched && !_stopping)
+            {
+                Notice?.Invoke(UiText.Get("ApplicationLaunchRequested"));
+                // 给进程启动留一点时间，避免同一程序的其他等待行连续发起启动。
+                await Task.Delay(900);
+            }
+        }
+        finally
+        {
+            _launching.Remove(path);
+            _nextLaunchCheck = 0;
+            await RefreshAsync();
+        }
+    }
+
     public Task ReinforcePinnedAsync()
     {
         var missing = Items.Where(x => x.WantsPin && !x.IsBusy && !Native.IsTopmost(x.Hwnd)).ToArray();
@@ -569,6 +619,25 @@ internal sealed class WindowManager
         }
         return false;
     }
+    public Task CollapseToIconAsync(WindowItem item) => OperateAsync(item, async () =>
+    {
+        var snapshot = Manage(item);
+        if (Native.IsIconic(item.Hwnd) || !Native.IsWindowVisible(item.Hwnd)) return;
+        var placement = Native.GetPlacement(item.Hwnd);
+        Track(item, s => { s.BeforeParking = placement; s.Parked = true; });
+        // 图标是恢复入口。隐藏目标可同时收起任务栏项，原窗口的层级和透明度仍归原来的开关管理。
+        if (!Native.ShowWindowAsync(item.Hwnd, Native.Hide))
+        {
+            Track(item, s => s.Parked = false);
+            throw new InvalidOperationException(UiText.Get("CollapseRejected"));
+        }
+        if (!await WaitForAsync(snapshot.Identity, h => !Native.IsWindowVisible(h)))
+            throw new InvalidOperationException(UiText.Get("CollapseRejected"));
+        item.IsHidden = true;
+        item.IsCollapsedToIcon = true;
+        Finish(item, false);
+    });
+
     public Task<string> ParkAsync(WindowItem item) => ParkAsync(item,
         hwnd => Native.ShowWindowAsync(hwnd, Native.ForceMinimize),
         (hwnd, placement) =>
@@ -660,7 +729,10 @@ internal sealed class WindowManager
         if (s.Parked) Native.ApplyPlacement(item.Hwnd, s.BeforeParking);
         Native.ShowWindowAsync(item.Hwnd, s.Parked ? (int)s.BeforeParking.ShowCmd : Native.Restore);
         if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h))) throw new InvalidOperationException(UiText.Get("RestoreRejected"));
-        s.Parked = false; item.IsHidden = false; item.IsMinimized = false; Journal();
+        Track(item, snapshot => snapshot.Parked = false);
+        item.IsHidden = false;
+        item.IsMinimized = false;
+        item.IsCollapsedToIcon = false;
         if (activate && !_stopping) Native.SetForegroundWindow(item.Hwnd);
         Finish(item, false);
     });
@@ -670,6 +742,7 @@ internal sealed class WindowManager
         {
             item.BackgroundEnabled = false;
             await RestoreSnapshotAsync(s);
+            item.IsCollapsedToIcon = false;
             item.Pinned = s.Topmost;
             item.Opacity = s.LayeredReadable && (s.LayeredFlags & 2) != 0 ? Native.ToPercent(s.Alpha) : 100;
             item.ClickThrough = (s.ExtendedStyle & Native.Transparent) != 0;

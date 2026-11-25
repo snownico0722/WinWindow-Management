@@ -30,6 +30,9 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _aggressiveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _pinReinforceTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _opacityTimer = new() { Interval = TimeSpan.FromMilliseconds(70) };
+    private readonly DispatcherTimer _managedControlsTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(60) };
+    private readonly DispatcherTimer _launchTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
+    private readonly Dictionary<WindowItem, ManagedWindowControls> _managedControls = new();
     private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(4.5) };
     private readonly Dictionary<WindowItem, int> _pendingOpacity = new();
     private readonly Dictionary<string, TextBox> _keyEditors;
@@ -84,6 +87,8 @@ public partial class MainWindow : Window
         FocusPinBox.IsChecked = p.PinWhenFocused; AbsoluteBox.IsChecked = p.AbsoluteTopmost; AggressiveBox.IsChecked = p.AggressiveTopmost;
         SoundBox.IsChecked = p.EnablePinSound; NotificationBox.IsChecked = p.ShowPinNotifications;
         EnhancedBackgroundBox.IsChecked = p.EnhancedBackgroundKeep;
+        TitlebarOpacitySlider.Value = p.TitlebarOpacity;
+        TitlebarOpacityLabel.Text = p.TitlebarOpacity + "%";
         LockCursorPosBox.IsChecked = p.LockBackgroundCursorPos;
         SnapshotLookbackSwitch.IsChecked = p.SnapshotLookbackEnabled;
         AggressiveBox.IsEnabled = p.AbsoluteTopmost;
@@ -95,6 +100,8 @@ public partial class MainWindow : Window
         _aggressiveTimer.Tick += (_, _) => { if (CanEnforceOwn() && Native.OverlappingTopmostAbove(_hwnd)) Native.Raise(_hwnd); };
         _pinReinforceTimer.Tick += async (_, _) => await RunAsync(Manager.ReinforcePinnedAsync);
         _opacityTimer.Tick += (_, _) => DrainOpacity();
+        _managedControlsTimer.Tick += (_, _) => RefreshManagedControls();
+        _launchTimer.Tick += async (_, _) => await RunAsync(Manager.RefreshLaunchAvailabilityAsync);
         _pickerTimer.Tick += (_, _) => UpdatePickerOutline();
         _statusTimer.Tick += (_, _) => DismissStatus();
         SourceInitialized += OnSourceInitialized;
@@ -106,7 +113,7 @@ public partial class MainWindow : Window
                 _ = ReadBehaviorsAsync();
         };
         Deactivated += (_, _) => { if (!_picking) _flash?.Hide(); ApplyOwnPolicy(); };
-        IsVisibleChanged += (_, _) => { if (!IsVisible) { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); };
+        IsVisibleChanged += (_, _) => { if (!IsVisible) { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); if (_ready) RefreshView(); };
         StateChanged += (_, _) => { if (WindowState != WindowState.Minimized) _lastState = WindowState; else { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); };
         Closing += OnClosing;
         _ready = true; RefreshView();
@@ -165,7 +172,7 @@ public partial class MainWindow : Window
         {
             if (_quitting) return;
             if (foreground) { ApplyOwnPolicy(); if (CanEnforceOwn()) Native.Raise(_hwnd); }
-            if ((IsVisible && WindowState != WindowState.Minimized) || Manager.HasRules) QueueRefresh();
+            if ((IsVisible && WindowState != WindowState.Minimized) || Manager.HasRules || _managedControls.Count != 0) QueueRefresh();
         };
         Run(() => _desktop.ApplyHotkeys(_store.Preferences.Hotkeys));
     }
@@ -217,6 +224,9 @@ public partial class MainWindow : Window
         var managedAll = Manager.Items.Where(x => x.IsManaged || x.Remembered).ToArray();
         Volatile.Write(ref _snapshotManaged, managedAll.Where(item => item.IsManaged && item.Hwnd != 0).Select(item => item.Hwnd).ToHashSet());
         _pinReinforceTimer.IsEnabled = managedAll.Any(x => x.WantsPin);
+        _launchTimer.IsEnabled = IsVisible && managedAll.Any(item => !item.IsAvailable);
+        SyncManagedControls(managedAll);
+
         int totalManaged = managedAll.Length;
         int pinnedCount = managedAll.Count(x => x.Pinned);
         int parkedCount = managedAll.Count(x => x.IsHidden || x.IsMinimized || x.Opacity == 0);
@@ -247,6 +257,50 @@ public partial class MainWindow : Window
         }
 
         if (_pendingOpacity.Count != 0) _opacityTimer.Start();
+    }
+
+    private void SyncManagedControls(WindowItem[] managed)
+    {
+        var targets = managed.Where(item => item.IsManaged && item.Hwnd != 0).ToHashSet();
+        foreach (var item in _managedControls.Keys.Where(item => !targets.Contains(item)).ToArray())
+        {
+            _managedControls[item].Close();
+            _managedControls.Remove(item);
+        }
+        foreach (var item in targets)
+            if (!_managedControls.ContainsKey(item))
+                _managedControls.Add(item, new ManagedWindowControls(this, item));
+        _managedControlsTimer.IsEnabled = _managedControls.Count != 0;
+        RefreshManagedControls();
+    }
+
+    internal Native.Point FindBadgeAnchor(WindowItem item, Native.Rect frame)
+    {
+        int size = ManagedWindowControls.BadgeSize;
+        Native.Point origin = new() { X = frame.Left + 6, Y = frame.Top + 3 };
+        var occupied = _managedControls.Where(pair => pair.Key != item).Select(pair => pair.Value.VisibleBadgeBounds)
+            .OfType<Native.Rect>().ToArray();
+        var first = Native.OverlayBounds(item.Hwnd, origin, size, size);
+        int step = first.Right - first.Left + 6;
+        // 最大化窗口常有同一个起点。找相邻空位，避免新的图标挡住另一个恢复入口。
+        if (!occupied.Any(other => Native.Overlaps(other, first))) return origin;
+        for (int i = 1; i <= occupied.Length; i++)
+        {
+            foreach (int offset in new[] { i * step, -i * step })
+            {
+                var candidate = new Native.Point { X = first.Left + offset, Y = first.Top };
+                var bounds = Native.OverlayBounds(item.Hwnd, candidate, size, size);
+                if (!occupied.Any(other => Native.Overlaps(other, bounds))) return candidate;
+            }
+        }
+        return origin;
+    }
+
+    internal void RefreshManagedControls()
+    {
+        if (_quitting) return;
+        foreach (var controls in _managedControls.Values)
+            controls.Follow(_store.Preferences.TitlebarOpacity);
     }
 
     private void SearchToggle_Click(object sender, RoutedEventArgs e)
@@ -288,6 +342,7 @@ public partial class MainWindow : Window
         WindowList.SelectedItem = item;
         switch (action)
         {
+            case "launch": await Manager.LaunchAsync(item); break;
             case "activate":
                 await Manager.ActivateAsync(item);
                 break;
@@ -296,6 +351,11 @@ public partial class MainWindow : Window
                 await Manager.SetListedPinAsync(item, nextPin);
                 if (item.Hwnd != 0) Outline.Show(item.Hwnd, transient: true, muted: !nextPin);
                 PinFeedback(item, nextPin);
+                break;
+            case "toggleOpacity":
+                int opacity = DesiredOpacity(item) == _store.Preferences.TitlebarOpacity ? 100 : _store.Preferences.TitlebarOpacity;
+                _pendingOpacity.Remove(item);
+                await Manager.SetOpacityAsync(item, opacity);
                 break;
             case "through": await Manager.SetClickThroughAsync(item, !item.ClickThrough); break;
             case "mute": await Manager.SetMuteAsync(item, !item.Muted); break;
@@ -659,6 +719,16 @@ public partial class MainWindow : Window
         if (backgroundChanged) _ = RunAsync(Manager.ApplyBackgroundPreferencesAsync);
     }
 
+    private void TitlebarOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!_ready) return;
+        int value = (int)e.NewValue;
+        TitlebarOpacityLabel.Text = value + "%";
+        _store.Preferences.TitlebarOpacity = value;
+        _store.SaveSoon();
+        RefreshManagedControls();
+    }
+
     private void Startup_Click(object sender, RoutedEventArgs e)
     {
         Run(() => { bool enabled = StartupBox.IsChecked == true; DesktopIntegration.SetAutostart(enabled); _store.Preferences.StartWithWindows = enabled; _store.SaveSoon(); });
@@ -796,6 +866,7 @@ public partial class MainWindow : Window
         if (_quitting) return;
         _quitting = true; HideHoverPreview(); SnapshotHistory.Dispose(); _layout?.Dispose(); AddPopup.IsOpen = false; _flash?.Dispose(); _flash = null;
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
+        _managedControlsTimer.Stop(); _launchTimer.Stop();
         CancelPicker(); SaveGeometry(); ApplyOwnPolicy();
         int failures = await Manager.ShutdownAsync();
         if (failures != 0) _desktop?.Notify(UiText.Format("RetryNextLaunch", failures));
@@ -804,7 +875,11 @@ public partial class MainWindow : Window
 
     internal void Cleanup()
     {
+        _ready = false;
         _pickerTimer.Stop(); _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
+        _managedControlsTimer.Stop(); _launchTimer.Stop();
+        foreach (var controls in _managedControls.Values) controls.Close();
+        _managedControls.Clear();
         _flash?.Dispose(); _flash = null;
         HideHoverPreview(); _hoverOutline?.Dispose(); _hoverOutline = null;
         SnapshotHistory.Dispose();

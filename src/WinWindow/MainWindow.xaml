@@ -230,6 +230,14 @@
             <CheckBox x:Name="FocusPinBox" Content="{DynamicResource Text.PinOnFocus}" Click="Settings_Click" ToolTip="{DynamicResource Text.PinOnFocusHint}"/>
             <CheckBox x:Name="AbsoluteBox" Content="{DynamicResource Text.KeepAbove}" Click="Settings_Click" ToolTip="{DynamicResource Text.KeepAboveHint}"/>
             <CheckBox x:Name="AggressiveBox" Content="{DynamicResource Text.AggressiveCheck}" Click="Settings_Click" ToolTip="{DynamicResource Text.AggressiveHint}"/>
+            <TextBlock Text="{DynamicResource Text.ManagedTitlebar}" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
+            <TextBlock Text="{DynamicResource Text.TitlebarOpacitySetting}" Style="{StaticResource MutedText}"/>
+            <DockPanel Margin="0,2,0,3">
+              <TextBlock x:Name="TitlebarOpacityLabel" DockPanel.Dock="Right" Width="46" TextAlignment="Right" VerticalAlignment="Center"/>
+              <Slider x:Name="TitlebarOpacitySlider" Minimum="0" Maximum="99" TickFrequency="1" IsSnapToTickEnabled="True"
+                ValueChanged="TitlebarOpacity_Changed" VerticalAlignment="Center" Margin="0,0,5,0"
+                AutomationProperties.Name="{DynamicResource Text.TitlebarOpacitySetting}"/>
+            </DockPanel>
             <TextBlock Text="{DynamicResource Text.BackgroundSection}" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
             <CheckBox x:Name="EnhancedBackgroundBox" Content="{DynamicResource Text.EnhancedBackground}" Click="Settings_Click" ToolTip="{DynamicResource Text.EnhancedBackgroundHint}"/>
             <CheckBox x:Name="LockCursorPosBox" Content="{DynamicResource Text.LockBackgroundCursor}" Click="Settings_Click" ToolTip="{DynamicResource Text.LockBackgroundCursorHint}"/>

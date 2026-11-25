@@ -64,8 +64,9 @@ internal sealed class WindowItem : Observable
     public HashSet<string>? MutedSessionIds { get; set; }
     public string? RuleId { get; set; }
     public nint Hwnd => Identity?.Hwnd ?? 0;
-    public string ProcessName => Identity is null ? UiText.Get("WaitingForWindow") : Path.GetFileName(Identity.ProcessPath);
-    public string ProcessPath => Identity?.ProcessPath ?? "";
+    public string ProcessName => ProcessPath.Length == 0 ? UiText.Get("WaitingForWindow") : Path.GetFileName(ProcessPath);
+    public string SavedProcessPath { get; init; } = "";
+    public string ProcessPath => Identity?.ProcessPath ?? SavedProcessPath;
     private ImageSource? _icon;
     private bool _requestedIcon;
     public ImageSource? Icon
@@ -128,8 +129,11 @@ internal sealed class WindowItem : Observable
     private bool _busy;
     public bool IsBusy { get => _busy; set { if (Set(ref _busy, value)) { Changed(nameof(CanOperate)); NotifyState(); } } }
     public bool CanOperate => IsAvailable && !IsBusy;
+    private bool _canLaunch, _collapsedToIcon;
+    public bool CanLaunch { get => _canLaunch; set => Set(ref _canLaunch, value); }
+    public bool IsCollapsedToIcon { get => _collapsedToIcon; set { if (Set(ref _collapsedToIcon, value)) NotifyState(); } }
     public bool IsParked => Original?.Parked == true;
-    public string StateText => !IsAvailable ? UiText.Get("PendingWindow") : IsBusy ? UiText.Get("Working") : IsHidden ? UiText.Get("HiddenRecoverable") : IsMinimized ? UiText.Get("Minimized") : Opacity == 0 ? UiText.Get("TransparentRecoverable") : Pinned ? UiText.Get("Pinned") : IsManaged ? UiText.Get("Managed") : UiText.Get("Normal");
+    public string StateText => !IsAvailable ? UiText.Get("PendingWindow") : IsBusy ? UiText.Get("Working") : IsCollapsedToIcon ? UiText.Get("CollapsedToIcon") : IsHidden ? UiText.Get("HiddenRecoverable") : IsMinimized ? UiText.Get("Minimized") : Opacity == 0 ? UiText.Get("TransparentRecoverable") : Pinned ? UiText.Get("Pinned") : IsManaged ? UiText.Get("Managed") : UiText.Get("Normal");
     public void NotifyLanguage()
     {
         Changed(nameof(ProcessName)); Changed(nameof(Details)); Changed(nameof(StateText));
@@ -153,6 +157,7 @@ internal sealed class Preferences
     public bool AggressiveTopmost { get; set; }
     public bool EnablePinSound { get; set; } = true;
     public bool ShowPinNotifications { get; set; }
+    public int TitlebarOpacity { get; set; } = 50;
     public bool EnhancedBackgroundKeep { get; set; }
     public bool LockBackgroundCursorPos { get; set; }
     public bool SnapshotLookbackEnabled { get; set; } = true;

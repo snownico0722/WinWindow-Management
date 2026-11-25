@@ -365,6 +365,13 @@ internal static class SmokeTests
             finally { NeatWin.Windows.WindowManager.CaptureFilterForTests = null; }
             await shell.Manager.RefreshAsync();
             var chosen = shell.Manager.Items.First(x => x.Hwnd == item.Hwnd);
+            var controlsTarget = await FixtureAsync(output, false);
+            processes.Add(controlsTarget.Process);
+            await CheckManagedTitlebarAsync(shell, controlsTarget.Hwnd, store);
+            Stop(controlsTarget.Process);
+            await controlsTarget.Process.WaitForExitAsync();
+            await shell.Manager.RefreshAsync();
+            await CheckLaunchButtonAsync(shell, store, output);
             var game = await FixtureAsync(output, false, activity: true);
             processes.Add(game.Process);
             using (var desktop = new DesktopIntegration(shell, shell.Manager))
@@ -1199,13 +1206,91 @@ internal static class SmokeTests
         await WaitAsync("restored hover preview closes on leave", () => !shell.IsHoverPreviewVisible);
     }
 
+    private static async Task CheckManagedTitlebarAsync(MainWindow shell, nint target, StateStore store)
+    {
+        await shell.AddTargetAsync(target, pin: false);
+        var item = shell.Manager.Items.Single(row => row.Hwnd == target);
+        var controls = Application.Current.Windows.OfType<ManagedWindowControls>()
+            .Single(window => ReferenceEquals(window.DataContext, item));
+        nint hwnd = new WindowInteropHelper(controls).Handle;
+        await WaitAsync("managed title bar follows its real target", () => Native.IsWindowVisible(hwnd) && Native.IsAbove(hwnd, target));
+        Assert(!Native.IsTopmost(hwnd) && (Native.Style(hwnd) & Native.NoActivateStyle) != 0,
+            "the title bar inherits the normal layer and does not steal focus");
+
+        var pin = (ToggleButton)controls.FindName("Pin");
+        pin.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        await WaitAsync("title pin puts the target and its controls in the topmost layer",
+            () => !item.IsBusy && Native.IsTopmost(target) && Native.IsTopmost(hwnd));
+
+        var opacity = (ToggleButton)controls.FindName("OpacityToggle");
+        var setting = (Slider)shell.FindName("TitlebarOpacitySlider");
+        Assert(setting.Value == 50, "title bar opacity starts at 50 percent");
+        setting.Value = 64;
+        opacity.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        await WaitAsync("title bar opacity uses the configured percent",
+            () => !item.IsBusy && Native.GetLayeredWindowAttributes(target, out _, out byte value, out _) && value == Native.ToAlpha(64));
+        opacity.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        await WaitAsync("title bar opacity toggles back to 100 percent", () => !item.IsBusy && item.Opacity == 100);
+        setting.Value = 50;
+
+        Native.ShowWindowAsync(target, Native.Maximized);
+        await WaitAsync("fixture is maximized before collapsing", () => Native.GetPlacement(target).ShowCmd == Native.Maximized);
+        ((Button)controls.FindName("Collapse")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        var badge = (Button)controls.FindName("Badge");
+        await WaitAsync("collapse leaves a topmost icon and hides the original window",
+            () => !item.IsBusy && item.IsCollapsedToIcon && badge.IsVisible && Native.IsTopmost(hwnd) && !Native.IsWindowVisible(target));
+        Assert(store.ReadRecovery().Any(snapshot => snapshot.Identity.Hwnd == target && snapshot.Parked &&
+            snapshot.BeforeParking.ShowCmd == Native.Maximized), "collapse journals the original placement");
+        badge.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        await WaitAsync("clicking the icon restores the original maximized window",
+            () => !item.IsBusy && !item.IsCollapsedToIcon && !badge.IsVisible &&
+                Native.IsWindowVisible(target) && Native.GetPlacement(target).ShowCmd == Native.Maximized);
+        await shell.Manager.RemoveAsync(item);
+        Assert(!Native.IsWindow(hwnd), "removing the target disposes its managed title bar");
+    }
+
+    private static async Task CheckLaunchButtonAsync(MainWindow shell, StateStore store, string output)
+    {
+        string name = "wwl" + Guid.NewGuid().ToString("N")[..8];
+        string path = Path.Combine(output, name + ".exe");
+        File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), path);
+        var rule = new WindowRule { Title = "Launch button fixture", ProcessPath = path };
+        store.Preferences.Rules.Add(rule);
+        try
+        {
+            await shell.Manager.RefreshAsync();
+            var pending = shell.Manager.Items.Single(item => item.RuleId == rule.Id);
+            await WaitAsync("the saved executable has a launch button", () => pending.CanLaunch);
+            var row = await FindRowAsync(shell, pending);
+            var launch = (Button)row.FindName("LaunchButton");
+            Assert(launch.IsVisible, "the play button occupies the waiting card's avatar slot");
+            launch.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await WaitAsync("the play button actually starts the saved executable", () => !Native.CanLaunchApplication(path), 5000);
+            Assert(!pending.CanLaunch && !launch.IsVisible, "a running executable cannot be launched again from the same card");
+        }
+        finally
+        {
+            foreach (var process in Process.GetProcessesByName(name))
+            {
+                using (process)
+                {
+                    Stop(process);
+                    await process.WaitForExitAsync();
+                }
+            }
+            store.Preferences.Rules.Remove(rule);
+            await shell.Manager.RefreshAsync();
+            File.Delete(path);
+        }
+    }
+
     private static async Task CheckPickerOutlineAsync(MainWindow shell, nint target)
     {
         shell.ShowShell();
         nint own = new WindowInteropHelper(shell).Handle;
         await WaitAsync("workbench has focus before preview", () => Native.GetForegroundWindow() == own);
         shell.PreviewPickerTarget(target);
-        var overlay = Application.Current.Windows.Cast<Window>().Single(w => w != shell && w.IsVisible && w.AllowsTransparency);
+        var overlay = Application.Current.Windows.Cast<Window>().Single(w => w != shell && w.IsVisible && w.AllowsTransparency && !w.IsHitTestVisible);
         nint hwnd = new WindowInteropHelper(overlay).Handle;
         bool Aligned() => Native.TryGetFrameBounds(target, out var targetRect) && Native.GetWindowRect(hwnd, out var outline)
             && outline.Left == targetRect.Left - 5 && outline.Top == targetRect.Top - 5

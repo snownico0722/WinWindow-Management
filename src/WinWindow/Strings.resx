@@ -274,4 +274,16 @@
   <data name="LayoutStrengthHint" xml:space="preserve"><value>影响已授权范围内的整理幅度</value></data>
   <data name="LegacyLightHint" xml:space="preserve"><value>沿用原来的松手辅助。再次选择轻度可启用新任务开窗辅助</value></data>
   <data name="LegacyFullHint" xml:space="preserve"><value>沿用原来的松手后同组整理。再次选择轻度可改为单窗辅助</value></data>
+  <data name="LaunchApplication" xml:space="preserve"><value>启动程序</value></data>
+  <data name="ApplicationLaunchRequested" xml:space="preserve"><value>已请求启动程序，正在等待窗口。</value></data>
+  <data name="ApplicationPathUnavailable" xml:space="preserve"><value>找不到保存的程序文件。</value></data>
+  <data name="ApplicationShellUnavailable" xml:space="preserve"><value>Windows 资源管理器暂时不可用，无法启动程序。</value></data>
+  <data name="CollapseToIcon" xml:space="preserve"><value>收起为图标</value></data>
+  <data name="CollapsedToIcon" xml:space="preserve"><value>已收起为图标</value></data>
+  <data name="RestoreFromIcon" xml:space="preserve"><value>恢复窗口</value></data>
+  <data name="CollapseRejected" xml:space="preserve"><value>此窗口未能收起为图标。</value></data>
+  <data name="ToggleTitlebarOpacity" xml:space="preserve"><value>切换窗口不透明度</value></data>
+  <data name="ToggleTitlebarOpacityHint" xml:space="preserve"><value>切换窗口不透明度（{0}% / 100%）</value></data>
+  <data name="ManagedTitlebar" xml:space="preserve"><value>被管理窗口顶栏</value></data>
+  <data name="TitlebarOpacitySetting" xml:space="preserve"><value>顶栏按钮切换到的不透明度</value></data>
 </root>

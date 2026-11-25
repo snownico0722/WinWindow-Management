@@ -27,6 +27,7 @@ internal sealed class StateStore
         DirectoryPath = directory;
         Directory.CreateDirectory(directory);
         Preferences = Read<Preferences>("settings.json") ?? new();
+        Preferences.TitlebarOpacity = Math.Clamp(Preferences.TitlebarOpacity, 0, 99);
         Preferences.Rules ??= new();
         Preferences.Hotkeys ??= WinWindow.Preferences.DefaultHotkeys();
         foreach (var pair in WinWindow.Preferences.DefaultHotkeys()) Preferences.Hotkeys.TryAdd(pair.Key, pair.Value);

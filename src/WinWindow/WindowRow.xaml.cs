@@ -93,7 +93,10 @@ public partial class WindowRow : UserControl
         _syncing = true;
         try
         {
-            CardFrame.Opacity = item.IsAvailable ? 1.0 : 0.72;
+            bool canLaunch = item.CanLaunch;
+            LaunchButton.Visibility = canLaunch ? Visibility.Visible : Visibility.Collapsed;
+            RowAvatar.Visibility = canLaunch ? Visibility.Hidden : Visibility.Visible;
+            CardFrame.Opacity = item.IsAvailable || item.CanLaunch ? 1.0 : 0.72;
             CardFrame.SetResourceReference(Border.BackgroundProperty, item.IsAvailable ? "Panel" : "Paper");
 
             PinButton.IsChecked = item.Pinned;
@@ -111,8 +114,9 @@ public partial class WindowRow : UserControl
             ParkButton.ToolTip = restore ? UiText.Get("RestoreWindow") : UiText.Get("ForceMinimize");
             System.Windows.Automation.AutomationProperties.SetName(ParkButton, restore ? UiText.Get("RestoreWindow") : UiText.Get("ForceMinimize"));
 
-            RowState.Text = !item.IsAvailable ? UiText.Get("AwaitLaunch")
+            RowState.Text = !item.IsAvailable ? UiText.Get(item.CanLaunch ? "AwaitLaunch" : "WaitingForWindow")
                 : item.IsBusy ? UiText.Get("Busy")
+                : item.IsCollapsedToIcon ? UiText.Get("CollapsedToIcon")
                 : item.IsHidden ? UiText.Get("Hidden")
                 : item.IsMinimized ? UiText.Get("Minimized")
                 : item.Opacity == 0 ? UiText.Get("Transparent")
@@ -141,6 +145,7 @@ public partial class WindowRow : UserControl
         Sync();
     }
 
+    private void Launch_Click(object sender, RoutedEventArgs e) => Execute("launch");
     private void Title_Click(object sender, RoutedEventArgs e) => Execute("activate");
     private void Pin_Click(object sender, RoutedEventArgs e) => Execute("pin");
     private void Through_Click(object sender, RoutedEventArgs e) => Execute("through");

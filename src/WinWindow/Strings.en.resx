@@ -274,4 +274,16 @@
   <data name="LayoutStrengthHint" xml:space="preserve"><value>Controls how much the layout can change within the selected mode</value></data>
   <data name="LegacyLightHint" xml:space="preserve"><value>Uses your previous gesture assistance. Select Light again to also assist when a new task window opens.</value></data>
   <data name="LegacyFullHint" xml:space="preserve"><value>Uses your previous group arrangement after gestures. Select Light again for single-window assistance.</value></data>
+  <data name="LaunchApplication" xml:space="preserve"><value>Launch application</value></data>
+  <data name="ApplicationLaunchRequested" xml:space="preserve"><value>Launch requested. Waiting for the window.</value></data>
+  <data name="ApplicationPathUnavailable" xml:space="preserve"><value>The saved application file could not be found.</value></data>
+  <data name="ApplicationShellUnavailable" xml:space="preserve"><value>Windows Explorer is unavailable. The application could not be launched.</value></data>
+  <data name="CollapseToIcon" xml:space="preserve"><value>Collapse to icon</value></data>
+  <data name="CollapsedToIcon" xml:space="preserve"><value>Collapsed to icon</value></data>
+  <data name="RestoreFromIcon" xml:space="preserve"><value>Restore window</value></data>
+  <data name="CollapseRejected" xml:space="preserve"><value>This window could not be collapsed to an icon.</value></data>
+  <data name="ToggleTitlebarOpacity" xml:space="preserve"><value>Toggle window opacity</value></data>
+  <data name="ToggleTitlebarOpacityHint" xml:space="preserve"><value>Toggle window opacity ({0}% / 100%)</value></data>
+  <data name="ManagedTitlebar" xml:space="preserve"><value>Managed window title bar</value></data>
+  <data name="TitlebarOpacitySetting" xml:space="preserve"><value>Opacity used by the title bar button</value></data>
 </root>

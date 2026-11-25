@@ -35,7 +35,8 @@
             <ColumnDefinition Width="36"/>
             <ColumnDefinition Width="*"/>
           </Grid.ColumnDefinitions>
-          <ContentPresenter Content="{Binding}" ContentTemplate="{StaticResource WindowAvatar}" Width="28" Height="28" HorizontalAlignment="Left" VerticalAlignment="Center"/>
+          <ContentPresenter x:Name="RowAvatar" Content="{Binding}" ContentTemplate="{StaticResource WindowAvatar}"
+            Width="28" Height="28" HorizontalAlignment="Left" VerticalAlignment="Center"/>
           <StackPanel Grid.Column="1" VerticalAlignment="Center">
             <TextBlock x:Name="TitleLabel" Text="{Binding Title}" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" FontSize="13"/>
             <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
@@ -44,6 +45,11 @@
             </StackPanel>
           </StackPanel>
         </Grid>
+      </Button>
+      <Button x:Name="LaunchButton" Style="{StaticResource RowIconButton}" Width="28" Height="28"
+        HorizontalAlignment="Left" VerticalAlignment="Center" Visibility="Collapsed" Click="Launch_Click"
+        ToolTip="{DynamicResource Text.LaunchApplication}" AutomationProperties.Name="{DynamicResource Text.LaunchApplication}">
+        <Path Data="M5,2.5 L13.5,8 L5,13.5 Z" Width="16" Height="16" Fill="{DynamicResource Accent}"/>
       </Button>
 
       <Slider x:Name="OpacitySlider" Grid.Column="1" Minimum="0" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True"
