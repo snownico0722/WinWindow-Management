@@ -226,6 +226,16 @@
             <TextBlock Text="{DynamicResource Text.Feedback}" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
             <CheckBox x:Name="SoundBox" Content="{DynamicResource Text.PinSound}" Click="Settings_Click"/>
             <CheckBox x:Name="NotificationBox" Content="{DynamicResource Text.PinNotifications}" Click="Settings_Click"/>
+            <TextBlock Text="{DynamicResource Text.QuickActionsSection}" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
+            <DockPanel Margin="0,3" MaxWidth="360" HorizontalAlignment="Left" Width="320" ToolTip="{DynamicResource Text.DefaultQuickOpacityHint}">
+              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBox x:Name="QuickOpacityBox" Width="64" MinHeight="26" Padding="5,3" TextAlignment="Right"
+                  AutomationProperties.Name="{DynamicResource Text.DefaultQuickOpacity}"
+                  LostKeyboardFocus="QuickOpacity_LostFocus" KeyDown="QuickOpacity_KeyDown"/>
+                <TextBlock Text="%" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="5,0,0,0"/>
+              </StackPanel>
+              <TextBlock Text="{DynamicResource Text.DefaultQuickOpacity}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
+            </DockPanel>
             <TextBlock Text="{DynamicResource Text.ManagerZOrder}" Style="{StaticResource SectionTitle}" Margin="0,14,0,6"/>
             <CheckBox x:Name="FocusPinBox" Content="{DynamicResource Text.PinOnFocus}" Click="Settings_Click" ToolTip="{DynamicResource Text.PinOnFocusHint}"/>
             <CheckBox x:Name="AbsoluteBox" Content="{DynamicResource Text.KeepAbove}" Click="Settings_Click" ToolTip="{DynamicResource Text.KeepAboveHint}"/>

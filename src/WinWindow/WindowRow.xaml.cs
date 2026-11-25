@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -53,7 +54,7 @@ public partial class WindowRow : UserControl
 
     private void ItemChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (_item is not { IsAvailable: true, IsBusy: false, IsHidden: false, IsMinimized: false }) CancelHoverPreview();
+        if (_item is not { IsAvailable: true, IsBusy: false, IsHidden: false, IsMinimized: false, IsIconCollapsed: false }) CancelHoverPreview();
         else if (IsMouseOver && _hoverCandidate is null && _hoverPreview is null) ScheduleHoverPreview();
         Sync();
     }
@@ -64,7 +65,7 @@ public partial class WindowRow : UserControl
     private void ScheduleHoverPreview()
     {
         CancelHoverPreview();
-        if (_item is not { IsAvailable: true, IsBusy: false, IsHidden: false, IsMinimized: false } item) return;
+        if (_item is not { IsAvailable: true, IsBusy: false, IsHidden: false, IsMinimized: false, IsIconCollapsed: false } item) return;
         _hoverCandidate = item;
         _hoverTimer.Start();
     }
@@ -74,7 +75,7 @@ public partial class WindowRow : UserControl
         _hoverTimer.Stop();
         var item = _hoverCandidate;
         _hoverCandidate = null;
-        if (item is null || !ReferenceEquals(_item, item) || !item.IsAvailable || item.IsBusy || item.IsHidden || item.IsMinimized) return;
+        if (item is null || !ReferenceEquals(_item, item) || !item.IsAvailable || item.IsBusy || item.IsHidden || item.IsMinimized || item.IsIconCollapsed) return;
         _hoverPreview = item;
         Owner?.ShowHoverPreview(item);
     }
@@ -93,8 +94,18 @@ public partial class WindowRow : UserControl
         _syncing = true;
         try
         {
-            CardFrame.Opacity = item.IsAvailable ? 1.0 : 0.72;
+            bool showLaunch = !item.IsAvailable && !string.IsNullOrWhiteSpace(item.ProcessPath);
+            // 未启动条目在原图标位置展示独立可点击的播放按钮，不再把整张卡片一起压淡导致启动按钮像禁用态。
+            CardFrame.Opacity = item.IsAvailable || showLaunch ? 1.0 : 0.72;
             CardFrame.SetResourceReference(Border.BackgroundProperty, item.IsAvailable ? "Panel" : "Paper");
+
+            AvatarPresenter.Visibility = showLaunch ? Visibility.Hidden : Visibility.Visible;
+            LaunchButton.Visibility = showLaunch ? Visibility.Visible : Visibility.Collapsed;
+            LaunchButton.IsEnabled = item.CanLaunch;
+            string exeName = Path.GetFileName(item.ProcessPath);
+            LaunchButton.ToolTip = showLaunch
+                ? (string.IsNullOrEmpty(exeName) ? UiText.Get("LaunchProgram") : UiText.Format("LaunchTarget", exeName))
+                : null;
 
             PinButton.IsChecked = item.Pinned;
             PinButton.IsEnabled = !item.IsBusy;
@@ -105,7 +116,7 @@ public partial class WindowRow : UserControl
             ThroughButton.ToolTip = item.ClickThrough ? UiText.Get("TurnOffThrough") : UiText.Get("TurnOnThrough");
             RemoveButton.IsEnabled = !item.IsBusy;
 
-            bool restore = item.IsHidden || item.IsMinimized;
+            bool restore = item.IsHidden || item.IsMinimized || item.IsIconCollapsed;
             ParkIcon.Data = System.Windows.Media.Geometry.Parse(restore ? ParkRestoreGeometry : ParkMinimizeGeometry);
             ParkButton.SetResourceReference(Control.ForegroundProperty, restore ? "Accent" : "Muted");
             ParkButton.ToolTip = restore ? UiText.Get("RestoreWindow") : UiText.Get("ForceMinimize");
@@ -113,6 +124,7 @@ public partial class WindowRow : UserControl
 
             RowState.Text = !item.IsAvailable ? UiText.Get("AwaitLaunch")
                 : item.IsBusy ? UiText.Get("Busy")
+                : item.IsIconCollapsed ? UiText.Get("CollapsedIconState")
                 : item.IsHidden ? UiText.Get("Hidden")
                 : item.IsMinimized ? UiText.Get("Minimized")
                 : item.Opacity == 0 ? UiText.Get("Transparent")
@@ -129,7 +141,7 @@ public partial class WindowRow : UserControl
             OpacityDisplayButton.Content = value + "%";
             if (!_dirty) OpacityNumber.Text = value.ToString();
 
-            bool showGhostWarning = item.IsAvailable && value < 15 && !item.ClickThrough && !item.IsHidden && !item.IsMinimized;
+            bool showGhostWarning = item.IsAvailable && value < 15 && !item.ClickThrough && !item.IsHidden && !item.IsMinimized && !item.IsIconCollapsed;
             GhostGuardButton.Visibility = showGhostWarning ? Visibility.Visible : Visibility.Collapsed;
         }
         finally { _syncing = false; }
@@ -142,6 +154,7 @@ public partial class WindowRow : UserControl
     }
 
     private void Title_Click(object sender, RoutedEventArgs e) => Execute("activate");
+    private void Launch_Click(object sender, RoutedEventArgs e) => Execute("launch");
     private void Pin_Click(object sender, RoutedEventArgs e) => Execute("pin");
     private void Through_Click(object sender, RoutedEventArgs e) => Execute("through");
     private void EnableThrough_Click(object sender, RoutedEventArgs e)
@@ -167,10 +180,11 @@ public partial class WindowRow : UserControl
     {
         if (_syncing || _item is not { IsAvailable: true } item || !(OpacitySlider.IsMouseCaptureWithin || OpacitySlider.IsKeyboardFocusWithin)) return;
         int value = (int)Math.Round(e.NewValue);
+        item.OpacityBeforeQuickToggle = null;
         Owner?.QueueOpacity(item, value);
         OpacityDisplayButton.Content = value + "%";
         if (!_dirty) { _syncing = true; OpacityNumber.Text = value.ToString(); _syncing = false; }
-        bool showGhostWarning = item.IsAvailable && value < 15 && !item.ClickThrough && !item.IsHidden && !item.IsMinimized;
+        bool showGhostWarning = item.IsAvailable && value < 15 && !item.ClickThrough && !item.IsHidden && !item.IsMinimized && !item.IsIconCollapsed;
         GhostGuardButton.Visibility = showGhostWarning ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -180,6 +194,7 @@ public partial class WindowRow : UserControl
         int current = Owner?.DesiredOpacity(item) ?? item.Opacity;
         int next = Math.Clamp(current + (e.Delta > 0 ? 5 : -5), 0, 100);
         e.Handled = true;
+        item.OpacityBeforeQuickToggle = null;
         Owner?.QueueOpacity(item, next);
         Sync();
     }
@@ -210,7 +225,11 @@ public partial class WindowRow : UserControl
     {
         if (!_dirty || _item is not { IsAvailable: true } item) return;
         _dirty = false;
-        if (int.TryParse(OpacityNumber.Text, out int value) && value is >= 0 and <= 100) Owner?.QueueOpacity(item, value);
+        if (int.TryParse(OpacityNumber.Text, out int value) && value is >= 0 and <= 100)
+        {
+            item.OpacityBeforeQuickToggle = null;
+            Owner?.QueueOpacity(item, value);
+        }
         else Owner?.ShowStatus(UiText.Get("OpacityRange"));
         Sync();
     }

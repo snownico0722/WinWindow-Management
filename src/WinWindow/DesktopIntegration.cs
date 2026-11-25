@@ -73,7 +73,7 @@ internal sealed class DesktopIntegration : IDisposable
             }
             managed.Enabled = managed.DropDownItems.Count != 0;
             recover.DropDownItems.Clear();
-            foreach (var item in manager.Items.Where(x => x.IsManaged && (x.IsHidden || x.IsParked || x.Opacity == 0)).ToArray())
+            foreach (var item in manager.Items.Where(x => x.IsManaged && (x.IsHidden || x.IsParked || x.IsIconCollapsed || x.Opacity == 0)).ToArray())
             {
                 var captured = item;
                 string title = item.Title.Length > 40 ? item.Title[..40] + "…" : item.Title;

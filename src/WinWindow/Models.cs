@@ -60,12 +60,15 @@ internal sealed class WindowRule
 internal sealed class WindowItem : Observable
 {
     public WindowIdentity? Identity { get; init; }
+    public string SavedProcessPath { get; init; } = "";
     public WindowSnapshot? Original { get; set; }
     public HashSet<string>? MutedSessionIds { get; set; }
     public string? RuleId { get; set; }
     public nint Hwnd => Identity?.Hwnd ?? 0;
-    public string ProcessName => Identity is null ? UiText.Get("WaitingForWindow") : Path.GetFileName(Identity.ProcessPath);
-    public string ProcessPath => Identity?.ProcessPath ?? "";
+    public string ProcessPath => Identity?.ProcessPath ?? SavedProcessPath;
+    public string ProcessName => Identity is not null ? Path.GetFileName(Identity.ProcessPath)
+        : !string.IsNullOrWhiteSpace(SavedProcessPath) ? Path.GetFileName(SavedProcessPath)
+        : UiText.Get("WaitingForWindow");
     private ImageSource? _icon;
     private bool _requestedIcon;
     public ImageSource? Icon
@@ -90,7 +93,7 @@ internal sealed class WindowItem : Observable
     {
         get
         {
-            string source = Identity is not null ? Path.GetFileNameWithoutExtension(Identity.ProcessPath) : Title;
+            string source = !string.IsNullOrWhiteSpace(ProcessPath) ? Path.GetFileNameWithoutExtension(ProcessPath) : Title;
             foreach (char c in source)
                 if (char.IsLetterOrDigit(c)) return char.ToUpperInvariant(c).ToString();
             return "W";
@@ -117,6 +120,7 @@ internal sealed class WindowItem : Observable
     public bool Pinned { get => _pinned; set { if (Set(ref _pinned, value)) NotifyState(); } }
     private int _opacity = 100;
     public int Opacity { get => _opacity; set { if (Set(ref _opacity, value)) NotifyState(); } }
+    public int? OpacityBeforeQuickToggle { get; set; }
     private bool _clickThrough;
     public bool ClickThrough { get => _clickThrough; set { if (Set(ref _clickThrough, value)) NotifyState(); } }
     private bool _muted;
@@ -125,11 +129,19 @@ internal sealed class WindowItem : Observable
     public bool IsMinimized { get => _minimized; set { if (Set(ref _minimized, value)) NotifyState(); } }
     private bool _hidden;
     public bool IsHidden { get => _hidden; set { if (Set(ref _hidden, value)) NotifyState(); } }
+    private bool _iconCollapsed;
+    public bool IsIconCollapsed { get => _iconCollapsed; set { if (Set(ref _iconCollapsed, value)) NotifyState(); } }
     private bool _busy;
-    public bool IsBusy { get => _busy; set { if (Set(ref _busy, value)) { Changed(nameof(CanOperate)); NotifyState(); } } }
+    public bool IsBusy { get => _busy; set { if (Set(ref _busy, value)) { Changed(nameof(CanOperate)); Changed(nameof(CanLaunch)); NotifyState(); } } }
     public bool CanOperate => IsAvailable && !IsBusy;
+    private bool _canLaunch;
+    public bool CanLaunch
+    {
+        get => _canLaunch && !IsBusy;
+        set => Set(ref _canLaunch, value);
+    }
     public bool IsParked => Original?.Parked == true;
-    public string StateText => !IsAvailable ? UiText.Get("PendingWindow") : IsBusy ? UiText.Get("Working") : IsHidden ? UiText.Get("HiddenRecoverable") : IsMinimized ? UiText.Get("Minimized") : Opacity == 0 ? UiText.Get("TransparentRecoverable") : Pinned ? UiText.Get("Pinned") : IsManaged ? UiText.Get("Managed") : UiText.Get("Normal");
+    public string StateText => !IsAvailable ? UiText.Get("PendingWindow") : IsBusy ? UiText.Get("Working") : IsIconCollapsed ? UiText.Get("CollapsedIconState") : IsHidden ? UiText.Get("HiddenRecoverable") : IsMinimized ? UiText.Get("Minimized") : Opacity == 0 ? UiText.Get("TransparentRecoverable") : Pinned ? UiText.Get("Pinned") : IsManaged ? UiText.Get("Managed") : UiText.Get("Normal");
     public void NotifyLanguage()
     {
         Changed(nameof(ProcessName)); Changed(nameof(Details)); Changed(nameof(StateText));
@@ -138,7 +150,7 @@ internal sealed class WindowItem : Observable
     public void NotifyState()
     {
         Changed(nameof(StateText)); Changed(nameof(IsManaged)); Changed(nameof(IsParked));
-        Changed(nameof(Remembered)); Changed(nameof(CanOperate));
+        Changed(nameof(Remembered)); Changed(nameof(CanOperate)); Changed(nameof(CanLaunch));
     }
 }
 internal sealed class Preferences
@@ -153,6 +165,7 @@ internal sealed class Preferences
     public bool AggressiveTopmost { get; set; }
     public bool EnablePinSound { get; set; } = true;
     public bool ShowPinNotifications { get; set; }
+    public int QuickOpacity { get; set; } = 50;
     public bool EnhancedBackgroundKeep { get; set; }
     public bool LockBackgroundCursorPos { get; set; }
     public bool SnapshotLookbackEnabled { get; set; } = true;

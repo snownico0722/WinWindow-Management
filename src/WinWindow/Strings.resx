@@ -274,4 +274,19 @@
   <data name="LayoutStrengthHint" xml:space="preserve"><value>影响已授权范围内的整理幅度</value></data>
   <data name="LegacyLightHint" xml:space="preserve"><value>沿用原来的松手辅助。再次选择轻度可启用新任务开窗辅助</value></data>
   <data name="LegacyFullHint" xml:space="preserve"><value>沿用原来的松手后同组整理。再次选择轻度可改为单窗辅助</value></data>
+  <data name="LaunchProgram" xml:space="preserve"><value>启动程序</value></data>
+  <data name="LaunchTarget" xml:space="preserve"><value>启动 {0}</value></data>
+  <data name="CollapseToIcon" xml:space="preserve"><value>收起为置顶图标</value></data>
+  <data name="CollapsedIconState" xml:space="preserve"><value>已收起为图标</value></data>
+  <data name="CollapsedIconHint" xml:space="preserve"><value>{0}
+点击展开窗口 · 按住拖动位置</value></data>
+  <data name="ExpandWindow" xml:space="preserve"><value>展开窗口</value></data>
+  <data name="QuickActionsSection" xml:space="preserve"><value>被管窗口顶栏快捷栏</value></data>
+  <data name="DefaultQuickOpacity" xml:space="preserve"><value>顶栏快捷不透明度（默认 50%）</value></data>
+  <data name="DefaultQuickOpacityHint" xml:space="preserve"><value>点击被管理窗口顶栏透明度按钮时切换的目标百分比，再次点击恢复原值</value></data>
+  <data name="ToggleQuickOpacity" xml:space="preserve"><value>切换不透明度为 {0}%</value></data>
+  <data name="RestoreQuickOpacity" xml:space="preserve"><value>恢复不透明度（{0}%）</value></data>
+  <data name="ApplicationPathUnavailable" xml:space="preserve"><value>找不到保存的程序文件。</value></data>
+  <data name="ApplicationShellUnavailable" xml:space="preserve"><value>Windows 资源管理器暂时不可用，无法启动程序。</value></data>
+  <data name="CollapseRejected" xml:space="preserve"><value>此窗口未能收起为图标。</value></data>
 </root>

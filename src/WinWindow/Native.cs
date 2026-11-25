@@ -10,6 +10,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -21,6 +22,7 @@ internal static class Native
 {
     internal const long Layered = 0x80000, Transparent = 0x20, TopmostStyle = 8, ToolWindow = 0x80, NoActivateStyle = 0x08000000L;
     internal const uint NoSize = 1, NoMove = 2, NoActivate = 0x10, AsyncPosition = 0x4000;
+    private const uint NoZOrder = 4, NoOwnerZOrder = 0x0200, NoSendChanging = 0x0400;
     internal const int Hide = 0, Normal = 1, Minimized = 2, Maximized = 3, ShowNoActivate = 4, Restore = 9, ForceMinimize = 11;
     private static readonly ConcurrentDictionary<string, ImageSource?> IconCache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -66,6 +68,7 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint hwnd, uint command);
     [DllImport("user32.dll")] internal static extern bool GetWindowRect(nint hwnd, out Rect rect);
+    [DllImport("user32.dll")] private static extern nint MonitorFromPoint(Point point, uint flags);
     [DllImport("user32.dll")] internal static extern nint MonitorFromWindow(nint hwnd, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
     [DllImport("user32.dll", SetLastError = true)] internal static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint key);
@@ -209,7 +212,7 @@ internal static class Native
         if (icon == 0) return null;
         try
         {
-            var bitmap = Imaging.CreateBitmapSourceFromHIcon(icon, Int32Rect.Empty, BitmapSizeOptions.FromWidthAndHeight(32, 32));
+            var bitmap = Imaging.CreateBitmapSourceFromHIcon(icon, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
             bitmap.Freeze();
             return bitmap;
         }
@@ -256,6 +259,90 @@ internal static class Native
         else SetWindowLong32(hwnd, -20, (int)value);
     }
 
+    public static void ConfigureInteractiveOverlay(nint hwnd)
+    {
+        if (hwnd == 0 || !IsWindow(hwnd)) return;
+        // 顶栏快捷按钮和收起后的置顶大图标需要接收鼠标点击与拖拽，但不能抢走当前工作窗口焦点，也不进入任务栏与 Alt+Tab。
+        long value = (Style(hwnd) & ~Transparent) | ToolWindow | NoActivateStyle;
+        if (IntPtr.Size == 8) SetWindowLong64(hwnd, -20, (nint)value);
+        else SetWindowLong32(hwnd, -20, (int)value);
+    }
+
+    internal static uint WindowDpi(nint hwnd)
+    {
+        if (hwnd != 0 && IsWindow(hwnd) && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 14393))
+        {
+            uint dpi = GetDpiForWindow(hwnd);
+            if (dpi > 0) return dpi;
+        }
+        return 96u;
+    }
+
+    internal static bool PositionOverlay(nint hwnd, int x, int y) =>
+        SetWindowPos(hwnd, (nint)(-1), x, y, 0, 0, NoSize | NoActivate);
+
+    internal static bool TryGetTitleBarOverlayBounds(nint targetHwnd, int barWidthPx, int barHeightPx, out Rect barRect)
+    {
+        barRect = default;
+        if (!TryGetFrameBounds(targetHwnd, out var frame)) return false;
+        if (DwmGetWindowAttribute(targetHwnd, 14, out int cloaked, 4) == 0 && cloaked != 0) return false;
+        double scale = WindowDpi(targetHwnd) / 96.0;
+        // 过窄的弹窗或工具条放不下左侧三键且会挤压右侧关闭按钮，保留安全余量后再挂载顶栏快捷条。
+        int minWidth = barWidthPx + (int)Math.Round(72 * scale);
+        int minHeight = barHeightPx + (int)Math.Round(6 * scale);
+        if (frame.Right - frame.Left < minWidth || frame.Bottom - frame.Top < minHeight) return false;
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        bool hasMonitor = GetMonitorInfo(MonitorFromWindow(targetHwnd, 2), ref info);
+        if (hasMonitor && (!Overlaps(frame, info.Work) ||
+            (!IsZoomed(targetHwnd) && frame.Left <= info.Monitor.Left && frame.Top <= info.Monitor.Top &&
+             frame.Right >= info.Monitor.Right && frame.Bottom >= info.Monitor.Bottom))) return false;
+        int baseLeft = hasMonitor ? Math.Max(frame.Left, info.Work.Left) : frame.Left;
+        int baseTop = hasMonitor ? Math.Max(frame.Top, info.Work.Top) : frame.Top;
+        int left = baseLeft + (int)Math.Round(8 * scale);
+        int top = baseTop + (int)Math.Round(4 * scale);
+        barRect = new Rect { Left = left, Top = top, Right = left + barWidthPx, Bottom = top + barHeightPx };
+        return true;
+    }
+
+    public static Rect OverlayBounds(nint hwnd, Point anchor, int width, int height)
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(MonitorFromPoint(anchor, 2), ref info)) return default;
+        var dpi = GetDpiForWindow(hwnd);
+        int w = (int)Math.Ceiling(width * dpi / 96.0), h = (int)Math.Ceiling(height * dpi / 96.0);
+        int x = Math.Clamp(anchor.X, info.Work.Left, Math.Max(info.Work.Left, info.Work.Right - w));
+        int y = Math.Clamp(anchor.Y, info.Work.Top, Math.Max(info.Work.Top, info.Work.Bottom - h));
+        return new Rect { Left = x, Top = y, Right = x + w, Bottom = y + h };
+    }
+
+    public static bool PositionWindowControl(nint hwnd, nint target, Rect bounds)
+    {
+        bool badge = target == 0;
+        bool topmost = badge || IsTopmost(target);
+        if (!SetOwnTopmost(hwnd, topmost)) return false;
+        bool inLayer = badge || GetWindow(hwnd, 2) == target;
+        if (inLayer && GetWindowRect(hwnd, out var current) &&
+            (current.Left, current.Top, current.Right, current.Bottom) ==
+            (bounds.Left, bounds.Top, bounds.Right, bounds.Bottom)) return true;
+        nint after = inLayer ? 0 : GetWindow(target, 3);
+        // 插在目标正上方，仍让挡住目标的窗口盖住按钮。跨过置顶层边界时用 HWND_TOP 保留现有层。
+        if (after != 0 && IsTopmost(after) != topmost) after = 0;
+        if (after == hwnd) inLayer = true;
+        return SetWindowPos(hwnd, after, bounds.Left, bounds.Top, bounds.Right - bounds.Left,
+            bounds.Bottom - bounds.Top, NoActivate | NoOwnerZOrder | (inLayer ? NoZOrder : 0));
+    }
+
+    internal static void FitIconOverlayToWorkArea(nint hwnd)
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(MonitorFromWindow(hwnd, 2), ref info) || !GetWindowRect(hwnd, out Rect r)) return;
+        int width = Math.Max(32, r.Right - r.Left);
+        int height = Math.Max(32, r.Bottom - r.Top);
+        int x = Math.Clamp(r.Left, info.Work.Left, Math.Max(info.Work.Left, info.Work.Right - width));
+        int y = Math.Clamp(r.Top, info.Work.Top, Math.Max(info.Work.Top, info.Work.Bottom - height));
+        SetWindowPos(hwnd, (nint)(-1), x, y, 0, 0, NoSize | NoActivate);
+    }
+
     public static string Title(nint hwnd) { var b = new StringBuilder(Math.Max(256, GetWindowTextLength(hwnd) + 1)); GetWindowText(hwnd, b, b.Capacity); return b.ToString(); }
     public static string ClassName(nint hwnd) { var b = new StringBuilder(256); GetClassName(hwnd, b, b.Capacity); return b.ToString(); }
     public static long Style(nint hwnd) => IntPtr.Size == 8 ? GetWindowLong64(hwnd, -20).ToInt64() : GetWindowLong32(hwnd, -20);
@@ -282,7 +369,7 @@ internal static class Native
             nint handle = OpenProcess(0x1000, false, pid);
             if (handle != 0)
             {
-                try { var b = new StringBuilder(32768); uint size = (uint)b.Capacity; if (QueryFullProcessImageName(handle, 0, b, ref size)) path = b.ToString(); }
+                try { path = ReadProcessPath(handle) ?? path; }
                 finally { CloseHandle(handle); }
             }
             return new(hwnd.ToInt64(), (int)pid, started, path, ClassName(hwnd));
@@ -295,6 +382,80 @@ internal static class Native
         var current = Identity(identity.Hwnd);
         return current is not null && current.ProcessId == identity.ProcessId && current.ProcessStarted == identity.ProcessStarted && current.ClassName == identity.ClassName;
     }
+    private static string? ReadProcessPath(nint process)
+    {
+        var path = new StringBuilder(32768);
+        uint size = (uint)path.Capacity;
+        return QueryFullProcessImageName(process, 0, path, ref size) ? path.ToString() : null;
+    }
+
+    public static bool CanLaunchApplication(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) ||
+            !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+            return false;
+        using var current = Process.GetCurrentProcess();
+        var processes = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(path));
+        try
+        {
+            foreach (var process in processes)
+            {
+                try
+                {
+                    if (process.SessionId != current.SessionId) continue;
+                    nint handle = OpenProcess(0x1000, false, (uint)process.Id);
+                    // 同名进程的路径无法读取时保守等待，避免重复启动。
+                    if (handle == 0)
+                    {
+                        if (!process.HasExited) return false;
+                        continue;
+                    }
+                    try
+                    {
+                        var runningPath = ReadProcessPath(handle);
+                        if (runningPath is null || string.Equals(runningPath, path, StringComparison.OrdinalIgnoreCase))
+                            return false;
+                    }
+                    finally { CloseHandle(handle); }
+                }
+                catch (InvalidOperationException) { } // The process exited during enumeration.
+                catch (Win32Exception e) when (e.NativeErrorCode is 87 or 1168) { }
+            }
+            return true;
+        }
+        finally { foreach (var process in processes) process.Dispose(); }
+    }
+
+    public static Task<bool> LaunchApplicationAsync(string path)
+    {
+        var result = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try { result.SetResult(LaunchApplication(path)); }
+            catch (Exception e) { result.SetException(e); }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return result.Task;
+    }
+
+    private static bool LaunchApplication(string path)
+    {
+        if (!File.Exists(path)) throw new InvalidOperationException(UiText.Get("ApplicationPathUnavailable"));
+        if (!CanLaunchApplication(path)) return false;
+
+        // 让桌面资源管理器按当前用户的正常权限启动，避免继承 WinWindow 的管理员令牌。
+        var shellType = Type.GetTypeFromProgID("Shell.Application", throwOnError: true)!;
+        dynamic shell = Activator.CreateInstance(shellType)!;
+        dynamic windows = shell.Windows();
+        object location = 0, root = null!;
+        const int desktopClass = 8, needDispatch = 1;
+        dynamic? desktop = windows.FindWindowSW(ref location, ref root, desktopClass, out int _, needDispatch);
+        if (desktop is null) throw new InvalidOperationException(UiText.Get("ApplicationShellUnavailable"));
+        desktop.Document.Application.ShellExecute(path, "", Path.GetDirectoryName(path), "open", Normal);
+        return true;
+    }
+
     internal static bool MatchesProcess(WindowIdentity identity)
     {
         nint process = OpenProcess(0x1000, false, (uint)identity.ProcessId);
@@ -930,7 +1091,9 @@ internal static class Native
         nint foreground = GetForegroundWindow();
         nint after = value ? (nint)(-1) : (nint)(-2);
         if (!value && foreground != hwnd && IsWindowVisible(foreground) && !IsIconic(foreground) && !IsTopmost(foreground) && !IsShell(foreground)) after = foreground;
-        return SetWindowPos(hwnd, after, 0, 0, 0, 0, NoMove | NoSize | NoActivate) && IsTopmost(hwnd) == value;
+        // 本体与浮层的原生置顶只改变各自的层级。这里没有几何变化需要 WPF 参与。
+        return SetWindowPos(hwnd, after, 0, 0, 0, 0, NoMove | NoSize | NoActivate | NoOwnerZOrder | NoSendChanging)
+            && IsTopmost(hwnd) == value;
     }
     public static bool Raise(nint hwnd) => SetWindowPos(hwnd, (nint)(-1), 0, 0, 0, 0, NoMove | NoSize | NoActivate);
     public static void SetOpacity(WindowSnapshot original, int percent)

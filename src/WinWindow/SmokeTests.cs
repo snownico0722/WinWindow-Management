@@ -41,14 +41,16 @@ internal static class SmokeTests
             await Task.Delay(25);
         }
     }
-    private static Process Start(params string[] args)
+    private static Process Start(params string[] args) => StartExecutable(
+        Environment.ProcessPath ?? throw new InvalidOperationException("无法确定当前可执行文件路径。"), args);
+
+    private static Process StartExecutable(string executable, string[] args)
     {
-        string executable = Environment.ProcessPath ?? throw new InvalidOperationException("无法确定当前可执行文件路径。");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         foreach (string arg in args) start.ArgumentList.Add(arg);
         return Process.Start(start) ?? throw new InvalidOperationException("无法启动测试进程。");
     }
-    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject, string? stall = null, bool activity = false, bool twins = false)
+    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject, string? stall = null, bool activity = false, bool twins = false, string? executable = null)
     {
         string file = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".hwnd");
         var args = new List<string> { "--fixture", file };
@@ -58,7 +60,7 @@ internal static class SmokeTests
         if (stall is not null) { args.Add("stall"); args.Add(stall); }
         args.Add(App.FixtureControllerArgument);
         args.Add(Environment.ProcessId.ToString());
-        var process = Start(args.ToArray());
+        var process = executable is null ? Start(args.ToArray()) : StartExecutable(executable, args.ToArray());
         for (int i = 0; i < 100; i++)
         {
             if (File.Exists(file) && long.TryParse(await File.ReadAllTextAsync(file), out long hwnd)) return (process, (nint)hwnd);
@@ -544,6 +546,17 @@ internal static class SmokeTests
             administratorStartup.IsChecked = false;
             administratorStartup.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             Assert(!StateStore.RequestAdministratorOnLaunch(store.DirectoryPath), "disabling administrator startup is persisted for the next launch");
+            var quickOpacityBox = (TextBox)shell.FindName("QuickOpacityBox");
+            Assert(store.Preferences.QuickOpacity == 50 && quickOpacityBox.Text == "50", "quick opacity defaults to 50% in General settings");
+            quickOpacityBox.Text = "45";
+            quickOpacityBox.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, Environment.TickCount, quickOpacityBox, administratorStartup)
+                { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
+            store.SavePreferences();
+            Assert(new StateStore(store.DirectoryPath).Preferences.QuickOpacity == 45, "custom quick opacity preset persists across restarts");
+            quickOpacityBox.Text = "50";
+            quickOpacityBox.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, Environment.TickCount, quickOpacityBox, administratorStartup)
+                { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
+            store.SavePreferences();
             OpenSection("LayoutSection");
             var layoutPage = (ScrollViewer)shell.FindName("LayoutSection");
             await WaitAsync("integrated layout settings loaded", () => layoutPage.IsVisible && layoutPage.IsEnabled && ((CheckBox)shell.FindName("VerticalFill")).IsChecked.HasValue);
@@ -721,7 +734,13 @@ internal static class SmokeTests
             await Task.Delay(250);
             Assert(Native.GetForegroundWindow() == normal.Hwnd && Native.IsAbove(normal.Hwnd, own), "losing focus neither reactivates nor covers the new foreground app");
             store.Preferences.ManualTopmost = true; shell.ApplyOwnPolicy();
-            Assert(Native.IsTopmost(own) && Native.GetForegroundWindow() == normal.Hwnd, "manual topmost does not steal keyboard focus");
+            await WaitAsync("manual pin sets workbench topmost without activating it", () =>
+            {
+                nint foreground = Native.GetForegroundWindow();
+                if (foreground != normal.Hwnd)
+                    throw new InvalidOperationException($"Manual pin changed foreground from 0x{normal.Hwnd:X} to 0x{foreground:X}.");
+                return Native.IsTopmost(own);
+            }, 700);
             store.Preferences.ManualTopmost = false; shell.ApplyOwnPolicy();
             shell.WindowState = WindowState.Minimized; await Task.Delay(150);
             Assert(Native.IsIconic(own) && !Native.IsTopmost(own), "minimized workbench is not raised by policy");
@@ -730,6 +749,9 @@ internal static class SmokeTests
             Assert(Native.IsWindowVisible(own), "hidden workbench can be explicitly shown");
             store.Preferences.PinWhenFocused = false; shell.ShowShell();
             Assert(!Native.IsTopmost(own), "wake raise is cleaned up immediately with focus policy off");
+            // 这些用例会启动和关闭其他进程，放在工作台焦点回归之后。
+            await CheckTitleBarOverlayAndLaunchAsync(shell, chosen, output, processes);
+            await CheckLaunchButtonAsync(shell, store, output);
             shell.Cleanup(); shell.Close(); shell = null;
             await manager.RestoreAllAsync(); manager = null;
             foreach (var p in processes) { Stop(p); await p.WaitForExitAsync(); }
@@ -1199,13 +1221,145 @@ internal static class SmokeTests
         await WaitAsync("restored hover preview closes on leave", () => !shell.IsHoverPreviewVisible);
     }
 
+    private static async Task CheckLaunchButtonAsync(MainWindow shell, StateStore store, string output)
+    {
+        string name = "wwl" + Guid.NewGuid().ToString("N")[..8];
+        string path = Path.Combine(output, name + ".exe");
+        File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), path);
+        var rule = new WindowRule { Title = "Launch button fixture", ProcessPath = path };
+        store.Preferences.Rules.Add(rule);
+        try
+        {
+            await shell.Manager.RefreshAsync();
+            var pending = shell.Manager.Items.Single(item => item.RuleId == rule.Id);
+            await WaitAsync("the saved executable has a launch button", () => pending.CanLaunch);
+            var row = await FindRowAsync(shell, pending);
+            var launch = (Button)row.FindName("LaunchButton");
+            Assert(launch.IsVisible, "the play button occupies the waiting card's avatar slot");
+            launch.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await WaitAsync("the play button actually starts the saved executable", () => !Native.CanLaunchApplication(path), 5000);
+            Assert(!pending.CanLaunch && !launch.IsVisible, "a running executable cannot be launched again from the same card");
+        }
+        finally
+        {
+            foreach (var process in Process.GetProcessesByName(name))
+            {
+                using (process)
+                {
+                    Stop(process);
+                    await process.WaitForExitAsync();
+                }
+            }
+            store.Preferences.Rules.Remove(rule);
+            await shell.Manager.RefreshAsync();
+            File.Delete(path);
+        }
+    }
+
+    private static async Task CheckTitleBarOverlayAndLaunchAsync(MainWindow shell, WindowItem chosen, string output, List<Process> processes)
+    {
+        await shell.Manager.SetOpacityAsync(chosen, 80, updateRule: false);
+        Native.ShowWindowAsync(chosen.Hwnd, Native.Maximized);
+        await WaitAsync("fixture is maximized before collapsing", () => Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized);
+        Native.SetForegroundWindow(chosen.Hwnd);
+        await WaitAsync("managed window shows its top-left 3-button overlay", () => shell.HasTitleOverlay(chosen), 2500);
+        nint barHwnd = shell.GetTitleOverlayHandle(chosen);
+        Assert(barHwnd != 0 && Native.IsWindowVisible(barHwnd) &&
+            (Native.Style(barHwnd) & (Native.ToolWindow | Native.NoActivateStyle | Native.Transparent)) == (Native.ToolWindow | Native.NoActivateStyle) &&
+            Native.IsTopmost(barHwnd) == Native.IsTopmost(chosen.Hwnd),
+            "title-bar overlay is interactive, tool-window scoped, and non-activating");
+
+        int beforeQuick = shell.DesiredOpacity(chosen);
+        shell.ToggleQuickOpacity(chosen);
+        await WaitAsync("title-bar opacity button applies 50% preset", () =>
+            Native.GetLayeredWindowAttributes(chosen.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(50));
+        shell.ToggleQuickOpacity(chosen);
+        await WaitAsync("title-bar opacity button restores previous opacity", () =>
+            Native.GetLayeredWindowAttributes(chosen.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(beforeQuick));
+
+        await shell.ExecuteRowAsync(chosen, "collapseIcon");
+        await WaitAsync("ico button parks target and raises enlarged pinned icon overlay", () =>
+            chosen.IsIconCollapsed && !Native.IsWindowVisible(chosen.Hwnd) &&
+            !shell.HasTitleOverlay(chosen) && shell.HasCollapsedIconOverlay(chosen), 3000);
+        nint iconHwnd = shell.GetCollapsedIconOverlayHandle(chosen);
+        Assert(iconHwnd != 0 && Native.IsTopmost(iconHwnd), "collapsed icon overlay stays pinned topmost");
+
+        var second = await FixtureAsync(output, false);
+        processes.Add(second.Process);
+        await shell.AddTargetAsync(second.Hwnd, pin: false);
+        var peer = shell.Manager.Items.Single(row => row.Hwnd == second.Hwnd);
+        Native.ShowWindowAsync(peer.Hwnd, Native.Maximized);
+        await WaitAsync("second fixture is maximized on the same screen", () => Native.GetPlacement(peer.Hwnd).ShowCmd == Native.Maximized);
+        await shell.ExecuteRowAsync(peer, "collapseIcon");
+        Assert(shell.HasCollapsedIconOverlay(peer) &&
+            Native.GetWindowRect(iconHwnd, out var firstBadge) &&
+            Native.GetWindowRect(shell.GetCollapsedIconOverlayHandle(peer), out var secondBadge) &&
+            !Native.Overlaps(firstBadge, secondBadge), "two maximized windows get separate visible recovery icons");
+        await shell.Manager.RemoveAsync(peer);
+
+        await shell.ExecuteRowAsync(chosen, "expandIcon");
+        await WaitAsync("clicking collapsed icon restores the maximized target window", () =>
+            !chosen.IsIconCollapsed && !shell.HasCollapsedIconOverlay(chosen) &&
+            Native.IsWindowVisible(chosen.Hwnd) && Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized, 3000);
+
+        string launchData = Path.Combine(output, "launch-check-" + Guid.NewGuid().ToString("N"));
+        var launchStore = new StateStore(launchData);
+        string exePath = Path.Combine(launchData, "launch-fixture-" + Guid.NewGuid().ToString("N")[..8] + ".exe");
+        File.Copy(Environment.ProcessPath!, exePath);
+        string originalTitle = "上次保存的文档标题";
+        var rule = new WindowRule
+        {
+            ProcessPath = exePath,
+            ClassName = chosen.Identity!.ClassName,
+            Title = originalTitle,
+            Pinned = true
+        };
+        launchStore.Preferences.Rules.Add(rule);
+        launchStore.SavePreferences();
+
+        int launchedPid = 0;
+        var launchShell = new MainWindow(launchStore, testMode: true);
+        try
+        {
+            await launchShell.InitializeAsync();
+            var pending = launchShell.Manager.Items.Single(x => !x.IsAvailable);
+            Assert(pending.CanLaunch && pending.ProcessPath == exePath, "unstarted rule exposes its executable launch path");
+            launchShell.Show();
+            var pendingRow = await FindRowAsync(launchShell, pending);
+            var launchBtn = (Button)pendingRow.FindName("LaunchButton");
+            Assert(launchBtn.Visibility == Visibility.Visible && launchBtn.IsEnabled, "unstarted row displays the play launch button in the avatar slot");
+
+            var customManager = new WindowManager(launchStore, Native.GetProcessMutes, Native.SetProcessMutes, async _ =>
+            {
+                var started = await FixtureAsync(output, false, executable: exePath);
+                processes.Add(started.Process);
+                launchedPid = started.Process.Id;
+                return true;
+            });
+            await customManager.RefreshAsync();
+            var pendingItem = customManager.Items.Single(x => !x.IsAvailable);
+            await customManager.LaunchAsync(pendingItem);
+            await WaitAsync("play launch binds newly started process window and applies rule", () =>
+                launchedPid > 0 && customManager.Items.Any(x => x.IsAvailable && x.Identity?.ProcessId == launchedPid && x.Pinned && x.RuleId is not null), 4000);
+            Assert(rule.Title == originalTitle && rule.ClassName == chosen.Identity.ClassName,
+                "matching a new title does not rewrite the saved window rule");
+            await customManager.ShutdownAsync();
+        }
+        finally
+        {
+            launchShell.Cleanup();
+            launchShell.Close();
+        }
+        shell.ShowShell();
+    }
+
     private static async Task CheckPickerOutlineAsync(MainWindow shell, nint target)
     {
         shell.ShowShell();
         nint own = new WindowInteropHelper(shell).Handle;
         await WaitAsync("workbench has focus before preview", () => Native.GetForegroundWindow() == own);
         shell.PreviewPickerTarget(target);
-        var overlay = Application.Current.Windows.Cast<Window>().Single(w => w != shell && w.IsVisible && w.AllowsTransparency);
+        var overlay = Application.Current.Windows.Cast<Window>().Single(w => w != shell && w.IsVisible && w.AllowsTransparency && !w.IsHitTestVisible);
         nint hwnd = new WindowInteropHelper(overlay).Handle;
         bool Aligned() => Native.TryGetFrameBounds(target, out var targetRect) && Native.GetWindowRect(hwnd, out var outline)
             && outline.Left == targetRect.Left - 5 && outline.Top == targetRect.Top - 5

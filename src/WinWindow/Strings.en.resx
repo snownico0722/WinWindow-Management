@@ -274,4 +274,19 @@
   <data name="LayoutStrengthHint" xml:space="preserve"><value>Controls how much the layout can change within the selected mode</value></data>
   <data name="LegacyLightHint" xml:space="preserve"><value>Uses your previous gesture assistance. Select Light again to also assist when a new task window opens.</value></data>
   <data name="LegacyFullHint" xml:space="preserve"><value>Uses your previous group arrangement after gestures. Select Light again for single-window assistance.</value></data>
+  <data name="LaunchProgram" xml:space="preserve"><value>Launch application</value></data>
+  <data name="LaunchTarget" xml:space="preserve"><value>Launch {0}</value></data>
+  <data name="CollapseToIcon" xml:space="preserve"><value>Collapse to pinned icon</value></data>
+  <data name="CollapsedIconState" xml:space="preserve"><value>Collapsed to icon</value></data>
+  <data name="CollapsedIconHint" xml:space="preserve"><value>{0}
+Click to expand · Drag to move</value></data>
+  <data name="ExpandWindow" xml:space="preserve"><value>Expand window</value></data>
+  <data name="QuickActionsSection" xml:space="preserve"><value>Managed window title-bar bar</value></data>
+  <data name="DefaultQuickOpacity" xml:space="preserve"><value>Quick opacity preset (default 50%)</value></data>
+  <data name="DefaultQuickOpacityHint" xml:space="preserve"><value>Target opacity percentage toggled by the managed window's title-bar button; click again to restore</value></data>
+  <data name="ToggleQuickOpacity" xml:space="preserve"><value>Switch opacity to {0}%</value></data>
+  <data name="RestoreQuickOpacity" xml:space="preserve"><value>Restore opacity ({0}%)</value></data>
+  <data name="ApplicationPathUnavailable" xml:space="preserve"><value>The saved application file could not be found.</value></data>
+  <data name="ApplicationShellUnavailable" xml:space="preserve"><value>Windows Explorer is unavailable. The application could not be launched.</value></data>
+  <data name="CollapseRejected" xml:space="preserve"><value>This window could not be collapsed to an icon.</value></data>
 </root>
