@@ -118,6 +118,21 @@ internal static class SurfaceAndSolverV4Checks
         IntentLayoutPlanner.AddOrders(orders, "columns", group.Select(g => g.Window.VisualRect).ToArray(), group);
         check(orders.Count == 1, "disjoint target frames only need their natural order");
 
+        // 大组预算不能被 DFS 的第一个合法首节点独占；每个可作为前层的窗口都应获得代表候选。
+        var largeFrames = Enumerable.Range(0, 6).Select(_ => new RectI(0, 0, 300, 400)).ToArray();
+        var largeGroup = Enumerable.Range(0, 6).Select(i =>
+        {
+            var original = new RectI(i * 350, 0, 300, 400);
+            return new VisibleWindow(Make(i + 20, 20, original, z: i), original.Area, original.Area, 1);
+        }).ToArray();
+        var largeOrders = new List<IntentLayoutPlanner.Candidate>();
+        IntentLayoutPlanner.AddOrders(largeOrders, "stack", largeFrames, largeGroup);
+        var firstLayerCounts = largeOrders.GroupBy(c => c.Order[0]).ToDictionary(g => g.Key, g => g.Count());
+        check(largeOrders.Count == 65 &&
+            Enumerable.Range(0, 6).All(i => firstLayerCounts.GetValueOrDefault(i) >= 9) &&
+            firstLayerCounts.Values.Max() - firstLayerCounts.Values.Min() <= 3,
+            "six-window bounded layer search distributes its 64 additional candidates across all legal first-layer choices");
+
         var first = group[0].Window;
         var back = group[1].Window;
         var overlapped = back.VisualRect with { X = 150 };
