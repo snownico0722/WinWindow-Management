@@ -825,6 +825,7 @@ public partial class MainWindow : Window
 
     internal void Cleanup()
     {
+        _ready = false;
         _pickerTimer.Stop(); _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
         _flash?.Dispose(); _flash = null;
         HideHoverPreview(); _hoverOutline?.Dispose(); _hoverOutline = null;
