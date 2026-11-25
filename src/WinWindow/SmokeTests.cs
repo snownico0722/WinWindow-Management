@@ -365,13 +365,6 @@ internal static class SmokeTests
             finally { NeatWin.Windows.WindowManager.CaptureFilterForTests = null; }
             await shell.Manager.RefreshAsync();
             var chosen = shell.Manager.Items.First(x => x.Hwnd == item.Hwnd);
-            var controlsTarget = await FixtureAsync(output, false);
-            processes.Add(controlsTarget.Process);
-            await CheckManagedTitlebarAsync(shell, controlsTarget.Hwnd, store);
-            Stop(controlsTarget.Process);
-            await controlsTarget.Process.WaitForExitAsync();
-            await shell.Manager.RefreshAsync();
-            await CheckLaunchButtonAsync(shell, store, output);
             var game = await FixtureAsync(output, false, activity: true);
             processes.Add(game.Process);
             using (var desktop = new DesktopIntegration(shell, shell.Manager))
@@ -728,7 +721,11 @@ internal static class SmokeTests
             await Task.Delay(250);
             Assert(Native.GetForegroundWindow() == normal.Hwnd && Native.IsAbove(normal.Hwnd, own), "losing focus neither reactivates nor covers the new foreground app");
             store.Preferences.ManualTopmost = true; shell.ApplyOwnPolicy();
-            Assert(Native.IsTopmost(own) && Native.GetForegroundWindow() == normal.Hwnd, "manual topmost does not steal keyboard focus");
+            nint afterManualPin = Native.GetForegroundWindow();
+            Assert(Native.IsTopmost(own),
+                $"manual pin sets workbench topmost (visible={shell.IsVisible}, state={shell.WindowState}, foreground=0x{afterManualPin:X})");
+            Assert(afterManualPin == normal.Hwnd,
+                $"manual topmost preserves foreground (expected=0x{normal.Hwnd:X}, actual=0x{afterManualPin:X}, workbench=0x{own:X})");
             store.Preferences.ManualTopmost = false; shell.ApplyOwnPolicy();
             shell.WindowState = WindowState.Minimized; await Task.Delay(150);
             Assert(Native.IsIconic(own) && !Native.IsTopmost(own), "minimized workbench is not raised by policy");
@@ -737,6 +734,14 @@ internal static class SmokeTests
             Assert(Native.IsWindowVisible(own), "hidden workbench can be explicitly shown");
             store.Preferences.PinWhenFocused = false; shell.ShowShell();
             Assert(!Native.IsTopmost(own), "wake raise is cleaned up immediately with focus policy off");
+            // 启动和关闭额外的外部进程可能切换前台，放在工作台焦点回归检查之后。
+            var controlsTarget = await FixtureAsync(output, false);
+            processes.Add(controlsTarget.Process);
+            await CheckManagedTitlebarAsync(shell, controlsTarget.Hwnd, store);
+            Stop(controlsTarget.Process);
+            await controlsTarget.Process.WaitForExitAsync();
+            await shell.Manager.RefreshAsync();
+            await CheckLaunchButtonAsync(shell, store, output);
             shell.Cleanup(); shell.Close(); shell = null;
             await manager.RestoreAllAsync(); manager = null;
             foreach (var p in processes) { Stop(p); await p.WaitForExitAsync(); }
