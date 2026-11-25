@@ -721,11 +721,13 @@ internal static class SmokeTests
             await Task.Delay(250);
             Assert(Native.GetForegroundWindow() == normal.Hwnd && Native.IsAbove(normal.Hwnd, own), "losing focus neither reactivates nor covers the new foreground app");
             store.Preferences.ManualTopmost = true; shell.ApplyOwnPolicy();
-            nint afterManualPin = Native.GetForegroundWindow();
-            Assert(Native.IsTopmost(own),
-                $"manual pin sets workbench topmost (visible={shell.IsVisible}, state={shell.WindowState}, foreground=0x{afterManualPin:X})");
-            Assert(afterManualPin == normal.Hwnd,
-                $"manual topmost preserves foreground (expected=0x{normal.Hwnd:X}, actual=0x{afterManualPin:X}, workbench=0x{own:X})");
+            await WaitAsync("manual pin sets workbench topmost without activating it", () =>
+            {
+                nint foreground = Native.GetForegroundWindow();
+                if (foreground != normal.Hwnd)
+                    throw new InvalidOperationException($"Manual pin changed foreground from 0x{normal.Hwnd:X} to 0x{foreground:X}.");
+                return Native.IsTopmost(own);
+            }, 700);
             store.Preferences.ManualTopmost = false; shell.ApplyOwnPolicy();
             shell.WindowState = WindowState.Minimized; await Task.Delay(150);
             Assert(Native.IsIconic(own) && !Native.IsTopmost(own), "minimized workbench is not raised by policy");

@@ -22,6 +22,7 @@ internal static class Native
 {
     internal const long Layered = 0x80000, Transparent = 0x20, TopmostStyle = 8, ToolWindow = 0x80, NoActivateStyle = 0x08000000L;
     internal const uint NoSize = 1, NoMove = 2, NoActivate = 0x10, AsyncPosition = 0x4000;
+    private const uint NoZOrder = 4, NoOwnerZOrder = 0x0200, NoSendChanging = 0x0400;
     internal const int Hide = 0, Normal = 1, Minimized = 2, Maximized = 3, ShowNoActivate = 4, Restore = 9, ForceMinimize = 11;
     private static readonly ConcurrentDictionary<string, ImageSource?> IconCache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -297,9 +298,8 @@ internal static class Native
         // 插在目标正上方，仍让挡住目标的窗口盖住按钮。跨过置顶层边界时用 HWND_TOP 保留现有层。
         if (after != 0 && IsTopmost(after) != topmost) after = 0;
         if (after == hwnd) inLayer = true;
-        const uint noZOrder = 4, noOwnerZOrder = 0x0200;
         return SetWindowPos(hwnd, after, bounds.Left, bounds.Top, bounds.Right - bounds.Left,
-            bounds.Bottom - bounds.Top, NoActivate | noOwnerZOrder | (inLayer ? noZOrder : 0));
+            bounds.Bottom - bounds.Top, NoActivate | NoOwnerZOrder | (inLayer ? NoZOrder : 0));
     }
 
     public static void ConfigureWindowControl(nint hwnd) =>
@@ -1062,7 +1062,9 @@ internal static class Native
         nint foreground = GetForegroundWindow();
         nint after = value ? (nint)(-1) : (nint)(-2);
         if (!value && foreground != hwnd && IsWindowVisible(foreground) && !IsIconic(foreground) && !IsTopmost(foreground) && !IsShell(foreground)) after = foreground;
-        return SetWindowPos(hwnd, after, 0, 0, 0, 0, NoMove | NoSize | NoActivate) && IsTopmost(hwnd) == value;
+        // 本体与浮层的原生置顶只改变各自的层级。这里没有几何变化需要 WPF 参与。
+        return SetWindowPos(hwnd, after, 0, 0, 0, 0, NoMove | NoSize | NoActivate | NoOwnerZOrder | NoSendChanging)
+            && IsTopmost(hwnd) == value;
     }
     public static bool Raise(nint hwnd) => SetWindowPos(hwnd, (nint)(-1), 0, 0, 0, 0, NoMove | NoSize | NoActivate);
     public static void SetOpacity(WindowSnapshot original, int percent)
