@@ -19,7 +19,9 @@ public sealed partial class WindowManager
 
     public LayoutApplication ApplyLayout(IntentLayoutPlan plan) => ApplyLayout(plan, null);
 
-    internal LayoutApplication ApplyLayout(IntentLayoutPlan plan, nint? automaticForeground, TaskLayoutContext? context = null, nint gestureWindow = default, ForegroundReading? initialReading = null, ForegroundReading? workspaceReading = null, Func<TidyMove, bool>? allowsMove = null)
+    internal LayoutApplication ApplyLayout(IntentLayoutPlan plan, nint? automaticForeground, TaskLayoutContext? context = null,
+        nint gestureWindow = default, ForegroundReading? initialReading = null, ForegroundReading? workspaceReading = null,
+        Func<TidyMove, bool>? allowsMove = null, Func<IReadOnlyList<WindowSnapshot>, IReadOnlyList<WindowSnapshot>>? layoutView = null)
     {
         var current = Capture();
         var needed = plan.Moves.Select(m => m.Window).Concat(plan.Layers.SelectMany(l => l.FrontToBack))
@@ -50,13 +52,14 @@ public sealed partial class WindowManager
             return live.Caret ? live.Root : 0;
         }
         var caret = ProtectedInputRoot(current);
-        if (context != null && (!IntentLayoutPlanner.TextViewAcceptsPlan(current, plan, context, caret) ||
-            plan.Layers.Count > 0 && !IntentLayoutPlanner.TextViewAcceptsPlan(current, plan with { Moves = [] }, context, caret)))
+        var working = layoutView?.Invoke(current) ?? current;
+        if (context != null && (!IntentLayoutPlanner.TextViewAcceptsPlan(working, plan, context, caret) ||
+            plan.Layers.Count > 0 && !IntentLayoutPlanner.TextViewAcceptsPlan(working, plan with { Moves = [] }, context, caret)))
             return new(plan with { Moves = [], Layers = [] }, ["已保留当前文字窗口的阅读位置。"])
                 { Interrupted = caret != 0 && context.WindowHints?.Any(h => h.Handle == caret && h.TextFocus) != true };
 
-        if (plan.Scene is { } scene && (!scene.Allows(current, plan) ||
-            plan.Layers.Count > 0 && !scene.Allows(current, plan with { Moves = [] })))
+        if (plan.Scene is { } scene && (!scene.Allows(working, plan) ||
+            plan.Layers.Count > 0 && !scene.Allows(working, plan with { Moves = [] })))
             return new(plan with { Moves = [], Layers = [] }, ["当前参照窗的可见区域已变化，本轮保留现场。"]);
         var targetRects = plan.Moves.ToDictionary(m => m.Window.Handle, m => m.TargetVisualRect);
         var notes = ApplyLayers(plan.Layers, targetRects, automaticForeground).ToList();
@@ -70,15 +73,16 @@ public sealed partial class WindowManager
         };
         if (failed.Length != 0) notes.Add("指定层级未实现，未套用依赖该层级的窗口位置。");
         var afterCaret = plan.Layers.Count > 0 || initialReading.HasValue || workspaceReading.HasValue ? ProtectedInputRoot(afterLayers) : caret;
+        var afterWorking = ReferenceEquals(afterLayers, current) ? working : layoutView?.Invoke(afterLayers) ?? afterLayers;
         bool readingChanged = false;
         if (context != null && (failed.Length > 0 || afterCaret != caret) &&
-            !IntentLayoutPlanner.TextViewAcceptsPlan(afterLayers, accepted with { Layers = [] }, context, afterCaret))
+            !IntentLayoutPlanner.TextViewAcceptsPlan(afterWorking, accepted with { Layers = [] }, context, afterCaret))
         {
             accepted = accepted with { Moves = [] };
             readingChanged = afterCaret != 0 && afterCaret != caret;
             notes.Add("层级变化后已保留当前文字窗口的阅读位置。");
         }
-        if (failed.Length > 0 && accepted.Scene?.Allows(afterLayers, accepted with { Layers = [] }) == false)
+        if (failed.Length > 0 && accepted.Scene?.Allows(afterWorking, accepted with { Layers = [] }) == false)
         {
             accepted = accepted with { Moves = [] };
             notes.Add("层级未完全实现，已保留后台参照窗的可见区域。");

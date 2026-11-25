@@ -33,6 +33,14 @@ internal sealed partial class RecorderSession
             WheelDelta: pointer.Delta, Hit: H(pointer.Hit), Identity: _activity.RawIdentity(pointer.Target, pointer.TargetPid, false)));
     }
 
+    internal bool TracksLayerReturns => TraceInput;
+    internal void RecordLayerReturn(WindowSnapshot window, LayerReturnEvidence evidence)
+    {
+        if (TraceInput)
+            PublishInteraction(new DesktopInteraction(_session, ++_sequence, Environment.TickCount64, "layer-return",
+                _identity.Id(window), window.ProcessId, H(window.Handle)) { LayerReturn = evidence });
+    }
+
     internal long? WorkspaceChanged(WindowSnapshot window, string detail)
     {
         if (!TraceInput) return null;

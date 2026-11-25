@@ -4,7 +4,11 @@ namespace NeatWin.Core;
 internal sealed record DesktopInteraction(string Session, long Sequence, long Tick, string Kind, int WindowId,
     uint ProcessId, string? Handle, string? ClassName = null, RectI? Frame = null, string? Owner = null,
     string? Foreground = null, PointI? Point = null, int? WheelDelta = null, string? Hit = null,
-    string? Detail = null, RawWindowIdentity? Identity = null, RectI? CaretClientRect = null, long? DeliveredTick = null, DateTimeOffset? DeliveredAt = null, int Version = 1);
+    string? Detail = null, RawWindowIdentity? Identity = null, RectI? CaretClientRect = null, long? DeliveredTick = null, DateTimeOffset? DeliveredAt = null, int Version = 1)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public LayerReturnEvidence? LayerReturn { get; init; }
+}
 
 public sealed record ReadingInteraction(double Scrolling, double CaretMotion, long? ScrollEvent, long? CaretEvent, bool RepeatedScroll = false);
 

@@ -73,10 +73,10 @@ internal static partial class IntentLayoutPlanner
             var access = Math.Min(rect.Width / 2, (int)Math.Round(140 * w.Dpi / 96.0));
             if (access < 1 || exposure[i].AccessWidth >= access || rect.Width > area.Width || rect.Height > area.Height) continue;
             var title = rect with { Height = Math.Min(rect.Height, (int)Math.Round(32 * w.Dpi / 96.0)) };
-            var covers = original.Take(i).Concat(obstacles.Where(o => o.ZOrder < w.ZOrder).Select(o => o.VisualRect))
+            var covers = original.Take(i).Concat(obstacles.Where(o => o.ZOrder < w.ZOrder && !o.IsLocalTo(w)).Select(o => o.VisualRect))
                 .Where(r => !r.Intersect(title).IsEmpty).Reverse().Take(3).ToArray();
             if (covers.Length == 0) continue;
-            var occupied = original.Where((_, other) => other != i).Concat(obstacles.Select(o => o.VisualRect));
+            var occupied = original.Where((_, other) => other != i).Concat(obstacles.Where(o => !o.IsLocalTo(w)).Select(o => o.VisualRect));
             foreach (var target in RectRegion.FreeRectangles(area, occupied, rect.Width, rect.Height)
                 .Select(region => ClampTo(rect, region)).Where(target => target != rect).Distinct()
                 .OrderBy(target => Math.Abs((long)rect.X - target.X) + Math.Abs((long)rect.Y - target.Y)).Take(4))
@@ -134,7 +134,7 @@ internal static partial class IntentLayoutPlanner
         // Surfaces below the target do not take away its available space.
         var paddedCover = RectI.FromEdges(cover.Left - gap, cover.Top - gap, cover.Right + gap, cover.Bottom + gap);
         var occupied = original.Where((_, i) => i < rear && i != front).Append(paddedCover)
-            .Concat(obstacles.Where(w => w.ZOrder < windows[rear].Window.ZOrder).Select(w => w.VisualRect));
+            .Concat(obstacles.Where(w => w.ZOrder < windows[rear].Window.ZOrder && !w.IsLocalTo(windows[rear].Window)).Select(w => w.VisualRect));
         foreach (var free in RectRegion.FreeRectangles(area, occupied, covered.Width, covered.Height))
         {
             var target = covered with { X = Math.Clamp(covered.X, free.Left, free.Right - covered.Width),

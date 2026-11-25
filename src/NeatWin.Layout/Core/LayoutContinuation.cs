@@ -50,8 +50,8 @@ internal static partial class IntentLayoutPlanner
             var minimum = pair.Select((w, i) => (
                 Math.Max(1, Math.Min(w.VisualRect.Width, goals[i].Width)),
                 Math.Max(1, Math.Min(w.VisualRect.Height, goals[i].Height)))).ToArray();
-            var abovePair = obstacles.Where(w => w.ZOrder < pair[0].ZOrder).Select(w => w.VisualRect).ToArray();
-            var aboveBackground = obstacles.Where(w => w.ZOrder < pair[1].ZOrder).Select(w => w.VisualRect).ToArray();
+            var abovePair = obstacles.Where(w => w.ZOrder < pair[0].ZOrder && !w.IsLocalTo(pair[0])).Select(w => w.VisualRect).ToArray();
+            var aboveBackground = obstacles.Where(w => w.ZOrder < pair[1].ZOrder && !w.IsLocalTo(pair[1])).Select(w => w.VisualRect).ToArray();
             // 忙碌桌面连同遮挡物超出首版验证范围时，继续使用现有单步选择。
             if (aboveBackground.Length > 12) return null;
             return new(main, peer, area, minimum, abovePair, aboveBackground);

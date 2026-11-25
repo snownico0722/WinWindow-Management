@@ -103,7 +103,8 @@ internal static partial class IntentLayoutPlanner
                 int localPlacement = groupContext.GeometryOnlyWindow == 0 ? -1 :
                     Array.FindIndex(group, v => v.Window.Handle == groupContext.GeometryOnlyWindow);
                 if (groupContext.GeometryOnlyWindow != 0 && localPlacement < 0) continue;
-                var obstacles = desktop.Where(w => !handles.Contains(w.Handle)).Select(w => w with
+                var obstacles = desktop.Where(w => !handles.Contains(w.Handle) &&
+                    (group.Length != 1 || !w.IsLocalTo(group[0].Window))).Select(w => w with
                     { VisualRect = settled.GetValueOrDefault(w.Handle, w.VisualRect),
                       ZOrder = settledRanks.GetValueOrDefault(w.Handle, w.ZOrder) })
                     .Where(w => !w.VisualRect.Intersect(area).IsEmpty).ToArray();
@@ -113,7 +114,7 @@ internal static partial class IntentLayoutPlanner
                 var blockers = obstacles.Where(w => !monitorHandles.Contains(w.Handle) && w.ZOrder < lastRank &&
                     (!w.IsTopmost || w.VisualRect.Intersect(area).Area >= area.Area * .15)).ToArray();
                 var packingAreas = localOnly || group.Length < 2 ? [area] : RectRegion.FreeRectangles(area,
-                        obstacles.Where(w => w.ZOrder < lastRank || monitorHandles.Contains(w.Handle) || anchors.Contains(w.Handle))
+                        obstacles.Where(w => !handles.Contains(w.Owner) && (w.ZOrder < lastRank || monitorHandles.Contains(w.Handle) || anchors.Contains(w.Handle)))
                             .Select(w => w.VisualRect),
                         group.Min(v => Math.Min(v.Window.VisualRect.Width, options.MinimumWidth)),
                         group.Min(v => Math.Min(v.Window.VisualRect.Height, options.MinimumHeight)))
@@ -164,7 +165,9 @@ internal static partial class IntentLayoutPlanner
                 }
                 var generationNotes = new List<LayoutCandidateTrace>();
                 var candidates = new List<Candidate> { new("keep", original, order) };
-                var rescue = group.Select(v => Fit(v.Window.VisualRect, v.Window, options, groupContext.Preferences.AllowUsefulResize)).ToArray();
+                // 窗口本身尺寸未超过工作区而仅边缘越界时，优先做纯平移拉回（不擅自篡改窗口宽高或挤压邻窗）。
+                var rescue = group.Select(v => Fit(v.Window.VisualRect, v.Window, options,
+                    groupContext.Preferences.AllowUsefulResize && (v.Window.VisualRect.Width > v.Window.WorkArea.Width || v.Window.VisualRect.Height > v.Window.WorkArea.Height))).ToArray();
                 if (!rescue.SequenceEqual(original)) candidates.Add(new("rescue", rescue, order));
                 // 给约束一个可用的同侧候选，否则“不要横移”很容易退化成偏小的阅读窗口永远得不到放大。
                 if (scene?.Lane is { } inherited && goals != null)
@@ -207,6 +210,9 @@ internal static partial class IntentLayoutPlanner
                     if (group.Length <= 8)
                     {
                         AddOverlapping(candidates, group, original, area, hint);
+                        // 原位时所有实际交叠都已受保护，记录剪枝原因即可。
+                        if (group.All(w => !w.Window.IsTopmost) && original.SelectMany((r, i) => original.Take(i).Select(a => r.Intersect(a))).Any(r => !r.IsEmpty))
+                            generationNotes.Add(new("restack", null, "layer-preserve-foreground-or-occluded"));
                         AddOrders(candidates, "restack", original, group);
                     }
                     AddTaskCandidates(candidates, group, original, area, task, groupContext, hint.GapPixels);
@@ -326,6 +332,12 @@ internal static partial class IntentLayoutPlanner
                                 }
                                 continue;
                             }
+                            // 禁止 retain-existing-edges 在死守旧内缩左/右缘（浪费 >96 DIP 屏幕外侧留白）的同时把窗口压窄到低于目标阅读宽度的 85%。
+                            double edgeScale = (group[i].Window.Dpi == 0 ? 96 : group[i].Window.Dpi) / 96d;
+                            int wastedOuter = Math.Min(simpler.Left - area.Left, area.Right - simpler.Right);
+                            if (goals != null && simpler.Width < target.Width && simpler.Width < goals[i].Width * .85 &&
+                                wastedOuter > (int)Math.Round(96 * edgeScale))
+                                continue;
                             var frames = (RectI[])best.Rects.Clone();
                             frames[i] = simpler;
                             Evaluate(new("retain-existing-edges", frames, best.Order), 1);
@@ -379,8 +391,6 @@ internal static partial class IntentLayoutPlanner
 
                 void EvaluateFeasible(Candidate candidate, int generation)
                 {
-                    var targetLookup = candidate.Order.SequenceEqual(order) ? null :
-                        Enumerable.Range(0, group.Length).ToDictionary(i => group[i].Window.Handle, i => candidate.Rects[i]);
                     if (groupContext.Attention != null && Array.Exists(order, i =>
                         groupContext.LimitReturn(group[i].Window, candidate.Rects[i]) != candidate.Rects[i]))
                     {
@@ -391,14 +401,16 @@ internal static partial class IntentLayoutPlanner
                         if (portfolio.Offer(smaller)) Evaluate(smaller, generation);
                         return;
                     }
+                    bool naturalOrder = candidate.Order.SequenceEqual(order);
                     var rejection = scene?.Lane is { } lane && Array.Exists(order, i => !lane.Allows(group[i].Window, candidate.Rects[i]))
-                        ? "attention-side-transfer" : !candidate.Order.SequenceEqual(order) &&
+                        ? "attention-side-transfer" : !naturalOrder &&
                         !LayerOrderSafe(group, candidate, order)
-                        ? "layer-preserve-foreground-or-occluded" : !candidate.Order.SequenceEqual(order) &&
-                        !WindowLayerSafety.CanReorder(candidate.Order.Select(i => group[i].Window).ToArray(), desktop ?? all.Select(v => v.Window).ToArray(), targetLookup)
+                        ? "layer-preserve-foreground-or-occluded" : !naturalOrder &&
+                        !WindowLayerSafety.CanReorder(candidate.Order.Select(i => group[i].Window).ToArray(), desktop ?? all.Select(v => v.Window).ToArray(),
+                            Enumerable.Range(0, group.Length).ToDictionary(i => group[i].Window.Handle, i => candidate.Rects[i]))
                         ? "layer-band-or-interleaved-window" : !TaskSafe(group, original, candidate, area, options, groupContext, obstacles, beforeExposure, goals, demands) ? "geometry-budget" :
                         HitsOutsideGroup(settled, group, original, candidate.Rects) ? "other-group" :
-                        blockers.Any(w => candidate.Rects.Select((r, i) => r.Intersect(w.VisualRect).Area > original[i].Intersect(w.VisualRect).Area).Any(b => b)) ? "fixed-occluder" :
+                        blockers.Any(w => candidate.Rects.Select((r, i) => !w.IsLocalTo(group[i].Window) && r.Intersect(w.VisualRect).Area > original[i].Intersect(w.VisualRect).Area).Any(b => b)) ? "fixed-occluder" :
                         null;
                     double referenceCost = 0;
                     if (rejection == null)

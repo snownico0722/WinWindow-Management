@@ -50,7 +50,7 @@ internal static class AttentionLayout
         {
             if (other.SurfaceState is "maximized" or "fullscreen")
             {
-                var covers = desktop.Where(w => w.Handle != window.Handle && w.ZOrder < other.ZOrder).Select(w => w.VisualRect).ToArray();
+                var covers = desktop.Where(w => w.Handle != window.Handle && w.ZOrder < other.ZOrder && !w.IsLocalTo(other)).Select(w => w.VisualRect).ToArray();
                 var before = IntentLayoutPlanner.ScreenExposure(other.VisualRect, covers.Append(window.VisualRect), area, other.Dpi);
                 var after = IntentLayoutPlanner.ScreenExposure(other.VisualRect, covers.Append(centered), area, other.Dpi);
                 // 连续横向可读区允许跨过细小遮挡；以原有视野为基准，显著切碎或缩减它才放弃默认居中。
@@ -59,7 +59,7 @@ internal static class AttentionLayout
             }
             var overlap = centered.Intersect(other.VisualRect);
             if (overlap.IsEmpty || overlap.Area <= other.VisualRect.Area * .12) continue;
-            var front = desktop.Where(w => w.ZOrder < other.ZOrder).Select(w => w.VisualRect);
+            var front = desktop.Where(w => w.ZOrder < other.ZOrder && !w.IsLocalTo(other)).Select(w => w.VisualRect);
             if (ScreenArea(overlap, front, area, other.Dpi) > other.VisualRect.Area * .12) return;
         }
         double currentCenter = window.VisualRect.Left + window.VisualRect.Width / 2d;
@@ -247,7 +247,37 @@ internal static class AttentionLayout
         // 工作区观察有时仍带着上一手的锚点。上面的同侧叠放依旧有效，真正的松手辅助由独立手势请求处理。
         if (context.GestureAnchor != 0 || context.Focus?.OpeningResidentLeft != null) return null;
         if (HasReadableColumns(group, targets, exposed, obstacles, context)) return "existing-readable-columns";
-        if (group.Length < 2) return null;
+        // 已在屏内、接近目标阅读尺寸的单窗，焦点恢复不应触发细微扩张。
+        if (group.Length == 1)
+        {
+            var solo = group[0].Window;
+            var soloFrame = solo.VisualRect;
+            var soloSeen = exposed[0];
+            double soloScale = (solo.Dpi == 0 ? 96 : solo.Dpi) / 96d;
+            if (!targets[0].LearnedWidth && !targets[0].LearnedHeight && !targets[0].RestingCenter.HasValue &&
+                soloFrame.Width >= .90 * targets[0].Width && soloFrame.Height >= .85 * targets[0].Height &&
+                soloFrame.Intersect(area) == soloFrame && soloSeen.Visible >= .94 && soloSeen.CenterVisible >= .94 &&
+                soloFrame.Width >= Math.Min(targets[0].Width, (int)Math.Round(800 * soloScale)) &&
+                soloFrame.Height >= Math.Min(targets[0].Height, (int)Math.Round(780 * soloScale)))
+                return "single-window-already-comfortable";
+            return null;
+        }
+        // 单向切入已经清晰可见（>= 95%）的前台窗且伴随窗仍保留 >= 56% 可读露出时，在尚未形成高频互切（Switches < 4）前不推挤后台窗口。
+        if (group.Length == 2 && context.Focus is { Switches: < 4 } lightSwitch &&
+            (context.WorkspaceCause & activation) != 0 && (context.WorkspaceCause & ~activation) == 0 &&
+            context.VideoHint == null && context.Placement?.Any(p => p.Confidence >= .40) != true)
+        {
+            int fgIdx = Array.FindIndex(group, v => v.Window.IsForeground && v.Window.Handle == lightSwitch.Main);
+            if (fgIdx >= 0)
+            {
+                int peerIdx = 1 - fgIdx;
+                var fgRect = group[fgIdx].Window.VisualRect;
+                var peerRect = group[peerIdx].Window.VisualRect;
+                if (fgRect.Intersect(area) == fgRect && peerRect.Intersect(area) == peerRect &&
+                    exposed[fgIdx].Visible >= .95 && exposed[peerIdx].Visible >= .56)
+                    return "companion-already-sufficiently-visible";
+            }
+        }
         // 在两个居中窗之间切回一次，可能只是翻回刚才看的内容。两边都有输入，或多次切换且各自有停留，才有更强的并排使用证据。
         if (group.Length == 2 && context.Focus is { Evidence: "recent-switch-pair" } focus &&
             !(focus.Companion != 0 && (group.All(v => context.Attention?.GetValueOrDefault(v.Window.Handle)?.Input >= .35) ||
@@ -305,7 +335,7 @@ internal static class AttentionLayout
         {
             if (peer.MonitorHandle != active.MonitorHandle || !peer.IsManageable || peer.IsTopmost ||
                 peer.Owner != 0 || peer.ZOrder <= active.ZOrder || !ColumnsFit(peer)) continue;
-            var covers = obstacles.Where(w => w.ZOrder < peer.ZOrder).Select(w => w.VisualRect).Append(active.VisualRect);
+            var covers = obstacles.Where(w => w.ZOrder < peer.ZOrder && !w.IsLocalTo(peer)).Select(w => w.VisualRect).Append(active.VisualRect);
             if (BothReadable(peer, IntentLayoutPlanner.ScreenExposure(peer.VisualRect, covers, area, peer.Dpi))) return true;
         }
         return false;
@@ -664,7 +694,7 @@ internal static partial class IntentLayoutPlanner
                 yield return Place(a.Left + (a.Width - size.Width) / 2, a.Top + (a.Height - size.Height) / 2);
                 if (i == main)
                 {
-                    var covers = obstacles.Where(w => w.ZOrder < group[i].Window.ZOrder)
+                    var covers = obstacles.Where(w => w.ZOrder < group[i].Window.ZOrder && !w.IsLocalTo(group[i].Window))
                         .Select(w => w.VisualRect).ToArray();
                     if (covers.Length > 0)
                         foreach (var slot in RectRegion.FreeRectangles(area, covers, size.Width, size.Height).Take(4))

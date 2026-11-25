@@ -89,10 +89,18 @@ internal static partial class IntentLayoutPlanner
         {
             if (recent.Weight < .35) return false;
             var a = primary.Window.VisualRect; var b = other.Window.VisualRect;
-            double independentArea = 1 - a.Intersect(b).Area / (double)Math.Max(1, Math.Min(a.Area, b.Area));
+            double overlapRatio = a.Intersect(b).Area / (double)Math.Max(1, Math.Min(a.Area, b.Area));
+            double independentArea = 1 - overlapRatio;
             double coVisible = Math.Min(primary.VisibleRatio, other.VisibleRatio) * independentArea;
             double comparisonEvidence = Math.Max(recent.Association, Math.Max(recent.Input, recent.Dwell * recent.Recency));
-            return coVisible * TaskAffinity(primary.Window, other.Window, context) * comparisonEvidence >= .35;
+            // 修复二次方遮挡悖论：当刚活跃交互过的工作窗被新唤起的前台窗遮挡 45%~85% 时，高遮挡恰恰是急需并排解救的信号而非否定配对的理由。
+            // 松手只授权这次操作；仅停留也不足以授权移动邻窗。
+            bool freshlyOccludedActivePeer = context.IsWorkspaceObservation && context.GestureAnchor == 0 &&
+                // 刚被系统摆过的搭档，需要两窗的关联证据才能再次介入。
+                (recent.RecentSystemPlacement <= 0 || recent.Association >= .35) &&
+                recent.Weight >= .75 && recent.Input >= .50 &&
+                other.VisibleRatio is >= .15 and <= .52 && overlapRatio >= .40;
+            return freshlyOccludedActivePeer || coVisible * TaskAffinity(primary.Window, other.Window, context) * comparisonEvidence >= .35;
         }
         var passive = context.WindowHints?.Where(h => h.MediaCompanion && !h.Anchor && h.Handle != mainHandle &&
             members.Contains(h.Handle) && CanJoin(h.Handle)).Take(2).ToArray();
@@ -151,7 +159,7 @@ internal static partial class IntentLayoutPlanner
         var front = new List<RectI>();
         return original.Select((r, i) =>
         {
-            var result = ScreenExposure(r, front.Concat((obstacles ?? []).Where(w => w.ZOrder < windows[i].Window.ZOrder)
+            var result = ScreenExposure(r, front.Concat((obstacles ?? []).Where(w => w.ZOrder < windows[i].Window.ZOrder && !w.IsLocalTo(windows[i].Window))
                 .Select(w => w.VisualRect)), area, windows[i].Window.Dpi);
             front.Add(r); return result;
         }).ToArray();
@@ -209,8 +217,8 @@ internal static partial class IntentLayoutPlanner
             {
                 int rank = Array.IndexOf(candidate.Order, i);
                 var prior = windows.Where(v => v.Window.ZOrder < window.ZOrder).Select(v => v.Window.VisualRect)
-                    .Concat((obstacles ?? []).Where(w => w.ZOrder < window.ZOrder).Select(w => w.VisualRect));
-                var next = front.Concat((obstacles ?? []).Where(w => w.ZOrder < windows[rank].Window.ZOrder).Select(w => w.VisualRect));
+                    .Concat((obstacles ?? []).Where(w => w.ZOrder < window.ZOrder && !w.IsLocalTo(window)).Select(w => w.VisualRect));
+                var next = front.Concat((obstacles ?? []).Where(w => w.ZOrder < windows[rank].Window.ZOrder && !w.IsLocalTo(window)).Select(w => w.VisualRect));
                 if (!TextViewAcceptsFrame(window, b, context, prior, next)) return false;
             }
             if (goals != null && (!goals[i].Movable && (a != b && !gestureEndpoint || Array.IndexOf(candidate.Order, i) != i) ||
@@ -246,7 +254,7 @@ internal static partial class IntentLayoutPlanner
                 widthFloor = Math.Max(widthFloor, Math.Min(a.Width, budget.MinimumFrameWidth));
             if (a.Width <= area.Width && (b.Width < widthFloor || !gestureEndpoint && b.Width > Math.Max(a.Width * 1.50, Math.Max(goals?[i].FrameWidth ?? 0, goals?[i].Width ?? 0)))) return false;
             if (a.Height <= area.Height && (b.Height < heightFloor || !gestureEndpoint && b.Height > Math.Max(a.Height * 1.50, goals?[i].Height ?? 0))) return false;
-            var after = ScreenExposure(b, front.Concat((obstacles ?? []).Where(w => w.ZOrder < windows[Array.IndexOf(candidate.Order, i)].Window.ZOrder).Select(w => w.VisualRect)), area, window.Dpi);
+            var after = ScreenExposure(b, front.Concat((obstacles ?? []).Where(w => w.ZOrder < windows[Array.IndexOf(candidate.Order, i)].Window.ZOrder && !w.IsLocalTo(window)).Select(w => w.VisualRect)), area, window.Dpi);
             if (goals?[i].Role is not (AttentionRole.Return or AttentionRole.Waiting) && context.Attention != null && (context.Focus?.Main == window.Handle ||
                 context.Focus?.Companion == window.Handle || context.HasRecentInput(window.Handle)))
             {
@@ -322,7 +330,7 @@ internal static partial class IntentLayoutPlanner
             double simultaneous = intent.WorkingSurface?.Simultaneous ?? 1;
             if (w.Handle == context.GestureAnchor && context.GestureTarget is { } endpoint && b != endpoint)
                 gestureDeficit = 1;
-            var blockers = obstacles.Where(o => o.ZOrder < windows[rank].Window.ZOrder).Select(o => o.VisualRect);
+            var blockers = obstacles.Where(o => o.ZOrder < windows[rank].Window.ZOrder && !o.IsLocalTo(w)).Select(o => o.VisualRect);
             var exposure = ScreenExposure(b, front.Concat(blockers), area, w.Dpi);
             bool automaticBackground = context.IsAutomaticBackground(w);
             // 已经露出的正文可以作返回入口。原先完全被埋住的窗口仍优先露出标题，方便安全地激活。
@@ -578,7 +586,7 @@ internal static partial class IntentLayoutPlanner
                 var cell = WindowExposure.Cell(candidate.Rects[peer], preference.RevealedCell);
                 var slot = Array.IndexOf(candidate.Order, peer);
                 var covers = candidate.Order.Take(slot).Select(i => candidate.Rects[i])
-                    .Concat((obstacles ?? []).Where(w => w.ZOrder < ranks[slot]).Select(w => w.VisualRect));
+                    .Concat((obstacles ?? []).Where(w => w.ZOrder < ranks[slot] && !w.IsLocalTo(windows[peer].Window)).Select(w => w.VisualRect));
                 error += 2 * preference.RegionConfidence * (1 - ScreenExposure(cell, covers, area, windows[peer].Window.Dpi).Visible);
             }
             personal += error;
@@ -636,7 +644,7 @@ internal static partial class IntentLayoutPlanner
             if (!TaskSafe(group, original, c, area, options, groupContext, afterObstacles, goals: goals, objectives: demands)) return false;
             for (var i = 0; i < group.Length; i++)
                 foreach (var obstacle in afterObstacles)
-                    if (after[i].Intersect(obstacle.VisualRect).Area >
+                    if (!obstacle.IsLocalTo(group[i].Window) && after[i].Intersect(obstacle.VisualRect).Area >
                         before[i].Intersect(previousObstacleRects.GetValueOrDefault(obstacle.Handle)).Area) return false;
             var hint = new IntentHint((int)Math.Round(8 * group[0].Window.Dpi / 96.0), 0, 0);
             var observedExposure = MeasureBeforeExposure(group, original, area, desktop.Where(w => !trace.Handles.Contains(w.Handle)).ToArray());

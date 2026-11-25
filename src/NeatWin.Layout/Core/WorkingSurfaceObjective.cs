@@ -112,7 +112,7 @@ internal static partial class IntentLayoutPlanner
             if (objectives[i].WorkingSurface is not { } surface || !goals[i].Movable) continue;
             var frame = original[i];
             if (frame.Width > area.Width || frame.Height > area.Height) continue;
-            var front = spread.Take(i).Concat(obstacles.Where(w => w.ZOrder < group[i].Window.ZOrder)
+            var front = spread.Take(i).Concat(obstacles.Where(w => w.ZOrder < group[i].Window.ZOrder && !w.IsLocalTo(group[i].Window))
                 .Select(w => w.VisualRect)).Where(r => !r.Intersect(area).IsEmpty).ToArray();
             if (!front.Any(r => !r.Intersect(frame).IsEmpty)) continue;
             var positions = new HashSet<RectI> { frame };

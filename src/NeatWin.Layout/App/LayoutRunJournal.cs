@@ -39,7 +39,8 @@ internal sealed class LayoutRunJournal : IDisposable
     internal string? Record(IReadOnlyList<WindowSnapshot> before, LayoutApplication application, string trigger,
         IntentLayoutPlan? baseline = null, IntentLayoutPlan? proposal = null, IntentLayoutPlan? scored = null,
         TaskLayoutContext? context = null, SmartTidyStrength? strength = null, bool? fullDesktop = null, bool allowReplan = false, string? undoOfRequest = null,
-        ManualWindowGesture? releaseInput = null, bool reusedPreview = false, long? openingTick = null, PlacementShadowReplay? shadow = null)
+        ManualWindowGesture? releaseInput = null, bool reusedPreview = false, long? openingTick = null, PlacementShadowReplay? shadow = null,
+        Func<IReadOnlyList<WindowSnapshot>, IReadOnlyList<WindowSnapshot>>? layoutView = null)
     {
         try
         {
@@ -82,7 +83,8 @@ internal sealed class LayoutRunJournal : IDisposable
             if (targets.Length > 0 || layers.Length > 0 || application.MinimizeRequested != null)
                 foreach (var old in _pending) old.Intervened = true;
             _pending.Add(new(observation, before.Select(w => w.Handle).ToHashSet(), Environment.TickCount64, epoch,
-                recorded, plan.Moves, application.Failures, allowReplan, application.MinimizeRequested) { Intervened = application.Interrupted, Scene = scene });
+                recorded, plan.Moves, application.Failures, allowReplan, application.MinimizeRequested)
+                { Intervened = application.Interrupted, Scene = scene, LayoutView = layoutView });
             _timer.Start();
             return observation.RequestId;
         }
@@ -155,14 +157,15 @@ internal sealed class LayoutRunJournal : IDisposable
                 bool comparable = !intervened && !frame.Truncated && !requested.Before.Truncated && pending.Scene != null &&
                     pending.Scene.References.All(g => current.TryGetValue(g.Window.Handle, out var w) &&
                         requested.SceneEffects?.Any(e => e.Rule == g.Rule && e.SubjectId == _identity.Id(w)) == true);
+                var working = pending.LayoutView?.Invoke(snapshot) ?? snapshot;
                 var actual = requested with { Actual = frame,
-                    ActualSceneEffects = comparable ? pending.Scene!.Effects(snapshot, h => _identity.Id(current[h])) : null, MinimizeVerified = minimized, Outcome = intervened ? "intervened" :
+                    ActualSceneEffects = comparable ? pending.Scene!.Effects(working, h => _identity.Id(current[h])) : null, MinimizeVerified = minimized, Outcome = intervened ? "intervened" :
                     pending.Failures.Count > 0 ? "submission-failed" : matches ? "observed-match" : "observed-difference" };
                 // Pause/clear stops writes, not the runtime's placement verification. An old
                 // completion must not resurrect cleared data or become a new recording session.
                 if (pending.Recorded) TryAppend(actual, pending.Epoch);
                 _snapshotObserver?.Invoke(actual);
-                Completed?.Invoke(actual, snapshot);
+                Completed?.Invoke(actual, working);
                 if (blocked && pending.AllowReplan) ReplanAroundBlockedWindow?.Invoke();
             }
             catch { }
@@ -187,6 +190,7 @@ internal sealed class LayoutRunJournal : IDisposable
         internal WindowSnapshot? Minimize { get; } = minimize;
         internal HashSet<nint>? UnchangedOnFirstRead { get; set; }
         internal ActiveLayoutScene? Scene { get; init; }
+        internal Func<IReadOnlyList<WindowSnapshot>, IReadOnlyList<WindowSnapshot>>? LayoutView { get; init; }
         internal bool Intervened { get; set; }
     }
 }

@@ -70,6 +70,16 @@ internal static class SceneModelChecks
         check(capture.Observe([selection, background, changedOther], 1500, false) is { Cause: var cause } &&
             cause.HasFlag(WorkspaceChangeCause.Geometry) && capture.WorkingForeground == host.Handle,
             "an independent geometry event can dispatch on time while a screenshot surface owns native focus");
+        WindowSnapshot[] capturing = [selection, background, changedOther];
+        var working = popup.PrepareForLayout(capturing, capture.WorkingForeground);
+        var screenshotWorkingSet = new VisibilityAnalyzer().SelectVisibleWorkingSet(working);
+        check(capturing[0].IsForeground && working.Count == 2 && working[0].IsForeground &&
+            screenshotWorkingSet.Any(w => w.Window.Handle == host.Handle && w.VisibleRatio == 1),
+            "the physical screenshot stays observable while planning uses the visible working desktop beneath it");
+        capture.ApplicationRequested(capturing, new([], [], []), 1500);
+        check(popup.IsCaptureOverlay(selection) && capture.WorkingForeground == host.Handle &&
+            !popup.PrepareForLayout(capturing, capture.WorkingForeground).Contains(selection),
+            "submitting against the observed desktop keeps screenshot recognition through the native preflight");
         check(!TaskSurfaces.IsCaptureTool(selection with { IndependentFrame = true }, TaskSurfaces.ChatCaption("截图")) &&
             !TaskSurfaces.IsCaptureTool(translation, SurfacePurpose.IndependentTask),
             "a pinned independent window or call stays a real reference");

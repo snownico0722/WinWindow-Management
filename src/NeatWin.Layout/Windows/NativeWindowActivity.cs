@@ -1,5 +1,6 @@
 using NeatWin.Core;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace NeatWin.Windows;
 
@@ -8,7 +9,7 @@ internal static class NativeWindowActivity
     // 微信多个独立功能共用同一 Qt 窗口类。仅为已匹配的聊天宿主或截图工具框读取系统窗标题，返回用途。
     internal static SurfacePurpose ChatSurface(WindowSnapshot w)
     {
-        var text = new System.Text.StringBuilder(128);
+        var text = new StringBuilder(128);
         return NativeMethods.GetWindowText(w.Handle, text, text.Capacity) > 0 ? TaskSurfaces.ChatCaption(text.ToString()) : SurfacePurpose.Unknown;
     }
 
@@ -25,12 +26,22 @@ internal static class NativeWindowActivity
     {
         if (foreground == 0 || foreground == NativeMethods.GetShellWindow()) return true;
         var root = NativeMethods.GetAncestor(foreground, NativeMethods.GaRoot);
-        return WindowManager.IsSystemSurface(root != 0 ? root : foreground);
+        var target = root != 0 ? root : foreground;
+        // 同时检查当前前台句柄与根句柄类名，避免 XAML Island 子宿主（如托盘溢出岛、贴靠栏、CLaunch、开始菜单）漏判。
+        if (WindowManager.IsSystemSurface(foreground) || (target != foreground && WindowManager.IsSystemSurface(target)))
+            return true;
+        NativeMethods.GetWindowThreadProcessId(target, out uint pid);
+        if (pid == 0) return true;
+        string? proc = WindowManager.ResolveProcessName(pid);
+        var cls = new StringBuilder(256);
+        _ = NativeMethods.GetClassName(target, cls, cls.Capacity);
+        if (!WindowManager.TryGetRect(target, out var rect)) rect = default;
+        return SurfaceAutonomy.IsTransientWorkspaceFreezeOverlay(proc, cls.ToString(), rect, default, false, false);
     }
 
     internal static bool SuspendsWorkspace(nint foreground)
     {
-        // 工作台被排除在布局采样之外。用户进设置时必须中断旧任务，否则残留的应用焦点会继续移动背后的窗口。
+        // 工作台、系统贴靠栏、托盘溢出面板与 CLaunch 快捷启动器激活时必须挂起自动整理，防止残留焦点把后台浏览器压扁。
         if (IsShellForeground(foreground) || AutomationGuard.IsUtility(foreground)) return true;
         NativeMethods.GetWindowThreadProcessId(foreground, out uint pid);
         return pid == 0 || pid == Environment.ProcessId;

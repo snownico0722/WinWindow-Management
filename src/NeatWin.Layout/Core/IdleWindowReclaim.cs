@@ -4,13 +4,28 @@ namespace NeatWin.Core;
 internal sealed class IdleWindowReclaim
 {
     private readonly Dictionary<int, long> _lastUse = [];
+    private long _lastObservedTick;
+    private nint? _coveredMonitor;
 
-    internal void Reset() => _lastUse.Clear();
+    internal void Reset()
+    {
+        _lastUse.Clear();
+        _lastObservedTick = 0;
+        _coveredMonitor = null;
+    }
 
     internal WindowSnapshot? Choose(IReadOnlyList<WindowSnapshot> snapshot, IntentLayoutPlan plan,
         TaskLayoutContext context, SmartTidyStrength strength, long tick, Func<WindowSnapshot, int> identity, ForegroundHistory history)
     {
         var present = snapshot.Where(w => w.IsManageable && !w.IsTopmost).ToDictionary(identity);
+        // 全屏期间只暂停同一显示器上后台窗的闲置时钟。另一屏照常工作。
+        if (_coveredMonitor is { } covered && _lastObservedTick > 0 && tick > _lastObservedTick)
+            foreach (var (id, window) in present)
+                if (window.MonitorHandle == covered && _lastUse.ContainsKey(id))
+                    _lastUse[id] += tick - _lastObservedTick;
+        _lastObservedTick = tick;
+        _coveredMonitor = snapshot.FirstOrDefault(w => w.IsForeground &&
+            (w.SurfaceState is "fullscreen" or "maximized" || WindowStateRules.FillsWorkArea(w.VisualRect, w.WorkArea, w.Dpi)))?.MonitorHandle;
         foreach (var id in _lastUse.Keys.Where(id => !present.ContainsKey(id)).ToArray()) _lastUse.Remove(id);
         var main = context.Focus?.Main ?? 0;
         var peer = context.Focus?.Companion ?? 0;
@@ -84,8 +99,6 @@ internal sealed class IdleWindowReclaim
             if (1 - before <= bestGain) continue;
             foreach (var possible in candidates)
             {
-                // Every other occluder stays in place. A return window with a usable title
-                // already has full access and contributes no reason to reclaim its neighbor.
                 double gain = Visibility(front.Where(w => w.Handle != possible.Handle)) - before;
                 if (gain <= bestGain) continue;
                 bestGain = gain;
@@ -94,8 +107,6 @@ internal sealed class IdleWindowReclaim
         }
         if (best != null || strength == SmartTidyStrength.Gentle || monitor == null) return best;
 
-        // An old window behind the task can leave a narrow, unusable strip. Count pixels
-        // that actually return to the desktop; hiding one strip to reveal another gains nothing.
         var local = projected.Where(w => w.MonitorHandle == monitor).ToArray();
         if (local.Count(w => w.IsManageable) < 4) return null;
         var taskOrder = local.Where(IsTask).Max(w => w.ZOrder);

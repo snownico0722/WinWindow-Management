@@ -122,7 +122,7 @@ internal sealed class DesktopActivity(PlacementHistoryStore store)
             if (info.Path == null) return null;
             var name = new StringBuilder(256);
             if (NativeMethods.GetClassName(w.Handle, name, name.Capacity) == 0) return null;
-            var value = store.Key(info.Path.ToUpperInvariant() + "|" + name, create);
+            var value = store.Key(info.Path.ToUpperInvariant() + "|" + SurfaceAutonomy.CanonicalRuleClass(name.ToString()), create);
             if (value == null) return null;
             if (_keys.Count >= 512) _keys.Clear();
             return _keys[key] = value;
