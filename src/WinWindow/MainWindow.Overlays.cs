@@ -19,12 +19,14 @@ public partial class MainWindow
 {
     private const string QuickOpacityGeometry = "M8,2 A6,6 0 1 0 8,14 A6,6 0 1 0 8,2 M8,2.4 L8,13.6 M8,5.2 L12.6,5.2 M8,8 L13.4,8 M8,10.8 L12.6,10.8";
 
-    private readonly Dictionary<WindowItem, TitleBarOverlay> _titleOverlays = new();
+    private readonly Dictionary<nint, TitleBarOverlay> _titleOverlays = new();
     private readonly Dictionary<WindowItem, CollapsedIconOverlay> _collapsedOverlays = new();
     private readonly Dictionary<WindowItem, (int X, int Y)> _collapsedIconPositions = new();
     private readonly HashSet<WindowItem> _collapsingIcons = new();
     private readonly DispatcherTimer _overlayTimer = new(DispatcherPriority.Background)
-        { Interval = TimeSpan.FromMilliseconds(45) };
+        { Interval = TimeSpan.FromMilliseconds(220) };
+    private Native.EventProc? _titleLocationCallback;
+    private nint _titleLocationHook;
     private bool _pickerPreviewActive;
     private readonly DispatcherTimer _launchAvailabilityTimer = new(DispatcherPriority.Background)
         { Interval = TimeSpan.FromSeconds(1) };
@@ -141,16 +143,52 @@ public partial class MainWindow
     }
 
     internal bool HasTitleOverlay(WindowItem item) =>
-        _titleOverlays.TryGetValue(item, out var overlay) && overlay.IsVisible;
+        _titleOverlays.TryGetValue(item.Hwnd, out var overlay) && overlay.IsVisible;
 
     internal nint GetTitleOverlayHandle(WindowItem item) =>
-        _titleOverlays.TryGetValue(item, out var overlay) ? overlay.Handle : 0;
+        _titleOverlays.TryGetValue(item.Hwnd, out var overlay) ? overlay.Handle : 0;
+
+    internal bool MoveTitleOverlayForTest(WindowItem item, int deltaX) =>
+        _titleOverlays.TryGetValue(item.Hwnd, out var overlay) && overlay.MoveHorizontally(deltaX);
+
+    internal void PauseOverlayPollingForTest() => _overlayTimer.Stop();
 
     internal bool HasCollapsedIconOverlay(WindowItem item) =>
         _collapsedOverlays.TryGetValue(item, out var overlay) && overlay.IsVisible;
 
     internal nint GetCollapsedIconOverlayHandle(WindowItem item) =>
         _collapsedOverlays.TryGetValue(item, out var overlay) ? overlay.Handle : 0;
+
+    private void UpdateTitleLocationHook(bool enabled)
+    {
+        if (enabled == (_titleLocationCallback is not null)) return;
+        if (enabled)
+        {
+            _titleLocationCallback = FollowTargetLocation;
+            _titleLocationHook = Native.HookExternalWindowLocations(_titleLocationCallback);
+            // 系统钩子不可用时退回原有频率，窗口移动仍可得到跟随。
+            _overlayTimer.Interval = TimeSpan.FromMilliseconds(_titleLocationHook == 0 ? 45 : 220);
+        }
+        else
+        {
+            if (_titleLocationHook != 0) Native.UnhookWinEvent(_titleLocationHook);
+            _titleLocationHook = 0;
+            _titleLocationCallback = null;
+            _overlayTimer.Interval = TimeSpan.FromMilliseconds(220);
+        }
+    }
+
+    private void FollowTargetLocation(nint hook, uint evt, nint hwnd, int objectId, int childId, uint thread, uint time)
+    {
+        if (_quitting || !_ready || _picking || _pickerPreviewActive || objectId != 0 || childId != 0 ||
+            !_titleOverlays.TryGetValue(hwnd, out var overlay)) return;
+        var item = overlay.Target;
+        if (!item.IsManaged || !item.IsAvailable || item.IsIconCollapsed || _collapsingIcons.Contains(item) ||
+            item.ClickThrough || DesiredOpacity(item) == 0 || item.Identity is not { } identity ||
+            Native.GetWindowThreadProcessId(hwnd, out uint pid) == 0 || pid != (uint)identity.ProcessId) return;
+        // 位置事件由注册钩子的 UI 线程接收，只更新命中的浮条。置顶和按键内容继续由常规同步处理。
+        overlay.FollowPosition();
+    }
 
     private void SyncManagedOverlays()
     {
@@ -160,7 +198,7 @@ public partial class MainWindow
             return;
         }
 
-        // 测试模式未启用桌面事件钩子时只在主界面已句柄化后挂载，避免无头初始化前抢建子窗口。
+        // 等工作台建立句柄后再挂载，避免无头初始化时先创建浮条。
         if (_hwnd == 0) return;
         _launchAvailabilityTimer.IsEnabled = IsVisible && WindowState != WindowState.Minimized &&
             Manager.Items.Any(item => !item.IsAvailable);
@@ -169,10 +207,10 @@ public partial class MainWindow
             .Where(x => x.IsManaged && x.IsAvailable && x.Identity is not null)
             .ToHashSet();
 
-        foreach (var stale in _titleOverlays.Keys.Where(k => !activeItems.Contains(k)).ToArray())
+        foreach (var stale in _titleOverlays.Values.Where(bar => !activeItems.Contains(bar.Target)).ToArray())
         {
-            _titleOverlays[stale].Dispose();
-            _titleOverlays.Remove(stale);
+            _titleOverlays.Remove(stale.Target.Hwnd);
+            stale.Dispose();
         }
         foreach (var stale in _collapsedOverlays.Keys.Where(k => !activeItems.Contains(k) || (!k.IsIconCollapsed && !_collapsingIcons.Contains(k))).ToArray())
         {
@@ -186,6 +224,7 @@ public partial class MainWindow
         if (activeItems.Count == 0)
         {
             _overlayTimer.Stop();
+            UpdateTitleLocationHook(false);
             return;
         }
 
@@ -196,7 +235,7 @@ public partial class MainWindow
         {
             if (item.IsIconCollapsed || _collapsingIcons.Contains(item))
             {
-                if (_titleOverlays.TryGetValue(item, out var bar)) bar.Hide();
+                if (_titleOverlays.TryGetValue(item.Hwnd, out var bar)) bar.Hide();
                 if (!_collapsedOverlays.TryGetValue(item, out var iconOverlay))
                 {
                     iconOverlay = new CollapsedIconOverlay(this, item);
@@ -212,25 +251,27 @@ public partial class MainWindow
             if (suppressTitleBars || item.IsMinimized || item.IsHidden || item.ClickThrough || currentOpacity == 0 ||
                 item.Identity is not { } identity || !Native.Matches(identity))
             {
-                if (_titleOverlays.TryGetValue(item, out var bar)) bar.Hide();
+                if (_titleOverlays.TryGetValue(item.Hwnd, out var bar)) bar.Hide();
                 continue;
             }
 
-            if (!_titleOverlays.TryGetValue(item, out var titleOverlay))
+            if (!_titleOverlays.TryGetValue(item.Hwnd, out var titleOverlay))
             {
                 titleOverlay = new TitleBarOverlay(this, item);
-                _titleOverlays[item] = titleOverlay;
+                _titleOverlays[item.Hwnd] = titleOverlay;
             }
 
             titleOverlay.Update(quickOpacity, currentOpacity);
         }
 
+        UpdateTitleLocationHook(_titleOverlays.Count != 0);
         if (!_overlayTimer.IsEnabled) _overlayTimer.Start();
     }
 
     private void DisposeManagedOverlays()
     {
         _overlayTimer.Stop();
+        UpdateTitleLocationHook(false);
         _launchAvailabilityTimer.Stop();
         foreach (var bar in _titleOverlays.Values) bar.Dispose();
         _titleOverlays.Clear();
@@ -243,6 +284,7 @@ public partial class MainWindow
     {
         private const int DefaultWidthDip = 98;
         private const int HeightDip = 26;
+        private const int DragHoldMilliseconds = 300;
 
         private readonly MainWindow _owner;
         private readonly WindowItem _item;
@@ -254,12 +296,22 @@ public partial class MainWindow
         private readonly Path _pinPath;
         private readonly ToggleButton _opacityButton;
         private readonly TextBlock _opacityText;
+        private readonly Border _toolbar;
         private HwndSource? _source;
         private nint _hwnd;
         private bool _syncing, _disposed;
+        private Native.Rect _track;
+        private Native.Rect _lastBarBounds;
+        private int _barWidthPixels;
+        private double _scale = 1;
+        private double _horizontalOffsetDip;
+        private int? _pressTimestamp;
+        private int? _dragCursorX;
+        private DispatcherTimer? _dragTimer;
 
         public nint Handle => _hwnd;
         public bool IsVisible => !_disposed && _window.IsVisible;
+        public WindowItem Target => _item;
 
         public TitleBarOverlay(MainWindow owner, WindowItem item)
         {
@@ -370,15 +422,20 @@ public partial class MainWindow
             barPanel.Children.Add(_pinButton);
             barPanel.Children.Add(_opacityButton);
 
-            var frame = new Border
+            _toolbar = new Border
             {
                 CornerRadius = new CornerRadius(7),
                 BorderThickness = new Thickness(1),
                 Padding = new Thickness(3, 2, 3, 2),
+                Cursor = Cursors.Arrow,
+                ForceCursor = true,
                 Child = barPanel
             };
-            frame.SetResourceReference(Border.BackgroundProperty, "Panel");
-            frame.SetResourceReference(Border.BorderBrushProperty, "Line");
+            _toolbar.SetResourceReference(Border.BackgroundProperty, "Panel");
+            _toolbar.SetResourceReference(Border.BorderBrushProperty, "Line");
+            _toolbar.PreviewMouseLeftButtonDown += OnToolbarMouseDown;
+            _toolbar.PreviewMouseMove += OnToolbarMouseMove;
+            _toolbar.PreviewMouseLeftButtonUp += OnToolbarMouseUp;
 
             _window = new Window
             {
@@ -392,7 +449,7 @@ public partial class MainWindow
                 Focusable = false,
                 SizeToContent = SizeToContent.Width,
                 Height = HeightDip,
-                Content = frame
+                Content = _toolbar
             };
             _window.SourceInitialized += OnSourceInitialized;
             _item.PropertyChanged += OnItemPropertyChanged;
@@ -410,6 +467,107 @@ public partial class MainWindow
         {
             if (!_disposed && e.PropertyName is nameof(WindowItem.Icon) or nameof(WindowItem.Pinned) or nameof(WindowItem.Opacity))
                 SyncContent(_owner._store.Preferences.QuickOpacity, _owner.DesiredOpacity(_item));
+        }
+
+        private void OnToolbarMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            _pressTimestamp = e.Timestamp;
+            if (_dragTimer is null)
+            {
+                _dragTimer = new DispatcherTimer(DispatcherPriority.Input);
+                _dragTimer.Tick += OnDragTick;
+            }
+            _dragTimer.Interval = TimeSpan.FromMilliseconds(16);
+            _dragTimer.Start();
+            // 短按沿用按钮自己的按下和点击行为。达到长按阈值后才接管捕获。
+        }
+
+        private void OnDragTick(object? sender, EventArgs e)
+        {
+            if (!Native.IsPrimaryMouseButtonDown())
+            {
+                StopDrag();
+                return;
+            }
+            if (_dragCursorX.HasValue)
+            {
+                UpdateDragPosition();
+                return;
+            }
+            if (_pressTimestamp is not int pressedAt ||
+                unchecked(Environment.TickCount - pressedAt) < DragHoldMilliseconds ||
+                !Native.GetCursorPos(out var cursor)) return;
+            _dragCursorX = cursor.X;
+            _toolbar.CaptureMouse();
+            // 非激活浮层在指针离开时可能收不到鼠标消息，仅在拖动期间补读位置和按键状态。
+            _dragTimer!.Interval = TimeSpan.FromMilliseconds(8);
+        }
+
+        private void OnToolbarMouseMove(object sender, MouseEventArgs e)
+        {
+            if (_dragCursorX is null || e.LeftButton != MouseButtonState.Pressed) return;
+            UpdateDragPosition();
+            e.Handled = true;
+        }
+
+        private void OnToolbarMouseUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_pressTimestamp is not int pressedAt) return;
+            _pressTimestamp = null;
+            if (_dragCursorX.HasValue || unchecked(e.Timestamp - pressedAt) >= DragHoldMilliseconds)
+            {
+                UpdateDragPosition();
+                e.Handled = true;
+                // 定时器可能排在松手消息之后。只要已经长按，就取消按钮捕获，避免触发按钮。
+                if (Mouse.Captured is UIElement captured && _toolbar.IsAncestorOf(captured))
+                    captured.ReleaseMouseCapture();
+            }
+            StopDrag();
+        }
+
+        private void UpdateDragPosition()
+        {
+            if (_dragCursorX is not int previousX || !Native.GetCursorPos(out var cursor) || cursor.X == previousX) return;
+            _dragCursorX = cursor.X;
+            MoveHorizontally(cursor.X - previousX);
+        }
+
+        private void StopDrag()
+        {
+            _dragTimer?.Stop();
+            _pressTimestamp = null;
+            _dragCursorX = null;
+            if (_toolbar.IsMouseCaptured) _toolbar.ReleaseMouseCapture();
+        }
+
+        private int MaxOffset => _track.Right - _track.Left - _barWidthPixels;
+        private int OffsetPixels => Math.Clamp((int)Math.Round(_horizontalOffsetDip * _scale), 0, MaxOffset);
+
+        public bool MoveHorizontally(int deltaX)
+        {
+            if (!IsVisible || _barWidthPixels == 0) return false;
+            int previous = OffsetPixels;
+            int next = (int)Math.Clamp((long)previous + deltaX, 0, MaxOffset);
+            if (next == previous) return true;
+            // 跟鼠标事件直接移动独立浮窗。只改 X，Y 保持贴在所属窗口的标题栏。
+            if (!MoveTo(BarBounds(next))) return false;
+            _horizontalOffsetDip = next / _scale;
+            return true;
+        }
+
+        private Native.Rect BarBounds(int offset)
+        {
+            var bounds = _track;
+            bounds.Left += offset;
+            bounds.Right = bounds.Left + _barWidthPixels;
+            return bounds;
+        }
+
+        private bool MoveTo(Native.Rect bounds)
+        {
+            if (!Native.MoveWindowControl(_hwnd, bounds.Left, bounds.Top)) return false;
+            _lastBarBounds = bounds;
+            return true;
         }
 
         private static nint WndProc(nint hwnd, int msg, nint wp, nint lp, ref bool handled)
@@ -452,6 +610,50 @@ public partial class MainWindow
             finally { _syncing = false; }
         }
 
+        private bool TryGetPlacement(out Native.Rect bounds)
+        {
+            bounds = default;
+            double scale = Native.WindowDpi(_item.Hwnd) / 96.0;
+            double widthDip = _window.ActualWidth > 1 ? _window.ActualWidth : DefaultWidthDip;
+            int widthPx = (int)Math.Ceiling(widthDip * scale);
+            int heightPx = (int)Math.Ceiling(HeightDip * scale);
+            if (!Native.TryGetTitleBarOverlayTrack(_item.Hwnd, widthPx, heightPx, scale, out var track))
+                return false;
+            _track = track;
+            _barWidthPixels = widthPx;
+            _scale = scale;
+            bounds = BarBounds(OffsetPixels);
+            return true;
+        }
+
+        public void FollowPosition()
+        {
+            if (_disposed || _hwnd == 0) return;
+            if (!TryGetPlacement(out var bounds))
+            {
+                Hide();
+                return;
+            }
+            if (!_window.IsVisible)
+            {
+                if (_item.Identity is { } identity && Native.Matches(identity))
+                    Update(_owner._store.Preferences.QuickOpacity, _owner.DesiredOpacity(_item));
+                return;
+            }
+
+            // 跨 DPI 时先用完整定位调整外框。同尺寸移动只提交坐标，不重新布局或改变层级。
+            var previous = _lastBarBounds;
+            if (bounds.Right - bounds.Left != previous.Right - previous.Left ||
+                bounds.Bottom - bounds.Top != previous.Bottom - previous.Top)
+            {
+                if (!Position(bounds)) Hide();
+            }
+            else if (bounds.Left != previous.Left || bounds.Top != previous.Top)
+            {
+                if (!MoveTo(bounds)) Hide();
+            }
+        }
+
         public void Update(int quickOpacity, int currentOpacity)
         {
             if (_disposed || _item.Hwnd == 0)
@@ -462,13 +664,7 @@ public partial class MainWindow
 
             if (_hwnd == 0) new WindowInteropHelper(_window).EnsureHandle();
 
-            double scale = Native.WindowDpi(_item.Hwnd) / 96.0;
-            double widthDip = _window.ActualWidth > 1 ? _window.ActualWidth : DefaultWidthDip;
-            int widthPx = (int)Math.Ceiling(widthDip * scale);
-            int heightPx = (int)Math.Ceiling(HeightDip * scale);
-
-            if (!Native.TryGetTitleBarOverlayBounds(_item.Hwnd, widthPx, heightPx, out var barRect) ||
-                !Native.PositionWindowControl(_hwnd, _item.Hwnd, barRect))
+            if (!TryGetPlacement(out var bounds) || !Position(bounds))
             {
                 Hide();
                 return;
@@ -477,17 +673,26 @@ public partial class MainWindow
             SyncContent(quickOpacity, currentOpacity);
             if (_window.IsVisible) return;
             _window.Show();
-            if (!Native.PositionWindowControl(_hwnd, _item.Hwnd, barRect)) Hide();
+            if (!Position(bounds)) Hide();
+        }
+
+        private bool Position(Native.Rect bounds)
+        {
+            if (!Native.PositionWindowControl(_hwnd, _item.Hwnd, bounds)) return false;
+            _lastBarBounds = bounds;
+            return true;
         }
 
         public void Hide()
         {
+            StopDrag();
             if (!_disposed && _window.IsVisible) _window.Hide();
         }
 
         public void Dispose()
         {
             if (_disposed) return;
+            StopDrag();
             _disposed = true;
             _item.PropertyChanged -= OnItemPropertyChanged;
             _source?.RemoveHook(WndProc);

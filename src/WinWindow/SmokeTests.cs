@@ -1269,6 +1269,69 @@ internal static class SmokeTests
             Native.IsTopmost(barHwnd) == Native.IsTopmost(chosen.Hwnd),
             "title-bar overlay is interactive, tool-window scoped, and non-activating");
 
+        var toolbar = (Border)Application.Current.Windows.Cast<Window>()
+            .Single(window => new WindowInteropHelper(window).Handle == barHwnd).Content;
+        var collapseButton = ((Panel)toolbar.Child).Children.OfType<Button>().Single();
+        bool ToolbarConsumesRelease(int holdMilliseconds)
+        {
+            int timestamp = Environment.TickCount;
+            collapseButton.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, timestamp, MouseButton.Left)
+                { RoutedEvent = Mouse.PreviewMouseDownEvent });
+            var released = new MouseButtonEventArgs(Mouse.PrimaryDevice, unchecked(timestamp + holdMilliseconds), MouseButton.Left)
+                { RoutedEvent = Mouse.PreviewMouseUpEvent };
+            collapseButton.RaiseEvent(released);
+            return released.Handled;
+        }
+        Assert(!ToolbarConsumesRelease(100) && ToolbarConsumesRelease(400),
+            "a short toolbar press reaches the button and a long press consumes its release");
+
+        if (!Native.GetWindowRect(barHwnd, out var originalBar))
+            throw new InvalidOperationException("Cannot read the title toolbar bounds.");
+        nint foreground = Native.GetForegroundWindow();
+        Assert(shell.MoveTitleOverlayForTest(chosen, 72) &&
+            Native.GetWindowRect(barHwnd, out var movedBar) && movedBar.Left == originalBar.Left + 72 &&
+            movedBar.Top == originalBar.Top && Native.GetForegroundWindow() == foreground,
+            "dragging the toolbar moves only X and keeps foreground focus");
+        await Task.Delay(135);
+        Assert(Native.GetWindowRect(barHwnd, out var settledBar) &&
+            settledBar.Left == originalBar.Left + 72 && settledBar.Top == originalBar.Top,
+            "the toolbar keeps its horizontal offset when following the target");
+        Assert(shell.MoveTitleOverlayForTest(chosen, int.MaxValue) &&
+            Native.GetWindowRect(barHwnd, out var rightBar) && rightBar.Left > settledBar.Left &&
+            Native.TryGetFrameBounds(chosen.Hwnd, out var targetFrame) &&
+            rightBar.Right <= targetFrame.Right - (int)Math.Round(72 * Native.WindowDpi(chosen.Hwnd) / 96.0) &&
+            shell.MoveTitleOverlayForTest(chosen, int.MinValue) &&
+            Native.GetWindowRect(barHwnd, out var leftBar) && leftBar.Left == originalBar.Left && leftBar.Top == originalBar.Top,
+            "toolbar dragging clamps both ends and leaves room for the window buttons");
+
+        Native.ShowWindowAsync(chosen.Hwnd, Native.Restore);
+        await WaitAsync("fixture returns to a movable window",
+            () => Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Normal);
+        var screen = new Native.MonitorInfo { Size = System.Runtime.InteropServices.Marshal.SizeOf<Native.MonitorInfo>() };
+        Assert(Native.GetMonitorInfo(Native.MonitorFromWindow(chosen.Hwnd, 2), ref screen), "read the fixture work area");
+        const uint noZOrder = 4;
+        int x = screen.Work.Left + 40, y = screen.Work.Top + 60;
+        int width = (screen.Work.Right - screen.Work.Left) * 2 / 3;
+        int height = (screen.Work.Bottom - screen.Work.Top) / 2;
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
+            "position the restored fixture within the work area");
+        bool ToolbarMatchesTrack(int offset) => Native.GetWindowRect(barHwnd, out var bar) &&
+            Native.TryGetTitleBarOverlayTrack(chosen.Hwnd, bar.Right - bar.Left, bar.Bottom - bar.Top,
+                Native.WindowDpi(chosen.Hwnd) / 96.0, out var track) &&
+            bar.Left == track.Left + offset && bar.Top == track.Top;
+        await WaitAsync("toolbar reaches the restored fixture before dragging", () => ToolbarMatchesTrack(0));
+        Assert(shell.MoveTitleOverlayForTest(chosen, 72), "set a horizontal offset on the restored fixture");
+        Assert(Native.GetWindowRect(barHwnd, out var beforeFollow), "read the toolbar position before moving the fixture");
+        shell.PauseOverlayPollingForTest();
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x + 28, y + 16, width, height, Native.NoActivate | noZOrder)),
+            "move the real target window without activating it");
+        await WaitAsync("a real window location event moves its toolbar with the saved offset while polling is paused", () =>
+            Native.GetWindowRect(barHwnd, out var bar) &&
+            bar.Left != beforeFollow.Left && bar.Top != beforeFollow.Top && ToolbarMatchesTrack(72));
+        Native.ShowWindowAsync(chosen.Hwnd, Native.Maximized);
+        await WaitAsync("fixture returns to maximized before collapse",
+            () => Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized);
+
         int beforeQuick = shell.DesiredOpacity(chosen);
         shell.ToggleQuickOpacity(chosen);
         await WaitAsync("title-bar opacity button applies 50% preset", () =>

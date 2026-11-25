@@ -64,6 +64,8 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(nint hwnd);
     [DllImport("user32.dll")] internal static extern bool AllowSetForegroundWindow(uint processId);
     [DllImport("user32.dll")] internal static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int virtualKey);
+    [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(Point point);
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint hwnd, uint command);
@@ -80,6 +82,13 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern uint InSendMessageEx(nint reserved);
     [DllImport("user32.dll")] internal static extern nint SetWinEventHook(uint first, uint last, nint module, EventProc callback, uint process, uint thread, uint flags);
     [DllImport("user32.dll")] internal static extern bool UnhookWinEvent(nint hook);
+
+    internal static nint HookExternalWindowLocations(EventProc callback)
+    {
+        const uint locationChange = 0x800B, outOfContext = 0, skipOwnProcess = 2;
+        // 排除本进程，移动浮条时不会向同一钩子再发一次位置事件。
+        return SetWinEventHook(locationChange, locationChange, 0, callback, 0, 0, outOfContext | skipOwnProcess);
+    }
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(nint hwnd, int attribute, out int value, int size);
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] private static extern int DwmGetWindowAttributeRect(nint hwnd, int attribute, out Rect rect, int size);
     [DllImport("dwmapi.dll")] internal static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
@@ -281,16 +290,11 @@ internal static class Native
     internal static bool PositionOverlay(nint hwnd, int x, int y) =>
         SetWindowPos(hwnd, (nint)(-1), x, y, 0, 0, NoSize | NoActivate);
 
-    internal static bool TryGetTitleBarOverlayBounds(nint targetHwnd, int barWidthPx, int barHeightPx, out Rect barRect)
+    internal static bool TryGetTitleBarOverlayTrack(nint targetHwnd, int barWidthPx, int barHeightPx, double scale, out Rect track)
     {
-        barRect = default;
+        track = default;
         if (!TryGetFrameBounds(targetHwnd, out var frame)) return false;
         if (DwmGetWindowAttribute(targetHwnd, 14, out int cloaked, 4) == 0 && cloaked != 0) return false;
-        double scale = WindowDpi(targetHwnd) / 96.0;
-        // 过窄的弹窗或工具条放不下左侧三键且会挤压右侧关闭按钮，保留安全余量后再挂载顶栏快捷条。
-        int minWidth = barWidthPx + (int)Math.Round(72 * scale);
-        int minHeight = barHeightPx + (int)Math.Round(6 * scale);
-        if (frame.Right - frame.Left < minWidth || frame.Bottom - frame.Top < minHeight) return false;
         var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
         bool hasMonitor = GetMonitorInfo(MonitorFromWindow(targetHwnd, 2), ref info);
         if (hasMonitor && (!Overlaps(frame, info.Work) ||
@@ -300,8 +304,26 @@ internal static class Native
         int baseTop = hasMonitor ? Math.Max(frame.Top, info.Work.Top) : frame.Top;
         int left = baseLeft + (int)Math.Round(8 * scale);
         int top = baseTop + (int)Math.Round(4 * scale);
-        barRect = new Rect { Left = left, Top = top, Right = left + barWidthPx, Bottom = top + barHeightPx };
+        // 横拖后仍给目标窗口右侧的系统按钮留出原有余量。
+        int right = frame.Right - (int)Math.Round(72 * scale);
+        int bottom = frame.Bottom;
+        if (hasMonitor)
+        {
+            right = Math.Min(right, info.Work.Right);
+            bottom = Math.Min(bottom, info.Work.Bottom);
+        }
+        if (right - left < barWidthPx || bottom - top < barHeightPx) return false;
+        track = new Rect { Left = left, Top = top, Right = right, Bottom = top + barHeightPx };
         return true;
+    }
+
+    internal static bool MoveWindowControl(nint hwnd, int x, int y) =>
+        SetWindowPos(hwnd, 0, x, y, 0, 0, NoSize | NoZOrder | NoActivate | NoOwnerZOrder | NoSendChanging);
+
+    internal static bool IsPrimaryMouseButtonDown()
+    {
+        const int swapButton = 23, leftButton = 1, rightButton = 2;
+        return GetAsyncKeyState(GetSystemMetrics(swapButton) == 0 ? leftButton : rightButton) < 0;
     }
 
     public static Rect OverlayBounds(nint hwnd, Point anchor, int width, int height)
