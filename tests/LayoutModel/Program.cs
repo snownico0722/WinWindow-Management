@@ -23,6 +23,7 @@ SolverPortfolioChecks.Run(Check);
 ContinuingLayoutChecks.Run(Check);
 GeneralLayoutChecks.Run(Check);
 GesturePreviewChecks.Run(Check);
+SurfaceAndSolverV4Checks.Run(Check);
 var home = new RectI(560, 100, 810, 700);
 WindowSnapshot Window(int id, RectI rect) => new(id, rect, rect, area, 1, default, true, id == 1, true, id - 1, 96, (uint)id);
 WindowSnapshot[] windows = [Window(1, home), Window(2, home with { X = 600 })];

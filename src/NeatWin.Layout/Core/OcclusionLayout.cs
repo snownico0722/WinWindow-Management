@@ -69,18 +69,68 @@ internal static partial class IntentLayoutPlanner
         }
     }
 
-    private static void AddOrders(List<Candidate> candidates, string kind, RectI[] rects, VisibleWindow[] windows)
+    internal static void AddOrders(List<Candidate> candidates, string kind, RectI[] rects, VisibleWindow[] windows)
     {
-        var natural = Enumerable.Range(0, windows.Length).ToArray();
+        var n = windows.Length;
+        var natural = Enumerable.Range(0, n).ToArray();
         candidates.Add(new(kind, rects, natural));
-        if (windows.Any(w => w.Window.IsTopmost) || windows.Length > 6) return;
-        var orders = new List<int[]> { Enumerable.Reverse(natural).ToArray(),
-            natural.OrderBy(i => rects[i].X).ToArray(), natural.OrderByDescending(i => rects[i].X).ToArray() };
-        for (var i = 1; i < windows.Length; i++)
-            orders.Add(new[] { i }.Concat(natural.Where(j => j != i)).ToArray());
-        foreach (var order in orders)
-            if (!candidates.Any(c => c.Rects.SequenceEqual(rects) && c.Order.SequenceEqual(order)))
-                candidates.Add(new(kind, rects, order));
+        if (n is < 2 or > 8 || windows.Any(w => w.Window.IsTopmost)) return;
+
+        var required = new int[n];
+        var dependent = new int[n];
+        bool hasFreeOverlap = false;
+        for (int i = 0; i < n; i++)
+        for (int j = i + 1; j < n; j++)
+        {
+            var a = windows[i].Window;
+            var b = windows[j].Window;
+            bool oldOverlap = !a.VisualRect.Intersect(b.VisualRect).IsEmpty;
+            bool newOverlap = !rects[i].Intersect(rects[j]).IsEmpty;
+            bool aFirst = oldOverlap || a.IsForeground || a.Owner == b.Handle;
+            bool bFirst = b.IsForeground || b.Owner == a.Handle;
+            if (aFirst) required[j] |= 1 << i;
+            if (bFirst) required[i] |= 1 << j;
+            if (aFirst || bFirst || newOverlap)
+            {
+                dependent[i] |= 1 << j;
+                dependent[j] |= 1 << i;
+            }
+            if (newOverlap && !aFirst && !bFirst) hasFreeOverlap = true;
+        }
+        if (!hasFreeOverlap) return;
+
+        // 小组完整枚举。大组限定每种几何的候选数，避免 8 扇新交叠窗口耗尽桌面线程。
+        int remaining = n <= 5 ? int.MaxValue : 64;
+        var order = new int[n];
+        Search(0, 0);
+
+        void Search(int depth, int used)
+        {
+            if (depth == n)
+            {
+                if (!order.AsSpan().SequenceEqual(natural))
+                {
+                    candidates.Add(new(kind, rects, (int[])order.Clone()));
+                    remaining--;
+                }
+                return;
+            }
+            for (int next = 0; next < n && remaining > 0; next++)
+            {
+                if ((used & (1 << next)) != 0 || (required[next] & ~used) != 0) continue;
+                // 只跨过当前前缀末尾连续可交换的窗口。中间如有共同遮挡者，
+                // A 与 C 即使不相交，也不能强制 A 永远在 C 前面。
+                bool duplicate = false;
+                for (int prev = depth - 1; prev >= 0; prev--)
+                {
+                    if ((dependent[next] & (1 << order[prev])) != 0) break;
+                    if (order[prev] > next) { duplicate = true; break; }
+                }
+                if (duplicate) continue;
+                order[depth] = next;
+                Search(depth + 1, used | (1 << next));
+            }
+        }
     }
 
     private static double StackSignal(VisibleWindow[] windows, RectI[] rects)

@@ -18,6 +18,8 @@ public sealed record WindowSnapshot(
     bool IsTopmost = false, string? SurfaceState = null)
 {
     public nint Owner { get; init; }
+    // 从属菜单属于宿主的交互区域，仍会实际遮住邻窗。
+    internal bool IsLocalTo(WindowSnapshot host) => !IsManageable && Owner != 0 && Owner == host.Handle;
     internal bool NativeUtility { get; init; }
     internal bool HasCaption { get; init; }
     internal bool IndependentFrame { get; init; }

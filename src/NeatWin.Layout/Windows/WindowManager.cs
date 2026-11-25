@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using NeatWin.Core;
@@ -10,6 +11,57 @@ public sealed partial class WindowManager
     internal static volatile Func<nint, bool>? CaptureFilterForTests;
     private IReadOnlyList<WindowSnapshot>? _cachedSnapshot;
     private long _cachedTick = long.MinValue;
+    private static Dictionary<uint, (uint ParentPid, string Name)> _processTree = [];
+    private static long _processTreeTick = long.MinValue;
+    private static readonly object _processTreeLock = new();
+
+    internal static uint ResolveParentProcessId(uint pid)
+    {
+        if (pid == 0) return 0;
+        RefreshProcessTreeIfNeeded();
+        lock (_processTreeLock)
+            return _processTree.TryGetValue(pid, out var info) ? info.ParentPid : 0;
+    }
+
+    internal static string? ResolveProcessName(uint pid)
+    {
+        if (pid == 0) return null;
+        RefreshProcessTreeIfNeeded();
+        lock (_processTreeLock)
+            if (_processTree.TryGetValue(pid, out var info) && !string.IsNullOrEmpty(info.Name))
+                return info.Name;
+        try
+        {
+            using var p = Process.GetProcessById((int)pid);
+            return p.ProcessName;
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException)
+        { return null; }
+    }
+
+    private static void RefreshProcessTreeIfNeeded()
+    {
+        long now = Environment.TickCount64;
+        lock (_processTreeLock)
+        {
+            if (now - _processTreeTick is >= 0 and <= 5_000 && _processTree.Count > 0) return;
+            var snapshot = NativeMethods.CreateToolhelp32Snapshot(NativeMethods.Th32csSnapProcess, 0);
+            if (snapshot == 0 || snapshot == -1) return;
+            try
+            {
+                var next = new Dictionary<uint, (uint, string)>();
+                var entry = new NativeMethods.ProcessEntry32 { Size = (uint)Marshal.SizeOf<NativeMethods.ProcessEntry32>() };
+                if (NativeMethods.Process32First(snapshot, ref entry))
+                {
+                    do { next[entry.ProcessId] = (entry.ParentProcessId, entry.ExeFile ?? string.Empty); }
+                    while (NativeMethods.Process32Next(snapshot, ref entry));
+                }
+                _processTree = next;
+                _processTreeTick = now;
+            }
+            finally { _ = NativeMethods.CloseHandle(snapshot); }
+        }
+    }
 
     internal void InvalidateCache()
     {
@@ -24,6 +76,7 @@ public sealed partial class WindowManager
             return cached;
         return Capture();
     }
+
     private const int SwShowMaximized = 3;
     public IReadOnlyList<WindowSnapshot> Capture()
     {
@@ -53,7 +106,15 @@ public sealed partial class WindowManager
                 return true;
             }
 
-            if (IsCloaked(hwnd) || IsSystemSurface(hwnd))
+            if (IsCloaked(hwnd))
+            {
+                return true;
+            }
+
+            var classBuilder = new StringBuilder(256);
+            _ = NativeMethods.GetClassName(hwnd, classBuilder, classBuilder.Capacity);
+            string className = classBuilder.ToString();
+            if (WindowClassification.IsSystemSurface(className))
             {
                 return true;
             }
@@ -80,8 +141,9 @@ public sealed partial class WindowManager
 
             var style = NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GwlStyle).ToInt64();
             var exStyle = NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GwlExStyle).ToInt64();
+            bool isLayered = (exStyle & NativeMethods.WsExLayered) != 0;
             if ((style & NativeMethods.WsChild) != 0 ||
-                ((exStyle & NativeMethods.WsExLayered) != 0 &&
+                (isLayered &&
                  NativeMethods.GetLayeredWindowAttributes(hwnd, out _, out var alpha, out var flags) &&
                  (flags & 2) != 0 && alpha == 0))
             {
@@ -96,15 +158,49 @@ public sealed partial class WindowManager
             var isResizable = (style & NativeMethods.WsThickFrame) != 0 && !maximized;
             var isTopmost = (exStyle & NativeMethods.WsExTopmost) != 0;
             var clickThrough = (exStyle & NativeMethods.WsExTransparent) != 0;
+            var hasCaption = (style & NativeMethods.WsCaption) == NativeMethods.WsCaption;
+            var hasMaximizeBox = (style & NativeMethods.WsMaximizeBox) != 0;
+            var workArea = ToRectI(monitorInfo.Work);
+            var dpi = Math.Max(96u, NativeMethods.GetDpiForWindow(hwnd));
+            string? processName = ResolveProcessName(processId);
+            bool hasTitleText = NativeMethods.GetWindowTextLength(hwnd) > 0;
+
+            // Tier 0A & Tier 0B：在采集入口剥除 18×18 事件靶、输入法浮条、浏览器无标题状态栏与瞬态贴靠栏/启动器浮层，
+            // 彻底杜绝幽灵窗口污染遮挡几何或导致 SolverFeedback 丢失。
+            bool ownedMenu = owner != 0 && !hasCaption && !isResizable && !clickThrough;
+            if (SurfaceAutonomy.IsGhostSurface(processName, className, visualRect, outerRect, workArea, dpi,
+                    hwnd == foreground, isTopmost, isResizable, isToolWindow, clickThrough, isLayered, hasCaption, hasTitleText, owner, noActivate) ||
+                SurfaceAutonomy.IsTransientWorkspaceFreezeOverlay(processName, className, visualRect, workArea, isTopmost, isToolWindow))
+            {
+                return true;
+            }
+
+            uint parentPid = ResolveParentProcessId(processId);
+            string? parentProcessName = parentPid != 0 && parentPid != processId ? ResolveProcessName(parentPid) : null;
+            bool isChatFamily = WindowClassification.Identify(processName, className) == WindowUseRole.Chat ||
+                WindowClassification.IsCrossProcessChatHelper(processName, parentProcessName);
+            SurfacePurpose chatPurpose = SurfacePurpose.Unknown;
+            if (isChatFamily && hasTitleText)
+            {
+                var titleBuf = new StringBuilder(128);
+                if (NativeMethods.GetWindowText(hwnd, titleBuf, titleBuf.Capacity) > 0)
+                    chatPurpose = WindowClassification.ChatCaption(titleBuf.ToString());
+            }
+
+            bool hung = NativeMethods.IsHungAppWindow(hwnd);
+            bool exemptPopup = hung || ownedMenu || SurfaceAutonomy.IsExemptFloatingPopup(processName, className, isResizable,
+                hasMaximizeBox, exStyle, visualRect, dpi, chatPurpose, parentProcessName);
+            bool nearFullGame = SurfaceAutonomy.IsProtectedNearFullscreenSurface(processName, visualRect, workArea);
             var fullScreen = visualRect == ToRectI(monitorInfo.Monitor);
             var isManageable = NativeMethods.IsWindowEnabled(hwnd) && !isTopmost && !clickThrough && !fullScreen &&
                 !maximized &&
+                !nearFullGame &&
+                !exemptPopup &&
                 independent &&
                 !isToolWindow &&
                 !noActivate &&
                 visualRect.Area >= 10_000;
 
-            var workArea = ToRectI(monitorInfo.Work);
             var insets = new FrameInsets(
                 Math.Max(0, visualRect.Left - outerRect.Left),
                 Math.Max(0, visualRect.Top - outerRect.Top),
@@ -122,14 +218,18 @@ public sealed partial class WindowManager
                 hwnd == foreground,
                 isManageable,
                 zOrder++,
-                Math.Max(96u, NativeMethods.GetDpiForWindow(hwnd)),
+                dpi,
                 processId,
                 isTopmost,
                 independent && !isToolWindow && !noActivate && visualRect.Area >= 10_000
-                    ? (fullScreen ? "fullscreen" : maximized ? "maximized" : "windowed") : null) { Owner = owner, NativeUtility = isToolWindow || noActivate || owner != 0 && !independent,
-                    HasCaption = (style & NativeMethods.WsCaption) == NativeMethods.WsCaption,
-                    IndependentFrame = (exStyle & NativeMethods.WsExAppWindow) != 0 ||
-                        (style & (NativeMethods.WsMinimizeBox | NativeMethods.WsMaximizeBox)) != 0 });
+                    ? (fullScreen ? "fullscreen" : maximized || nearFullGame ? "maximized" : "windowed") : null)
+            {
+                Owner = owner,
+                NativeUtility = isToolWindow || noActivate || exemptPopup || owner != 0 && !independent,
+                HasCaption = hasCaption,
+                IndependentFrame = !exemptPopup && ((exStyle & NativeMethods.WsExAppWindow) != 0 ||
+                    (style & (NativeMethods.WsMinimizeBox | NativeMethods.WsMaximizeBox)) != 0)
+            });
 
             return true;
         }, nint.Zero);
@@ -293,7 +393,8 @@ public sealed partial class WindowManager
             (style & (NativeMethods.WsMinimizeBox | NativeMethods.WsMaximizeBox)) != 0;
         if (!documentFrame && (exStyle & NativeMethods.WsExAppWindow) == 0) return false;
         var className = new StringBuilder(256);
-        return NativeMethods.GetClassName(hwnd, className, className.Capacity) > 0 && className.ToString() != "#32770";
+        return NativeMethods.GetClassName(hwnd, className, className.Capacity) > 0 &&
+            className.ToString() is not ("#32770" or "OperationStatusWindow" or "Ghost");
     }
 
     private static bool IsMaximized(nint hwnd)

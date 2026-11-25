@@ -68,8 +68,8 @@ internal static partial class IntentLayoutPlanner
         var after = TaskLayoutSession.Project(desktop, plan);
         var target = after.First(w => w.Handle == window.Handle);
         return TextViewAcceptsFrame(window, target.VisualRect, context,
-            desktop.Where(w => w.ZOrder < window.ZOrder).Select(w => w.VisualRect),
-            after.Where(w => w.ZOrder < target.ZOrder).Select(w => w.VisualRect));
+            desktop.Where(w => w.ZOrder < window.ZOrder && !w.IsLocalTo(window)).Select(w => w.VisualRect),
+            after.Where(w => w.ZOrder < target.ZOrder && !w.IsLocalTo(target)).Select(w => w.VisualRect));
     }
 
     private static bool TextViewAcceptsFrame(WindowSnapshot window, RectI target, TaskLayoutContext context,
@@ -113,8 +113,8 @@ internal static partial class IntentLayoutPlanner
             }
             if (regions.Length == 0 && picture == null) continue;
             if (!next.TryGetValue(w.Handle, out var target)) return false;
-            var blockersBefore = before.Where(b => b.ZOrder < w.ZOrder).Select(b => b.VisualRect);
-            var blockersAfter = after.Where(b => b.ZOrder < target.ZOrder).Select(b => b.VisualRect);
+            var blockersBefore = before.Where(b => b.ZOrder < w.ZOrder && !b.IsLocalTo(w)).Select(b => b.VisualRect);
+            var blockersAfter = after.Where(b => b.ZOrder < target.ZOrder && !b.IsLocalTo(target)).Select(b => b.VisualRect);
             if (picture is { } measured && !PreservesVisibility(measured.Content(w.VisualRect), measured.Content(target.VisualRect),
                 blockersBefore, blockersAfter, w.WorkArea, 1)) return false;
             if (regions.Length > 0 && !RegionsPreserved(w.VisualRect, target.VisualRect, blockersBefore, blockersAfter,

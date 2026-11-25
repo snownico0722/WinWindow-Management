@@ -34,7 +34,14 @@ public sealed class VisibilityAnalyzer
             var fragments = new List<RectI> { baseRect };
             for (var frontIndex = 0; frontIndex < i && fragments.Count > 0; frontIndex++)
             {
-                var occluder = windows[frontIndex].VisualRect.Intersect(window.WorkArea);
+                var front = windows[frontIndex];
+                // 自遮挡免疫：归属于当前窗口自身的非托管下拉菜单、模态对话框或受抑局部表面，不削减宿主自身的可视曝光率。
+                if (front.IsLocalTo(window))
+                {
+                    continue;
+                }
+
+                var occluder = front.VisualRect.Intersect(window.WorkArea);
                 if (occluder.IsEmpty)
                 {
                     continue;
@@ -64,7 +71,7 @@ public sealed class VisibilityAnalyzer
             {
                 var uncoveredByFixed = new List<RectI> { baseRect };
                 for (var j = 0; j < i && uncoveredByFixed.Count > 0; j++)
-                    if (!windows[j].IsManageable)
+                    if (!windows[j].IsManageable && !windows[j].IsLocalTo(window))
                         uncoveredByFixed = RectRegion.Subtract(uncoveredByFixed, windows[j].VisualRect);
                 available = uncoveredByFixed.Count > 0;
             }

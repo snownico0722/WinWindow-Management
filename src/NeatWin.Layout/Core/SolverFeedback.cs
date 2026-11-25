@@ -52,9 +52,11 @@ internal sealed class SolverFeedbackSession
         if (g?.Portfolio == null || old == null || end == null || !end.IsForeground || end.ProcessId != gesture.ProcessId ||
             !WindowStateRules.Matches(old, end, gesture.EndRect) || !WindowStateRules.Near(old.VisualRect, gesture.StartRect) ||
             gesture.WorkArea != old.WorkArea) return null;
-        var peers = round.Projected.Where(w => w.MonitorHandle == old.MonitorHandle && w.Handle != old.Handle)
+        // 拉边框会临时唤起系统贴靠栏。比对可管理同伴，保留身份、几何和相对层序检查。
+        var peers = round.Projected.Where(w => w.IsManageable && w.MonitorHandle == old.MonitorHandle && w.Handle != old.Handle)
             .OrderBy(w => w.ZOrder).ToArray();
-        var current = live.Where(w => w.MonitorHandle == old.MonitorHandle && w.Handle != old.Handle).OrderBy(w => w.ZOrder).ToArray();
+        var current = live.Where(w => w.IsManageable && w.MonitorHandle == old.MonitorHandle && w.Handle != old.Handle)
+            .OrderBy(w => w.ZOrder).ToArray();
         if (peers.Length != current.Length || peers.Where((w,i) => !WindowStateRules.Matches(w, current[i], w.VisualRect)).Any()) return null;
 
         int index = Array.IndexOf(g.Handles, old.Handle);
@@ -110,5 +112,46 @@ internal sealed class SolverFeedbackSession
             result[key] = new(f.Context, family, (r?.Balance ?? 0) * decay + vote, (r?.Evidence ?? 0) * decay + 1, f.Time);
         }
         return result.Values.ToArray();
+    }
+}
+
+// 只记同组窗口被提回的事实。遮挡前后比例可供离线分析，普通切换不会给候选算法投票。
+internal sealed record LayerReturnEvidence(string RequestId, long ElapsedMs, double CoveredBefore, double CoveredAfter);
+internal sealed record LayerReturnObservation(string RequestId, long Tick, IReadOnlyList<WindowSnapshot> Before,
+    WindowSnapshot[] Projected, LayoutGroupTrace[] ChangedGroups)
+{
+    internal static LayerReturnObservation? FromSubmission(string? id, long tick, IReadOnlyList<WindowSnapshot> before, IntentLayoutPlan plan)
+    {
+        if (id == null || plan.Moves.Count + plan.Layers.Count == 0) return null;
+        var changed = plan.Moves.Select(m => m.Window.Handle)
+            .Concat(plan.Layers.SelectMany(l => l.FrontToBack.Select(w => w.Handle))).ToHashSet();
+        var groups = plan.Groups.Where(g => g.Handles.Length > 1 && g.Handles.Any(changed.Contains)).ToArray();
+        return groups.Length == 0 ? null : new(id, tick, before, TaskLayoutSession.Project(before, plan), groups);
+    }
+
+    internal LayerReturnEvidence? Observe(IReadOnlyList<WindowSnapshot> live, WindowSnapshot raised, long now)
+    {
+        // 只看紧随提交的前台变化。时间过近可能是原生摆位尾声，过远则很难再关联到该请求。
+        if (now - Tick is < 500 or > 10_000 || !raised.IsForeground || !raised.IsManageable || raised.IsTopmost) return null;
+        var group = ChangedGroups.FirstOrDefault(g => g.Handles.Contains(raised.Handle));
+        if (group == null) return null;
+        var projected = Projected.Where(w => group.Handles.Contains(w.Handle)).OrderBy(w => w.ZOrder).ToArray();
+        var actual = live.Where(w => group.Handles.Contains(w.Handle)).OrderBy(w => w.ZOrder).ToArray();
+        if (projected.Length != group.Handles.Length || actual.Length != projected.Length ||
+            actual[0].Handle != raised.Handle || projected[0].Handle == raised.Handle) return null;
+        var promoted = projected.First(w => w.Handle == raised.Handle);
+        if (!WindowStateRules.Matches(promoted, raised, promoted.VisualRect)) return null;
+        var peers = projected.Where(w => w.Handle != raised.Handle);
+        if (!peers.Zip(actual.Skip(1)).All(pair => WindowStateRules.Matches(pair.First, pair.Second, pair.First.VisualRect))) return null;
+        double Covered(IReadOnlyList<WindowSnapshot> desktop)
+        {
+            var subject = desktop.First(w => w.Handle == raised.Handle);
+            var frame = subject.VisualRect.Intersect(subject.WorkArea);
+            var covers = desktop.Where(w => group.Handles.Contains(w.Handle) && w.ZOrder < subject.ZOrder)
+                .Select(w => w.VisualRect);
+            return 1 - OcclusionMetrics.Measure(frame, covers, subject.Dpi).Visible;
+        }
+        var after = Covered(projected);
+        return after > .08 ? new(RequestId, now - Tick, Covered(Before), after) : null;
     }
 }

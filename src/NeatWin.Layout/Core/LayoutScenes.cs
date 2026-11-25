@@ -69,7 +69,7 @@ internal sealed class ReferenceExposure
         {
             if (pieces.Count == 0) break;
             var blocker = box(front);
-            if (front.Handle != Window.Handle && order(front) < rank && !clip.Intersect(blocker).IsEmpty)
+            if (!front.IsLocalTo(Window) && front.Handle != Window.Handle && order(front) < rank && !clip.Intersect(blocker).IsEmpty)
                 pieces = RectRegion.Subtract(pieces, blocker, int.MaxValue);
         }
         return pieces;
@@ -126,7 +126,11 @@ internal sealed record AttentionLane(WindowSnapshot Front, nint Source, int Side
             bool matches(nint a, nint b) => a == front.Handle && b == source.Handle || b == front.Handle && a == source.Handle;
             // 单次切换和某个程序惯常靠左都不授权分栏。两窗明确联合观看、在这对窗口已建立的方向规则，
             // 或反复切换且双方均有直接操作，才让全局求解重新比较横向转移的收益。
-            if (ctx.PairHints?.Any(h => h.Relation == TaskRelation.JointView && matches(h.First, h.Second)) == true ||
+            int freeOuter = Math.Max(Math.Min(a.Left, b.Left) - area.Left, area.Right - Math.Max(a.Right, b.Right));
+            bool staggeredSevereOverlap = focus.Switches >= 2 && Math.Abs((a.X + a.Width / 2d) - (b.X + b.Width / 2d)) >= area.Width * .13 &&
+                a.Intersect(b).Area >= Math.Min(a.Area, b.Area) * .45 && freeOuter >= area.Width * .18;
+            if (staggeredSevereOverlap ||
+                ctx.PairHints?.Any(h => h.Relation == TaskRelation.JointView && matches(h.First, h.Second)) == true ||
                 focus.Evidence == "recent-switch-pair" && focus.Switches >= 2 &&
                 (ctx.RulePairs?.Any(p => p.FirstSide != "either" && matches(p.First, p.Second)) == true ||
                  focus.Switches >= 3 && ctx.Attention?.GetValueOrDefault(front.Handle)?.Input >= .35 &&
