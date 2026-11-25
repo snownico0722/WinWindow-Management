@@ -49,10 +49,14 @@
         <Button x:Name="LaunchButton" Style="{StaticResource LaunchAvatarButton}" Width="28" Height="28"
           HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,1,0,1" Visibility="Collapsed"
           Click="Launch_Click" AutomationProperties.Name="{DynamicResource Text.LaunchProgram}">
-          <Path Data="M6.4,4.2 L12.8,8 L6.4,11.8 Z"
-            Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-            Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-            StrokeThickness="1.2" StrokeLineJoin="Round" Width="16" Height="16"/>
+          <Grid>
+            <Image Source="{Binding Icon}" Width="18" Height="18" Opacity="0.38" RenderOptions.BitmapScalingMode="HighQuality"/>
+            <Border Width="16" Height="16" CornerRadius="8" Background="{DynamicResource Panel}" Opacity="0.82"/>
+            <Path Data="M6.6,4.4 L12.6,8 L6.6,11.6 Z"
+              Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+              StrokeThickness="1.1" StrokeLineJoin="Round" Width="15" Height="15"/>
+          </Grid>
         </Button>
       </Grid>
 

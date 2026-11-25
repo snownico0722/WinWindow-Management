@@ -24,7 +24,7 @@ internal static class Native
     internal const uint NoSize = 1, NoMove = 2, NoActivate = 0x10, AsyncPosition = 0x4000;
     private const uint NoZOrder = 4, NoOwnerZOrder = 0x0200, NoSendChanging = 0x0400;
     internal const int Hide = 0, Normal = 1, Minimized = 2, Maximized = 3, ShowNoActivate = 4, Restore = 9, ForceMinimize = 11;
-    private static readonly ConcurrentDictionary<string, ImageSource?> IconCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, ImageSource> IconCache = new(StringComparer.OrdinalIgnoreCase);
 
     [StructLayout(LayoutKind.Sequential)] public struct Point { public int X; public int Y; }
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
@@ -92,6 +92,12 @@ internal static class Native
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(nint hwnd, int attribute, out int value, int size);
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] private static extern int DwmGetWindowAttributeRect(nint hwnd, int attribute, out Rect rect, int size);
     [DllImport("dwmapi.dll")] internal static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
+    [DllImport("gdi32.dll")] private static extern nint CreateRoundRectRgn(int left, int top, int right, int bottom, int widthEllipse, int heightEllipse);
+    [DllImport("gdi32.dll")] private static extern bool DeleteObject(nint handle);
+    [DllImport("user32.dll")] private static extern int SetWindowRgn(nint hwnd, nint region, bool redraw);
+    [DllImport("user32.dll")] private static extern bool DestroyIcon(nint icon);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int SHDefExtractIconW(string file, int index, uint flags, out nint largeIcon, nint smallIcon, uint size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(uint access, bool inherit, uint id);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(nint process, out uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetProcessTimes(nint process, out long creation, out long exit, out long kernel, out long user);
@@ -213,7 +219,7 @@ internal static class Native
                 if (CopyIcon(icon) is { } bitmap) return bitmap;
             }
         }
-        return AppIcon(id.ProcessPath);
+        return ExecutableIcon(id.ProcessPath);
     }
 
     private static ImageSource? CopyIcon(nint icon)
@@ -228,23 +234,33 @@ internal static class Native
         catch (Exception e) when (e is ArgumentException or ExternalException or InvalidOperationException) { return null; }
     }
 
-    private static ImageSource? AppIcon(string processPath)
+    internal static ImageSource? ExecutableIcon(string processPath)
     {
         if (string.IsNullOrWhiteSpace(processPath)) return null;
-        return IconCache.GetOrAdd(processPath, static file =>
+        if (IconCache.TryGetValue(processPath, out var cached)) return cached;
+        if (!File.Exists(processPath)) return null;
+        try
         {
+            // 保留窗口自己的图标，只有按路径取图时才向 Shell 请求 64 像素图标。
+            int result = SHDefExtractIconW(processPath, 0, 0, out nint large, 0, 64);
             try
             {
-                if (!File.Exists(file)) return null;
-                using var icon = System.Drawing.Icon.ExtractAssociatedIcon(file);
-                if (icon is null) return null;
-                return CopyIcon(icon.Handle);
+                if (result == 0 && CopyIcon(large) is { } icon)
+                    return IconCache.GetOrAdd(processPath, icon);
             }
-            catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException or ExternalException)
+            finally
             {
-                return null;
+                if (large != 0) DestroyIcon(large);
             }
-        });
+
+            using var fallback = System.Drawing.Icon.ExtractAssociatedIcon(processPath);
+            var bitmap = fallback is null ? null : CopyIcon(fallback.Handle);
+            return bitmap is null ? null : IconCache.GetOrAdd(processPath, bitmap);
+        }
+        catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException or ExternalException)
+        {
+            return null;
+        }
     }
 
     internal static bool PositionOutline(nint hwnd, Rect rect) =>
@@ -319,6 +335,16 @@ internal static class Native
 
     internal static bool MoveWindowControl(nint hwnd, int x, int y) =>
         SetWindowPos(hwnd, 0, x, y, 0, 0, NoSize | NoZOrder | NoActivate | NoOwnerZOrder | NoSendChanging);
+
+    internal static bool RoundOverlayRegion(nint hwnd, int width, int height, int diameter)
+    {
+        nint region = CreateRoundRectRgn(0, 0, width, height, diameter, diameter);
+        if (region == 0) return false;
+        // 系统在成功设置后接管区域句柄，此处只释放设置失败的区域。
+        if (SetWindowRgn(hwnd, region, true) != 0) return true;
+        DeleteObject(region);
+        return false;
+    }
 
     internal static bool IsPrimaryMouseButtonDown()
     {

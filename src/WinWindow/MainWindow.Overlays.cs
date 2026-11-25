@@ -9,7 +9,6 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Media.Effects;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 
@@ -703,9 +702,9 @@ public partial class MainWindow
 
     private sealed class CollapsedIconOverlay : IDisposable
     {
-        internal const int WindowSizeDip = 58;
-        private const int CardSizeDip = 50;
+        internal const int WindowSizeDip = 50;
         private const int IconSizeDip = 32;
+        private const int CornerRadiusDip = 8;
 
         private readonly MainWindow _owner;
         private readonly WindowItem _item;
@@ -719,6 +718,8 @@ public partial class MainWindow
         private HwndSource? _source;
         private nint _hwnd;
         private bool _disposed, _placed, _capturing, _dragged;
+        private (int Width, int Height, uint Dpi) _clipSize;
+        private (int X, int Y) _lastDragPosition;
         private Native.Point _downCursor;
         private Native.Rect _downRect;
         private Action<(int X, int Y)>? _savePosition;
@@ -748,23 +749,23 @@ public partial class MainWindow
             innerHost.Children.Add(_iconImage);
             innerHost.Children.Add(_initialText);
 
-            // 收起后的悬浮图标相比任务栏 16×16 图标显著放大（50×50 容器 / 32×32 高清图标），并加 2.5px 主题强调色描边与柔和阴影，避免混入复杂桌面背景。
+            var innerPlate = new Border
+            {
+                Margin = new Thickness(1.5),
+                CornerRadius = new CornerRadius(5.5),
+                BorderThickness = new Thickness(1),
+                Child = innerHost
+            };
+            innerPlate.SetResourceReference(Border.BackgroundProperty, "Panel");
+            innerPlate.SetResourceReference(Border.BorderBrushProperty, "Line");
+
+            // 双层描边在复杂桌面背景上仍能辨认，保持 50 DIP 的卡片和 32 DIP 的图标。
             _card = new Border
             {
-                Width = CardSizeDip,
-                Height = CardSizeDip,
-                Margin = new Thickness(4),
-                CornerRadius = new CornerRadius(14),
+                CornerRadius = new CornerRadius(CornerRadiusDip),
                 BorderThickness = new Thickness(2.5),
                 Cursor = Cursors.Hand,
-                Child = innerHost,
-                Effect = new DropShadowEffect
-                {
-                    BlurRadius = 7,
-                    ShadowDepth = 1.5,
-                    Opacity = 0.24,
-                    Color = Colors.Black
-                }
+                Child = innerPlate
             };
             _card.SetResourceReference(Border.BackgroundProperty, "Panel");
             _card.SetResourceReference(Border.BorderBrushProperty, "Accent");
@@ -782,8 +783,8 @@ public partial class MainWindow
             menu.Items.Add(_removeMenu);
             _card.ContextMenu = menu;
 
-            _card.MouseEnter += (_, _) => _card.SetResourceReference(Border.BackgroundProperty, "Selection");
-            _card.MouseLeave += (_, _) => _card.SetResourceReference(Border.BackgroundProperty, "Panel");
+            _card.MouseEnter += (_, _) => innerPlate.SetResourceReference(Border.BackgroundProperty, "Selection");
+            _card.MouseLeave += (_, _) => innerPlate.SetResourceReference(Border.BackgroundProperty, "Panel");
             _card.MouseLeftButtonDown += OnMouseDown;
             _card.MouseMove += OnMouseMove;
             _card.MouseLeftButtonUp += OnMouseUp;
@@ -793,8 +794,7 @@ public partial class MainWindow
             {
                 Title = "",
                 WindowStyle = WindowStyle.None,
-                AllowsTransparency = true,
-                Background = Brushes.Transparent,
+                AllowsTransparency = false,
                 ShowInTaskbar = false,
                 ShowActivated = false,
                 ResizeMode = ResizeMode.NoResize,
@@ -803,7 +803,10 @@ public partial class MainWindow
                 Height = WindowSizeDip,
                 Content = _card
             };
+            _window.SetResourceReference(Control.BackgroundProperty, "Panel");
             _window.SourceInitialized += OnSourceInitialized;
+            _window.DpiChanged += (_, _) =>
+                _window.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(ApplyCorners));
             _item.PropertyChanged += OnItemPropertyChanged;
         }
 
@@ -813,6 +816,16 @@ public partial class MainWindow
             Native.ConfigureInteractiveOverlay(_hwnd);
             _source = HwndSource.FromHwnd(_hwnd);
             _source?.AddHook(WndProc);
+        }
+
+        private void ApplyCorners()
+        {
+            if (_disposed || !Native.GetWindowRect(_hwnd, out var bounds)) return;
+            var size = (Width: bounds.Right - bounds.Left, Height: bounds.Bottom - bounds.Top, Dpi: Native.WindowDpi(_hwnd));
+            if (size == _clipSize || size.Width <= 0 || size.Height <= 0) return;
+            int diameter = (int)Math.Round(2 * CornerRadiusDip * size.Dpi / 96.0);
+            if (Native.RoundOverlayRegion(_hwnd, size.Width, size.Height, diameter))
+                _clipSize = size;
         }
 
         private void OnItemPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -833,9 +846,9 @@ public partial class MainWindow
 
         private void OnMouseDown(object sender, MouseButtonEventArgs e)
         {
-            if (_disposed || _hwnd == 0) return;
-            Native.GetCursorPos(out _downCursor);
-            Native.GetWindowRect(_hwnd, out _downRect);
+            if (_disposed || _hwnd == 0 || !Native.GetCursorPos(out _downCursor) ||
+                !Native.GetWindowRect(_hwnd, out _downRect)) return;
+            _lastDragPosition = (_downRect.Left, _downRect.Top);
             _capturing = true;
             _dragged = false;
             _card.CaptureMouse();
@@ -844,14 +857,17 @@ public partial class MainWindow
 
         private void OnMouseMove(object sender, MouseEventArgs e)
         {
-            if (!_capturing || e.LeftButton != MouseButtonState.Pressed || _hwnd == 0) return;
-            Native.GetCursorPos(out var current);
+            if (!_capturing || e.LeftButton != MouseButtonState.Pressed || _hwnd == 0 ||
+                !Native.GetCursorPos(out var current)) return;
             int dx = current.X - _downCursor.X;
             int dy = current.Y - _downCursor.Y;
             if (!_dragged && Math.Abs(dx) < 5 && Math.Abs(dy) < 5) return;
             _dragged = true;
             e.Handled = true;
-            Native.PositionOverlay(_hwnd, _downRect.Left + dx, _downRect.Top + dy);
+            // 拖动只提交新坐标。建立置顶和拖动中的平移各走自己的原生操作。
+            var next = (X: _downRect.Left + dx, Y: _downRect.Top + dy);
+            if (next != _lastDragPosition && Native.MoveWindowControl(_hwnd, next.X, next.Y))
+                _lastDragPosition = next;
         }
 
         private async void OnMouseUp(object sender, MouseButtonEventArgs e)
@@ -866,6 +882,7 @@ public partial class MainWindow
             if (wasDragged)
             {
                 Native.FitIconOverlayToWorkArea(_hwnd);
+                ApplyCorners();
                 if (Native.GetWindowRect(_hwnd, out var rect))
                     _savePosition?.Invoke((rect.Left, rect.Top));
                 return;
@@ -896,22 +913,25 @@ public partial class MainWindow
 
             SyncVisuals();
 
-            if (!_placed)
+            int x = initialPosition?.X ?? 120;
+            int y = initialPosition?.Y ?? 120;
+            bool justPlaced = !_placed;
+            if (justPlaced)
             {
                 _placed = true;
-                int x = initialPosition?.X ?? 120;
-                int y = initialPosition?.Y ?? 120;
                 Native.PositionOverlay(_hwnd, x, y);
             }
 
             if (!_window.IsVisible)
             {
                 _window.Show();
+                if (justPlaced) Native.PositionOverlay(_hwnd, x, y);
                 Native.FitIconOverlayToWorkArea(_hwnd);
+                ApplyCorners();
                 if (Native.GetWindowRect(_hwnd, out var rect))
                     _savePosition?.Invoke((rect.Left, rect.Top));
             }
-            else if (!Native.IsTopmost(_hwnd) || (aggressiveTopmost && Native.OverlappingTopmostAbove(_hwnd)))
+            else if (!_capturing && (!Native.IsTopmost(_hwnd) || (aggressiveTopmost && Native.OverlappingTopmostAbove(_hwnd))))
             {
                 Native.Raise(_hwnd);
             }

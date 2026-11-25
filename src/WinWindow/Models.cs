@@ -4,8 +4,11 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace WinWindow;
 
@@ -69,25 +72,38 @@ internal sealed class WindowItem : Observable
     public string ProcessName => Identity is not null ? Path.GetFileName(Identity.ProcessPath)
         : !string.IsNullOrWhiteSpace(SavedProcessPath) ? Path.GetFileName(SavedProcessPath)
         : UiText.Get("WaitingForWindow");
-    private ImageSource? _icon;
-    private bool _requestedIcon;
+    private volatile ImageSource? _icon;
+    private int _requestedIcon;
     public ImageSource? Icon
     {
         get
         {
-            if (!_requestedIcon && Identity is { } identity)
-            {
-                _requestedIcon = true;
-                _ = LoadIconAsync(identity);
-            }
+            if ((Identity is not null || !string.IsNullOrWhiteSpace(SavedProcessPath)) &&
+                Interlocked.CompareExchange(ref _requestedIcon, 1, 0) == 0)
+                _ = LoadIconAsync();
             return _icon;
         }
     }
 
-    private async Task LoadIconAsync(WindowIdentity identity)
+    private async Task LoadIconAsync()
     {
-        _icon = await Task.Run(() => Native.WindowIcon(identity));
-        if (_icon is not null) Changed(nameof(Icon));
+        var icon = await Task.Run(() => Identity is { } identity
+            ? Native.WindowIcon(identity)
+            : Native.ExecutableIcon(SavedProcessPath)).ConfigureAwait(false);
+        if (icon is null) return;
+
+        void Publish()
+        {
+            _icon = icon;
+            Changed(nameof(Icon));
+        }
+
+        // 异步绑定可以在后台线程首次读取 Icon，通知同时会触发浮窗和行控件的 UI 更新。
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null)
+            Publish();
+        else if (!dispatcher.HasShutdownStarted)
+            _ = dispatcher.BeginInvoke(DispatcherPriority.Background, (Action)Publish);
     }
     public string Initial
     {

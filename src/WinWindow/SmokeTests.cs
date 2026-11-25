@@ -1345,7 +1345,8 @@ internal static class SmokeTests
             chosen.IsIconCollapsed && !Native.IsWindowVisible(chosen.Hwnd) &&
             !shell.HasTitleOverlay(chosen) && shell.HasCollapsedIconOverlay(chosen), 3000);
         nint iconHwnd = shell.GetCollapsedIconOverlayHandle(chosen);
-        Assert(iconHwnd != 0 && Native.IsTopmost(iconHwnd), "collapsed icon overlay stays pinned topmost");
+        Assert(iconHwnd != 0 && Native.IsTopmost(iconHwnd) && (Native.Style(iconHwnd) & Native.Layered) == 0,
+            "collapsed icon overlay stays topmost as a non-layered window");
 
         var second = await FixtureAsync(output, false);
         processes.Add(second.Process);
@@ -1380,6 +1381,19 @@ internal static class SmokeTests
         launchStore.Preferences.Rules.Add(rule);
         launchStore.SavePreferences();
 
+        // 异步绑定可能从后台触发首次加载，图标变更仍要由 UI 线程发布给行和浮窗。
+        var iconProbe = new WindowItem { SavedProcessPath = exePath };
+        var iconNotifiedOnUi = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        iconProbe.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(WindowItem.Icon))
+                iconNotifiedOnUi.TrySetResult(shell.Dispatcher.CheckAccess());
+        };
+        await Task.Run(() => _ = iconProbe.Icon);
+        Assert(await iconNotifiedOnUi.Task.WaitAsync(TimeSpan.FromSeconds(5)) &&
+            iconProbe.Icon is System.Windows.Media.Imaging.BitmapSource { PixelWidth: 64, PixelHeight: 64, IsFrozen: true },
+            "the 64px executable icon requested by a worker is published on the UI thread");
+
         int launchedPid = 0;
         var launchShell = new MainWindow(launchStore, testMode: true);
         try
@@ -1391,6 +1405,8 @@ internal static class SmokeTests
             var pendingRow = await FindRowAsync(launchShell, pending);
             var launchBtn = (Button)pendingRow.FindName("LaunchButton");
             Assert(launchBtn.Visibility == Visibility.Visible && launchBtn.IsEnabled, "unstarted row displays the play launch button in the avatar slot");
+            var launchIcon = ((Panel)launchBtn.Content).Children.OfType<Image>().Single();
+            await WaitAsync("the play button shows the waiting executable icon behind its triangle", () => launchIcon.Source is not null);
 
             var customManager = new WindowManager(launchStore, Native.GetProcessMutes, Native.SetProcessMutes, async _ =>
             {
