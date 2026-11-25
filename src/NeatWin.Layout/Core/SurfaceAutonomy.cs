@@ -26,15 +26,13 @@ internal static partial class SurfaceAutonomy
         "SoPY_Comp", "SoPY_Status", "SoPY_UI", "SoPY_Hint", "Sogou_TSF_UI",
         "CherryWindowClass", "Tao Thread Event Target", "Winit Thread Event Target",
         "com.ccswitch.desktop-sic", "SysDragImage", "SysShadow", "tooltips_class32",
-        "MicrosoftWindowsTooltip", "XSkinTooltip", "Xaml_WindowedPopupClass", "#32768",
-        "ComboLBox", "Auto-Suggest Dropdown", "EVERYTHING_DROPDOWNLIST_BORDER",
+        "MicrosoftWindowsTooltip", "XSkinTooltip", "Xaml_WindowedPopupClass", "EVERYTHING_DROPDOWNLIST_BORDER",
         "OleMainThreadWndClass", "CicMarshalWndClass", "CiceroUIWndFrame", "CLIPBRDWNDCLASS",
         "Chrome_MessageWindow", "MessageWindowClass", "URL Moniker Notification Window",
         "Windows.Internal.Shell.TabProxyWindow", "ForegroundStaging", "EdgeUiInputTopWndClass",
         "EdgeUiInputWndClass", "ThumbnailDeviceHelperWnd", "LivePreview", "RCShadowWnd",
         "RCTransparentWnd", "ScreenShareTrackerWindow", "MilMagnifierHwndReimpl",
-        "Qt*QWindowToolSaveBits", "Qt*QWindowPopupSaveBits", "MozillaDropShadowWindowClass",
-        "PopupHost", "DropDown",
+        "Qt*QWindowToolSaveBits", "MozillaDropShadowWindowClass",
     };
 
     // 剥除每次进程重启随机变化的 GUID / ATL 实例地址，同时保留 Chrome_WidgetWin_1、CabinetWClass 等固定类名。
@@ -57,10 +55,17 @@ internal static partial class SurfaceAutonomy
             : normalized;
     }
 
-    internal static bool IsTransientMenu(string? executable, string windowClass, bool ownedMenu, bool noActivate, bool isToolWindow) =>
-        ownedMenu && (windowClass is "#32768" or "ComboLBox" or "Auto-Suggest Dropdown" or "PopupHost" or "DropDown" ||
-            noActivate && isToolWindow && WindowClassification.IsBrowserProcess(executable) &&
+    private static bool IsMenuClass(string canonical) =>
+        canonical is "#32768" or "ComboLBox" or "Auto-Suggest Dropdown" or "PopupHost" or "DropDown" or "Qt*QWindowPopupSaveBits";
+
+    internal static bool IsTransientMenu(string windowClass, bool ownedMenu, bool noActivate, bool isToolWindow) =>
+        ownedMenu && (IsMenuClass(CanonicalAutonomyClass(windowClass)) || noActivate && isToolWindow &&
             windowClass is "Chrome_WidgetWin_1" or "MozillaWindowClass");
+
+    internal static bool IsPassiveBrowserTool(string? executable, string windowClass, bool ownedPopup, bool isToolWindow,
+        bool isForeground, bool isTopmost, bool hasTitleText) =>
+        ownedPopup && isToolWindow && !isForeground && !isTopmost && !hasTitleText &&
+        windowClass == "Chrome_WidgetWin_1" && WindowClassification.IsBrowserProcess(executable);
 
     // Tier 0A：根本不是工作面或真实桌面遮挡物（如 18×18 事件靶、豆包输入法浮条、浏览器左下角无标题 URL 悬浮状态条、右下角通知气泡、底层壁纸挂件）。
     // 在采集入口直接丢弃，既防止污染 BeforeExposure 诱导主窗口跳变，也避免破坏 SolverFeedback 同伴窗口比对。
@@ -74,10 +79,7 @@ internal static partial class SurfaceAutonomy
         if (WindowClassification.Identify(executable, cls) == WindowUseRole.Note) return false;
         if (clickThrough && isToolWindow && isLayered) return true;
         string canonical = CanonicalAutonomyClass(cls);
-        // 通用下拉菜单、展开书签夹与无边框工具浮层剥离（覆盖 Chromium/Firefox/Electron/WPF/Qt，无论是否带标题或面积是否超宿主 30%）：
-        // 有真实宿主的可见菜单需要保留几何，以便计算它对其他窗口的遮挡。
-        if (owner != 0 && !hasCaption && !isResizable && !clickThrough) return false;
-        if (noActivate && isToolWindow && !hasCaption && !isResizable) return true;
+        // 阴影和提示借用宿主的 owner。先排除已知装饰，再为可交互菜单保留真实遮挡。
         if (cls is "TopLevelWindowForOverflowXamlIsland" or "NotifyIconOverflowWindow")
             return !isForeground; // 非前台时忽略，夺得前台时交给 Tier 0B 冻结工作区
         if (IgnoredWindowClasses.Contains(cls) || IgnoredWindowClasses.Contains(canonical)) return true;
@@ -88,14 +90,18 @@ internal static partial class SurfaceAutonomy
         string app = WindowClassification.ProcessKey(executable);
         if (app == "imeservice") return true;
         double scale = Math.Max(96u, dpi) / 96d;
+        bool ownedPopup = owner != 0 && !hasCaption && !isResizable && !clickThrough;
+        if (IsMenuClass(canonical)) return !ownedPopup;
+        if (app is "qq" or "tim" or "weixin" or "wechat" && isTopmost && !isResizable && !workArea.IsEmpty &&
+            visualRect.Area <= workArea.Area * .06 && (!ownedPopup || isToolWindow && !isForeground && !hasTitleText))
+            return true;
+        if (ownedPopup) return false;
+        if (noActivate && isToolWindow && !hasCaption && !isResizable) return true;
         // Chrome / Edge 底部无标题 URL 悬浮状态条与轻量弹出浮层，曾误作障碍物导致父浏览器平白横跳 389px。
         if (!isForeground && WindowClassification.IsBrowserProcess(executable) && cls == "Chrome_WidgetWin_1" && !hasTitleText &&
             (visualRect.Height <= (int)Math.Ceiling(52 * scale) || !hasCaption || !isResizable))
             return true;
         if (app == "steamwebhelper" && isTopmost && visualRect.Height <= (int)Math.Ceiling(140 * scale))
-            return true;
-        if (app is "qq" or "tim" or "weixin" or "wechat" && isTopmost && !isResizable && !workArea.IsEmpty &&
-            visualRect.Area <= workArea.Area * .06)
             return true;
         // Portals 等桌面壁纸层挂件位于普通应用下方，不应充当遮挡障碍物切割可用走廊。
         if (app == "portals" && canonical.StartsWith("HwndWrapper[Portals", StringComparison.OrdinalIgnoreCase))

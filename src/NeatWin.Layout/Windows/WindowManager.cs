@@ -224,7 +224,9 @@ public sealed partial class WindowManager
                     ? (fullScreen ? "fullscreen" : maximized || nearFullGame ? "maximized" : "windowed") : null)
             {
                 Owner = owner,
-                IsTransientMenu = SurfaceAutonomy.IsTransientMenu(processName, className, ownedMenu, noActivate, isToolWindow),
+                IsTransientMenu = SurfaceAutonomy.IsTransientMenu(className, ownedMenu, noActivate, isToolWindow),
+                IsPassiveBrowserTool = SurfaceAutonomy.IsPassiveBrowserTool(processName, className, ownedMenu, isToolWindow,
+                    hwnd == foreground, isTopmost, hasTitleText),
                 NativeUtility = isToolWindow || noActivate || exemptPopup || owner != 0 && !independent,
                 HasCaption = hasCaption,
                 IndependentFrame = !exemptPopup && ((exStyle & NativeMethods.WsExAppWindow) != 0 ||

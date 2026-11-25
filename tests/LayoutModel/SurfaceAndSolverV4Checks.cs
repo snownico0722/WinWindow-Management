@@ -75,8 +75,19 @@ internal static class SurfaceAndSolverV4Checks
         var feedback = WithSurface(pinned with { Owner = w1.Handle, IsTransientMenu = true });
         check(feedback != null && feedback.Votes["keep"] > feedback.Votes["attention-layout"],
             "an identified transient menu does not interrupt a real drag-back vote");
+        var browserTool = pinned with
+        {
+            Owner = w1.Handle, NativeUtility = true, IsTopmost = false,
+            IsPassiveBrowserTool = SurfaceAutonomy.IsPassiveBrowserTool("msedge", "Chrome_WidgetWin_1", ownedPopup: true,
+                isToolWindow: true, isForeground: false, isTopmost: false, hasTitleText: false),
+        };
+        check(browserTool.IsPassiveBrowserTool && WithSurface(browserTool) is { } browserFeedback &&
+            browserFeedback.Votes["keep"] > browserFeedback.Votes["attention-layout"],
+            "an owned titleless non-topmost browser tool appearing at release preserves a drag-back vote");
         check(WithSurface(pinned) == null,
             "a newly visible fixed occluder makes a drag-back ambiguous");
+        check(WithSurface(browserTool with { IsPassiveBrowserTool = false }) == null,
+            "an owned persistent viewer is still considered when attributing a drag-back");
 
         // 6. Browser expanded bookmarks menu & Self-Occlusion Immunity (owned menus and sticky notes)
         check(!SurfaceAutonomy.IsGhostSurface("chrome.exe", "Chrome_WidgetWin_1", new(736, 214, 501, 1141), new(736, 214, 501, 1141),
@@ -88,6 +99,13 @@ internal static class SurfaceAndSolverV4Checks
               !SurfaceAutonomy.IsGhostSurface("PaperTodo.exe", "HwndWrapper[PaperTodo;;334b16a3-a641-4e33-9ca6-a101d0a2a3a1]",
                   new(2435, 168, 125, 58), new(2435, 168, 125, 58), work, 120, false, true, false, false, false, true, false, false, owner: 0, noActivate: true),
               "owned browser menus retain their bounds, Qt decoration is discarded and a sticky note survives");
+        var popupRect = new RectI(600, 200, 240, 180);
+        bool ExcludesOwned(string windowClass) => SurfaceAutonomy.IsGhostSurface("chrome", windowClass, popupRect, popupRect,
+            work, 120, false, true, false, true, false, false, false, false, owner: 1100, noActivate: true);
+        check(new[] { "SysShadow", "tooltips_class32", "Qt5152QWindowToolTipSaveBits", "Qt5152QWindowToolSaveBits" }
+            .All(ExcludesOwned), "known shadows and tooltips are still filtered when they have an owner");
+        check(!ExcludesOwned("#32768") && !ExcludesOwned("Qt5152QWindowPopupSaveBits"),
+            "owned Win32 and Qt menus keep their visible geometry");
 
         var chromeHost = Make(1100, 14608, new(478, 86, 1162, 1206), fg: true, z: 1);
         var ownedChildDialog = Make(3700, 14608, new(736, 214, 501, 1141), fg: false, resizable: false, topmost: true, manageable: false, z: 0)
@@ -123,10 +141,11 @@ internal static class SurfaceAndSolverV4Checks
         var independentOwner = firstMenu with { IndependentFrame = true };
         check(!TaskSurfaces.ResolveLocalRoots([secondMenu, independentOwner, host])[0].IsLocalTo(host),
             "submenu ownership does not cross an independently usable task frame");
-        check(SurfaceAutonomy.IsTransientMenu("chrome", "Chrome_WidgetWin_1", ownedMenu: true, noActivate: true, isToolWindow: true) &&
-            !SurfaceAutonomy.IsTransientMenu("qqkit", "Qt51519QWindowIcon", ownedMenu: true, noActivate: false, isToolWindow: true) &&
-            !SurfaceAutonomy.IsTransientMenu("papertodo", "HwndWrapper[PaperTodo;]", ownedMenu: true, noActivate: true, isToolWindow: true),
-            "an owned nonactivating menu is distinguished from an interactive viewer");
+        check(SurfaceAutonomy.IsTransientMenu("Chrome_WidgetWin_1", ownedMenu: true, noActivate: true, isToolWindow: true) &&
+            !SurfaceAutonomy.IsTransientMenu("Chrome_WidgetWin_1", ownedMenu: false, noActivate: true, isToolWindow: true) &&
+            !SurfaceAutonomy.IsTransientMenu("Qt51519QWindowIcon", ownedMenu: true, noActivate: false, isToolWindow: true) &&
+            !SurfaceAutonomy.IsTransientMenu("HwndWrapper[PaperTodo;]", ownedMenu: true, noActivate: true, isToolWindow: true),
+            "a shared Chromium or Electron menu requires owner evidence, and an interactive viewer or note stays distinct");
 
         var scheduler = new AutomaticLayoutScheduler();
         scheduler.Reset(AutomaticLayoutMode.AutoFullAssist, [host, neighbor], 0);
