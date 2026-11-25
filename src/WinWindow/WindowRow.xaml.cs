@@ -94,14 +94,13 @@ public partial class WindowRow : UserControl
         _syncing = true;
         try
         {
-            bool showLaunch = !item.IsAvailable && !string.IsNullOrWhiteSpace(item.ProcessPath);
+            bool showLaunch = item.CanLaunch;
             // 未启动条目在原图标位置展示独立可点击的播放按钮，不再把整张卡片一起压淡导致启动按钮像禁用态。
             CardFrame.Opacity = item.IsAvailable || showLaunch ? 1.0 : 0.72;
             CardFrame.SetResourceReference(Border.BackgroundProperty, item.IsAvailable ? "Panel" : "Paper");
 
             AvatarPresenter.Visibility = showLaunch ? Visibility.Hidden : Visibility.Visible;
             LaunchButton.Visibility = showLaunch ? Visibility.Visible : Visibility.Collapsed;
-            LaunchButton.IsEnabled = item.CanLaunch;
             string exeName = Path.GetFileName(item.ProcessPath);
             LaunchButton.ToolTip = showLaunch
                 ? (string.IsNullOrEmpty(exeName) ? UiText.Get("LaunchProgram") : UiText.Format("LaunchTarget", exeName))
@@ -122,8 +121,8 @@ public partial class WindowRow : UserControl
             ParkButton.ToolTip = restore ? UiText.Get("RestoreWindow") : UiText.Get("ForceMinimize");
             System.Windows.Automation.AutomationProperties.SetName(ParkButton, restore ? UiText.Get("RestoreWindow") : UiText.Get("ForceMinimize"));
 
-            RowState.Text = !item.IsAvailable ? UiText.Get("AwaitLaunch")
-                : item.IsBusy ? UiText.Get("Busy")
+            RowState.Text = item.IsBusy ? UiText.Get("Busy")
+                : !item.IsAvailable ? UiText.Get(showLaunch ? "AwaitLaunch" : "WaitingForWindow")
                 : item.IsIconCollapsed ? UiText.Get("CollapsedIconState")
                 : item.IsHidden ? UiText.Get("Hidden")
                 : item.IsMinimized ? UiText.Get("Minimized")

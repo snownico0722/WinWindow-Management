@@ -310,8 +310,13 @@ internal sealed class WindowManager
         var paths = pending.Select(item => item.SavedProcessPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var available = await Task.Run(() => paths.Where(Native.CanLaunchApplication).ToHashSet(StringComparer.OrdinalIgnoreCase));
         if (_stopping) return;
+        long now = Environment.TickCount64;
+        // ShellExecute 返回时进程可能还没出现。保留同一路径的启动占用，避免播放按钮短暂变回可用。
+        var awaitingWindow = _pendingLaunches.Values.Where(launch => launch.Expires > now)
+            .Select(launch => launch.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var item in pending)
-            item.CanLaunch = available.Contains(item.SavedProcessPath) && !_launching.Contains(item.SavedProcessPath);
+            item.CanLaunch = available.Contains(item.SavedProcessPath) && !_launching.Contains(item.SavedProcessPath)
+                && !awaitingWindow.Contains(item.SavedProcessPath);
     }
 
     public async Task LaunchAsync(WindowItem item)
@@ -319,7 +324,8 @@ internal sealed class WindowManager
         if (_stopping || !item.CanLaunch || !Items.Contains(item) || item.RuleId is not { } id ||
             _store.Preferences.Rules.FirstOrDefault(rule => rule.Id == id) is not { } saved) return;
         string path = item.ProcessPath;
-        if (!_launching.Add(path)) return;
+        if (_pendingLaunches.Values.Any(launch => launch.Expires > Environment.TickCount64 &&
+            string.Equals(path, launch.Path, StringComparison.OrdinalIgnoreCase)) || !_launching.Add(path)) return;
         try
         {
             foreach (var row in Items.Where(row => row.Identity is null &&
@@ -637,8 +643,6 @@ internal sealed class WindowManager
         }
         item.BackgroundEnabled = false;
         item.WantsPin = false;
-        item.IsIconCollapsed = false;
-        item.OpacityBeforeQuickToggle = null;
         item.IsIconCollapsed = false;
         item.OpacityBeforeQuickToggle = null;
         if (item.RuleId is { } rid) _pendingLaunches.Remove(rid);
