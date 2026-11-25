@@ -99,12 +99,31 @@ internal static partial class IntentLayoutPlanner
         }
         if (!hasFreeOverlap) return;
 
-        // 小组完整枚举。大组限定每种几何的候选数，避免 8 扇新交叠窗口耗尽桌面线程。
+        // 小组完整枚举。大组限制每种几何的候选数，避免 8 扇新交叠窗口耗尽桌面线程。
+        // 不能让单一首窗口的 DFS 独占 64 个预算：候选结果会受数组索引顺序影响。
+        // 对大组按合法首节点分配预算，先保证每个可作为首层的窗口都有代表性；
+        // 某个首节点组合不足时，剩余预算再由后续首节点使用。
         int remaining = n <= 5 ? int.MaxValue : 64;
         var order = new int[n];
-        Search(0, 0);
+        if (n <= 5)
+        {
+            int unlimited = int.MaxValue;
+            Search(0, 0, ref unlimited);
+        }
+        else
+        {
+            var roots = Enumerable.Range(0, n).Where(i => required[i] == 0).ToArray();
+            for (int root = 0; root < roots.Length && remaining > 0; root++)
+            {
+                int rootsLeft = roots.Length - root;
+                int rootBudget = (remaining + rootsLeft - 1) / rootsLeft;
+                int rootRemaining = rootBudget;
+                order[0] = roots[root];
+                Search(1, 1 << roots[root], ref rootRemaining);
+            }
+        }
 
-        void Search(int depth, int used)
+        void Search(int depth, int used, ref int rootRemaining)
         {
             if (depth == n)
             {
@@ -112,10 +131,11 @@ internal static partial class IntentLayoutPlanner
                 {
                     candidates.Add(new(kind, rects, (int[])order.Clone()));
                     remaining--;
+                    rootRemaining--;
                 }
                 return;
             }
-            for (int next = 0; next < n && remaining > 0; next++)
+            for (int next = 0; next < n && remaining > 0 && rootRemaining > 0; next++)
             {
                 if ((used & (1 << next)) != 0 || (required[next] & ~used) != 0) continue;
                 // 只跨过当前前缀末尾连续可交换的窗口。中间如有共同遮挡者，
@@ -128,7 +148,7 @@ internal static partial class IntentLayoutPlanner
                 }
                 if (duplicate) continue;
                 order[depth] = next;
-                Search(depth + 1, used | (1 << next));
+                Search(depth + 1, used | (1 << next), ref rootRemaining);
             }
         }
     }
