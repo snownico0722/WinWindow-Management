@@ -1335,12 +1335,17 @@ internal static class SmokeTests
         int beforeQuick = shell.DesiredOpacity(chosen);
         shell.ToggleQuickOpacity(chosen);
         await WaitAsync("title-bar opacity button applies 50% preset", () =>
+            !chosen.IsBusy && chosen.Opacity == 50 &&
             Native.GetLayeredWindowAttributes(chosen.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(50));
         shell.ToggleQuickOpacity(chosen);
+        // 原生透明度先于 UI 操作结束生效。等按钮恢复可操作后再点击收起。
         await WaitAsync("title-bar opacity button restores previous opacity", () =>
+            !chosen.IsBusy && chosen.Opacity == beforeQuick &&
             Native.GetLayeredWindowAttributes(chosen.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(beforeQuick));
 
         await shell.ExecuteRowAsync(chosen, "collapseIcon");
+        if (!chosen.IsIconCollapsed)
+            Report("Collapse did not settle after the command. Workbench status: " + ((TextBlock)shell.FindName("StatusText")).Text);
         await WaitAsync("ico button parks target and raises enlarged pinned icon overlay", () =>
             chosen.IsIconCollapsed && !Native.IsWindowVisible(chosen.Hwnd) &&
             !shell.HasTitleOverlay(chosen) && shell.HasCollapsedIconOverlay(chosen), 3000);
