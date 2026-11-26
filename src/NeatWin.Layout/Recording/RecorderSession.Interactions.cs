@@ -25,7 +25,7 @@ internal sealed partial class RecorderSession
     internal void PointerObserved(PointerObservation pointer)
     {
         var sequence = ++_sequence;
-        if (pointer.Target != 0 && pointer.TargetPid != 0)
+        if (pointer.Target != 0 && pointer.TargetPid != 0 && !AutomationGuard.IsUtility(pointer.Target))
             InputHistory.Pointer(pointer.Kind, pointer.Target, pointer.TargetPid, pointer.Tick, sequence, pointer.Point);
         if (!TraceInput) return;
         PublishInteraction(new(_session, sequence, pointer.Tick, pointer.Kind, EventWindowId(pointer.Target, pointer.TargetPid),

@@ -300,6 +300,12 @@ internal static class SmokeTests
             Assert(Native.IsIconic(item.Hwnd) && item.IsParked, "force minimize produces a real iconic window");
             await manager.RestoreParkingAsync(item, false);
             Assert(Native.IsWindowVisible(item.Hwnd) && !Native.IsIconic(item.Hwnd) && Native.GetPlacement(item.Hwnd).ShowCmd == before.ShowCmd, "restore preserves pre-minimize maximized state");
+            await manager.ParkAsync(item);
+            Native.ShowWindowAsync(item.Hwnd, Native.Restore);
+            await WaitAsync("externally parked window is usable again", () => Native.HasReachableFrame(item.Hwnd));
+            Assert(item.IsParked, "the recovery record still exists before refresh");
+            await manager.RefreshAsync();
+            Assert(!item.IsParked, "refresh retires the old location after an external wake");
             await manager.ReleaseAsync(item);
             var rejected = await FixtureAsync(output, true); processes.Add(rejected.Process);
             var stubborn = manager.SelectTarget(rejected.Hwnd);
@@ -548,6 +554,13 @@ internal static class SmokeTests
             Assert(!StateStore.RequestAdministratorOnLaunch(store.DirectoryPath), "disabling administrator startup is persisted for the next launch");
             var quickOpacityBox = (TextBox)shell.FindName("QuickOpacityBox");
             Assert(store.Preferences.QuickOpacity == 50 && quickOpacityBox.Text == "50", "quick opacity defaults to 50% in General settings");
+            shell.ShowShell();
+            Assert(quickOpacityBox.Focus(), "focus the quick opacity editor");
+            quickOpacityBox.Text = "25";
+            quickOpacityBox.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(quickOpacityBox)!,
+                Environment.TickCount, Key.Escape) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+            Assert(quickOpacityBox.IsVisible && quickOpacityBox.Text == "50" && store.Preferences.QuickOpacity == 50,
+                "Escape cancels the opacity draft without closing settings");
             quickOpacityBox.Text = "45";
             quickOpacityBox.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, Environment.TickCount, quickOpacityBox, administratorStartup)
                 { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
@@ -750,7 +763,7 @@ internal static class SmokeTests
             store.Preferences.PinWhenFocused = false; shell.ShowShell();
             Assert(!Native.IsTopmost(own), "wake raise is cleaned up immediately with focus policy off");
             // 这些用例会启动和关闭其他进程，放在工作台焦点回归之后。
-            await CheckTitleBarOverlayAndLaunchAsync(shell, chosen, output, processes);
+            await CheckTitleBarOverlayAndLaunchAsync(shell, chosen, store, output, processes);
             await CheckLaunchButtonAsync(shell, store, output);
             shell.Cleanup(); shell.Close(); shell = null;
             await manager.RestoreAllAsync(); manager = null;
@@ -1256,10 +1269,12 @@ internal static class SmokeTests
         }
     }
 
-    private static async Task CheckTitleBarOverlayAndLaunchAsync(MainWindow shell, WindowItem chosen, string output, List<Process> processes)
+    private static async Task CheckTitleBarOverlayAndLaunchAsync(MainWindow shell, WindowItem chosen, StateStore store, string output, List<Process> processes)
     {
         if (Native.IsTopmost(chosen.Hwnd)) await shell.Manager.SetPinAsync(chosen, false, updateRule: false);
-        await shell.Manager.SetOpacityAsync(chosen, 80, updateRule: false);
+        shell.Manager.SetRemembered(chosen, true);
+        await shell.Manager.SetOpacityAsync(chosen, 80);
+        var opacityRule = store.Preferences.Rules.Single(rule => rule.Id == chosen.RuleId);
         Native.ShowWindowAsync(chosen.Hwnd, Native.Maximized);
         await WaitAsync("fixture is maximized before collapsing", () => Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized);
         Native.SetForegroundWindow(chosen.Hwnd);
@@ -1345,8 +1360,7 @@ internal static class SmokeTests
         Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
             "position the restored fixture within the work area");
         bool ToolbarMatchesTrack(int offset) => Native.GetWindowRect(barHwnd, out var bar) &&
-            Native.TryGetTitleBarOverlayTrack(chosen.Hwnd, bar.Right - bar.Left, bar.Bottom - bar.Top,
-                Native.WindowDpi(chosen.Hwnd) / 96.0, out var track) &&
+            Native.TryGetTitleBarOverlayTrack(chosen.Hwnd, barHwnd, 78, 26, out var track, out _) &&
             bar.Left == track.Left + offset && bar.Top == track.Top;
         await WaitAsync("toolbar reaches the restored fixture before dragging", () => ToolbarMatchesTrack(0));
         Assert(shell.MoveTitleOverlayForTest(chosen, 72), "set a horizontal offset on the restored fixture");
@@ -1366,6 +1380,9 @@ internal static class SmokeTests
         await WaitAsync("title-bar opacity button applies 50% preset", () =>
             !chosen.IsBusy && chosen.Opacity == 50 &&
             Native.GetLayeredWindowAttributes(chosen.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(50));
+        await shell.Manager.SetPinAsync(chosen, true);
+        Assert(opacityRule.Opacity == beforeQuick, "saving a pin preserves the opacity rule during a quick toggle");
+        await shell.Manager.SetPinAsync(chosen, false);
         shell.ToggleQuickOpacity(chosen);
         // 原生透明度先于 UI 操作结束生效。等按钮恢复可操作后再点击收起。
         await WaitAsync("title-bar opacity button restores previous opacity", () =>
@@ -1549,6 +1566,42 @@ internal static class SmokeTests
             launchShell.Cleanup();
             launchShell.Close();
         }
+        var wpfStore = new StateStore(Path.Combine(launchData, "wpf"));
+        string wpfExe = Path.Combine(wpfStore.DirectoryPath, "wpf-launch-fixture.exe");
+        Directory.CreateDirectory(wpfStore.DirectoryPath);
+        File.Copy(exePath, wpfExe);
+        var previousWpf = await FixtureAsync(output, true, executable: wpfExe);
+        processes.Add(previousWpf.Process);
+        var wpfRule = Rule(previousWpf.Hwnd);
+        wpfRule.Title = originalTitle;
+        wpfStore.Preferences.Rules.Add(wpfRule);
+        Stop(previousWpf.Process);
+        await previousWpf.Process.WaitForExitAsync();
+
+        var wpfManager = new WindowManager(wpfStore, Native.GetProcessMutes, Native.SetProcessMutes, async _ =>
+        {
+            var started = await FixtureAsync(output, true, executable: wpfExe);
+            processes.Add(started.Process);
+            launchedPid = started.Process.Id;
+            return true;
+        });
+        await wpfManager.RefreshAsync();
+        await wpfManager.LaunchAsync(wpfManager.Items.Single(x => x.RuleId == wpfRule.Id));
+        await WaitAsync("a freshly launched WPF HWND receives its saved rule", () =>
+            wpfManager.Items.Any(x => x.Identity?.ProcessId == launchedPid && x.RuleId == wpfRule.Id &&
+                x.Pinned && x.Identity.ClassName != wpfRule.ClassName), 4000);
+        var liveWpf = wpfManager.Items.Single(x => x.Identity?.ProcessId == launchedPid && x.RuleId == wpfRule.Id);
+        await wpfManager.ShutdownAsync();
+
+        wpfRule.Title = Native.Title(liveWpf.Hwnd);
+        var regularWpfManager = new WindowManager(wpfStore);
+        await regularWpfManager.RefreshAsync();
+        await WaitAsync("ordinary WPF startup also restores the saved rule", () =>
+            regularWpfManager.Items.Any(x => x.Hwnd == liveWpf.Hwnd && x.Pinned && x.RuleId == wpfRule.Id));
+        await regularWpfManager.ShutdownAsync();
+        var activeWpf = processes.Single(process => process.Id == launchedPid);
+        Stop(activeWpf);
+        await activeWpf.WaitForExitAsync();
         shell.ShowShell();
     }
 

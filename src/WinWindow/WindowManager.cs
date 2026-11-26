@@ -106,11 +106,12 @@ internal sealed class WindowManager
                 var live = found.FirstOrDefault(x => Same(x.Identity, item.Identity));
                 if (live is null && !item.IsManaged && item.Original is null) { Items.Remove(item); continue; }
                 item.Title = live?.Title ?? Native.Title(item.Hwnd);
+                bool observedParked = item.IsIconCollapsed || item.IsHidden || item.IsMinimized;
                 bool minimized = Native.IsIconic(item.Hwnd), hidden = !Native.IsWindowVisible(item.Hwnd);
                 item.IsMinimized = minimized; item.IsHidden = hidden;
-                if (!minimized && !hidden && item.IsIconCollapsed)
+                if (item.IsParked && observedParked && !minimized && !hidden && Native.HasReachableFrame(item.Hwnd))
                 {
-                    // 外部唤回后取消这次收起，避免之后退出时又恢复到过期位置。
+                    // 外部唤回且实际能在屏幕上操作时才能移除入口，退出也无需再恢复旧坐标。
                     Track(item, snapshot => snapshot.Parked = false);
                     item.IsIconCollapsed = false;
                 }
@@ -137,7 +138,7 @@ internal sealed class WindowManager
             _pendingLaunches.Remove(expired);
 
         var rules = _store.Preferences.Rules.ToArray();
-        // 第一遍维持严格的路径+类名+标题精确匹配，保护同程序多窗口各自的规则归属。
+        // 优先保留精确匹配。只有保存规则和新窗口双方都唯一时，才按 WPF 稳定类名恢复。
         foreach (var rule in rules)
         {
             if (Items.Any(x => x.Identity is not null && x.RuleId == rule.Id))
@@ -146,8 +147,12 @@ internal sealed class WindowManager
                 continue;
             }
             var placeholder = Items.FirstOrDefault(x => x.Identity is null && x.RuleId == rule.Id);
-            var item = Items.FirstOrDefault(x => x.IsAvailable && !x.IsBusy && x.AutoRemember &&
+            var candidates = Items.Where(x => x.IsAvailable && !x.IsBusy && x.AutoRemember &&
                 x.Original?.RemovedPendingBackground != true && x.RuleId is null && rule.Matches(x));
+            var item = candidates.FirstOrDefault(x => x.Identity!.ClassName == rule.ClassName);
+            if (item is null && candidates.Take(2).ToArray() is [var candidate] &&
+                rules.Count(other => other.Matches(candidate)) == 1)
+                item = candidate;
             if (item is not null)
             {
                 _pendingLaunches.Remove(rule.Id);
@@ -174,7 +179,7 @@ internal sealed class WindowManager
             var candidates = Items.Where(x => x.IsAvailable && !x.IsBusy && x.AutoRemember &&
                 x.Original?.RemovedPendingBackground != true && x.RuleId is null && x.Identity is { } id &&
                 string.Equals(id.ProcessPath, launch.Path, StringComparison.OrdinalIgnoreCase) &&
-                (launch.ClassName.Length == 0 || id.ClassName == launch.ClassName) &&
+                (launch.ClassName.Length == 0 || WindowRule.MatchesClass(launch.ClassName, id.ClassName)) &&
                 !launch.Existing.Any(previous => Same(previous, id))).Take(2).ToArray();
             if (candidates is not [var matched]) continue;
             _pendingLaunches.Remove(rule.Id);
@@ -576,15 +581,17 @@ internal sealed class WindowManager
         if (updateRule && value) AutoRemember(item);
         Finish(item, updateRule);
     });
-    public Task SetOpacityAsync(WindowItem item, int value, bool updateRule = true) => OperateAsync(item, async () =>
-    {
-        value = Math.Clamp(value, 0, 100); Track(item, s => s.EditedOpacity = true);
-        var original = item.Original!;
-        await Task.Run(() => { Native.EnsureIdentity(original.Identity); Native.SetOpacity(original, value); });
-        item.Opacity = value;
-        if (updateRule && value < 100) AutoRemember(item);
-        Finish(item, updateRule);
-    });
+    public Task SetOpacityAsync(WindowItem item, int value, bool updateRule = true, int? quickBaseline = null) =>
+        OperateAsync(item, async () =>
+        {
+            value = Math.Clamp(value, 0, 100); Track(item, s => s.EditedOpacity = true);
+            var original = item.Original!;
+            await Task.Run(() => { Native.EnsureIdentity(original.Identity); Native.SetOpacity(original, value); });
+            item.OpacityBeforeQuickToggle = quickBaseline;
+            item.Opacity = value;
+            if (updateRule && value < 100) AutoRemember(item);
+            Finish(item, updateRule);
+        });
     public Task SetClickThroughAsync(WindowItem item, bool value, bool updateRule = true) => OperateAsync(item, async () =>
     {
         Track(item, s => s.EditedClickThrough = true);
@@ -683,7 +690,8 @@ internal sealed class WindowManager
     private void AddRule(WindowItem item)
     {
         var rule = new WindowRule { ProcessPath = item.ProcessPath, ClassName = item.Identity!.ClassName,
-            Title = item.Title, Pinned = item.Pinned, Opacity = item.Opacity, ClickThrough = item.ClickThrough,
+            Title = item.Title, Pinned = item.Pinned, Opacity = item.OpacityBeforeQuickToggle ?? item.Opacity,
+            ClickThrough = item.ClickThrough,
             Muted = item.Muted, KeepRunning = item.BackgroundEnabled };
         _store.Preferences.Rules.Add(rule);
         item.RuleId = rule.Id;
@@ -693,7 +701,10 @@ internal sealed class WindowManager
     {
         var rule = _store.Preferences.Rules.FirstOrDefault(x => x.Id == item.RuleId);
         if (rule is null) return;
-        rule.Pinned = item.Pinned; rule.Opacity = item.Opacity; rule.ClickThrough = item.ClickThrough;
+        rule.Pinned = item.Pinned;
+        // 快捷开关只影响当前窗。保存其他字段时也沿用规则里的不透明度。
+        if (item.OpacityBeforeQuickToggle is null) rule.Opacity = item.Opacity;
+        rule.ClickThrough = item.ClickThrough;
         rule.Muted = item.Muted; rule.KeepRunning = item.BackgroundEnabled;
         _store.SaveSoon();
     }
@@ -778,10 +789,14 @@ internal sealed class WindowManager
             if (!Native.Matches(s.Identity)) return;
             if (s.Parked)
             {
-                Native.ApplyPlacement(s.Identity.Hwnd, s.BeforeParking);
-                Native.ShowWindowAsync(s.Identity.Hwnd, (int)s.BeforeParking.ShowCmd);
-                if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h)))
-                    throw new InvalidOperationException(UiText.Get("RestorePending"));
+                // 收起可能超时，或者用户已在外部唤回。能操作的窗口无需跳回当时的位置。
+                if (!Native.HasReachableFrame(s.Identity.Hwnd))
+                {
+                    Native.ApplyPlacement(s.Identity.Hwnd, s.BeforeParking);
+                    Native.ShowWindowAsync(s.Identity.Hwnd, (int)s.BeforeParking.ShowCmd);
+                    if (!await WaitForAsync(s.Identity, Native.HasReachableFrame))
+                        throw new InvalidOperationException(UiText.Get("RestorePending"));
+                }
                 s.Parked = false;
                 Journal();
             }
@@ -823,7 +838,7 @@ internal sealed class WindowManager
         {
             if (s.Parked) Native.ApplyPlacement(item.Hwnd, s.BeforeParking);
             Native.ShowWindowAsync(item.Hwnd, s.Parked ? (int)s.BeforeParking.ShowCmd : Native.Restore);
-            if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h)))
+            if (!await WaitForAsync(s.Identity, Native.HasReachableFrame))
                 throw new InvalidOperationException(UiText.Get("RestoreRejected"));
         }
         Track(item, snapshot => snapshot.Parked = false);
@@ -863,6 +878,7 @@ internal sealed class WindowManager
             item.BackgroundEnabled = false;
             await RestoreSnapshotAsync(s);
             item.IsIconCollapsed = false;
+            item.OpacityBeforeQuickToggle = null;
             item.Pinned = s.Topmost;
             item.Opacity = s.LayeredReadable && (s.LayeredFlags & 2) != 0 ? Native.ToPercent(s.Alpha) : 100;
             item.ClickThrough = (s.ExtendedStyle & Native.Transparent) != 0;

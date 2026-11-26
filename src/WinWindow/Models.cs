@@ -57,8 +57,27 @@ internal sealed class WindowRule
     public bool KeepRunning { get; set; }
     public bool Matches(WindowItem item) => item.Identity is { } id &&
         string.Equals(ProcessPath, id.ProcessPath, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(ClassName, id.ClassName, StringComparison.Ordinal) &&
+        MatchesClass(ClassName, id.ClassName) &&
         string.Equals(Title, item.Title, StringComparison.Ordinal);
+
+    internal static bool MatchesClass(string? saved, string current)
+    {
+        if (string.Equals(saved, current, StringComparison.Ordinal)) return true;
+
+        // WPF 为每个 HWND 注册带随机 GUID 的类。只在匹配保存规则时忽略这段，句柄身份仍用完整类名。
+        var savedPrefix = WpfClassPrefix(saved);
+        return !savedPrefix.IsEmpty && savedPrefix.SequenceEqual(WpfClassPrefix(current));
+    }
+
+    private static ReadOnlySpan<char> WpfClassPrefix(string? name)
+    {
+        if (name is null || !name.StartsWith("HwndWrapper[", StringComparison.Ordinal) || !name.EndsWith(']'))
+            return default;
+        int separator = name.LastIndexOf(';');
+        return separator >= 0 && Guid.TryParseExact(name.AsSpan(separator + 1, name.Length - separator - 2), "D", out _)
+            ? name.AsSpan(0, separator)
+            : default;
+    }
 }
 internal sealed class WindowItem : Observable
 {

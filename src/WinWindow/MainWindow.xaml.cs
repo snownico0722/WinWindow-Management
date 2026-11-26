@@ -31,7 +31,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _pinReinforceTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _opacityTimer = new() { Interval = TimeSpan.FromMilliseconds(70) };
     private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(4.5) };
-    private readonly Dictionary<WindowItem, int> _pendingOpacity = new();
+    private readonly Dictionary<WindowItem, (int Value, bool Temporary, int? Baseline)> _pendingOpacity = new();
     private readonly Dictionary<string, TextBox> _keyEditors;
     private DesktopIntegration? _desktop;
     private DesktopLayout? _layout;
@@ -109,7 +109,13 @@ public partial class MainWindow : Window
         };
         Deactivated += (_, _) => { if (!_picking) _flash?.Hide(); ApplyOwnPolicy(); };
         IsVisibleChanged += (_, _) => { if (!IsVisible) { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); if (_ready) SyncManagedOverlays(); };
-        StateChanged += (_, _) => { if (WindowState != WindowState.Minimized) _lastState = WindowState; else { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); };
+        StateChanged += (_, _) =>
+        {
+            if (WindowState != WindowState.Minimized) _lastState = WindowState;
+            else { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); }
+            ApplyOwnPolicy();
+            if (_ready && !_quitting) SyncLaunchAvailabilityTimer();
+        };
         Closing += OnClosing;
         _ready = true; RefreshView();
     }
@@ -354,12 +360,14 @@ public partial class MainWindow : Window
             _desktop?.NotifyInfo(UiText.Format(pinned ? "PinnedNotice" : "UnpinnedNotice", item.Title));
     }
 
-    internal int DesiredOpacity(WindowItem item) => _pendingOpacity.GetValueOrDefault(item, item.Opacity);
+    internal int DesiredOpacity(WindowItem item) =>
+        _pendingOpacity.TryGetValue(item, out var request) ? request.Value : item.Opacity;
 
-    internal void QueueOpacity(WindowItem item, int value)
+    internal void QueueOpacity(WindowItem item, int value, bool temporary = false, int? baseline = null)
     {
         if (_quitting || !Manager.Items.Contains(item)) return;
-        _pendingOpacity[item] = Math.Clamp(value, 0, 100); _opacityTimer.Start();
+        _pendingOpacity[item] = (Math.Clamp(value, 0, 100), temporary, baseline);
+        _opacityTimer.Start();
     }
 
     private void DrainOpacity()
@@ -370,10 +378,11 @@ public partial class MainWindow : Window
             if (!pair.Key.IsBusy) _ = ApplyOpacityAsync(pair.Key, pair.Value);
     }
 
-    private async Task ApplyOpacityAsync(WindowItem item, int value)
+    private async Task ApplyOpacityAsync(WindowItem item, (int Value, bool Temporary, int? Baseline) request)
     {
-        await RunAsync(() => Manager.SetOpacityAsync(item, value));
-        if (_pendingOpacity.TryGetValue(item, out int latest) && latest == value) _pendingOpacity.Remove(item);
+        await RunAsync(() => Manager.SetOpacityAsync(item, request.Value,
+            updateRule: !request.Temporary, quickBaseline: request.Baseline));
+        if (_pendingOpacity.TryGetValue(item, out var latest) && latest == request) _pendingOpacity.Remove(item);
         item.Changed(nameof(item.Opacity));
         if (!_quitting && _pendingOpacity.Count != 0) _opacityTimer.Start();
     }
@@ -574,7 +583,15 @@ public partial class MainWindow : Window
         }
         if (e.Key != Key.Escape) return;
         if (_picking) { CancelPicker(); e.Handled = true; }
-        else if (SettingsPage.Visibility == Visibility.Visible && !IsEditingHotkey) { ShowSettings(false); e.Handled = true; }
+        else if (SettingsPage.Visibility == Visibility.Visible && !IsEditingHotkey)
+        {
+            string savedOpacity = _store.Preferences.QuickOpacity.ToString();
+            if (QuickOpacityBox.IsKeyboardFocusWithin && QuickOpacityBox.Text != savedOpacity)
+                QuickOpacityBox.Text = savedOpacity;
+            else
+                ShowSettings(false);
+            e.Handled = true;
+        }
     }
 
     private void Brand_Click(object sender, RoutedEventArgs e) => ToggleCompact();
