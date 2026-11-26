@@ -332,10 +332,10 @@ internal sealed class AutoTidyManager : NativeWindow, IDisposable
                 if (!_pointerMessages.Remove((int)message.WParam, out var input)) return;
                 if (_restorePointer && input.Kind is "left-down" or "left-up") RestorePointer?.Invoke(input);
                 if (_tracePointer || _trackTaskInput) PointerObserved?.Invoke(input);
-                if (_enabled && input.Kind == "left-down" && input.Target != 0) TouchClick(input.Target);
+                if (input.Target == 0 || AutomationGuard.IsUtility(input.Target)) return;
+                if (_enabled && input.Kind == "left-down") TouchClick(input.Target);
                 // 松开是诊断证据，不能重复增加注意力。诊断单独开启时也不能给布局授权。
-                if (_trackTaskInput && input.Kind is not ("left-up" or "right-up" or "middle-up") &&
-                    input.Target != 0 && input.TargetPid != 0 && !AutomationGuard.IsUtility(input.Target))
+                if (_trackTaskInput && input.Kind is not ("left-up" or "right-up" or "middle-up") && input.TargetPid != 0)
                 {
                     NativeMethods.GetWindowThreadProcessId(input.Target, out uint currentPid);
                     if (currentPid == input.TargetPid)

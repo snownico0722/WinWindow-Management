@@ -16,6 +16,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using NeatWin.Core;
+using NeatWin.Windows;
 
 namespace WinWindow;
 
@@ -47,6 +48,7 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern bool IsIconic(nint hwnd);
     [DllImport("user32.dll")] private static extern bool IsZoomed(nint hwnd);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint hwnd);
+    [DllImport("shcore.dll")] private static extern int GetDpiForMonitor(nint monitor, int dpiType, out uint dpiX, out uint dpiY);
     [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
     [DllImport("user32.dll")] internal static extern nint GetActiveWindow();
     [DllImport("user32.dll")] internal static extern nint GetFocus();
@@ -74,7 +76,6 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint hwnd, uint command);
     [DllImport("user32.dll")] internal static extern bool GetWindowRect(nint hwnd, out Rect rect);
-    [DllImport("user32.dll")] private static extern nint MonitorFromPoint(Point point, uint flags);
     [DllImport("user32.dll")] internal static extern nint MonitorFromWindow(nint hwnd, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
     [DllImport("user32.dll")] private static extern bool EnumDisplayMonitors(nint dc, nint clip, MonitorEnumProc callback, nint data);
@@ -299,6 +300,7 @@ internal static class Native
         long value = (Style(hwnd) & ~Transparent) | ToolWindow | NoActivateStyle;
         if (IntPtr.Size == 8) SetWindowLong64(hwnd, -20, (nint)value);
         else SetWindowLong32(hwnd, -20, (int)value);
+        AutomationGuard.MarkUtility(hwnd);
     }
 
     internal static uint WindowDpi(nint hwnd)
@@ -314,30 +316,45 @@ internal static class Native
     internal static bool PositionOverlay(nint hwnd, int x, int y) =>
         SetWindowPos(hwnd, (nint)(-1), x, y, 0, 0, NoSize | NoActivate);
 
-    internal static bool TryGetTitleBarOverlayTrack(nint targetHwnd, int barWidthPx, int barHeightPx, double scale, out Rect track)
+    private static uint OverlayDpi(nint monitor, nint overlayHwnd = 0)
+    {
+        if (overlayHwnd != 0 && MonitorFromWindow(overlayHwnd, 0) == monitor)
+            return WindowDpi(overlayHwnd);
+
+        // 创建或跨屏前先拿落点的有效 DPI。浮窗落位后以上面的 HWND 实测为准。
+        const int effectiveDpi = 0;
+        return GetDpiForMonitor(monitor, effectiveDpi, out uint dpi, out _) == 0 && dpi > 0 ? dpi : 96u;
+    }
+
+    internal static bool TryGetTitleBarOverlayTrack(nint targetHwnd, nint overlayHwnd,
+        int widthDip, int heightDip, out Rect track, out double scale)
     {
         track = default;
+        scale = 1;
         if (!TryGetFrameBounds(targetHwnd, out var frame)) return false;
         if (DwmGetWindowAttribute(targetHwnd, 14, out int cloaked, 4) == 0 && cloaked != 0) return false;
+        bool maximized = IsZoomed(targetHwnd);
+
+        // 上下双屏时窗口主体可能在另一屏。选标题栏所在屏，避免把浮条夹到正文里。
+        var title = new Rect { Left = frame.Left, Top = frame.Top, Right = frame.Right, Bottom = frame.Top + 1 };
+        nint monitor = MonitorFromRect(in title, 0);
+        if (monitor == 0 && maximized) monitor = MonitorFromWindow(targetHwnd, 2);
         var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
-        bool hasMonitor = GetMonitorInfo(MonitorFromWindow(targetHwnd, 2), ref info);
-        if (hasMonitor && (!Overlaps(frame, info.Work) ||
-            (!IsZoomed(targetHwnd) && frame.Left <= info.Monitor.Left && frame.Top <= info.Monitor.Top &&
-             frame.Right >= info.Monitor.Right && frame.Bottom >= info.Monitor.Bottom))) return false;
-        int baseLeft = hasMonitor ? Math.Max(frame.Left, info.Work.Left) : frame.Left;
-        int baseTop = hasMonitor ? Math.Max(frame.Top, info.Work.Top) : frame.Top;
-        int left = baseLeft + (int)Math.Round(8 * scale);
-        int top = baseTop + (int)Math.Round(4 * scale);
-        // 横拖后仍给目标窗口右侧的系统按钮留出原有余量。
-        int right = frame.Right - (int)Math.Round(72 * scale);
-        int bottom = frame.Bottom;
-        if (hasMonitor)
-        {
-            right = Math.Min(right, info.Work.Right);
-            bottom = Math.Min(bottom, info.Work.Bottom);
-        }
-        if (right - left < barWidthPx || bottom - top < barHeightPx) return false;
-        track = new Rect { Left = left, Top = top, Right = right, Bottom = top + barHeightPx };
+        if (!GetMonitorInfo(monitor, ref info) || !Overlaps(frame, info.Work) ||
+            (!maximized && frame.Left <= info.Monitor.Left && frame.Top <= info.Monitor.Top &&
+             frame.Right >= info.Monitor.Right && frame.Bottom >= info.Monitor.Bottom)) return false;
+
+        scale = OverlayDpi(monitor, overlayHwnd) / 96.0;
+        int width = (int)Math.Ceiling(widthDip * scale);
+        int height = (int)Math.Ceiling(heightDip * scale);
+        int left = Math.Max(frame.Left, info.Work.Left) + (int)Math.Round(8 * scale);
+        int top = frame.Top + (int)Math.Round(4 * scale);
+        if (maximized) top = Math.Max(top, info.Work.Top);
+        // 横拖后仍给目标窗口右侧的系统按钮留出余量。
+        int right = Math.Min(frame.Right - (int)Math.Round(72 * scale), info.Work.Right);
+        int bottom = Math.Min(frame.Bottom, info.Work.Bottom);
+        if (top < info.Work.Top || right - left < width || bottom - top < height) return false;
+        track = new Rect { Left = left, Top = top, Right = right, Bottom = top + height };
         return true;
     }
 
@@ -381,7 +398,7 @@ internal static class Native
             frame = valid ? normal : geometry.Frame;
         }
         if (movedBadge is { } badge)
-            frame = FrameByBadge(frame, badge, work, WindowDpi(hwnd));
+            frame = FrameByBadge(frame, badge, work);
         else
             frame = FitFrame(frame, work, frame.Left, frame.Top);
 
@@ -432,12 +449,28 @@ internal static class Native
         return uncovered.Count == 0;
     }
 
+    internal static bool IsShown(nint hwnd) => IsWindowVisible(hwnd) && !IsIconic(hwnd);
+
+    internal static bool HasReachableFrame(nint hwnd)
+    {
+        if (!TryGetFrameBounds(hwnd, out var frame)) return false;
+        var screen = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(MonitorFromRect(in frame, 0), ref screen)) return false;
+        var bounds = screen.Monitor;
+        // 允许部分离屏，但只露出几像素边框还不能当作用户可以找回的窗口。
+        int exposedWidth = Math.Min(frame.Right, bounds.Right) - Math.Max(frame.Left, bounds.Left);
+        int exposedHeight = Math.Min(frame.Bottom, bounds.Bottom) - Math.Max(frame.Top, bounds.Top);
+        return exposedWidth >= Math.Min(frame.Right - frame.Left, 32) &&
+            exposedHeight >= Math.Min(frame.Bottom - frame.Top, 24);
+    }
+
     internal static bool IsRestoredWindow(nint hwnd, bool maximized, nint monitor = 0) =>
-        IsWindowVisible(hwnd) && !IsIconic(hwnd) && IsZoomed(hwnd) == maximized &&
+        HasReachableFrame(hwnd) && IsZoomed(hwnd) == maximized &&
         (monitor == 0 || MonitorFromWindow(hwnd, 0) == monitor);
 
-    private static Rect FrameByBadge(Rect frame, Rect badge, Rect work, uint dpi)
+    private static Rect FrameByBadge(Rect frame, Rect badge, Rect work)
     {
+        uint dpi = OverlayDpi(MonitorFromRect(in badge, 2));
         int inset = (int)Math.Round(6 * dpi / 96.0);
         return FitFrame(frame, work, badge.Left - inset, badge.Top - inset);
     }
@@ -458,14 +491,14 @@ internal static class Native
     internal static bool IsAtBadge(nint hwnd, Rect badge, Rect work) =>
         TryGetFrameBounds(hwnd, out var frame) &&
         FrameInside(frame, work) &&
-        NearFrame(frame, FrameByBadge(frame, badge, work, WindowDpi(hwnd)));
+        NearFrame(frame, FrameByBadge(frame, badge, work));
 
     internal static bool PostFitRestoredWindow(WindowIdentity identity, Rect? badge, Rect work)
     {
         EnsureIdentity(identity);
         nint hwnd = identity.Hwnd;
         if (!TryGetFrameBounds(hwnd, out var frame) || !GetWindowRect(hwnd, out var outer)) return false;
-        var wanted = badge is { } anchor ? FrameByBadge(frame, anchor, work, WindowDpi(hwnd))
+        var wanted = badge is { } anchor ? FrameByBadge(frame, anchor, work)
             : FitFrame(frame, work, frame.Left, frame.Top);
         int x = wanted.Left + outer.Left - frame.Left;
         int y = wanted.Top + outer.Top - frame.Top;
@@ -527,15 +560,16 @@ internal static class Native
         return GetAsyncKeyState(GetSystemMetrics(swapButton) == 0 ? leftButton : rightButton) < 0;
     }
 
-    public static Rect OverlayBounds(nint hwnd, Point anchor, int width, int height)
+    internal static bool TryGetOverlayWorkArea(nint targetHwnd, out Rect work, out double scale)
     {
+        nint monitor = MonitorFromWindow(targetHwnd, 2);
         var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
-        if (!GetMonitorInfo(MonitorFromPoint(anchor, 2), ref info)) return default;
-        var dpi = GetDpiForWindow(hwnd);
-        int w = (int)Math.Ceiling(width * dpi / 96.0), h = (int)Math.Ceiling(height * dpi / 96.0);
-        int x = Math.Clamp(anchor.X, info.Work.Left, Math.Max(info.Work.Left, info.Work.Right - w));
-        int y = Math.Clamp(anchor.Y, info.Work.Top, Math.Max(info.Work.Top, info.Work.Bottom - h));
-        return new Rect { Left = x, Top = y, Right = x + w, Bottom = y + h };
+        work = default;
+        scale = 1;
+        if (!GetMonitorInfo(monitor, ref info)) return false;
+        work = info.Work;
+        scale = OverlayDpi(monitor) / 96.0;
+        return true;
     }
 
     public static bool PositionWindowControl(nint hwnd, nint target, Rect? bounds = null)
@@ -637,6 +671,9 @@ internal static class Native
                     }
                     try
                     {
+                        // 进程列表可能刚好取到已退出的同名程序。它无需阻止下一次启动。
+                        const uint stillActive = 259;
+                        if (GetExitCodeProcess(handle, out uint exitCode) && exitCode != stillActive) continue;
                         var runningPath = ReadProcessPath(handle);
                         if (runningPath is null || string.Equals(runningPath, path, StringComparison.OrdinalIgnoreCase))
                             return false;

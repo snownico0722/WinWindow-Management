@@ -45,11 +45,6 @@ public partial class MainWindow
             CommitQuickOpacity();
             QuickOpacityBox.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
         }
-        else if (e.Key == Key.Escape)
-        {
-            e.Handled = true;
-            QuickOpacityBox.Text = _store.Preferences.QuickOpacity.ToString();
-        }
     }
 
     private void QuickOpacity_LostFocus(object sender, KeyboardFocusChangedEventArgs e) => CommitQuickOpacity();
@@ -79,19 +74,15 @@ public partial class MainWindow
         if (!item.IsAvailable) return;
         int target = Math.Clamp(_store.Preferences.QuickOpacity, 1, 99);
         int current = DesiredOpacity(item);
-        int next;
-        // 若当前不等于预设值，记下切换前的百分比以便再次点击还原；若本就处于预设值，则回退到原百分比或 100%。
+        var baseline = _pendingOpacity.TryGetValue(item, out var request)
+            ? request.Baseline : item.OpacityBeforeQuickToggle;
+        // 快捷切换可以被滑块覆盖，也可以在请求尚未执行时再次按键。
         if (current != target)
-        {
-            item.OpacityBeforeQuickToggle = current;
-            next = target;
-        }
+            QueueOpacity(item, target, temporary: true, baseline: baseline ?? current);
+        else if (baseline is int previous && previous > 0 && previous != target)
+            QueueOpacity(item, previous, temporary: true);
         else
-        {
-            next = item.OpacityBeforeQuickToggle is int prev && prev > 0 && prev != target ? prev : 100;
-            item.OpacityBeforeQuickToggle = null;
-        }
-        QueueOpacity(item, next);
+            QueueOpacity(item, 100, temporary: true, baseline: baseline ?? current);
         SyncManagedOverlays();
     }
 
@@ -116,14 +107,20 @@ public partial class MainWindow
 
     private (int X, int Y) FindCollapsedIconPosition(WindowItem item, Native.Rect frame)
     {
-        var size = CollapsedIconOverlay.WindowSizeDip;
-        int inset = (int)Math.Round(6 * Native.WindowDpi(item.Hwnd) / 96.0);
-        var anchor = new Native.Point { X = frame.Left + inset, Y = frame.Top + inset };
-        var first = Native.OverlayBounds(item.Hwnd, anchor, size, size);
+        if (!Native.TryGetOverlayWorkArea(item.Hwnd, out var work, out double scale))
+            return (frame.Left, frame.Top);
+        int size = (int)Math.Ceiling(CollapsedIconOverlay.WindowSizeDip * scale);
+        int inset = (int)Math.Round(6 * scale);
+        int maxX = Math.Max(work.Left, work.Right - size);
+        int maxY = Math.Max(work.Top, work.Bottom - size);
+        int firstX = Math.Clamp(frame.Left + inset, work.Left, maxX);
+        int firstY = Math.Clamp(frame.Top + inset, work.Top, maxY);
+        Native.Rect Bounds(int x, int y) => new() { Left = x, Top = y, Right = x + size, Bottom = y + size };
+        var first = Bounds(firstX, firstY);
         var others = _collapsedOverlays.Where(pair => pair.Key != item).Select(pair => pair.Value.VisibleBounds)
             .OfType<Native.Rect>().ToArray();
         if (!others.Any(other => Native.Overlaps(first, other))) return (first.Left, first.Top);
-        int step = first.Right - first.Left + inset;
+        int step = size + inset;
         for (int i = 1; i <= others.Length; i++)
         {
             foreach (var candidate in new[]
@@ -134,7 +131,10 @@ public partial class MainWindow
                 new Native.Point { X = first.Left, Y = first.Top - i * step }
             })
             {
-                var bounds = Native.OverlayBounds(item.Hwnd, candidate, size, size);
+                // 自动找空位留在源屏，只有用户拖动才能把图标放到另一屏。
+                if (candidate.X < work.Left || candidate.X > maxX || candidate.Y < work.Top || candidate.Y > maxY)
+                    continue;
+                var bounds = Bounds(candidate.X, candidate.Y);
                 if (!others.Any(other => Native.Overlaps(bounds, other))) return (bounds.Left, bounds.Top);
             }
         }
@@ -202,6 +202,10 @@ public partial class MainWindow
         overlay.FollowPosition();
     }
 
+    private void SyncLaunchAvailabilityTimer() =>
+        _launchAvailabilityTimer.IsEnabled = IsVisible && WindowState != WindowState.Minimized &&
+            Manager.Items.Any(item => !item.IsAvailable);
+
     private void SyncManagedOverlays()
     {
         if (_quitting || !_ready)
@@ -212,8 +216,7 @@ public partial class MainWindow
 
         // 等工作台建立句柄后再挂载，避免无头初始化时先创建浮条。
         if (_hwnd == 0) return;
-        _launchAvailabilityTimer.IsEnabled = IsVisible && WindowState != WindowState.Minimized &&
-            Manager.Items.Any(item => !item.IsAvailable);
+        SyncLaunchAvailabilityTimer();
 
         var activeItems = Manager.Items
             .Where(x => x.IsManaged && x.IsAvailable && x.Identity is not null)
@@ -446,6 +449,10 @@ public partial class MainWindow
                 Content = _toolbar
             };
             _window.SourceInitialized += OnSourceInitialized;
+            _window.DpiChanged += (_, _) => _window.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                if (IsVisible) Update(_owner._store.Preferences.QuickOpacity, _owner.DesiredOpacity(_item));
+            }));
             _item.PropertyChanged += OnItemPropertyChanged;
         }
 
@@ -609,13 +616,10 @@ public partial class MainWindow
         private bool TryGetPlacement(out Native.Rect bounds)
         {
             bounds = default;
-            double scale = Native.WindowDpi(_item.Hwnd) / 96.0;
-            int widthPx = (int)Math.Ceiling(WidthDip * scale);
-            int heightPx = (int)Math.Ceiling(HeightDip * scale);
-            if (!Native.TryGetTitleBarOverlayTrack(_item.Hwnd, widthPx, heightPx, scale, out var track))
+            if (!Native.TryGetTitleBarOverlayTrack(_item.Hwnd, _hwnd, WidthDip, HeightDip, out var track, out double scale))
                 return false;
             _track = track;
-            _barWidthPixels = widthPx;
+            _barWidthPixels = (int)Math.Ceiling(WidthDip * scale);
             _scale = scale;
             bounds = BarBounds(OffsetPixels);
             return true;
@@ -793,7 +797,13 @@ public partial class MainWindow
             _card.MouseLeftButtonDown += OnMouseDown;
             _card.MouseMove += OnMouseMove;
             _card.MouseLeftButtonUp += OnMouseUp;
-            _card.LostMouseCapture += (_, _) => _capturing = false;
+            _card.LostMouseCapture += (_, _) =>
+            {
+                if (!_capturing) return;
+                _capturing = false;
+                if (_dragged && !_disposed) FinishDrop();
+                _dragged = false;
+            };
 
             _window = new Window
             {

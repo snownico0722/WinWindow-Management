@@ -300,6 +300,12 @@ internal static class SmokeTests
             Assert(Native.IsIconic(item.Hwnd) && item.IsParked, "force minimize produces a real iconic window");
             await manager.RestoreParkingAsync(item, false);
             Assert(Native.IsWindowVisible(item.Hwnd) && !Native.IsIconic(item.Hwnd) && Native.GetPlacement(item.Hwnd).ShowCmd == before.ShowCmd, "restore preserves pre-minimize maximized state");
+            await manager.ParkAsync(item);
+            Native.ShowWindowAsync(item.Hwnd, Native.Restore);
+            await WaitAsync("externally parked window is usable again", () => Native.HasReachableFrame(item.Hwnd));
+            Assert(item.IsParked, "the recovery record still exists before refresh");
+            await manager.RefreshAsync();
+            Assert(!item.IsParked, "refresh retires the old location after an external wake");
             await manager.ReleaseAsync(item);
             var rejected = await FixtureAsync(output, true); processes.Add(rejected.Process);
             var stubborn = manager.SelectTarget(rejected.Hwnd);
@@ -321,6 +327,7 @@ internal static class SmokeTests
             Assert(Native.IsWindowVisible(stubborn.Hwnd) && !Native.IsIconic(stubborn.Hwnd) &&
                 !stubborn.IsHidden && !stubborn.IsParked, "hidden fallback can be restored");
             await manager.ReleaseAsync(stubborn);
+            await CheckLateCollapseRecoveryAsync(output, processes);
             await manager.SetOpacityAsync(item, 0);
             var recovered = new WindowManager(store);
             await recovered.RecoverPreviousSessionAsync();
@@ -548,6 +555,13 @@ internal static class SmokeTests
             Assert(!StateStore.RequestAdministratorOnLaunch(store.DirectoryPath), "disabling administrator startup is persisted for the next launch");
             var quickOpacityBox = (TextBox)shell.FindName("QuickOpacityBox");
             Assert(store.Preferences.QuickOpacity == 50 && quickOpacityBox.Text == "50", "quick opacity defaults to 50% in General settings");
+            shell.ShowShell();
+            Assert(quickOpacityBox.Focus(), "focus the quick opacity editor");
+            quickOpacityBox.Text = "25";
+            quickOpacityBox.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(quickOpacityBox)!,
+                Environment.TickCount, Key.Escape) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+            Assert(quickOpacityBox.IsVisible && quickOpacityBox.Text == "50" && store.Preferences.QuickOpacity == 50,
+                "Escape cancels the opacity draft without closing settings");
             quickOpacityBox.Text = "45";
             quickOpacityBox.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, Environment.TickCount, quickOpacityBox, administratorStartup)
                 { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
@@ -750,7 +764,7 @@ internal static class SmokeTests
             store.Preferences.PinWhenFocused = false; shell.ShowShell();
             Assert(!Native.IsTopmost(own), "wake raise is cleaned up immediately with focus policy off");
             // 这些用例会启动和关闭其他进程，放在工作台焦点回归之后。
-            await CheckTitleBarOverlayAndLaunchAsync(shell, chosen, output, processes);
+            await CheckTitleBarOverlayAndLaunchAsync(shell, chosen, store, output, processes);
             await CheckLaunchButtonAsync(shell, store, output);
             shell.Cleanup(); shell.Close(); shell = null;
             await manager.RestoreAllAsync(); manager = null;
@@ -1256,10 +1270,12 @@ internal static class SmokeTests
         }
     }
 
-    private static async Task CheckTitleBarOverlayAndLaunchAsync(MainWindow shell, WindowItem chosen, string output, List<Process> processes)
+    private static async Task CheckTitleBarOverlayAndLaunchAsync(MainWindow shell, WindowItem chosen, StateStore store, string output, List<Process> processes)
     {
         if (Native.IsTopmost(chosen.Hwnd)) await shell.Manager.SetPinAsync(chosen, false, updateRule: false);
-        await shell.Manager.SetOpacityAsync(chosen, 80, updateRule: false);
+        shell.Manager.SetRemembered(chosen, true);
+        await shell.Manager.SetOpacityAsync(chosen, 80);
+        var opacityRule = store.Preferences.Rules.Single(rule => rule.Id == chosen.RuleId);
         Native.ShowWindowAsync(chosen.Hwnd, Native.Maximized);
         await WaitAsync("fixture is maximized before collapsing", () => Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized);
         Native.SetForegroundWindow(chosen.Hwnd);
@@ -1345,8 +1361,7 @@ internal static class SmokeTests
         Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
             "position the restored fixture within the work area");
         bool ToolbarMatchesTrack(int offset) => Native.GetWindowRect(barHwnd, out var bar) &&
-            Native.TryGetTitleBarOverlayTrack(chosen.Hwnd, bar.Right - bar.Left, bar.Bottom - bar.Top,
-                Native.WindowDpi(chosen.Hwnd) / 96.0, out var track) &&
+            Native.TryGetTitleBarOverlayTrack(chosen.Hwnd, barHwnd, 78, 26, out var track, out _) &&
             bar.Left == track.Left + offset && bar.Top == track.Top;
         await WaitAsync("toolbar reaches the restored fixture before dragging", () => ToolbarMatchesTrack(0));
         Assert(shell.MoveTitleOverlayForTest(chosen, 72), "set a horizontal offset on the restored fixture");
@@ -1366,11 +1381,29 @@ internal static class SmokeTests
         await WaitAsync("title-bar opacity button applies 50% preset", () =>
             !chosen.IsBusy && chosen.Opacity == 50 &&
             Native.GetLayeredWindowAttributes(chosen.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(50));
+        await shell.Manager.SetPinAsync(chosen, true);
+        Assert(opacityRule.Opacity == beforeQuick, "saving a pin preserves the opacity rule during a quick toggle");
+        await shell.Manager.SetPinAsync(chosen, false);
         shell.ToggleQuickOpacity(chosen);
         // 原生透明度先于 UI 操作结束生效。等按钮恢复可操作后再点击收起。
         await WaitAsync("title-bar opacity button restores previous opacity", () =>
             !chosen.IsBusy && chosen.Opacity == beforeQuick &&
             Native.GetLayeredWindowAttributes(chosen.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(beforeQuick));
+
+        shell.ToggleQuickOpacity(chosen);
+        await WaitAsync("the temporary opacity is active before editing", () => !chosen.IsBusy && chosen.Opacity == 50);
+        shell.ShowShell();
+        var opacityRow = await FindRowAsync(shell, chosen);
+        var opacitySlider = (Slider)opacityRow.FindName("OpacitySlider");
+        Assert(opacitySlider.Focus(), "focus the slider before changing temporary opacity");
+        opacitySlider.Value = 65;
+        Assert(shell.DesiredOpacity(chosen) == 65 && chosen.Opacity == 50 &&
+            chosen.OpacityBeforeQuickToggle == beforeQuick, "queued manual opacity keeps the baseline until the HWND changes");
+        await shell.Manager.SetPinAsync(chosen, true);
+        Assert(opacityRule.Opacity != 50, "pinning during a queued manual edit cannot persist the temporary opacity");
+        await WaitAsync("manual opacity replaces the saved baseline", () =>
+            !chosen.IsBusy && chosen.Opacity == 65 && opacityRule.Opacity == 65 && chosen.OpacityBeforeQuickToggle is null);
+        await shell.Manager.SetPinAsync(chosen, false);
 
         await shell.ExecuteRowAsync(chosen, "collapseIcon");
         if (!chosen.IsIconCollapsed)
@@ -1549,6 +1582,50 @@ internal static class SmokeTests
             launchShell.Cleanup();
             launchShell.Close();
         }
+        var wpfStore = new StateStore(Path.Combine(launchData, "wpf"));
+        string wpfExe = Path.GetFullPath(Path.Combine(wpfStore.DirectoryPath, $"wpf-{Guid.NewGuid():N}.exe"));
+        File.Copy(exePath, wpfExe);
+        nint launchedWpfHwnd = 0;
+        var wpfManager = new WindowManager(wpfStore, Native.GetProcessMutes, Native.SetProcessMutes, async _ =>
+        {
+            var started = await FixtureAsync(output, true, executable: wpfExe);
+            processes.Add(started.Process);
+            launchedWpfHwnd = started.Hwnd;
+            return true;
+        });
+
+        var previousWpf = await FixtureAsync(output, true, executable: wpfExe);
+        var wpfRule = Rule(previousWpf.Hwnd);
+        using (previousWpf.Process)
+        {
+            Stop(previousWpf.Process);
+            await previousWpf.Process.WaitForExitAsync();
+        }
+        await WaitAsync("the stopped WPF fixture becomes launchable", () => Native.CanLaunchApplication(wpfExe));
+        wpfRule.Title = originalTitle;
+        wpfStore.Preferences.Rules.Add(wpfRule);
+        await wpfManager.RefreshAsync();
+        var pendingWpf = wpfManager.Items.Single(x => x.RuleId == wpfRule.Id);
+        Assert(pendingWpf.CanLaunch, "the stopped WPF fixture has a launch button");
+        await wpfManager.LaunchAsync(pendingWpf);
+        Assert(launchedWpfHwnd != 0, "the WPF fixture started through the launch path");
+        string launchedClass = Native.ClassName(launchedWpfHwnd);
+        Assert(launchedClass != wpfRule.ClassName && WindowRule.MatchesClass(wpfRule.ClassName, launchedClass),
+            $"fresh WPF HWND uses a different instance GUID ({wpfRule.ClassName} / {launchedClass})");
+        await WaitAsync("a freshly launched WPF HWND receives its saved rule", () =>
+            wpfManager.Items.Any(x => x.Hwnd == launchedWpfHwnd && x.RuleId == wpfRule.Id && x.Pinned), 4000);
+        var liveWpf = wpfManager.Items.Single(x => x.Hwnd == launchedWpfHwnd && x.RuleId == wpfRule.Id);
+        await wpfManager.ShutdownAsync();
+
+        wpfRule.Title = Native.Title(liveWpf.Hwnd);
+        var regularWpfManager = new WindowManager(wpfStore);
+        await regularWpfManager.RefreshAsync();
+        await WaitAsync("ordinary WPF startup also restores the saved rule", () =>
+            regularWpfManager.Items.Any(x => x.Hwnd == liveWpf.Hwnd && x.Pinned && x.RuleId == wpfRule.Id));
+        await regularWpfManager.ShutdownAsync();
+        var activeWpf = processes[^1];
+        Stop(activeWpf);
+        await activeWpf.WaitForExitAsync();
         shell.ShowShell();
     }
 
@@ -1764,6 +1841,48 @@ internal static class SmokeTests
         await game.WaitForExitAsync();
         await manager.RefreshAsync();
         Assert(!store.ReadRecovery().Any(s => s.Identity.Hwnd == hwnd), "pending cleanup expires when the original game exits");
+    }
+
+    private static async Task CheckLateCollapseRecoveryAsync(string output, List<Process> processes)
+    {
+        string gate = @"Local\WinWindow.LateCollapse." + Guid.NewGuid().ToString("N");
+        using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".entered");
+        using var release = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".release");
+        var target = await FixtureAsync(output, false, stall: gate);
+        processes.Add(target.Process);
+        var store = ChildStore(output, false);
+        var manager = new WindowManager(store);
+        var item = manager.SelectTarget(target.Hwnd);
+        Assert(Native.PostMessage(target.Hwnd, App.StallFixtureMessage, 0, 0), "stall the HWND before posting collapse");
+        var watchdog = Task.Run(() => { if (!release.WaitOne(6_000)) release.Set(); });
+        try
+        {
+            await WaitAsync("the window thread is not processing messages", () => entered.WaitOne(0));
+            try
+            {
+                await manager.CollapseToIconAsync(item);
+                throw new Exception("A stalled target should not confirm collapse.");
+            }
+            catch (InvalidOperationException e) when (e.Message == UiText.Get("CollapseRejected")) { }
+            Assert(Native.IsShown(target.Hwnd) && !release.WaitOne(0), "the pending hide has not run yet");
+            Assert(await manager.ShutdownAsync() == 1 &&
+                store.ReadRecovery().Single() is { Parked: true, ParkingPending: true },
+                "exit keeps the recovery record for a hide that has not been observed");
+
+            release.Set();
+            await WaitAsync("the queued hide executes once the target responds", () => !Native.IsWindowVisible(target.Hwnd));
+            var recovered = new WindowManager(store);
+            await recovered.RecoverPreviousSessionAsync();
+            await WaitAsync("the saved recovery record brings back the late-hidden window", () =>
+                Native.IsShown(target.Hwnd) && store.ReadRecovery().Count == 0);
+        }
+        finally
+        {
+            release.Set();
+            await watchdog;
+            Stop(target.Process);
+            await target.Process.WaitForExitAsync();
+        }
     }
 
     private static async Task DesktopRegressionAsync(string output, List<Process> processes)
