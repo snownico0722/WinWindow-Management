@@ -669,6 +669,9 @@ internal static class Native
                     }
                     try
                     {
+                        // 进程列表可能刚好取到已退出的同名程序。它无需阻止下一次启动。
+                        const uint stillActive = 259;
+                        if (GetExitCodeProcess(handle, out uint exitCode) && exitCode != stillActive) continue;
                         var runningPath = ReadProcessPath(handle);
                         if (runningPath is null || string.Equals(runningPath, path, StringComparison.OrdinalIgnoreCase))
                             return false;

@@ -1567,9 +1567,17 @@ internal static class SmokeTests
             launchShell.Close();
         }
         var wpfStore = new StateStore(Path.Combine(launchData, "wpf"));
-        string wpfExe = Path.Combine(wpfStore.DirectoryPath, "wpf-launch-fixture.exe");
-        Directory.CreateDirectory(wpfStore.DirectoryPath);
+        string wpfExe = Path.GetFullPath(Path.Combine(wpfStore.DirectoryPath, $"wpf-{Guid.NewGuid():N}.exe"));
         File.Copy(exePath, wpfExe);
+        nint launchedWpfHwnd = 0;
+        var wpfManager = new WindowManager(wpfStore, Native.GetProcessMutes, Native.SetProcessMutes, async _ =>
+        {
+            var started = await FixtureAsync(output, true, executable: wpfExe);
+            processes.Add(started.Process);
+            launchedWpfHwnd = started.Hwnd;
+            return true;
+        });
+
         var previousWpf = await FixtureAsync(output, true, executable: wpfExe);
         var wpfRule = Rule(previousWpf.Hwnd);
         using (previousWpf.Process)
@@ -1577,27 +1585,17 @@ internal static class SmokeTests
             Stop(previousWpf.Process);
             await previousWpf.Process.WaitForExitAsync();
         }
+        await WaitAsync("the stopped WPF fixture becomes launchable", () => Native.CanLaunchApplication(wpfExe));
         wpfRule.Title = originalTitle;
         wpfStore.Preferences.Rules.Add(wpfRule);
-
-        nint launchedWpfHwnd = 0;
-        var wpfManager = new WindowManager(wpfStore, Native.GetProcessMutes, Native.SetProcessMutes, async _ =>
-        {
-            var started = await FixtureAsync(output, true, executable: wpfExe);
-            processes.Add(started.Process);
-            launchedPid = started.Process.Id;
-            launchedWpfHwnd = started.Hwnd;
-            return true;
-        });
-        wpfManager.Notice += message => Report("WPF launch: " + message);
         await wpfManager.RefreshAsync();
         var pendingWpf = wpfManager.Items.Single(x => x.RuleId == wpfRule.Id);
-        Assert(pendingWpf.CanLaunch, $"the previous WPF process exited and can be relaunched ({pendingWpf.ProcessPath})");
+        Assert(pendingWpf.CanLaunch, "the stopped WPF fixture has a launch button");
         await wpfManager.LaunchAsync(pendingWpf);
         Assert(launchedWpfHwnd != 0, "the WPF fixture started through the launch path");
-        var launchedClass = Native.ClassName(launchedWpfHwnd);
+        string launchedClass = Native.ClassName(launchedWpfHwnd);
         Assert(launchedClass != wpfRule.ClassName && WindowRule.MatchesClass(wpfRule.ClassName, launchedClass),
-            $"fresh WPF HWND has a different instance GUID in the same class ({wpfRule.ClassName} / {launchedClass})");
+            $"fresh WPF HWND uses a different instance GUID ({wpfRule.ClassName} / {launchedClass})");
         await WaitAsync("a freshly launched WPF HWND receives its saved rule", () =>
             wpfManager.Items.Any(x => x.Hwnd == launchedWpfHwnd && x.RuleId == wpfRule.Id && x.Pinned), 4000);
         var liveWpf = wpfManager.Items.Single(x => x.Hwnd == launchedWpfHwnd && x.RuleId == wpfRule.Id);
@@ -1609,7 +1607,7 @@ internal static class SmokeTests
         await WaitAsync("ordinary WPF startup also restores the saved rule", () =>
             regularWpfManager.Items.Any(x => x.Hwnd == liveWpf.Hwnd && x.Pinned && x.RuleId == wpfRule.Id));
         await regularWpfManager.ShutdownAsync();
-        var activeWpf = processes.Single(process => process.Id == launchedPid);
+        var activeWpf = processes[^1];
         Stop(activeWpf);
         await activeWpf.WaitForExitAsync();
         shell.ShowShell();
