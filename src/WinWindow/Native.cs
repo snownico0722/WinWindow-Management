@@ -449,6 +449,8 @@ internal static class Native
         return uncovered.Count == 0;
     }
 
+    internal static bool IsShown(nint hwnd) => IsWindowVisible(hwnd) && !IsIconic(hwnd);
+
     internal static bool HasReachableFrame(nint hwnd)
     {
         if (!TryGetFrameBounds(hwnd, out var frame)) return false;

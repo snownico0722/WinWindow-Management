@@ -42,6 +42,7 @@ internal sealed class WindowSnapshot
     public bool EditedClickThrough { get; set; }
     public Dictionary<string, bool>? OriginalAudioMutes { get; set; }
     public bool Parked { get; set; }
+    public bool ParkingPending { get; set; }
     public Native.Placement BeforeParking { get; set; }
 }
 internal sealed class WindowRule

@@ -179,7 +179,6 @@ public partial class WindowRow : UserControl
     {
         if (_syncing || _item is not { IsAvailable: true } item || !(OpacitySlider.IsMouseCaptureWithin || OpacitySlider.IsKeyboardFocusWithin)) return;
         int value = (int)Math.Round(e.NewValue);
-        item.OpacityBeforeQuickToggle = null;
         Owner?.QueueOpacity(item, value);
         OpacityDisplayButton.Content = value + "%";
         if (!_dirty) { _syncing = true; OpacityNumber.Text = value.ToString(); _syncing = false; }
@@ -193,7 +192,6 @@ public partial class WindowRow : UserControl
         int current = Owner?.DesiredOpacity(item) ?? item.Opacity;
         int next = Math.Clamp(current + (e.Delta > 0 ? 5 : -5), 0, 100);
         e.Handled = true;
-        item.OpacityBeforeQuickToggle = null;
         Owner?.QueueOpacity(item, next);
         Sync();
     }
@@ -226,7 +224,6 @@ public partial class WindowRow : UserControl
         _dirty = false;
         if (int.TryParse(OpacityNumber.Text, out int value) && value is >= 0 and <= 100)
         {
-            item.OpacityBeforeQuickToggle = null;
             Owner?.QueueOpacity(item, value);
         }
         else Owner?.ShowStatus(UiText.Get("OpacityRange"));

@@ -109,11 +109,17 @@ internal sealed class WindowManager
                 bool observedParked = item.IsIconCollapsed || item.IsHidden || item.IsMinimized;
                 bool minimized = Native.IsIconic(item.Hwnd), hidden = !Native.IsWindowVisible(item.Hwnd);
                 item.IsMinimized = minimized; item.IsHidden = hidden;
-                if (item.IsParked && observedParked && !minimized && !hidden && Native.HasReachableFrame(item.Hwnd))
+                if (item.Original is { Parked: true } parking)
                 {
-                    // 外部唤回且实际能在屏幕上操作时才能移除入口，退出也无需再恢复旧坐标。
-                    Track(item, snapshot => snapshot.Parked = false);
-                    item.IsIconCollapsed = false;
+                    if (parking.ParkingPending && hidden)
+                        Track(item, snapshot => snapshot.ParkingPending = false);
+                    else if (!parking.ParkingPending && observedParked && !minimized && !hidden &&
+                        (!item.IsIconCollapsed || Native.HasReachableFrame(item.Hwnd)))
+                    {
+                        // 外部唤回后让用户保留当前坐标。桌面图标须等窗口回到屏幕再撤下。
+                        Track(item, snapshot => snapshot.Parked = false);
+                        item.IsIconCollapsed = false;
+                    }
                 }
                 item.Pinned = Native.IsTopmost(item.Hwnd);
                 item.ClickThrough = (Native.Style(item.Hwnd) & Native.Transparent) != 0;
@@ -272,12 +278,12 @@ internal sealed class WindowManager
     private void Track(WindowItem item, Action<WindowSnapshot> edit)
     {
         var s = Manage(item);
-        var previous = (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.OriginalAudioMutes, s.RestoreActivation, s.InjectedBackground, s.Parked, s.BeforeParking);
+        var previous = (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.OriginalAudioMutes, s.RestoreActivation, s.InjectedBackground, s.Parked, s.ParkingPending, s.BeforeParking);
         edit(s);
-        var next = (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.OriginalAudioMutes, s.RestoreActivation, s.InjectedBackground, s.Parked, s.BeforeParking);
+        var next = (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.OriginalAudioMutes, s.RestoreActivation, s.InjectedBackground, s.Parked, s.ParkingPending, s.BeforeParking);
         if (previous.Equals(next)) return;
         try { Journal(); }
-        catch { (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.OriginalAudioMutes, s.RestoreActivation, s.InjectedBackground, s.Parked, s.BeforeParking) = previous; throw; }
+        catch { (s.EditedTopmost, s.EditedOpacity, s.EditedClickThrough, s.OriginalAudioMutes, s.RestoreActivation, s.InjectedBackground, s.Parked, s.ParkingPending, s.BeforeParking) = previous; throw; }
     }
     // Published on the dispatcher after the durable intent changes. The layout worker
     // can check one exact window lifetime without touching dispatcher-owned rows.
@@ -373,15 +379,17 @@ internal sealed class WindowManager
         if (Native.IsIconic(item.Hwnd) || !Native.IsWindowVisible(item.Hwnd)) return;
         var placement = Native.GetPlacement(item.Hwnd);
         item.IconWindowGeometry = Native.TryGetIconWindowGeometry(item.Hwnd, out var geometry) ? geometry : null;
-        Track(item, s => { s.BeforeParking = placement; s.Parked = true; });
+        bool alreadyPending = snapshot.ParkingPending;
+        Track(item, s => { s.BeforeParking = placement; s.Parked = s.ParkingPending = true; });
         // 图标是恢复入口。隐藏目标可同时收起任务栏项，原窗口的层级和透明度仍归原来的开关管理。
         if (!Native.ShowWindowAsync(item.Hwnd, Native.Hide))
         {
-            Track(item, s => s.Parked = false);
+            if (!alreadyPending) Track(item, s => s.Parked = s.ParkingPending = false);
             throw new InvalidOperationException(UiText.Get("CollapseRejected"));
         }
         if (!await WaitForAsync(snapshot.Identity, h => !Native.IsWindowVisible(h)))
             throw new InvalidOperationException(UiText.Get("CollapseRejected"));
+        Track(item, s => s.ParkingPending = false);
         item.IsHidden = true;
         item.IsIconCollapsed = true;
         Finish(item, false);
@@ -634,7 +642,7 @@ internal sealed class WindowManager
         if (item.Original is { } snapshot)
         {
             item.BackgroundEnabled = false;
-            try { await RestoreSnapshotAsync(snapshot, unpin: true); }
+            try { await RestoreSnapshotAsync(item, snapshot, unpin: true); }
             catch (Exception e) when (snapshot.RestoreActivation && !snapshot.Parked &&
                 snapshot.OriginalAudioMutes is null && !snapshot.EditedTopmost &&
                 !snapshot.EditedOpacity && !snapshot.EditedClickThrough)
@@ -737,8 +745,9 @@ internal sealed class WindowManager
             var snapshot = Manage(item);
             if (Native.IsIconic(item.Hwnd) || !Native.IsWindowVisible(item.Hwnd)) { result = UiText.Get("AlreadyParked"); return; }
             var placement = Native.GetPlacement(item.Hwnd);
-            Track(item, s => { s.BeforeParking = placement; s.Parked = true; });
+            Track(item, s => { s.BeforeParking = placement; s.Parked = s.ParkingPending = true; });
             forceMinimize(item.Hwnd);
+            bool hideRequested = false;
             bool minimized = await WaitForAsync(snapshot.Identity, Native.IsIconic);
             if (!minimized && !_stopping)
             {
@@ -747,11 +756,13 @@ internal sealed class WindowManager
             }
             if (!minimized && !_stopping)
             {
-                Native.ShowWindowAsync(item.Hwnd, Native.Hide);
+                hideRequested = Native.ShowWindowAsync(item.Hwnd, Native.Hide);
                 if (!await WaitForAsync(snapshot.Identity, h => !Native.IsWindowVisible(h) || Native.IsIconic(h)))
                 { result = UiText.Get("ParkRejected"); return; }
             }
             item.IsMinimized = Native.IsIconic(item.Hwnd); item.IsHidden = !Native.IsWindowVisible(item.Hwnd);
+            if (item.IsHidden || (item.IsMinimized && !hideRequested))
+                Track(item, s => s.ParkingPending = false);
             result = item.IsHidden ? UiText.Get("HiddenRestoreList") : UiText.Get("MinimizedStatus"); Finish(item, false);
         });
         return result;
@@ -770,7 +781,7 @@ internal sealed class WindowManager
             row.Muted = current.Count != 0 && current.Values.All(muted => muted);
     }
 
-    private async Task RestoreSnapshotAsync(WindowSnapshot s, bool unpin = false)
+    private async Task RestoreSnapshotAsync(WindowItem item, WindowSnapshot s, bool unpin = false)
     {
         // Activation cleanup may outlast the entire exit budget. Start independent
         // restoration now and checkpoint each completed part on the dispatcher.
@@ -787,24 +798,31 @@ internal sealed class WindowManager
         async Task RestoreWindowAsync()
         {
             if (!Native.Matches(s.Identity)) return;
-            if (s.Parked)
+            nint hwnd = s.Identity.Hwnd;
+            bool Restored(nint window) => item.IsIconCollapsed
+                ? Native.HasReachableFrame(window) : Native.IsShown(window);
+            // 可见窗口可能还没处理已投递的隐藏请求。保留恢复记录，同时继续恢复其他属性。
+            bool waitingForParking = s.Parked && s.ParkingPending && Native.IsShown(hwnd);
+            if (s.Parked && !waitingForParking)
             {
-                // 收起可能超时，或者用户已在外部唤回。能操作的窗口无需跳回当时的位置。
-                if (!Native.HasReachableFrame(s.Identity.Hwnd))
+                if (!Restored(hwnd))
                 {
-                    Native.ApplyPlacement(s.Identity.Hwnd, s.BeforeParking);
-                    Native.ShowWindowAsync(s.Identity.Hwnd, (int)s.BeforeParking.ShowCmd);
-                    if (!await WaitForAsync(s.Identity, Native.HasReachableFrame))
+                    Native.ApplyPlacement(hwnd, s.BeforeParking);
+                    Native.ShowWindowAsync(hwnd, (int)s.BeforeParking.ShowCmd);
+                    if (!await WaitForAsync(s.Identity, Restored))
                         throw new InvalidOperationException(UiText.Get("RestorePending"));
                 }
-                s.Parked = false;
+                s.Parked = s.ParkingPending = false;
                 Journal();
             }
-            if (!unpin && !s.EditedTopmost && !s.EditedOpacity && !s.EditedClickThrough) return;
-            if (unpin) s.EditedTopmost = true;
-            await Task.Run(() => { if (Native.Matches(s.Identity)) Native.RestoreStyles(s, unpin); });
-            s.EditedTopmost = s.EditedOpacity = s.EditedClickThrough = false;
-            Journal();
+            if (unpin || s.EditedTopmost || s.EditedOpacity || s.EditedClickThrough)
+            {
+                if (unpin) s.EditedTopmost = true;
+                await Task.Run(() => { if (Native.Matches(s.Identity)) Native.RestoreStyles(s, unpin); });
+                s.EditedTopmost = s.EditedOpacity = s.EditedClickThrough = false;
+                Journal();
+            }
+            if (waitingForParking) throw new InvalidOperationException(UiText.Get("RestorePending"));
         }
 
         await Task.WhenAll(RestoreActivationAsync(), RestoreAudioAsync(s), RestoreWindowAsync());
@@ -812,6 +830,8 @@ internal sealed class WindowManager
     public Task RestoreParkingAsync(WindowItem item, bool activate = true, Native.Rect? movedBadge = null) => OperateAsync(item, async () =>
     {
         var s = Manage(item);
+        if (s.Parked && s.ParkingPending && Native.IsShown(item.Hwnd))
+            throw new InvalidOperationException(UiText.Get("RestorePending"));
         bool maximized = s.Parked && s.BeforeParking.ShowCmd == Native.Maximized;
         bool restoreFromIcon = item.IsIconCollapsed && s.Parked;
         var planned = restoreFromIcon && item.IconWindowGeometry is { } geometry
@@ -838,10 +858,10 @@ internal sealed class WindowManager
         {
             if (s.Parked) Native.ApplyPlacement(item.Hwnd, s.BeforeParking);
             Native.ShowWindowAsync(item.Hwnd, s.Parked ? (int)s.BeforeParking.ShowCmd : Native.Restore);
-            if (!await WaitForAsync(s.Identity, Native.HasReachableFrame))
+            if (!await WaitForAsync(s.Identity, Native.IsShown))
                 throw new InvalidOperationException(UiText.Get("RestoreRejected"));
         }
-        Track(item, snapshot => snapshot.Parked = false);
+        Track(item, snapshot => snapshot.Parked = snapshot.ParkingPending = false);
         item.IsHidden = false;
         item.IsMinimized = false;
         item.IsIconCollapsed = false;
@@ -876,7 +896,7 @@ internal sealed class WindowManager
         if (item.Original is { } s)
         {
             item.BackgroundEnabled = false;
-            await RestoreSnapshotAsync(s);
+            await RestoreSnapshotAsync(item, s);
             item.IsIconCollapsed = false;
             item.OpacityBeforeQuickToggle = null;
             item.Pinned = s.Topmost;
@@ -916,7 +936,7 @@ internal sealed class WindowManager
             if (_operations.TryGetValue(item, out var pending)) await pending;
             if (item.Original is not { } s) return;
             item.BackgroundEnabled = false;
-            await RestoreSnapshotAsync(s);
+            await RestoreSnapshotAsync(item, s);
             item.Original = null; item.NotifyState(); Journal();
         }
         catch (Exception e) { System.Diagnostics.Trace.TraceWarning("Exit recovery: {0}", e.Message); }

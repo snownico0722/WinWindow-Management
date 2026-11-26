@@ -327,6 +327,7 @@ internal static class SmokeTests
             Assert(Native.IsWindowVisible(stubborn.Hwnd) && !Native.IsIconic(stubborn.Hwnd) &&
                 !stubborn.IsHidden && !stubborn.IsParked, "hidden fallback can be restored");
             await manager.ReleaseAsync(stubborn);
+            await CheckLateCollapseRecoveryAsync(output, processes);
             await manager.SetOpacityAsync(item, 0);
             var recovered = new WindowManager(store);
             await recovered.RecoverPreviousSessionAsync();
@@ -1389,6 +1390,21 @@ internal static class SmokeTests
             !chosen.IsBusy && chosen.Opacity == beforeQuick &&
             Native.GetLayeredWindowAttributes(chosen.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(beforeQuick));
 
+        shell.ToggleQuickOpacity(chosen);
+        await WaitAsync("the temporary opacity is active before editing", () => !chosen.IsBusy && chosen.Opacity == 50);
+        shell.ShowShell();
+        var opacityRow = await FindRowAsync(shell, chosen);
+        var opacitySlider = (Slider)opacityRow.FindName("OpacitySlider");
+        Assert(opacitySlider.Focus(), "focus the slider before changing temporary opacity");
+        opacitySlider.Value = 65;
+        Assert(shell.DesiredOpacity(chosen) == 65 && chosen.Opacity == 50 &&
+            chosen.OpacityBeforeQuickToggle == beforeQuick, "queued manual opacity keeps the baseline until the HWND changes");
+        await shell.Manager.SetPinAsync(chosen, true);
+        Assert(opacityRule.Opacity != 50, "pinning during a queued manual edit cannot persist the temporary opacity");
+        await WaitAsync("manual opacity replaces the saved baseline", () =>
+            !chosen.IsBusy && chosen.Opacity == 65 && opacityRule.Opacity == 65 && chosen.OpacityBeforeQuickToggle is null);
+        await shell.Manager.SetPinAsync(chosen, false);
+
         await shell.ExecuteRowAsync(chosen, "collapseIcon");
         if (!chosen.IsIconCollapsed)
             Report("Collapse did not settle after the command. Workbench status: " + ((TextBlock)shell.FindName("StatusText")).Text);
@@ -1825,6 +1841,48 @@ internal static class SmokeTests
         await game.WaitForExitAsync();
         await manager.RefreshAsync();
         Assert(!store.ReadRecovery().Any(s => s.Identity.Hwnd == hwnd), "pending cleanup expires when the original game exits");
+    }
+
+    private static async Task CheckLateCollapseRecoveryAsync(string output, List<Process> processes)
+    {
+        string gate = @"Local\WinWindow.LateCollapse." + Guid.NewGuid().ToString("N");
+        using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".entered");
+        using var release = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".release");
+        var target = await FixtureAsync(output, false, stall: gate);
+        processes.Add(target.Process);
+        var store = ChildStore(output, false);
+        var manager = new WindowManager(store);
+        var item = manager.SelectTarget(target.Hwnd);
+        Assert(Native.PostMessage(target.Hwnd, App.StallFixtureMessage, 0, 0), "stall the HWND before posting collapse");
+        var watchdog = Task.Run(() => { if (!release.WaitOne(6_000)) release.Set(); });
+        try
+        {
+            await WaitAsync("the window thread is not processing messages", () => entered.WaitOne(0));
+            try
+            {
+                await manager.CollapseToIconAsync(item);
+                throw new Exception("A stalled target should not confirm collapse.");
+            }
+            catch (InvalidOperationException e) when (e.Message == UiText.Get("CollapseRejected")) { }
+            Assert(Native.IsShown(target.Hwnd) && !release.WaitOne(0), "the pending hide has not run yet");
+            Assert(await manager.ShutdownAsync() == 1 &&
+                store.ReadRecovery().Single() is { Parked: true, ParkingPending: true },
+                "exit keeps the recovery record for a hide that has not been observed");
+
+            release.Set();
+            await WaitAsync("the queued hide executes once the target responds", () => !Native.IsWindowVisible(target.Hwnd));
+            var recovered = new WindowManager(store);
+            await recovered.RecoverPreviousSessionAsync();
+            await WaitAsync("the saved recovery record brings back the late-hidden window", () =>
+                Native.IsShown(target.Hwnd) && store.ReadRecovery().Count == 0);
+        }
+        finally
+        {
+            release.Set();
+            await watchdog;
+            Stop(target.Process);
+            await target.Process.WaitForExitAsync();
+        }
     }
 
     private static async Task DesktopRegressionAsync(string output, List<Process> processes)
