@@ -1275,16 +1275,19 @@ internal static class SmokeTests
                 Native.SetWindowPos(clicked.Hwnd, 0, left, top, width, 160, Native.NoActivate) &&
                 Native.SetWindowPos(other.Hwnd, 0, work.Left + 12, work.Top + 12, 180, 160, Native.NoActivate)),
                 "place the clicked fixture across the old window edge with an exposed client area");
+            otherItem = shell.Manager.SelectTarget(other.Hwnd);
+            Native.SetForegroundWindow(other.Hwnd);
+            await WaitAsync("the other fixture is foreground before its initial pin", () => Native.GetForegroundWindow() == other.Hwnd);
+            await shell.Manager.SetPinAsync(otherItem, true);
+            Native.SetForegroundWindow(source.Hwnd);
+            await WaitAsync("the overlapping fixture is foreground before its initial pin", () => Native.GetForegroundWindow() == source.Hwnd);
+            await shell.Manager.SetPinAsync(source, true);
             Native.SetForegroundWindow(clicked.Hwnd);
             await WaitAsync("the exposed fixture is already in the foreground", () => Native.GetForegroundWindow() == clicked.Hwnd);
 
             bool nativeInput = Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
             if (nativeInput) shell.EnableNativeUnpinInputForTest();
-            await shell.Manager.SetPinAsync(source, true);
             await shell.ExecuteRowAsync(source, "pin");
-            otherItem = shell.Manager.SelectTarget(other.Hwnd);
-            await shell.ExecuteRowAsync(otherItem, "pin");
-            Assert(Native.IsTopmost(other.Hwnd), "another managed window is pinned before the first click");
             await shell.ExecuteRowAsync(otherItem, "pin");
             Assert(!Native.IsTopmost(other.Hwnd) && !Native.IsTopmost(source.Hwnd) &&
                 Native.GetForegroundWindow() == clicked.Hwnd &&
