@@ -1340,9 +1340,10 @@ internal static class Native
             Overlaps(oldBounds, foregroundBounds) && IsAbove(old, foreground);
     }
 
-    internal static bool RevealClickedWindowAfterUnpin(WindowIdentity oldWindow, nint clicked)
+    internal static bool RevealClickedWindowAfterUnpin(WindowIdentity oldWindow, WindowIdentity clickedWindow)
     {
-        if (GetForegroundWindow() != clicked || !CoversForegroundAfterUnpin(oldWindow, clicked)) return false;
+        nint clicked = clickedWindow.Hwnd;
+        if (GetForegroundWindow() != clicked || !Matches(clickedWindow) || !CoversForegroundAfterUnpin(oldWindow, clicked)) return false;
         nint after = GetWindow(oldWindow.Hwnd, 3);
         if (after == clicked) return false;
         if (after != 0 && IsTopmost(after)) after = 0;

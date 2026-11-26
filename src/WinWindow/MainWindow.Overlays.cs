@@ -350,7 +350,7 @@ public partial class MainWindow
             }
             if (_clicked != foreground) return;
             Dispose();
-            _ = RevealAsync(foreground);
+            if (Native.Identity(foreground) is { } clickedWindow) _ = RevealAsync(clickedWindow);
         }
 
         private nint OnMouse(int code, nint message, nint dataPointer)
@@ -374,11 +374,11 @@ public partial class MainWindow
             return NativeMethods.CallNextHookEx(_hook, code, message, dataPointer);
         }
 
-        private async Task RevealAsync(nint foreground)
+        private async Task RevealAsync(WindowIdentity clickedWindow)
         {
-            if (!await Task.Run(() => Native.RevealClickedWindowAfterUnpin(_oldWindow, foreground)) || _owner._quitting) return;
+            if (!await Task.Run(() => Native.RevealClickedWindowAfterUnpin(_oldWindow, clickedWindow)) || _owner._quitting) return;
             if (_owner._titleOverlays.TryGetValue(_oldWindow.Hwnd, out var oldBar)) oldBar.SyncLayer();
-            if (_owner._titleOverlays.TryGetValue(foreground, out var clickedBar)) clickedBar.SyncLayer();
+            if (_owner._titleOverlays.TryGetValue(clickedWindow.Hwnd, out var clickedBar)) clickedBar.SyncLayer();
         }
 
         public void Dispose()
