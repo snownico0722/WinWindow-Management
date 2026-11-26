@@ -24,6 +24,7 @@ internal static class Native
     internal const long Layered = 0x80000, Transparent = 0x20, TopmostStyle = 8, ToolWindow = 0x80, NoActivateStyle = 0x08000000L;
     internal const uint NoSize = 1, NoMove = 2, NoActivate = 0x10, AsyncPosition = 0x4000;
     private const uint NoZOrder = 4, NoOwnerZOrder = 0x0200, NoSendChanging = 0x0400;
+    internal const uint EventLocationChange = 0x800B;
     internal const int Hide = 0, Normal = 1, Minimized = 2, Maximized = 3, ShowNoActivate = 4, Restore = 9, ForceMinimize = 11;
     private static readonly ConcurrentDictionary<string, ImageSource> IconCache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -89,11 +90,11 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern nint SetWinEventHook(uint first, uint last, nint module, EventProc callback, uint process, uint thread, uint flags);
     [DllImport("user32.dll")] internal static extern bool UnhookWinEvent(nint hook);
 
-    internal static nint HookExternalWindowLocations(EventProc callback)
+    internal static nint HookExternalWindowEvents(uint first, uint last, EventProc callback)
     {
-        const uint locationChange = 0x800B, outOfContext = 0, skipOwnProcess = 2;
+        const uint outOfContext = 0, skipOwnProcess = 2;
         // 排除本进程，移动浮条时不会向同一钩子再发一次位置事件。
-        return SetWinEventHook(locationChange, locationChange, 0, callback, 0, 0, outOfContext | skipOwnProcess);
+        return SetWinEventHook(first, last, 0, callback, 0, 0, outOfContext | skipOwnProcess);
     }
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(nint hwnd, int attribute, out int value, int size);
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] private static extern int DwmGetWindowAttributeRect(nint hwnd, int attribute, out Rect rect, int size);
@@ -543,18 +544,37 @@ internal static class Native
         bool badge = target == 0;
         bool topmost = badge || IsTopmost(target);
         if (!SetOwnTopmost(hwnd, topmost)) return false;
-        bool inLayer = badge || GetWindow(hwnd, 2) == target;
-        if (inLayer && (bounds is not { } desired ||
-            (GetWindowRect(hwnd, out var current) && (current.Left, current.Top, current.Right, current.Bottom) ==
-            (desired.Left, desired.Top, desired.Right, desired.Bottom)))) return true;
+        bool inLayer = badge || HasTargetBelow(hwnd, target);
         nint after = inLayer ? 0 : GetWindow(target, 3);
         // 插在目标正上方，仍让挡住目标的窗口盖住按钮。跨过置顶层边界时用 HWND_TOP 保留现有层。
         if (after != 0 && IsTopmost(after) != topmost) after = 0;
         if (after == hwnd) inLayer = true;
         uint flags = NoActivate | NoOwnerZOrder | (inLayer ? NoZOrder : 0);
-        return bounds is { } rect
-            ? SetWindowPos(hwnd, after, rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, flags)
-            : SetWindowPos(hwnd, after, 0, 0, 0, 0, flags | NoMove | NoSize | NoSendChanging);
+        if (bounds is not { } rect)
+            return inLayer || SetWindowPos(hwnd, after, 0, 0, 0, 0, flags | NoMove | NoSize | NoSendChanging);
+
+        int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+        if (GetWindowRect(hwnd, out var current))
+        {
+            bool samePosition = rect.Left == current.Left && rect.Top == current.Top;
+            bool sameSize = width == current.Right - current.Left && height == current.Bottom - current.Top;
+            if (inLayer && samePosition && sameSize) return true;
+            if (samePosition) flags |= NoMove;
+            if (sameSize) flags |= NoSize | NoSendChanging;
+        }
+        return SetWindowPos(hwnd, after, rect.Left, rect.Top, width, height, flags);
+    }
+
+    private static bool HasTargetBelow(nint overlay, nint target)
+    {
+        // 不可见的辅助 HWND 不遮挡原窗，夹在中间时保留浮条现有层级。
+        for (nint next = GetWindow(overlay, 2); next != 0; next = GetWindow(next, 2))
+        {
+            if (next == target) return true;
+            if (IsWindowVisible(next) && !IsIconic(next) &&
+                (DwmGetWindowAttribute(next, 14, out int cloaked, 4) != 0 || cloaked == 0)) return false;
+        }
+        return false;
     }
 
     internal static void FitIconOverlayToWorkArea(nint hwnd)

@@ -12,6 +12,7 @@ using System.Windows.Media;
 using System.Windows.Shell;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using NeatWin.Windows;
 
 namespace WinWindow;
 
@@ -25,8 +26,8 @@ public partial class MainWindow
     private readonly HashSet<WindowItem> _collapsingIcons = new();
     private readonly DispatcherTimer _overlayTimer = new(DispatcherPriority.Background)
         { Interval = TimeSpan.FromMilliseconds(220) };
-    private Native.EventProc? _titleLocationCallback;
-    private nint _titleLocationHook;
+    private Native.EventProc? _titleWindowEventCallback;
+    private nint _titleLocationHook, _titleMoveSizeHook;
     private bool _pickerPreviewActive;
     private readonly DispatcherTimer _launchAvailabilityTimer = new(DispatcherPriority.Background)
         { Interval = TimeSpan.FromSeconds(1) };
@@ -155,6 +156,9 @@ public partial class MainWindow
 
     internal void PauseOverlayPollingForTest() => _overlayTimer.Stop();
 
+    internal void FinishTitleOverlayMoveForTest(WindowItem item) =>
+        FollowTargetWindow(_titleMoveSizeHook, NativeMethods.EventSystemMoveSizeEnd, item.Hwnd, 0, 0, 0, 0);
+
     internal bool HasCollapsedIconOverlay(WindowItem item) =>
         _collapsedOverlays.TryGetValue(item, out var overlay) && overlay.IsVisible;
 
@@ -171,26 +175,29 @@ public partial class MainWindow
         return Manager.RestoreParkingAsync(item, movedBadge: movedBadge);
     }
 
-    private void UpdateTitleLocationHook(bool enabled)
+    private void UpdateTitleWindowHooks(bool enabled)
     {
-        if (enabled == (_titleLocationCallback is not null)) return;
+        if (enabled == (_titleWindowEventCallback is not null)) return;
         if (enabled)
         {
-            _titleLocationCallback = FollowTargetLocation;
-            _titleLocationHook = Native.HookExternalWindowLocations(_titleLocationCallback);
+            _titleWindowEventCallback = FollowTargetWindow;
+            _titleLocationHook = Native.HookExternalWindowEvents(Native.EventLocationChange, Native.EventLocationChange, _titleWindowEventCallback);
+            _titleMoveSizeHook = Native.HookExternalWindowEvents(NativeMethods.EventSystemMoveSizeStart,
+                NativeMethods.EventSystemMoveSizeEnd, _titleWindowEventCallback);
             // 系统钩子不可用时退回原有频率，窗口移动仍可得到跟随。
             _overlayTimer.Interval = TimeSpan.FromMilliseconds(_titleLocationHook == 0 ? 45 : 220);
         }
         else
         {
             if (_titleLocationHook != 0) Native.UnhookWinEvent(_titleLocationHook);
-            _titleLocationHook = 0;
-            _titleLocationCallback = null;
+            if (_titleMoveSizeHook != 0) Native.UnhookWinEvent(_titleMoveSizeHook);
+            _titleLocationHook = _titleMoveSizeHook = 0;
+            _titleWindowEventCallback = null;
             _overlayTimer.Interval = TimeSpan.FromMilliseconds(220);
         }
     }
 
-    private void FollowTargetLocation(nint hook, uint evt, nint hwnd, int objectId, int childId, uint thread, uint time)
+    private void FollowTargetWindow(nint hook, uint evt, nint hwnd, int objectId, int childId, uint thread, uint time)
     {
         if (_quitting || !_ready || _picking || _pickerPreviewActive || objectId != 0 || childId != 0 ||
             !_titleOverlays.TryGetValue(hwnd, out var overlay)) return;
@@ -198,8 +205,9 @@ public partial class MainWindow
         if (!item.IsManaged || !item.IsAvailable || item.IsIconCollapsed || _collapsingIcons.Contains(item) ||
             item.ClickThrough || DesiredOpacity(item) == 0 || item.Identity is not { } identity ||
             Native.GetWindowThreadProcessId(hwnd, out uint pid) == 0 || pid != (uint)identity.ProcessId) return;
-        // 位置事件由注册钩子的 UI 线程接收，只更新命中的浮条。置顶和按键内容继续由常规同步处理。
+        // 移动期间只跟坐标。在进入和退出系统拖动时校正层级，松手不用等下一轮刷新。
         overlay.FollowPosition();
+        if (evt is NativeMethods.EventSystemMoveSizeStart or NativeMethods.EventSystemMoveSizeEnd) overlay.SyncLayer();
     }
 
     private void SyncManagedOverlays()
@@ -237,7 +245,7 @@ public partial class MainWindow
         if (activeItems.Count == 0)
         {
             _overlayTimer.Stop();
-            UpdateTitleLocationHook(false);
+            UpdateTitleWindowHooks(false);
             return;
         }
 
@@ -277,14 +285,14 @@ public partial class MainWindow
             titleOverlay.Update(quickOpacity, currentOpacity);
         }
 
-        UpdateTitleLocationHook(_titleOverlays.Count != 0);
+        UpdateTitleWindowHooks(_titleOverlays.Count != 0);
         if (!_overlayTimer.IsEnabled) _overlayTimer.Start();
     }
 
     private void DisposeManagedOverlays()
     {
         _overlayTimer.Stop();
-        UpdateTitleLocationHook(false);
+        UpdateTitleWindowHooks(false);
         _launchAvailabilityTimer.Stop();
         foreach (var bar in _titleOverlays.Values) bar.Dispose();
         _titleOverlays.Clear();
@@ -298,13 +306,15 @@ public partial class MainWindow
         private const int WidthDip = 78;
         private const int HeightDip = 26;
         private const int DragThresholdDip = 4;
+        private static readonly Geometry PinnedGlyph = IconGeometry(PinActiveGeometry);
+        private static readonly Geometry UnpinnedGlyph = IconGeometry(PinInactiveGeometry);
+        private static readonly Geometry OpacityGlyph = IconGeometry(QuickOpacityGeometry);
 
         private readonly MainWindow _owner;
         private readonly WindowItem _item;
         private readonly Window _window;
         private readonly Image _iconImage;
         private readonly TextBlock _initialText;
-        private readonly Button _collapseButton;
         private readonly ToggleButton _pinButton;
         private readonly Path _pinPath;
         private readonly ToggleButton _opacityButton;
@@ -345,15 +355,16 @@ public partial class MainWindow
             iconHost.Children.Add(_iconImage);
             iconHost.Children.Add(_initialText);
 
-            _collapseButton = new Button
+            var collapseButton = new Button
             {
                 Width = 22,
                 Height = 20,
                 Margin = new Thickness(0, 0, 2, 0),
                 Content = iconHost
             };
-            _collapseButton.SetResourceReference(FrameworkElement.StyleProperty, "RowIconButton");
-            _collapseButton.Click += async (_, _) =>
+            collapseButton.SetResourceReference(FrameworkElement.StyleProperty, "RowIconButton");
+            collapseButton.SetResourceReference(FrameworkElement.ToolTipProperty, "Text.CollapseToIcon");
+            collapseButton.Click += async (_, _) =>
             {
                 if (!_syncing && !_disposed) await _owner.ExecuteRowAsync(_item, "collapseIcon");
             };
@@ -387,7 +398,7 @@ public partial class MainWindow
 
             var opacityPath = new Path
             {
-                Data = Geometry.Parse(QuickOpacityGeometry),
+                Data = OpacityGlyph,
                 StrokeThickness = 1.4,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
@@ -412,7 +423,7 @@ public partial class MainWindow
             };
 
             var barPanel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-            barPanel.Children.Add(_collapseButton);
+            barPanel.Children.Add(collapseButton);
             barPanel.Children.Add(_pinButton);
             barPanel.Children.Add(_opacityButton);
 
@@ -579,28 +590,48 @@ public partial class MainWindow
             return 0;
         }
 
+        private static Geometry IconGeometry(string path)
+        {
+            var geometry = Geometry.Parse(path);
+            geometry.Freeze();
+            return geometry;
+        }
+
         private void SyncContent(int quickOpacity, int currentOpacity)
         {
             _syncing = true;
             try
             {
                 var icon = _item.Icon;
-                _iconImage.Source = icon;
-                _iconImage.Visibility = icon is not null ? Visibility.Visible : Visibility.Collapsed;
-                _initialText.Text = _item.Initial;
-                _initialText.Visibility = icon is null ? Visibility.Visible : Visibility.Collapsed;
-                _collapseButton.ToolTip = UiText.Get("CollapseToIcon");
+                if (_iconImage.Source != icon) _iconImage.Source = icon;
+                Visibility iconVisibility = icon is not null ? Visibility.Visible : Visibility.Collapsed;
+                if (_iconImage.Visibility != iconVisibility) _iconImage.Visibility = iconVisibility;
+                Visibility initialVisibility = icon is null ? Visibility.Visible : Visibility.Collapsed;
+                if (_initialText.Visibility != initialVisibility) _initialText.Visibility = initialVisibility;
+                if (icon is null)
+                {
+                    string initial = _item.Initial;
+                    if (_initialText.Text != initial) _initialText.Text = initial;
+                }
 
-                _pinButton.IsChecked = _item.Pinned;
-                _pinButton.ToolTip = _item.Pinned ? UiText.Get("UnpinKeepListed") : UiText.Get("PinWindow");
-                _pinPath.Data = Geometry.Parse(_item.Pinned ? PinActiveGeometry : PinInactiveGeometry);
+                bool pinned = _item.Pinned;
+                if (_pinButton.IsChecked != pinned) _pinButton.IsChecked = pinned;
+                string pinAction = UiText.Get(pinned ? "UnpinKeepListed" : "PinWindow");
+                if (!Equals(_pinButton.ToolTip, pinAction)) _pinButton.ToolTip = pinAction;
+                // 后台同步与松手后的定位共用同一份图形，状态不变时无需重绘图钉。
+                var pinGlyph = pinned ? PinnedGlyph : UnpinnedGlyph;
+                if (_pinPath.Data != pinGlyph) _pinPath.Data = pinGlyph;
 
                 bool isQuickActive = currentOpacity == quickOpacity;
-                _opacityButton.IsChecked = isQuickActive;
-                _opacityButton.IsEnabled = !_item.IsBusy;
+                if (_opacityButton.IsChecked != isQuickActive) _opacityButton.IsChecked = isQuickActive;
+                bool canSetOpacity = !_item.IsBusy;
+                if (_opacityButton.IsEnabled != canSetOpacity) _opacityButton.IsEnabled = canSetOpacity;
                 string opacityAction = UiText.Get(isQuickActive ? "RestoreQuickOpacity" : "ToggleQuickOpacity");
-                _opacityButton.ToolTip = opacityAction;
-                System.Windows.Automation.AutomationProperties.SetName(_opacityButton, opacityAction);
+                if (!Equals(_opacityButton.ToolTip, opacityAction))
+                {
+                    _opacityButton.ToolTip = opacityAction;
+                    System.Windows.Automation.AutomationProperties.SetName(_opacityButton, opacityAction);
+                }
             }
             finally { _syncing = false; }
         }

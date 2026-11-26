@@ -1276,6 +1276,11 @@ internal static class SmokeTests
         var collapseButton = toolbarButtons.OfType<Button>().Single();
         var pinButton = (ToggleButton)toolbarButtons[1];
         var opacityButton = (ToggleButton)toolbarButtons[2];
+        var pinPath = (System.Windows.Shapes.Path)((Viewbox)pinButton.Content).Child;
+        var pinGlyph = pinPath.Data;
+        chosen.Changed(nameof(chosen.Opacity));
+        Assert(pinGlyph.IsFrozen && ReferenceEquals(pinGlyph, pinPath.Data),
+            "a refresh with unchanged button state reuses the frozen pin geometry");
         Assert(opacityButton.Content is Viewbox { Child: System.Windows.Shapes.Path } &&
             opacityButton.ToolTip is string tip && !tip.Contains('%'), "the toolbar opacity button displays only its icon");
         bool ToolbarConsumesRelease(int horizontalDelta, bool shouldDrag)
@@ -1376,6 +1381,30 @@ internal static class SmokeTests
         await WaitAsync("a real window location event moves its toolbar with the saved offset while polling is paused", () =>
             Native.GetWindowRect(barHwnd, out var bar) &&
             bar.Left != beforeFollow.Left && bar.Top != beforeFollow.Top && ToolbarMatchesTrack(72));
+        if (!Native.GetWindowRect(barHwnd, out var settledBounds))
+            throw new InvalidOperationException("Cannot read the settled toolbar bounds.");
+        const uint stackOnly = Native.NoMove | Native.NoSize | Native.NoActivate;
+        Assert(Native.PositionWindowControl(barHwnd, chosen.Hwnd, settledBounds), "settle the toolbar layer before inserting a helper");
+        using (var helper = new HwndSource(new HwndSourceParameters("Hidden toolbar fixture", 1, 1)
+        {
+            WindowStyle = unchecked((int)0x80000000)
+        }))
+        {
+            Assert(!Native.IsWindowVisible(helper.Handle) &&
+                Native.SetWindowPos(helper.Handle, barHwnd, 0, 0, 0, 0, stackOnly) &&
+                NeatWin.Windows.NativeMethods.GetWindow(barHwnd, 2) == helper.Handle && Native.IsAbove(helper.Handle, chosen.Hwnd),
+                "an invisible helper sits between the toolbar and the target");
+            Assert(Native.PositionWindowControl(barHwnd, chosen.Hwnd, settledBounds) &&
+                NeatWin.Windows.NativeMethods.GetWindow(barHwnd, 2) == helper.Handle,
+                "the invisible helper does not cause an unnecessary toolbar restack");
+        }
+        Assert(Native.SetWindowPos(barHwnd, chosen.Hwnd, 0, 0, 0, 0, stackOnly) && Native.IsAbove(chosen.Hwnd, barHwnd),
+            "the target is temporarily above the toolbar at the end of a move");
+        var settledGlyph = pinPath.Data;
+        shell.FinishTitleOverlayMoveForTest(chosen);
+        Assert(Native.IsAbove(barHwnd, chosen.Hwnd) && Native.GetWindowRect(barHwnd, out var endBounds) &&
+            endBounds.Equals(settledBounds) && ReferenceEquals(settledGlyph, pinPath.Data),
+            "move end repairs the toolbar layer without polling, changing geometry or redrawing its pin");
         Native.ShowWindowAsync(chosen.Hwnd, Native.Maximized);
         await WaitAsync("fixture returns to maximized before collapse",
             () => Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized);
