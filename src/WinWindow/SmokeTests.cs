@@ -1845,32 +1845,36 @@ internal static class SmokeTests
 
     private static async Task CheckLateCollapseRecoveryAsync(string output, List<Process> processes)
     {
-        string gate = @"Local\WinWindow.LateCollapse." + Guid.NewGuid().ToString("N");
-        using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".entered");
-        using var release = new EventWaitHandle(false, EventResetMode.ManualReset, gate + ".release");
-        var target = await FixtureAsync(output, false, stall: gate);
+        var target = await FixtureAsync(output, false);
         processes.Add(target.Process);
         var store = ChildStore(output, false);
         var manager = new WindowManager(store);
         var item = manager.SelectTarget(target.Hwnd);
-        Assert(Native.PostMessage(target.Hwnd, App.StallFixtureMessage, 0, 0), "stall the HWND before posting collapse");
-        var watchdog = Task.Run(() => { if (!release.WaitOne(6_000)) release.Set(); });
         try
         {
-            await WaitAsync("the window thread is not processing messages", () => entered.WaitOne(0));
+            // 延迟投递时机，避免把 Windows 处理挂起窗口的速度当成测试前提。
+            nint pendingHide = 0;
+            bool timedOut = false;
             try
             {
-                await manager.CollapseToIconAsync(item);
-                throw new Exception("A stalled target should not confirm collapse.");
+                await manager.CollapseToIconAsync(item, hwnd =>
+                {
+                    pendingHide = hwnd;
+                    return true;
+                });
             }
-            catch (InvalidOperationException e) when (e.Message == UiText.Get("CollapseRejected")) { }
-            Assert(Native.IsShown(target.Hwnd) && !release.WaitOne(0), "the pending hide has not run yet");
+            catch (InvalidOperationException e) when (e.Message == UiText.Get("CollapseRejected"))
+            {
+                timedOut = true;
+            }
+            Assert(timedOut && pendingHide == target.Hwnd && Native.IsShown(target.Hwnd),
+                "the pending hide times out before reaching the HWND");
             Assert(await manager.ShutdownAsync() == 1 &&
                 store.ReadRecovery().Single() is { Parked: true, ParkingPending: true },
                 "exit keeps the recovery record for a hide that has not been observed");
 
-            release.Set();
-            await WaitAsync("the queued hide executes once the target responds", () => !Native.IsWindowVisible(target.Hwnd));
+            Assert(Native.ShowWindowAsync(pendingHide, Native.Hide), "deliver the delayed hide to the real HWND");
+            await WaitAsync("the delayed request hides the target after shutdown", () => !Native.IsWindowVisible(target.Hwnd));
             var recovered = new WindowManager(store);
             await recovered.RecoverPreviousSessionAsync();
             await WaitAsync("the saved recovery record brings back the late-hidden window", () =>
@@ -1878,8 +1882,6 @@ internal static class SmokeTests
         }
         finally
         {
-            release.Set();
-            await watchdog;
             Stop(target.Process);
             await target.Process.WaitForExitAsync();
         }
