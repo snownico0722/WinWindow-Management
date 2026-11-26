@@ -41,14 +41,16 @@ internal static class SmokeTests
             await Task.Delay(25);
         }
     }
-    private static Process Start(params string[] args)
+    private static Process Start(params string[] args) => StartExecutable(
+        Environment.ProcessPath ?? throw new InvalidOperationException("无法确定当前可执行文件路径。"), args);
+
+    private static Process StartExecutable(string executable, string[] args)
     {
-        string executable = Environment.ProcessPath ?? throw new InvalidOperationException("无法确定当前可执行文件路径。");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         foreach (string arg in args) start.ArgumentList.Add(arg);
         return Process.Start(start) ?? throw new InvalidOperationException("无法启动测试进程。");
     }
-    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject, string? stall = null, bool activity = false, bool twins = false)
+    private static async Task<(Process Process, nint Hwnd)> FixtureAsync(string directory, bool reject, string? stall = null, bool activity = false, bool twins = false, string? executable = null)
     {
         string file = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".hwnd");
         var args = new List<string> { "--fixture", file };
@@ -58,7 +60,7 @@ internal static class SmokeTests
         if (stall is not null) { args.Add("stall"); args.Add(stall); }
         args.Add(App.FixtureControllerArgument);
         args.Add(Environment.ProcessId.ToString());
-        var process = Start(args.ToArray());
+        var process = executable is null ? Start(args.ToArray()) : StartExecutable(executable, args.ToArray());
         for (int i = 0; i < 100; i++)
         {
             if (File.Exists(file) && long.TryParse(await File.ReadAllTextAsync(file), out long hwnd)) return (process, (nint)hwnd);
@@ -544,6 +546,17 @@ internal static class SmokeTests
             administratorStartup.IsChecked = false;
             administratorStartup.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             Assert(!StateStore.RequestAdministratorOnLaunch(store.DirectoryPath), "disabling administrator startup is persisted for the next launch");
+            var quickOpacityBox = (TextBox)shell.FindName("QuickOpacityBox");
+            Assert(store.Preferences.QuickOpacity == 50 && quickOpacityBox.Text == "50", "quick opacity defaults to 50% in General settings");
+            quickOpacityBox.Text = "45";
+            quickOpacityBox.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, Environment.TickCount, quickOpacityBox, administratorStartup)
+                { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
+            store.SavePreferences();
+            Assert(new StateStore(store.DirectoryPath).Preferences.QuickOpacity == 45, "custom quick opacity preset persists across restarts");
+            quickOpacityBox.Text = "50";
+            quickOpacityBox.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, Environment.TickCount, quickOpacityBox, administratorStartup)
+                { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
+            store.SavePreferences();
             OpenSection("LayoutSection");
             var layoutPage = (ScrollViewer)shell.FindName("LayoutSection");
             await WaitAsync("integrated layout settings loaded", () => layoutPage.IsVisible && layoutPage.IsEnabled && ((CheckBox)shell.FindName("VerticalFill")).IsChecked.HasValue);
@@ -721,7 +734,13 @@ internal static class SmokeTests
             await Task.Delay(250);
             Assert(Native.GetForegroundWindow() == normal.Hwnd && Native.IsAbove(normal.Hwnd, own), "losing focus neither reactivates nor covers the new foreground app");
             store.Preferences.ManualTopmost = true; shell.ApplyOwnPolicy();
-            Assert(Native.IsTopmost(own) && Native.GetForegroundWindow() == normal.Hwnd, "manual topmost does not steal keyboard focus");
+            await WaitAsync("manual pin sets workbench topmost without activating it", () =>
+            {
+                nint foreground = Native.GetForegroundWindow();
+                if (foreground != normal.Hwnd)
+                    throw new InvalidOperationException($"Manual pin changed foreground from 0x{normal.Hwnd:X} to 0x{foreground:X}.");
+                return Native.IsTopmost(own);
+            }, 700);
             store.Preferences.ManualTopmost = false; shell.ApplyOwnPolicy();
             shell.WindowState = WindowState.Minimized; await Task.Delay(150);
             Assert(Native.IsIconic(own) && !Native.IsTopmost(own), "minimized workbench is not raised by policy");
@@ -730,6 +749,9 @@ internal static class SmokeTests
             Assert(Native.IsWindowVisible(own), "hidden workbench can be explicitly shown");
             store.Preferences.PinWhenFocused = false; shell.ShowShell();
             Assert(!Native.IsTopmost(own), "wake raise is cleaned up immediately with focus policy off");
+            // 这些用例会启动和关闭其他进程，放在工作台焦点回归之后。
+            await CheckTitleBarOverlayAndLaunchAsync(shell, chosen, output, processes);
+            await CheckLaunchButtonAsync(shell, store, output);
             shell.Cleanup(); shell.Close(); shell = null;
             await manager.RestoreAllAsync(); manager = null;
             foreach (var p in processes) { Stop(p); await p.WaitForExitAsync(); }
@@ -1199,13 +1221,344 @@ internal static class SmokeTests
         await WaitAsync("restored hover preview closes on leave", () => !shell.IsHoverPreviewVisible);
     }
 
+    private static async Task CheckLaunchButtonAsync(MainWindow shell, StateStore store, string output)
+    {
+        string name = "wwl" + Guid.NewGuid().ToString("N")[..8];
+        string path = Path.Combine(output, name + ".exe");
+        File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), path);
+        var rule = new WindowRule { Title = "Launch button fixture", ProcessPath = path };
+        store.Preferences.Rules.Add(rule);
+        try
+        {
+            await shell.Manager.RefreshAsync();
+            var pending = shell.Manager.Items.Single(item => item.RuleId == rule.Id);
+            await WaitAsync("the saved executable has a launch button", () => pending.CanLaunch);
+            var row = await FindRowAsync(shell, pending);
+            var launch = (Button)row.FindName("LaunchButton");
+            Assert(launch.IsVisible, "the play button occupies the waiting card's avatar slot");
+            launch.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await WaitAsync("the play button actually starts the saved executable", () => !Native.CanLaunchApplication(path), 5000);
+            Assert(!pending.CanLaunch && !launch.IsVisible, "a running executable cannot be launched again from the same card");
+        }
+        finally
+        {
+            foreach (var process in Process.GetProcessesByName(name))
+            {
+                using (process)
+                {
+                    Stop(process);
+                    await process.WaitForExitAsync();
+                }
+            }
+            store.Preferences.Rules.Remove(rule);
+            await shell.Manager.RefreshAsync();
+            File.Delete(path);
+        }
+    }
+
+    private static async Task CheckTitleBarOverlayAndLaunchAsync(MainWindow shell, WindowItem chosen, string output, List<Process> processes)
+    {
+        if (Native.IsTopmost(chosen.Hwnd)) await shell.Manager.SetPinAsync(chosen, false, updateRule: false);
+        await shell.Manager.SetOpacityAsync(chosen, 80, updateRule: false);
+        Native.ShowWindowAsync(chosen.Hwnd, Native.Maximized);
+        await WaitAsync("fixture is maximized before collapsing", () => Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized);
+        Native.SetForegroundWindow(chosen.Hwnd);
+        await WaitAsync("managed window shows its top-left 3-button overlay", () => shell.HasTitleOverlay(chosen), 2500);
+        nint barHwnd = shell.GetTitleOverlayHandle(chosen);
+        Assert(barHwnd != 0 && Native.IsWindowVisible(barHwnd) &&
+            (Native.Style(barHwnd) & (Native.ToolWindow | Native.NoActivateStyle | Native.Transparent)) == (Native.ToolWindow | Native.NoActivateStyle) &&
+            Native.IsTopmost(barHwnd) == Native.IsTopmost(chosen.Hwnd),
+            "title-bar overlay is interactive, tool-window scoped, and non-activating");
+
+        var toolbar = (Border)Application.Current.Windows.Cast<Window>()
+            .Single(window => new WindowInteropHelper(window).Handle == barHwnd).Content;
+        var toolbarButtons = ((Panel)toolbar.Child).Children;
+        var collapseButton = toolbarButtons.OfType<Button>().Single();
+        var opacityButton = toolbarButtons.OfType<ToggleButton>().Last();
+        Assert(opacityButton.Content is Viewbox { Child: System.Windows.Shapes.Path } &&
+            opacityButton.ToolTip is string tip && !tip.Contains('%'), "the toolbar opacity button displays only its icon");
+        bool ToolbarConsumesRelease(int horizontalDelta, bool shouldDrag)
+        {
+            int timestamp = Environment.TickCount;
+            collapseButton.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, timestamp, MouseButton.Left)
+                { RoutedEvent = Mouse.PreviewMouseDownEvent });
+            Assert(shell.MovePressedTitleOverlayForTest(chosen, horizontalDelta) == shouldDrag && toolbar.Cursor == Cursors.Arrow,
+                "the toolbar applies a horizontal threshold and keeps the normal pointer");
+            var released = new MouseButtonEventArgs(Mouse.PrimaryDevice, timestamp + 15, MouseButton.Left)
+                { RoutedEvent = Mouse.PreviewMouseUpEvent };
+            collapseButton.RaiseEvent(released);
+            return released.Handled;
+        }
+        Assert(!ToolbarConsumesRelease(1, false) && ToolbarConsumesRelease(18, true),
+            "a click with slight movement reaches the button and a quick horizontal drag consumes its release");
+        shell.MoveTitleOverlayForTest(chosen, int.MinValue);
+
+        if (!Native.GetWindowRect(barHwnd, out var originalBar))
+            throw new InvalidOperationException("Cannot read the title toolbar bounds.");
+        nint foreground = Native.GetForegroundWindow();
+        Assert(shell.MoveTitleOverlayForTest(chosen, 72) &&
+            Native.GetWindowRect(barHwnd, out var movedBar) && movedBar.Left == originalBar.Left + 72 &&
+            movedBar.Top == originalBar.Top && Native.GetForegroundWindow() == foreground,
+            "dragging the toolbar moves only X and keeps foreground focus");
+        await Task.Delay(135);
+        Assert(Native.GetWindowRect(barHwnd, out var settledBar) &&
+            settledBar.Left == originalBar.Left + 72 && settledBar.Top == originalBar.Top,
+            "the toolbar keeps its horizontal offset when following the target");
+        Assert(shell.MoveTitleOverlayForTest(chosen, int.MaxValue) &&
+            Native.GetWindowRect(barHwnd, out var rightBar) && rightBar.Left > settledBar.Left &&
+            Native.TryGetFrameBounds(chosen.Hwnd, out var targetFrame) &&
+            rightBar.Right <= targetFrame.Right - (int)Math.Round(72 * Native.WindowDpi(chosen.Hwnd) / 96.0) &&
+            shell.MoveTitleOverlayForTest(chosen, int.MinValue) &&
+            Native.GetWindowRect(barHwnd, out var leftBar) && leftBar.Left == originalBar.Left && leftBar.Top == originalBar.Top,
+            "toolbar dragging clamps both ends and leaves room for the window buttons");
+
+        // 制造一次前台窗口已切换但浮条还停在旧层级的状态，直接走桌面事件的处理入口。
+        var cover = new Window { Width = 250, Height = 120, ShowInTaskbar = false };
+        try
+        {
+            cover.Show();
+            nint coverHwnd = new WindowInteropHelper(cover).Handle;
+            Assert(Native.SetWindowPos(coverHwnd, 0, originalBar.Left, originalBar.Top, 240, 100, Native.NoActivate),
+                "place a normal foreground window over the toolbar");
+            cover.Activate();
+            await WaitAsync("cover window takes foreground", () => Native.GetForegroundWindow() == coverHwnd);
+            shell.PauseOverlayPollingForTest();
+            Assert(Native.SetWindowPos(barHwnd, 0, 0, 0, 0, 0, Native.NoMove | Native.NoSize | Native.NoActivate) &&
+                Native.IsAbove(barHwnd, coverHwnd), "leave the toolbar temporarily above the covering window");
+            shell.OnDesktopWindowsChanged(foreground: true);
+            Assert(Native.IsAbove(coverHwnd, barHwnd) && Native.IsAbove(barHwnd, chosen.Hwnd) &&
+                Native.GetForegroundWindow() == coverHwnd &&
+                Native.GetWindowRect(barHwnd, out var synced) && Native.NearFrame(synced, originalBar),
+                "foreground changes correct only the toolbar Z order before overlay polling resumes");
+        }
+        finally { cover.Close(); }
+
+        Native.ShowWindowAsync(chosen.Hwnd, Native.Restore);
+        await WaitAsync("fixture returns to a movable window",
+            () => Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Normal);
+        var screen = new Native.MonitorInfo { Size = System.Runtime.InteropServices.Marshal.SizeOf<Native.MonitorInfo>() };
+        Assert(Native.GetMonitorInfo(Native.MonitorFromWindow(chosen.Hwnd, 2), ref screen), "read the fixture work area");
+        const uint noZOrder = 4;
+        int x = screen.Work.Left + 40, y = screen.Work.Top + 60;
+        int width = (screen.Work.Right - screen.Work.Left) * 2 / 3;
+        int height = (screen.Work.Bottom - screen.Work.Top) / 2;
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
+            "position the restored fixture within the work area");
+        bool ToolbarMatchesTrack(int offset) => Native.GetWindowRect(barHwnd, out var bar) &&
+            Native.TryGetTitleBarOverlayTrack(chosen.Hwnd, bar.Right - bar.Left, bar.Bottom - bar.Top,
+                Native.WindowDpi(chosen.Hwnd) / 96.0, out var track) &&
+            bar.Left == track.Left + offset && bar.Top == track.Top;
+        await WaitAsync("toolbar reaches the restored fixture before dragging", () => ToolbarMatchesTrack(0));
+        Assert(shell.MoveTitleOverlayForTest(chosen, 72), "set a horizontal offset on the restored fixture");
+        Assert(Native.GetWindowRect(barHwnd, out var beforeFollow), "read the toolbar position before moving the fixture");
+        shell.PauseOverlayPollingForTest();
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x + 28, y + 16, width, height, Native.NoActivate | noZOrder)),
+            "move the real target window without activating it");
+        await WaitAsync("a real window location event moves its toolbar with the saved offset while polling is paused", () =>
+            Native.GetWindowRect(barHwnd, out var bar) &&
+            bar.Left != beforeFollow.Left && bar.Top != beforeFollow.Top && ToolbarMatchesTrack(72));
+        Native.ShowWindowAsync(chosen.Hwnd, Native.Maximized);
+        await WaitAsync("fixture returns to maximized before collapse",
+            () => Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized);
+
+        int beforeQuick = shell.DesiredOpacity(chosen);
+        shell.ToggleQuickOpacity(chosen);
+        await WaitAsync("title-bar opacity button applies 50% preset", () =>
+            !chosen.IsBusy && chosen.Opacity == 50 &&
+            Native.GetLayeredWindowAttributes(chosen.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(50));
+        shell.ToggleQuickOpacity(chosen);
+        // 原生透明度先于 UI 操作结束生效。等按钮恢复可操作后再点击收起。
+        await WaitAsync("title-bar opacity button restores previous opacity", () =>
+            !chosen.IsBusy && chosen.Opacity == beforeQuick &&
+            Native.GetLayeredWindowAttributes(chosen.Hwnd, out _, out byte a, out _) && a == Native.ToAlpha(beforeQuick));
+
+        await shell.ExecuteRowAsync(chosen, "collapseIcon");
+        if (!chosen.IsIconCollapsed)
+            Report("Collapse did not settle after the command. Workbench status: " + ((TextBlock)shell.FindName("StatusText")).Text);
+        await WaitAsync("ico button parks target and raises enlarged pinned icon overlay", () =>
+            chosen.IsIconCollapsed && !Native.IsWindowVisible(chosen.Hwnd) &&
+            !shell.HasTitleOverlay(chosen) && shell.HasCollapsedIconOverlay(chosen), 3000);
+        nint iconHwnd = shell.GetCollapsedIconOverlayHandle(chosen);
+        Assert(iconHwnd != 0 && Native.IsTopmost(iconHwnd) && (Native.Style(iconHwnd) & Native.Layered) == 0,
+            "collapsed icon overlay stays topmost as a non-layered window");
+        Assert(Native.GetWindowRect(iconHwnd, out var borderBounds), "read the rounded recovery icon bounds");
+        int iconWidth = borderBounds.Right - borderBounds.Left, iconHeight = borderBounds.Bottom - borderBounds.Top;
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+            Assert(Native.UsesSystemOverlayCorners(iconHwnd), "Windows 11 recovery icon requests DWM rounded corners");
+        // 独立 HWND 验证旧系统的区域回退。应用区域会禁用 DWM 圆角，因此在单独窗口上测试。
+        var fallbackIcon = new Window { WindowStyle = WindowStyle.None, Width = 50, Height = 50, ShowInTaskbar = false };
+        try
+        {
+            nint fallbackHandle = new WindowInteropHelper(fallbackIcon).EnsureHandle();
+            int diameter = (int)Math.Round(16 * Native.WindowDpi(iconHwnd) / 96.0);
+            Assert(Native.RoundOverlayRegion(fallbackHandle, iconWidth, iconHeight, diameter) &&
+                Native.GetOverlayRegionEdgesForTest(fallbackHandle, iconWidth, iconHeight) == (true, true),
+                "GDI fallback keeps the rightmost and bottommost straight-edge pixels");
+        }
+        finally { fallbackIcon.Close(); }
+
+        var second = await FixtureAsync(output, false);
+        processes.Add(second.Process);
+        await shell.AddTargetAsync(second.Hwnd, pin: false);
+        var peer = shell.Manager.Items.Single(row => row.Hwnd == second.Hwnd);
+        Native.ShowWindowAsync(peer.Hwnd, Native.Maximized);
+        await WaitAsync("second fixture is maximized on the same screen", () => Native.GetPlacement(peer.Hwnd).ShowCmd == Native.Maximized);
+        await shell.ExecuteRowAsync(peer, "collapseIcon");
+        Assert(shell.HasCollapsedIconOverlay(peer) &&
+            Native.GetWindowRect(iconHwnd, out var firstBadge) &&
+            Native.GetWindowRect(shell.GetCollapsedIconOverlayHandle(peer), out var secondBadge) &&
+            !Native.Overlaps(firstBadge, secondBadge), "two maximized windows get separate visible recovery icons");
+        await shell.Manager.RemoveAsync(peer);
+
+        await shell.ExecuteRowAsync(chosen, "expandIcon");
+        await WaitAsync("clicking collapsed icon restores the maximized target window", () =>
+            !chosen.IsIconCollapsed && !shell.HasCollapsedIconOverlay(chosen) &&
+            Native.IsWindowVisible(chosen.Hwnd) && Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized, 3000);
+
+        Native.ShowWindowAsync(chosen.Hwnd, Native.Restore);
+        await WaitAsync("the fixture returns to its normal state", () => Native.IsRestoredWindow(chosen.Hwnd, false));
+        // 显示状态和 DWM 边界可能先后更新。先放到已知位置，再等可见边框离开最大化区域。
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
+            "place the restored fixture at the baseline position");
+        Native.Rect originalFrame = default;
+        await WaitAsync("the normal fixture has settled at the baseline before collapse", () =>
+            Native.TryGetFrameBounds(chosen.Hwnd, out originalFrame) &&
+            Math.Abs(originalFrame.Left - x) < 24 && Math.Abs(originalFrame.Top - y) < 24 &&
+            Math.Abs(originalFrame.Right - (x + width)) < 24 && Math.Abs(originalFrame.Bottom - (y + height)) < 24);
+        await shell.ExecuteRowAsync(chosen, "collapseIcon");
+        await WaitAsync("the normal fixture collapses", () => chosen.IsIconCollapsed && shell.HasCollapsedIconOverlay(chosen));
+        await shell.ExecuteRowAsync(chosen, "expandIcon");
+        await WaitAsync("an unmoved icon restores the original normal window geometry", () => !chosen.IsIconCollapsed &&
+            Native.TryGetFrameBounds(chosen.Hwnd, out var restored) && Native.NearFrame(restored, originalFrame));
+
+        // 用虚拟桌面的最左边界给半离屏用例留出确定没有显示器的区域。
+        int desktopLeft = Native.VirtualDesktopLeft();
+        int clippedX = desktopLeft - width / 3;
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, clippedX, y, width, height, Native.NoActivate | noZOrder)),
+            "place the fixture partly outside the desktop before collapse");
+        await WaitAsync("part of the original frame is outside all displays", () =>
+            Native.TryGetFrameBounds(chosen.Hwnd, out var clipped) && clipped.Left < desktopLeft);
+        await shell.ExecuteRowAsync(chosen, "collapseIcon");
+        await WaitAsync("the partly off-screen fixture collapses", () => chosen.IsIconCollapsed);
+        await shell.ExecuteRowAsync(chosen, "expandIcon");
+        await WaitAsync("an unmoved icon brings an off-screen window fully back onto the desktop", () =>
+            !chosen.IsIconCollapsed && Native.TryGetFrameBounds(chosen.Hwnd, out var recovered) && Native.IsOnDesktop(recovered));
+
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
+            "return the fixture to the original display before dragging its icon");
+        await WaitAsync("the fixture has returned to the original display position", () =>
+            Native.TryGetFrameBounds(chosen.Hwnd, out var positioned) && Native.NearFrame(positioned, originalFrame));
+        await shell.ExecuteRowAsync(chosen, "collapseIcon");
+        await WaitAsync("the normal fixture collapses again", () => chosen.IsIconCollapsed && shell.HasCollapsedIconOverlay(chosen));
+        Assert(shell.MoveCollapsedIconForTest(chosen, screen.Work.Right - 44, screen.Work.Bottom - 44) &&
+            Native.GetWindowRect(shell.GetCollapsedIconOverlayHandle(chosen), out _), "the recovery icon can be dropped at the far edge");
+        if (!Native.GetWindowRect(shell.GetCollapsedIconOverlayHandle(chosen), out var badge))
+            throw new InvalidOperationException("Cannot read the dragged recovery icon bounds.");
+        var firstShownBounds = new TaskCompletionSource<Native.Rect>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Native.EventProc onShow = (_, _, hwnd, objectId, childId, _, _) =>
+        {
+            if (hwnd == chosen.Hwnd && objectId == 0 && childId == 0 && Native.GetWindowRect(hwnd, out var bounds))
+                firstShownBounds.TrySetResult(bounds);
+        };
+        nint showHook = Native.SetWinEventHook(0x8002, 0x8002, 0, onShow, (uint)chosen.Identity!.ProcessId, 0, 0);
+        Assert(showHook != 0, "register the target window show hook");
+        try
+        {
+            await shell.ExecuteRowAsync(chosen, "expandIcon");
+            await WaitAsync("the normal window opens within the work area beside the dragged icon", () =>
+                !chosen.IsIconCollapsed && Native.IsAtBadge(chosen.Hwnd, badge, screen.Work));
+            var firstShown = await firstShownBounds.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert(Native.GetWindowRect(chosen.Hwnd, out var finalBounds) && Native.NearFrame(firstShown, finalBounds),
+                "the expanded window is already at its destination on the first show event");
+        }
+        finally
+        {
+            Native.UnhookWinEvent(showHook);
+            GC.KeepAlive(onShow);
+        }
+
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
+            "move the expanded window back to the original side");
+        await shell.ExecuteRowAsync(chosen, "collapseIcon");
+        await WaitAsync("a fresh collapse places a new icon near the current window", () => chosen.IsIconCollapsed &&
+            Native.GetWindowRect(shell.GetCollapsedIconOverlayHandle(chosen), out var newBadge) &&
+            newBadge.Left < x + 80 && newBadge.Top < y + 80);
+        await shell.ExecuteRowAsync(chosen, "activate");
+        await WaitAsync("the row opens the collapsed window", () => !chosen.IsIconCollapsed && Native.IsWindowVisible(chosen.Hwnd));
+
+        string launchData = Path.Combine(output, "launch-check-" + Guid.NewGuid().ToString("N"));
+        var launchStore = new StateStore(launchData);
+        string exePath = Path.Combine(launchData, "launch-fixture-" + Guid.NewGuid().ToString("N")[..8] + ".exe");
+        File.Copy(Environment.ProcessPath!, exePath);
+        string originalTitle = "上次保存的文档标题";
+        var rule = new WindowRule
+        {
+            ProcessPath = exePath,
+            ClassName = chosen.Identity!.ClassName,
+            Title = originalTitle,
+            Pinned = true
+        };
+        launchStore.Preferences.Rules.Add(rule);
+        launchStore.SavePreferences();
+
+        // 异步绑定可能从后台触发首次加载，图标变更仍要由 UI 线程发布给行和浮窗。
+        var iconProbe = new WindowItem { SavedProcessPath = exePath };
+        var iconNotifiedOnUi = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        iconProbe.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(WindowItem.Icon))
+                iconNotifiedOnUi.TrySetResult(shell.Dispatcher.CheckAccess());
+        };
+        await Task.Run(() => _ = iconProbe.Icon);
+        Assert(await iconNotifiedOnUi.Task.WaitAsync(TimeSpan.FromSeconds(5)) &&
+            iconProbe.Icon is System.Windows.Media.Imaging.BitmapSource { PixelWidth: 64, PixelHeight: 64, IsFrozen: true },
+            "the 64px executable icon requested by a worker is published on the UI thread");
+
+        int launchedPid = 0;
+        var launchShell = new MainWindow(launchStore, testMode: true);
+        try
+        {
+            await launchShell.InitializeAsync();
+            var pending = launchShell.Manager.Items.Single(x => !x.IsAvailable);
+            Assert(pending.CanLaunch && pending.ProcessPath == exePath, "unstarted rule exposes its executable launch path");
+            launchShell.Show();
+            var pendingRow = await FindRowAsync(launchShell, pending);
+            var launchBtn = (Button)pendingRow.FindName("LaunchButton");
+            Assert(launchBtn.Visibility == Visibility.Visible && launchBtn.IsEnabled, "unstarted row displays the play launch button in the avatar slot");
+            var launchIcon = ((Panel)launchBtn.Content).Children.OfType<Image>().Single();
+            await WaitAsync("the play button shows the waiting executable icon behind its triangle", () => launchIcon.Source is not null);
+
+            var customManager = new WindowManager(launchStore, Native.GetProcessMutes, Native.SetProcessMutes, async _ =>
+            {
+                var started = await FixtureAsync(output, false, executable: exePath);
+                processes.Add(started.Process);
+                launchedPid = started.Process.Id;
+                return true;
+            });
+            await customManager.RefreshAsync();
+            var pendingItem = customManager.Items.Single(x => !x.IsAvailable);
+            await customManager.LaunchAsync(pendingItem);
+            await WaitAsync("play launch binds newly started process window and applies rule", () =>
+                launchedPid > 0 && customManager.Items.Any(x => x.IsAvailable && x.Identity?.ProcessId == launchedPid && x.Pinned && x.RuleId is not null), 4000);
+            Assert(rule.Title == originalTitle && rule.ClassName == chosen.Identity.ClassName,
+                "matching a new title does not rewrite the saved window rule");
+            await customManager.ShutdownAsync();
+        }
+        finally
+        {
+            launchShell.Cleanup();
+            launchShell.Close();
+        }
+        shell.ShowShell();
+    }
+
     private static async Task CheckPickerOutlineAsync(MainWindow shell, nint target)
     {
         shell.ShowShell();
         nint own = new WindowInteropHelper(shell).Handle;
         await WaitAsync("workbench has focus before preview", () => Native.GetForegroundWindow() == own);
         shell.PreviewPickerTarget(target);
-        var overlay = Application.Current.Windows.Cast<Window>().Single(w => w != shell && w.IsVisible && w.AllowsTransparency);
+        var overlay = Application.Current.Windows.Cast<Window>().Single(w => w != shell && w.IsVisible && w.AllowsTransparency && !w.IsHitTestVisible);
         nint hwnd = new WindowInteropHelper(overlay).Handle;
         bool Aligned() => Native.TryGetFrameBounds(target, out var targetRect) && Native.GetWindowRect(hwnd, out var outline)
             && outline.Left == targetRect.Left - 5 && outline.Top == targetRect.Top - 5

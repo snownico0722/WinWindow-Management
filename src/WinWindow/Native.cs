@@ -10,10 +10,12 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using NeatWin.Core;
 
 namespace WinWindow;
 
@@ -21,8 +23,9 @@ internal static class Native
 {
     internal const long Layered = 0x80000, Transparent = 0x20, TopmostStyle = 8, ToolWindow = 0x80, NoActivateStyle = 0x08000000L;
     internal const uint NoSize = 1, NoMove = 2, NoActivate = 0x10, AsyncPosition = 0x4000;
+    private const uint NoZOrder = 4, NoOwnerZOrder = 0x0200, NoSendChanging = 0x0400;
     internal const int Hide = 0, Normal = 1, Minimized = 2, Maximized = 3, ShowNoActivate = 4, Restore = 9, ForceMinimize = 11;
-    private static readonly ConcurrentDictionary<string, ImageSource?> IconCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, ImageSource> IconCache = new(StringComparer.OrdinalIgnoreCase);
 
     [StructLayout(LayoutKind.Sequential)] public struct Point { public int X; public int Y; }
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
@@ -32,8 +35,11 @@ internal static class Native
         public Point MinPosition; public Point MaxPosition; public Rect NormalPosition;
     }
     [StructLayout(LayoutKind.Sequential)] internal struct MonitorInfo { public int Size; public Rect Monitor; public Rect Work; public uint Flags; }
+    internal readonly record struct IconWindowGeometry(Rect Frame, Rect Outer, MonitorInfo Display);
+    internal readonly record struct IconRestorePlacement(Placement Placement, nint Monitor, Rect Work);
     [StructLayout(LayoutKind.Sequential)] internal struct MinMaxInfo { public Point Reserved; public Point MaxSize; public Point MaxPosition; public Point MinTrack; public Point MaxTrack; }
     internal delegate bool EnumProc(nint hwnd, nint data);
+    private delegate bool MonitorEnumProc(nint monitor, nint dc, nint rect, nint data);
     internal delegate void EventProc(nint hook, uint eventType, nint hwnd, int objectId, int childId, uint threadId, uint time);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc callback, nint data);
     [DllImport("user32.dll")] internal static extern bool IsWindow(nint hwnd);
@@ -62,12 +68,17 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(nint hwnd);
     [DllImport("user32.dll")] internal static extern bool AllowSetForegroundWindow(uint processId);
     [DllImport("user32.dll")] internal static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int virtualKey);
+    [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(Point point);
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint hwnd, uint command);
     [DllImport("user32.dll")] internal static extern bool GetWindowRect(nint hwnd, out Rect rect);
+    [DllImport("user32.dll")] private static extern nint MonitorFromPoint(Point point, uint flags);
     [DllImport("user32.dll")] internal static extern nint MonitorFromWindow(nint hwnd, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
+    [DllImport("user32.dll")] private static extern bool EnumDisplayMonitors(nint dc, nint clip, MonitorEnumProc callback, nint data);
+    [DllImport("user32.dll")] private static extern nint MonitorFromRect(in Rect rect, uint flags);
     [DllImport("user32.dll", SetLastError = true)] internal static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint key);
     [DllImport("user32.dll")] internal static extern bool UnregisterHotKey(nint hwnd, int id);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern uint RegisterWindowMessage(string name);
@@ -77,9 +88,24 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern uint InSendMessageEx(nint reserved);
     [DllImport("user32.dll")] internal static extern nint SetWinEventHook(uint first, uint last, nint module, EventProc callback, uint process, uint thread, uint flags);
     [DllImport("user32.dll")] internal static extern bool UnhookWinEvent(nint hook);
+
+    internal static nint HookExternalWindowLocations(EventProc callback)
+    {
+        const uint locationChange = 0x800B, outOfContext = 0, skipOwnProcess = 2;
+        // 排除本进程，移动浮条时不会向同一钩子再发一次位置事件。
+        return SetWinEventHook(locationChange, locationChange, 0, callback, 0, 0, outOfContext | skipOwnProcess);
+    }
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(nint hwnd, int attribute, out int value, int size);
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] private static extern int DwmGetWindowAttributeRect(nint hwnd, int attribute, out Rect rect, int size);
     [DllImport("dwmapi.dll")] internal static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
+    [DllImport("gdi32.dll")] private static extern nint CreateRoundRectRgn(int left, int top, int right, int bottom, int widthEllipse, int heightEllipse);
+    [DllImport("gdi32.dll")] private static extern bool PtInRegion(nint region, int x, int y);
+    [DllImport("gdi32.dll")] private static extern bool DeleteObject(nint handle);
+    [DllImport("user32.dll")] private static extern int GetWindowRgn(nint hwnd, nint region);
+    [DllImport("user32.dll")] private static extern int SetWindowRgn(nint hwnd, nint region, bool redraw);
+    [DllImport("user32.dll")] private static extern bool DestroyIcon(nint icon);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int SHDefExtractIconW(string file, int index, uint flags, out nint largeIcon, nint smallIcon, uint size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(uint access, bool inherit, uint id);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(nint process, out uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetProcessTimes(nint process, out long creation, out long exit, out long kernel, out long user);
@@ -201,7 +227,7 @@ internal static class Native
                 if (CopyIcon(icon) is { } bitmap) return bitmap;
             }
         }
-        return AppIcon(id.ProcessPath);
+        return ExecutableIcon(id.ProcessPath);
     }
 
     private static ImageSource? CopyIcon(nint icon)
@@ -209,30 +235,40 @@ internal static class Native
         if (icon == 0) return null;
         try
         {
-            var bitmap = Imaging.CreateBitmapSourceFromHIcon(icon, Int32Rect.Empty, BitmapSizeOptions.FromWidthAndHeight(32, 32));
+            var bitmap = Imaging.CreateBitmapSourceFromHIcon(icon, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
             bitmap.Freeze();
             return bitmap;
         }
         catch (Exception e) when (e is ArgumentException or ExternalException or InvalidOperationException) { return null; }
     }
 
-    private static ImageSource? AppIcon(string processPath)
+    internal static ImageSource? ExecutableIcon(string processPath)
     {
         if (string.IsNullOrWhiteSpace(processPath)) return null;
-        return IconCache.GetOrAdd(processPath, static file =>
+        if (IconCache.TryGetValue(processPath, out var cached)) return cached;
+        if (!File.Exists(processPath)) return null;
+        try
         {
+            // 保留窗口自己的图标，只有按路径取图时才向 Shell 请求 64 像素图标。
+            int result = SHDefExtractIconW(processPath, 0, 0, out nint large, 0, 64);
             try
             {
-                if (!File.Exists(file)) return null;
-                using var icon = System.Drawing.Icon.ExtractAssociatedIcon(file);
-                if (icon is null) return null;
-                return CopyIcon(icon.Handle);
+                if (result == 0 && CopyIcon(large) is { } icon)
+                    return IconCache.GetOrAdd(processPath, icon);
             }
-            catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException or ExternalException)
+            finally
             {
-                return null;
+                if (large != 0) DestroyIcon(large);
             }
-        });
+
+            using var fallback = System.Drawing.Icon.ExtractAssociatedIcon(processPath);
+            var bitmap = fallback is null ? null : CopyIcon(fallback.Handle);
+            return bitmap is null ? null : IconCache.GetOrAdd(processPath, bitmap);
+        }
+        catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException or ExternalException)
+        {
+            return null;
+        }
     }
 
     internal static bool PositionOutline(nint hwnd, Rect rect) =>
@@ -254,6 +290,282 @@ internal static class Native
         long value = Style(hwnd) | mask;
         if (IntPtr.Size == 8) SetWindowLong64(hwnd, -20, (nint)value);
         else SetWindowLong32(hwnd, -20, (int)value);
+    }
+
+    public static void ConfigureInteractiveOverlay(nint hwnd)
+    {
+        if (hwnd == 0 || !IsWindow(hwnd)) return;
+        // 顶栏快捷按钮和收起后的置顶大图标需要接收鼠标点击与拖拽，但不能抢走当前工作窗口焦点，也不进入任务栏与 Alt+Tab。
+        long value = (Style(hwnd) & ~Transparent) | ToolWindow | NoActivateStyle;
+        if (IntPtr.Size == 8) SetWindowLong64(hwnd, -20, (nint)value);
+        else SetWindowLong32(hwnd, -20, (int)value);
+    }
+
+    internal static uint WindowDpi(nint hwnd)
+    {
+        if (hwnd != 0 && IsWindow(hwnd) && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 14393))
+        {
+            uint dpi = GetDpiForWindow(hwnd);
+            if (dpi > 0) return dpi;
+        }
+        return 96u;
+    }
+
+    internal static bool PositionOverlay(nint hwnd, int x, int y) =>
+        SetWindowPos(hwnd, (nint)(-1), x, y, 0, 0, NoSize | NoActivate);
+
+    internal static bool TryGetTitleBarOverlayTrack(nint targetHwnd, int barWidthPx, int barHeightPx, double scale, out Rect track)
+    {
+        track = default;
+        if (!TryGetFrameBounds(targetHwnd, out var frame)) return false;
+        if (DwmGetWindowAttribute(targetHwnd, 14, out int cloaked, 4) == 0 && cloaked != 0) return false;
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        bool hasMonitor = GetMonitorInfo(MonitorFromWindow(targetHwnd, 2), ref info);
+        if (hasMonitor && (!Overlaps(frame, info.Work) ||
+            (!IsZoomed(targetHwnd) && frame.Left <= info.Monitor.Left && frame.Top <= info.Monitor.Top &&
+             frame.Right >= info.Monitor.Right && frame.Bottom >= info.Monitor.Bottom))) return false;
+        int baseLeft = hasMonitor ? Math.Max(frame.Left, info.Work.Left) : frame.Left;
+        int baseTop = hasMonitor ? Math.Max(frame.Top, info.Work.Top) : frame.Top;
+        int left = baseLeft + (int)Math.Round(8 * scale);
+        int top = baseTop + (int)Math.Round(4 * scale);
+        // 横拖后仍给目标窗口右侧的系统按钮留出原有余量。
+        int right = frame.Right - (int)Math.Round(72 * scale);
+        int bottom = frame.Bottom;
+        if (hasMonitor)
+        {
+            right = Math.Min(right, info.Work.Right);
+            bottom = Math.Min(bottom, info.Work.Bottom);
+        }
+        if (right - left < barWidthPx || bottom - top < barHeightPx) return false;
+        track = new Rect { Left = left, Top = top, Right = right, Bottom = top + barHeightPx };
+        return true;
+    }
+
+    internal static bool MoveWindowControl(nint hwnd, int x, int y) =>
+        SetWindowPos(hwnd, 0, x, y, 0, 0, NoSize | NoZOrder | NoActivate | NoOwnerZOrder | NoSendChanging);
+
+    internal static bool TryGetIconWindowGeometry(nint hwnd, out IconWindowGeometry geometry)
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        geometry = default;
+        if (!TryGetFrameBounds(hwnd, out var frame) || !GetWindowRect(hwnd, out var outer) ||
+            !GetMonitorInfo(MonitorFromWindow(hwnd, 2), ref info)) return false;
+        geometry = new(frame, outer, info);
+        return true;
+    }
+
+    internal static IconRestorePlacement? PlanIconRestore(nint hwnd, Placement placement, IconWindowGeometry geometry, Rect? movedBadge)
+    {
+        var frame = geometry.Frame;
+        var outer = geometry.Outer;
+        bool maximized = placement.ShowCmd == Maximized;
+        if (movedBadge is null && IsOnDesktop(frame)) return null;
+
+        var anchor = movedBadge ?? frame;
+        nint monitor = MonitorFromRect(in anchor, 2);
+        var display = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(monitor, ref display)) return null;
+        if (maximized && MonitorFromWindow(hwnd, 0) == monitor) return null;
+
+        bool toolWindow = (Style(hwnd) & ToolWindow) != 0;
+        var work = display.Work;
+        if (work.Right <= work.Left || work.Bottom <= work.Top) return null;
+        // WINDOWPLACEMENT 用工作区坐标，DWM 边框用屏幕坐标。在完成定位后才换回工作区坐标。
+        if (maximized)
+        {
+            var normal = placement.NormalPosition;
+            if (!toolWindow)
+                normal = OffsetRect(normal, geometry.Display.Work.Left - geometry.Display.Monitor.Left,
+                    geometry.Display.Work.Top - geometry.Display.Monitor.Top);
+            bool valid = normal.Right > normal.Left && normal.Bottom > normal.Top;
+            frame = valid ? normal : geometry.Frame;
+        }
+        if (movedBadge is { } badge)
+            frame = FrameByBadge(frame, badge, work, WindowDpi(hwnd));
+        else
+            frame = FitFrame(frame, work, frame.Left, frame.Top);
+
+        if (!maximized)
+        {
+            frame.Left += outer.Left - geometry.Frame.Left;
+            frame.Top += outer.Top - geometry.Frame.Top;
+            frame.Right += outer.Right - geometry.Frame.Right;
+            frame.Bottom += outer.Bottom - geometry.Frame.Bottom;
+        }
+        int workX = toolWindow ? 0 : display.Work.Left - display.Monitor.Left;
+        int workY = toolWindow ? 0 : display.Work.Top - display.Monitor.Top;
+        placement.NormalPosition = OffsetRect(frame, -workX, -workY);
+        if (maximized)
+        {
+            // 用目标屏的最大化位置和正常位置一起提交，避免先在旧屏显示后再还原换屏。
+            placement.MaxPosition = new Point
+            {
+                X = display.Work.Left - workX + geometry.Outer.Left - geometry.Display.Work.Left,
+                Y = display.Work.Top - workY + geometry.Outer.Top - geometry.Display.Work.Top
+            };
+        }
+        return new(placement, monitor, work);
+    }
+
+    private static Rect OffsetRect(Rect rect, int x, int y) =>
+        new() { Left = rect.Left + x, Top = rect.Top + y, Right = rect.Right + x, Bottom = rect.Bottom + y };
+
+    internal static bool FrameInside(Rect frame, Rect area) =>
+        frame.Left >= area.Left && frame.Top >= area.Top && frame.Right <= area.Right && frame.Bottom <= area.Bottom;
+
+    internal static int VirtualDesktopLeft() => GetSystemMetrics(76);
+
+    internal static bool IsOnDesktop(Rect frame)
+    {
+        List<RectI> uncovered = [RectI.FromEdges(frame.Left, frame.Top, frame.Right, frame.Bottom)];
+        EnumDisplayMonitors(0, 0, (monitor, _, _, _) =>
+        {
+            var display = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+            if (GetMonitorInfo(monitor, ref display))
+            {
+                var bounds = display.Monitor;
+                uncovered = RectRegion.Subtract(uncovered, RectI.FromEdges(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom),
+                    int.MaxValue);
+            }
+            return uncovered.Count != 0;
+        }, 0);
+        return uncovered.Count == 0;
+    }
+
+    internal static bool IsRestoredWindow(nint hwnd, bool maximized, nint monitor = 0) =>
+        IsWindowVisible(hwnd) && !IsIconic(hwnd) && IsZoomed(hwnd) == maximized &&
+        (monitor == 0 || MonitorFromWindow(hwnd, 0) == monitor);
+
+    private static Rect FrameByBadge(Rect frame, Rect badge, Rect work, uint dpi)
+    {
+        int inset = (int)Math.Round(6 * dpi / 96.0);
+        return FitFrame(frame, work, badge.Left - inset, badge.Top - inset);
+    }
+
+    private static Rect FitFrame(Rect frame, Rect work, int left, int top)
+    {
+        int width = Math.Min(frame.Right - frame.Left, work.Right - work.Left);
+        int height = Math.Min(frame.Bottom - frame.Top, work.Bottom - work.Top);
+        left = Math.Clamp(left, work.Left, work.Right - width);
+        top = Math.Clamp(top, work.Top, work.Bottom - height);
+        return new Rect { Left = left, Top = top, Right = left + width, Bottom = top + height };
+    }
+
+    internal static bool NearFrame(Rect first, Rect second) =>
+        Math.Abs(first.Left - second.Left) <= 2 && Math.Abs(first.Top - second.Top) <= 2 &&
+        Math.Abs(first.Right - second.Right) <= 2 && Math.Abs(first.Bottom - second.Bottom) <= 2;
+
+    internal static bool IsAtBadge(nint hwnd, Rect badge, Rect work) =>
+        TryGetFrameBounds(hwnd, out var frame) &&
+        FrameInside(frame, work) &&
+        NearFrame(frame, FrameByBadge(frame, badge, work, WindowDpi(hwnd)));
+
+    internal static bool PostFitRestoredWindow(WindowIdentity identity, Rect? badge, Rect work)
+    {
+        EnsureIdentity(identity);
+        nint hwnd = identity.Hwnd;
+        if (!TryGetFrameBounds(hwnd, out var frame) || !GetWindowRect(hwnd, out var outer)) return false;
+        var wanted = badge is { } anchor ? FrameByBadge(frame, anchor, work, WindowDpi(hwnd))
+            : FitFrame(frame, work, frame.Left, frame.Top);
+        int x = wanted.Left + outer.Left - frame.Left;
+        int y = wanted.Top + outer.Top - frame.Top;
+        int width = wanted.Right - wanted.Left + (outer.Right - frame.Right) - (outer.Left - frame.Left);
+        int height = wanted.Bottom - wanted.Top + (outer.Bottom - frame.Bottom) - (outer.Top - frame.Top);
+        return SetWindowPos(hwnd, 0, x, y, width, height, NoZOrder | NoActivate | NoOwnerZOrder | AsyncPosition);
+    }
+
+    internal static bool RoundOverlayRegion(nint hwnd, int width, int height, int diameter)
+    {
+        nint region = CreateRoundRectRgn(0, 0, width, height, diameter, diameter);
+        if (region == 0) return false;
+        // 用最外侧直边的像素判断实际区域是否偏小。只补 GDI 少给的边，避免无条件放宽圆角。
+        var (right, bottom) = OverlayRegionEdges(region, width, height);
+        if (!right || !bottom)
+        {
+            DeleteObject(region);
+            region = CreateRoundRectRgn(0, 0, width + (right ? 0 : 1), height + (bottom ? 0 : 1), diameter, diameter);
+            if (region == 0) return false;
+        }
+        // 系统在成功设置后接管区域句柄，此处只释放设置失败的区域。
+        if (SetWindowRgn(hwnd, region, true) != 0) return true;
+        DeleteObject(region);
+        return false;
+    }
+
+    internal static bool TryUseSystemOverlayCorners(nint hwnd)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) return false;
+        const int cornerPreference = 33, borderColor = 34;
+        int round = 2;
+        if (DwmSetWindowAttribute(hwnd, cornerPreference, ref round, sizeof(int)) != 0) return false;
+        // 外层描边由应用绘制，避免再叠一圈系统边框。
+        int noBorder = unchecked((int)0xfffffffe);
+        DwmSetWindowAttribute(hwnd, borderColor, ref noBorder, sizeof(int));
+        return true;
+    }
+
+    internal static bool UsesSystemOverlayCorners(nint hwnd) =>
+        DwmGetWindowAttribute(hwnd, 33, out int corner, sizeof(int)) == 0 && corner == 2;
+
+    private static (bool Right, bool Bottom) OverlayRegionEdges(nint region, int width, int height) =>
+        (PtInRegion(region, width - 1, height / 2), PtInRegion(region, width / 2, height - 1));
+
+    internal static (bool Right, bool Bottom) GetOverlayRegionEdgesForTest(nint hwnd, int width, int height)
+    {
+        nint region = CreateRoundRectRgn(0, 0, width, height, 0, 0);
+        if (region == 0) return default;
+        try
+        {
+            return GetWindowRgn(hwnd, region) != 0 ? OverlayRegionEdges(region, width, height) : default;
+        }
+        finally { DeleteObject(region); }
+    }
+
+    internal static bool IsPrimaryMouseButtonDown()
+    {
+        const int swapButton = 23, leftButton = 1, rightButton = 2;
+        return GetAsyncKeyState(GetSystemMetrics(swapButton) == 0 ? leftButton : rightButton) < 0;
+    }
+
+    public static Rect OverlayBounds(nint hwnd, Point anchor, int width, int height)
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(MonitorFromPoint(anchor, 2), ref info)) return default;
+        var dpi = GetDpiForWindow(hwnd);
+        int w = (int)Math.Ceiling(width * dpi / 96.0), h = (int)Math.Ceiling(height * dpi / 96.0);
+        int x = Math.Clamp(anchor.X, info.Work.Left, Math.Max(info.Work.Left, info.Work.Right - w));
+        int y = Math.Clamp(anchor.Y, info.Work.Top, Math.Max(info.Work.Top, info.Work.Bottom - h));
+        return new Rect { Left = x, Top = y, Right = x + w, Bottom = y + h };
+    }
+
+    public static bool PositionWindowControl(nint hwnd, nint target, Rect? bounds = null)
+    {
+        bool badge = target == 0;
+        bool topmost = badge || IsTopmost(target);
+        if (!SetOwnTopmost(hwnd, topmost)) return false;
+        bool inLayer = badge || GetWindow(hwnd, 2) == target;
+        if (inLayer && (bounds is not { } desired ||
+            (GetWindowRect(hwnd, out var current) && (current.Left, current.Top, current.Right, current.Bottom) ==
+            (desired.Left, desired.Top, desired.Right, desired.Bottom)))) return true;
+        nint after = inLayer ? 0 : GetWindow(target, 3);
+        // 插在目标正上方，仍让挡住目标的窗口盖住按钮。跨过置顶层边界时用 HWND_TOP 保留现有层。
+        if (after != 0 && IsTopmost(after) != topmost) after = 0;
+        if (after == hwnd) inLayer = true;
+        uint flags = NoActivate | NoOwnerZOrder | (inLayer ? NoZOrder : 0);
+        return bounds is { } rect
+            ? SetWindowPos(hwnd, after, rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, flags)
+            : SetWindowPos(hwnd, after, 0, 0, 0, 0, flags | NoMove | NoSize | NoSendChanging);
+    }
+
+    internal static void FitIconOverlayToWorkArea(nint hwnd)
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(MonitorFromWindow(hwnd, 2), ref info) || !GetWindowRect(hwnd, out Rect r)) return;
+        int width = Math.Max(32, r.Right - r.Left);
+        int height = Math.Max(32, r.Bottom - r.Top);
+        int x = Math.Clamp(r.Left, info.Work.Left, Math.Max(info.Work.Left, info.Work.Right - width));
+        int y = Math.Clamp(r.Top, info.Work.Top, Math.Max(info.Work.Top, info.Work.Bottom - height));
+        SetWindowPos(hwnd, (nint)(-1), x, y, 0, 0, NoSize | NoActivate);
     }
 
     public static string Title(nint hwnd) { var b = new StringBuilder(Math.Max(256, GetWindowTextLength(hwnd) + 1)); GetWindowText(hwnd, b, b.Capacity); return b.ToString(); }
@@ -282,7 +594,7 @@ internal static class Native
             nint handle = OpenProcess(0x1000, false, pid);
             if (handle != 0)
             {
-                try { var b = new StringBuilder(32768); uint size = (uint)b.Capacity; if (QueryFullProcessImageName(handle, 0, b, ref size)) path = b.ToString(); }
+                try { path = ReadProcessPath(handle) ?? path; }
                 finally { CloseHandle(handle); }
             }
             return new(hwnd.ToInt64(), (int)pid, started, path, ClassName(hwnd));
@@ -295,6 +607,80 @@ internal static class Native
         var current = Identity(identity.Hwnd);
         return current is not null && current.ProcessId == identity.ProcessId && current.ProcessStarted == identity.ProcessStarted && current.ClassName == identity.ClassName;
     }
+    private static string? ReadProcessPath(nint process)
+    {
+        var path = new StringBuilder(32768);
+        uint size = (uint)path.Capacity;
+        return QueryFullProcessImageName(process, 0, path, ref size) ? path.ToString() : null;
+    }
+
+    public static bool CanLaunchApplication(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) ||
+            !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+            return false;
+        using var current = Process.GetCurrentProcess();
+        var processes = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(path));
+        try
+        {
+            foreach (var process in processes)
+            {
+                try
+                {
+                    if (process.SessionId != current.SessionId) continue;
+                    nint handle = OpenProcess(0x1000, false, (uint)process.Id);
+                    // 同名进程的路径无法读取时保守等待，避免重复启动。
+                    if (handle == 0)
+                    {
+                        if (!process.HasExited) return false;
+                        continue;
+                    }
+                    try
+                    {
+                        var runningPath = ReadProcessPath(handle);
+                        if (runningPath is null || string.Equals(runningPath, path, StringComparison.OrdinalIgnoreCase))
+                            return false;
+                    }
+                    finally { CloseHandle(handle); }
+                }
+                catch (InvalidOperationException) { } // The process exited during enumeration.
+                catch (Win32Exception e) when (e.NativeErrorCode is 87 or 1168) { }
+            }
+            return true;
+        }
+        finally { foreach (var process in processes) process.Dispose(); }
+    }
+
+    public static Task<bool> LaunchApplicationAsync(string path)
+    {
+        var result = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try { result.SetResult(LaunchApplication(path)); }
+            catch (Exception e) { result.SetException(e); }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return result.Task;
+    }
+
+    private static bool LaunchApplication(string path)
+    {
+        if (!File.Exists(path)) throw new InvalidOperationException(UiText.Get("ApplicationPathUnavailable"));
+        if (!CanLaunchApplication(path)) return false;
+
+        // 让桌面资源管理器按当前用户的正常权限启动，避免继承 WinWindow 的管理员令牌。
+        var shellType = Type.GetTypeFromProgID("Shell.Application", throwOnError: true)!;
+        dynamic shell = Activator.CreateInstance(shellType)!;
+        dynamic windows = shell.Windows();
+        object location = 0, root = null!;
+        const int desktopClass = 8, needDispatch = 1;
+        dynamic? desktop = windows.FindWindowSW(ref location, ref root, desktopClass, out int _, needDispatch);
+        if (desktop is null) throw new InvalidOperationException(UiText.Get("ApplicationShellUnavailable"));
+        desktop.Document.Application.ShellExecute(path, "", Path.GetDirectoryName(path), "open", Normal);
+        return true;
+    }
+
     internal static bool MatchesProcess(WindowIdentity identity)
     {
         nint process = OpenProcess(0x1000, false, (uint)identity.ProcessId);
@@ -930,7 +1316,9 @@ internal static class Native
         nint foreground = GetForegroundWindow();
         nint after = value ? (nint)(-1) : (nint)(-2);
         if (!value && foreground != hwnd && IsWindowVisible(foreground) && !IsIconic(foreground) && !IsTopmost(foreground) && !IsShell(foreground)) after = foreground;
-        return SetWindowPos(hwnd, after, 0, 0, 0, 0, NoMove | NoSize | NoActivate) && IsTopmost(hwnd) == value;
+        // 本体与浮层的原生置顶只改变各自的层级。这里没有几何变化需要 WPF 参与。
+        return SetWindowPos(hwnd, after, 0, 0, 0, 0, NoMove | NoSize | NoActivate | NoOwnerZOrder | NoSendChanging)
+            && IsTopmost(hwnd) == value;
     }
     public static bool Raise(nint hwnd) => SetWindowPos(hwnd, (nint)(-1), 0, 0, 0, 0, NoMove | NoSize | NoActivate);
     public static void SetOpacity(WindowSnapshot original, int percent)

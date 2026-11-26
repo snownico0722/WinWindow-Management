@@ -610,4 +610,37 @@
       </Setter.Value>
     </Setter>
   </Style>
+
+  <Style x:Key="LaunchAvatarButton" TargetType="Button">
+    <Setter Property="Width" Value="28"/>
+    <Setter Property="Height" Value="28"/>
+    <Setter Property="MinHeight" Value="0"/>
+    <Setter Property="Padding" Value="0"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="Background" Value="{DynamicResource Selection}"/>
+    <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource Accent}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border x:Name="Frame" CornerRadius="6" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+              <Setter TargetName="Frame" Property="Background" Value="{DynamicResource Accent}"/>
+              <Setter Property="Foreground" Value="{DynamicResource OnAccent}"/>
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+              <Setter TargetName="Frame" Property="Opacity" Value="0.82"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter Property="Opacity" Value="0.42"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
 </ResourceDictionary>

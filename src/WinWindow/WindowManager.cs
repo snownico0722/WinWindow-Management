@@ -19,17 +19,25 @@ internal sealed class WindowManager
     public event Action<string>? Notice;
     public event Action? Changed;
     public bool HasRules => _store.Preferences.Rules.Count != 0;
+    public bool HasManagedWindows => Items.Any(x => x.IsManaged);
+    private readonly Dictionary<string, PendingLaunch> _pendingLaunches = new();
+    private readonly HashSet<string> _launching = new(StringComparer.OrdinalIgnoreCase);
+    private long _nextLaunchCheck;
+    private sealed record PendingLaunch(string Path, string ClassName, WindowIdentity[] Existing, long Expires);
     private readonly Func<WindowIdentity, Dictionary<string, bool>> _readMutes;
     private readonly Action<WindowIdentity, IReadOnlyDictionary<string, bool>, bool?> _writeMutes;
+    private readonly Func<string, Task<bool>> _launchProcess;
 
-    public WindowManager(StateStore store) : this(store, Native.GetProcessMutes, Native.SetProcessMutes) { }
+    public WindowManager(StateStore store) : this(store, Native.GetProcessMutes, Native.SetProcessMutes, Native.LaunchApplicationAsync) { }
 
     internal WindowManager(StateStore store, Func<WindowIdentity, Dictionary<string, bool>> readMutes,
-        Action<WindowIdentity, IReadOnlyDictionary<string, bool>, bool?> writeMutes)
+        Action<WindowIdentity, IReadOnlyDictionary<string, bool>, bool?> writeMutes,
+        Func<string, Task<bool>>? launchProcess = null)
     {
         _store = store;
         _readMutes = readMutes;
         _writeMutes = writeMutes;
+        _launchProcess = launchProcess ?? Native.LaunchApplicationAsync;
     }
     private string NativeDirectory => Path.GetFullPath(Path.Combine(_store.DirectoryPath, "Native"));
     private static bool Same(WindowIdentity? a, WindowIdentity? b) => a is not null && b is not null && a.Handle == b.Handle && a.ProcessId == b.ProcessId && a.ProcessStarted == b.ProcessStarted && a.ClassName == b.ClassName;
@@ -98,7 +106,14 @@ internal sealed class WindowManager
                 var live = found.FirstOrDefault(x => Same(x.Identity, item.Identity));
                 if (live is null && !item.IsManaged && item.Original is null) { Items.Remove(item); continue; }
                 item.Title = live?.Title ?? Native.Title(item.Hwnd);
-                item.IsMinimized = Native.IsIconic(item.Hwnd); item.IsHidden = !Native.IsWindowVisible(item.Hwnd);
+                bool minimized = Native.IsIconic(item.Hwnd), hidden = !Native.IsWindowVisible(item.Hwnd);
+                item.IsMinimized = minimized; item.IsHidden = hidden;
+                if (!minimized && !hidden && item.IsIconCollapsed)
+                {
+                    // 外部唤回后取消这次收起，避免之后退出时又恢复到过期位置。
+                    Track(item, snapshot => snapshot.Parked = false);
+                    item.IsIconCollapsed = false;
+                }
                 item.Pinned = Native.IsTopmost(item.Hwnd);
                 item.ClickThrough = (Native.Style(item.Hwnd) & Native.Transparent) != 0;
                 if (Native.GetLayeredWindowAttributes(item.Hwnd, out _, out byte alpha, out uint flags) && (flags & 2) != 0) item.Opacity = Native.ToPercent(alpha);
@@ -109,28 +124,66 @@ internal sealed class WindowManager
             if (_stopping) return;
             if (removed) Journal();
             _rulesActive = true;
-            ApplyRules(); Changed?.Invoke();
+            ApplyRules();
+            await RefreshLaunchAvailabilityAsync();
+            if (!_stopping) Changed?.Invoke();
         }
         finally { _refreshing = false; }
     }
     private void ApplyRules()
     {
-        foreach (var rule in _store.Preferences.Rules.ToArray())
+        long now = Environment.TickCount64;
+        foreach (var expired in _pendingLaunches.Where(p => p.Value.Expires <= now).Select(p => p.Key).ToArray())
+            _pendingLaunches.Remove(expired);
+
+        var rules = _store.Preferences.Rules.ToArray();
+        // 第一遍维持严格的路径+类名+标题精确匹配，保护同程序多窗口各自的规则归属。
+        foreach (var rule in rules)
         {
-            // Keep a live binding through title changes. Each saved rule may claim one unbound HWND.
-            if (Items.Any(x => x.Identity is not null && x.RuleId == rule.Id)) continue;
+            if (Items.Any(x => x.Identity is not null && x.RuleId == rule.Id))
+            {
+                _pendingLaunches.Remove(rule.Id);
+                continue;
+            }
             var placeholder = Items.FirstOrDefault(x => x.Identity is null && x.RuleId == rule.Id);
             var item = Items.FirstOrDefault(x => x.IsAvailable && !x.IsBusy && x.AutoRemember &&
                 x.Original?.RemovedPendingBackground != true && x.RuleId is null && rule.Matches(x));
             if (item is not null)
             {
+                _pendingLaunches.Remove(rule.Id);
                 if (placeholder is not null) Items.Remove(placeholder);
                 item.RuleId = rule.Id;
                 _ = ApplyRuleAsync(item, rule);
             }
             else if (placeholder is null)
-                Items.Add(new() { Title = rule.Title, RuleId = rule.Id, IsAvailable = false, Pinned = rule.Pinned, Opacity = rule.Opacity, ClickThrough = rule.ClickThrough, Muted = rule.Muted, BackgroundEnabled = rule.KeepRunning });
+            {
+                Items.Add(new()
+                {
+                    SavedProcessPath = rule.ProcessPath ?? "", Title = rule.Title, RuleId = rule.Id, IsAvailable = false,
+                    Pinned = rule.Pinned, Opacity = rule.Opacity, ClickThrough = rule.ClickThrough,
+                    Muted = rule.Muted, BackgroundEnabled = rule.KeepRunning
+                });
+            }
         }
+
+        // 主动启动时允许标题改变，但只认领启动前未出现、类名吻合且唯一的候选。
+        // 保留保存规则原有标题和类名，后续的普通启动仍走精确匹配。
+        foreach (var rule in rules)
+        {
+            if (!_pendingLaunches.TryGetValue(rule.Id, out var launch)) continue;
+            var candidates = Items.Where(x => x.IsAvailable && !x.IsBusy && x.AutoRemember &&
+                x.Original?.RemovedPendingBackground != true && x.RuleId is null && x.Identity is { } id &&
+                string.Equals(id.ProcessPath, launch.Path, StringComparison.OrdinalIgnoreCase) &&
+                (launch.ClassName.Length == 0 || id.ClassName == launch.ClassName) &&
+                !launch.Existing.Any(previous => Same(previous, id))).Take(2).ToArray();
+            if (candidates is not [var matched]) continue;
+            _pendingLaunches.Remove(rule.Id);
+            var placeholder = Items.FirstOrDefault(x => x.Identity is null && x.RuleId == rule.Id);
+            if (placeholder is not null) Items.Remove(placeholder);
+            matched.RuleId = rule.Id;
+            _ = ApplyRuleAsync(matched, rule);
+        }
+
         foreach (var pending in Items.Where(x => x.Identity is null && !_store.Preferences.Rules.Any(r => r.Id == x.RuleId)).ToArray()) Items.Remove(pending);
     }
     public Task ReinforcePinnedAsync()
@@ -241,9 +294,93 @@ internal sealed class WindowManager
         if (_stopping || item.Identity is null) return;
         Native.EnsureIdentity(item.Identity);
         item.Listed = true;
+        // 主动加入管理的窗口默认记住其程序路径，目标退出后保留在列表中并展示播放启动入口；用户仍可通过右键取消记忆或点击 × 移出。
+        AutoRemember(item);
+        _store.SaveSoon();
         item.NotifyState();
         Changed?.Invoke();
     }
+
+    internal async Task RefreshLaunchAvailabilityAsync()
+    {
+        if (_stopping || Environment.TickCount64 < _nextLaunchCheck) return;
+        var pending = Items.Where(item => item.Identity is null).ToArray();
+        if (pending.Length == 0) return;
+        _nextLaunchCheck = Environment.TickCount64 + 800;
+        var paths = pending.Select(item => item.SavedProcessPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var available = await Task.Run(() => paths.Where(Native.CanLaunchApplication).ToHashSet(StringComparer.OrdinalIgnoreCase));
+        if (_stopping) return;
+        long now = Environment.TickCount64;
+        // ShellExecute 返回时进程可能还没出现。保留同一路径的启动占用，避免播放按钮短暂变回可用。
+        var awaitingWindow = _pendingLaunches.Values.Where(launch => launch.Expires > now)
+            .Select(launch => launch.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in pending)
+            item.CanLaunch = available.Contains(item.SavedProcessPath) && !_launching.Contains(item.SavedProcessPath)
+                && !awaitingWindow.Contains(item.SavedProcessPath);
+    }
+
+    public async Task LaunchAsync(WindowItem item)
+    {
+        if (_stopping || !item.CanLaunch || !Items.Contains(item) || item.RuleId is not { } id ||
+            _store.Preferences.Rules.FirstOrDefault(rule => rule.Id == id) is not { } saved) return;
+        string path = item.ProcessPath;
+        if (_pendingLaunches.Values.Any(launch => launch.Expires > Environment.TickCount64 &&
+            string.Equals(path, launch.Path, StringComparison.OrdinalIgnoreCase)) || !_launching.Add(path)) return;
+        try
+        {
+            foreach (var row in Items.Where(row => row.Identity is null &&
+                string.Equals(row.SavedProcessPath, path, StringComparison.OrdinalIgnoreCase)))
+                row.CanLaunch = false;
+            await OperateAsync(item, async () =>
+            {
+                string className = saved.ClassName ?? "";
+                var existing = await Task.Run(() => Native.Enumerate().Where(row =>
+                    string.Equals(row.ProcessPath, path, StringComparison.OrdinalIgnoreCase))
+                    .Select(row => row.Identity!).ToArray());
+                if (_stopping || !await _launchProcess(path) || _stopping) return;
+                _pendingLaunches[id] = new PendingLaunch(path, className, existing, Environment.TickCount64 + 15_000);
+                _ = FollowUpLaunchRefreshAsync(id);
+            });
+        }
+        finally
+        {
+            _launching.Remove(path);
+            _nextLaunchCheck = 0;
+            await RefreshAsync();
+        }
+    }
+
+    private async Task FollowUpLaunchRefreshAsync(string id)
+    {
+        foreach (int delay in new[] { 400, 800, 1600, 2400, 4000, 6000 })
+        {
+            if (_stopping || !_pendingLaunches.ContainsKey(id)) return;
+            await Task.Delay(delay);
+            if (_stopping || !_pendingLaunches.ContainsKey(id)) return;
+            try { await RefreshAsync(); }
+            catch (Exception e) { if (!_stopping) Notice?.Invoke(e.Message); }
+        }
+    }
+
+    public Task CollapseToIconAsync(WindowItem item) => OperateAsync(item, async () =>
+    {
+        var snapshot = Manage(item);
+        if (Native.IsIconic(item.Hwnd) || !Native.IsWindowVisible(item.Hwnd)) return;
+        var placement = Native.GetPlacement(item.Hwnd);
+        item.IconWindowGeometry = Native.TryGetIconWindowGeometry(item.Hwnd, out var geometry) ? geometry : null;
+        Track(item, s => { s.BeforeParking = placement; s.Parked = true; });
+        // 图标是恢复入口。隐藏目标可同时收起任务栏项，原窗口的层级和透明度仍归原来的开关管理。
+        if (!Native.ShowWindowAsync(item.Hwnd, Native.Hide))
+        {
+            Track(item, s => s.Parked = false);
+            throw new InvalidOperationException(UiText.Get("CollapseRejected"));
+        }
+        if (!await WaitForAsync(snapshot.Identity, h => !Native.IsWindowVisible(h)))
+            throw new InvalidOperationException(UiText.Get("CollapseRejected"));
+        item.IsHidden = true;
+        item.IsIconCollapsed = true;
+        Finish(item, false);
+    });
 
     public async Task SetBackgroundEnabledAsync(WindowItem item, bool enabled, bool updateRule = true)
     {
@@ -507,6 +644,9 @@ internal sealed class WindowManager
         }
         item.BackgroundEnabled = false;
         item.WantsPin = false;
+        item.IsIconCollapsed = false;
+        item.OpacityBeforeQuickToggle = null;
+        if (item.RuleId is { } rid) _pendingLaunches.Remove(rid);
         _store.Preferences.Rules.RemoveAll(r => r.Id == item.RuleId);
         item.RuleId = null; item.Listed = false;
         if (!pendingBackground)
@@ -654,22 +794,75 @@ internal sealed class WindowManager
 
         await Task.WhenAll(RestoreActivationAsync(), RestoreAudioAsync(s), RestoreWindowAsync());
     }
-    public Task RestoreParkingAsync(WindowItem item, bool activate = true) => OperateAsync(item, async () =>
+    public Task RestoreParkingAsync(WindowItem item, bool activate = true, Native.Rect? movedBadge = null) => OperateAsync(item, async () =>
     {
         var s = Manage(item);
-        if (s.Parked) Native.ApplyPlacement(item.Hwnd, s.BeforeParking);
-        Native.ShowWindowAsync(item.Hwnd, s.Parked ? (int)s.BeforeParking.ShowCmd : Native.Restore);
-        if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h))) throw new InvalidOperationException(UiText.Get("RestoreRejected"));
-        s.Parked = false; item.IsHidden = false; item.IsMinimized = false; Journal();
+        bool maximized = s.Parked && s.BeforeParking.ShowCmd == Native.Maximized;
+        bool restoreFromIcon = item.IsIconCollapsed && s.Parked;
+        var planned = restoreFromIcon && item.IconWindowGeometry is { } geometry
+            ? Native.PlanIconRestore(item.Hwnd, s.BeforeParking, geometry, movedBadge)
+            : null;
+        if (planned is { } plan)
+        {
+            if (!await RestoreToPlannedPositionAsync(s.Identity, plan, maximized, movedBadge))
+            {
+                // 应用拒绝目标屏时仍按原有布局恢复，确认窗口可用后再移除图标。
+                if (!await ApplyRestorePlacementAsync(s.Identity, s.BeforeParking) ||
+                    !await WaitForAsync(s.Identity, h => Native.IsRestoredWindow(h, maximized)))
+                    throw new InvalidOperationException(UiText.Get("RestoreRejected"));
+                Notice?.Invoke(UiText.Get("RestoreBadgeFallback"));
+            }
+        }
+        else if (restoreFromIcon)
+        {
+            if (!await ApplyRestorePlacementAsync(s.Identity, s.BeforeParking) ||
+                !await WaitForAsync(s.Identity, h => Native.IsRestoredWindow(h, maximized)))
+                throw new InvalidOperationException(UiText.Get("RestoreRejected"));
+        }
+        else
+        {
+            if (s.Parked) Native.ApplyPlacement(item.Hwnd, s.BeforeParking);
+            Native.ShowWindowAsync(item.Hwnd, s.Parked ? (int)s.BeforeParking.ShowCmd : Native.Restore);
+            if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h)))
+                throw new InvalidOperationException(UiText.Get("RestoreRejected"));
+        }
+        Track(item, snapshot => snapshot.Parked = false);
+        item.IsHidden = false;
+        item.IsMinimized = false;
+        item.IsIconCollapsed = false;
         if (activate && !_stopping) Native.SetForegroundWindow(item.Hwnd);
         Finish(item, false);
     });
+
+    private static Task<bool> ApplyRestorePlacementAsync(WindowIdentity identity, Native.Placement placement) => Task.Run(() =>
+    {
+        Native.EnsureIdentity(identity);
+        return Native.ApplyPlacement(identity.Hwnd, placement);
+    });
+
+    private static async Task<bool> RestoreToPlannedPositionAsync(WindowIdentity identity, Native.IconRestorePlacement plan,
+        bool maximized, Native.Rect? movedBadge)
+    {
+        bool OnTarget(nint hwnd) => Native.IsRestoredWindow(hwnd, maximized, plan.Monitor);
+        // SetWindowPlacement 同时提交最终位置和显示状态，隐藏窗第一次显形就在目标屏。
+        if (!await ApplyRestorePlacementAsync(identity, plan.Placement) || !await WaitForAsync(identity, OnTarget))
+            return false;
+        if (maximized) return true;
+        bool AtPosition(nint hwnd) => OnTarget(hwnd) && (movedBadge is { } badge
+            ? Native.IsAtBadge(hwnd, badge, plan.Work)
+            : Native.TryGetFrameBounds(hwnd, out var frame) && Native.FrameInside(frame, plan.Work));
+        if (AtPosition(identity.Hwnd)) return true;
+        // 跨 DPI 后实际大小可能变化，只在窗口已经出现在目标屏后补一次边缘校正。
+        return await Task.Run(() => Native.PostFitRestoredWindow(identity, movedBadge, plan.Work)) &&
+            await WaitForAsync(identity, AtPosition);
+    }
     public Task ReleaseAsync(WindowItem item, bool forgetRule = false, bool updateRule = true) => OperateAsync(item, async () =>
     {
         if (item.Original is { } s)
         {
             item.BackgroundEnabled = false;
             await RestoreSnapshotAsync(s);
+            item.IsIconCollapsed = false;
             item.Pinned = s.Topmost;
             item.Opacity = s.LayeredReadable && (s.LayeredFlags & 2) != 0 ? Native.ToPercent(s.Alpha) : 100;
             item.ClickThrough = (s.ExtendedStyle & Native.Transparent) != 0;

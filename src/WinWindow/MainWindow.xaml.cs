@@ -83,6 +83,7 @@ public partial class MainWindow : Window
         AdministratorStartupBox.IsChecked = p.RunAsAdministrator;
         FocusPinBox.IsChecked = p.PinWhenFocused; AbsoluteBox.IsChecked = p.AbsoluteTopmost; AggressiveBox.IsChecked = p.AggressiveTopmost;
         SoundBox.IsChecked = p.EnablePinSound; NotificationBox.IsChecked = p.ShowPinNotifications;
+        QuickOpacityBox.Text = p.QuickOpacity.ToString();
         EnhancedBackgroundBox.IsChecked = p.EnhancedBackgroundKeep;
         LockCursorPosBox.IsChecked = p.LockBackgroundCursorPos;
         SnapshotLookbackSwitch.IsChecked = p.SnapshotLookbackEnabled;
@@ -97,6 +98,7 @@ public partial class MainWindow : Window
         _opacityTimer.Tick += (_, _) => DrainOpacity();
         _pickerTimer.Tick += (_, _) => UpdatePickerOutline();
         _statusTimer.Tick += (_, _) => DismissStatus();
+        InitializeOverlays();
         SourceInitialized += OnSourceInitialized;
         Loaded += async (_, _) => await InitializeAsync();
         Activated += (_, _) =>
@@ -106,7 +108,7 @@ public partial class MainWindow : Window
                 _ = ReadBehaviorsAsync();
         };
         Deactivated += (_, _) => { if (!_picking) _flash?.Hide(); ApplyOwnPolicy(); };
-        IsVisibleChanged += (_, _) => { if (!IsVisible) { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); };
+        IsVisibleChanged += (_, _) => { if (!IsVisible) { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); if (_ready) SyncManagedOverlays(); };
         StateChanged += (_, _) => { if (WindowState != WindowState.Minimized) _lastState = WindowState; else { AddPopup.IsOpen = false; _flash?.Hide(); HideHoverPreview(); } ApplyOwnPolicy(); };
         Closing += OnClosing;
         _ready = true; RefreshView();
@@ -126,7 +128,7 @@ public partial class MainWindow : Window
     {
         // Hover is a pointer affordance, not a focus action; it also works over an inactive workbench.
         if (_quitting || !_ready || !IsVisible || WindowState == WindowState.Minimized || _compact || WindowPage.Visibility != Visibility.Visible ||
-            !item.IsAvailable || item.IsBusy || item.IsHidden || item.IsMinimized ||
+            !item.IsAvailable || item.IsBusy || item.IsHidden || item.IsMinimized || item.IsIconCollapsed ||
             item.Identity is not { } identity ||
             !Native.Matches(identity) || !Native.IsWindowVisible(identity.Hwnd) || Native.IsIconic(identity.Hwnd) ||
             !Native.TryGetFrameBounds(identity.Hwnd, out _))
@@ -161,13 +163,22 @@ public partial class MainWindow : Window
         _desktop = new(this, Manager);
         _desktop.ActionRequested += async action => await OnDesktopActionAsync(action);
         _desktop.RecoveryRequested += async item => await ExecuteRowAsync(item, "reset");
-        _desktop.WindowsChanged += foreground =>
-        {
-            if (_quitting) return;
-            if (foreground) { ApplyOwnPolicy(); if (CanEnforceOwn()) Native.Raise(_hwnd); }
-            if ((IsVisible && WindowState != WindowState.Minimized) || Manager.HasRules) QueueRefresh();
-        };
+        _desktop.WindowsChanged += OnDesktopWindowsChanged;
         Run(() => _desktop.ApplyHotkeys(_store.Preferences.Hotkeys));
+    }
+
+    internal void OnDesktopWindowsChanged(bool foreground)
+    {
+        if (_quitting || !_ready) return;
+        if (foreground)
+        {
+            ApplyOwnPolicy();
+            if (CanEnforceOwn()) Native.Raise(_hwnd);
+            // 切前台只改层级时可能没有位置事件，直接校正可见浮条。
+            foreach (var overlay in _titleOverlays.Values)
+                overlay.SyncLayer();
+        }
+        if ((IsVisible && WindowState != WindowState.Minimized) || Manager.HasRules || Manager.HasManagedWindows) QueueRefresh();
     }
 
     private nint WindowMessage(nint hwnd, int msg, nint wp, nint lp, ref bool handled)
@@ -219,7 +230,7 @@ public partial class MainWindow : Window
         _pinReinforceTimer.IsEnabled = managedAll.Any(x => x.WantsPin);
         int totalManaged = managedAll.Length;
         int pinnedCount = managedAll.Count(x => x.Pinned);
-        int parkedCount = managedAll.Count(x => x.IsHidden || x.IsMinimized || x.Opacity == 0);
+        int parkedCount = managedAll.Count(x => x.IsHidden || x.IsMinimized || x.IsIconCollapsed || x.Opacity == 0);
 
         EmptyStatePanel.Visibility = _view.IsEmpty ? Visibility.Visible : Visibility.Collapsed;
         EmptyListText.Text = SearchBox.Text.Length == 0 ? UiText.Get("NoManagedWindows") : UiText.Get("NoMatches");
@@ -247,6 +258,7 @@ public partial class MainWindow : Window
         }
 
         if (_pendingOpacity.Count != 0) _opacityTimer.Start();
+        SyncManagedOverlays();
     }
 
     private void SearchToggle_Click(object sender, RoutedEventArgs e)
@@ -289,7 +301,8 @@ public partial class MainWindow : Window
         switch (action)
         {
             case "activate":
-                await Manager.ActivateAsync(item);
+                if (item.IsIconCollapsed) await ExpandManagedWindowAsync(item);
+                else await Manager.ActivateAsync(item);
                 break;
             case "pin":
                 bool nextPin = !item.Pinned;
@@ -300,8 +313,24 @@ public partial class MainWindow : Window
             case "through": await Manager.SetClickThroughAsync(item, !item.ClickThrough); break;
             case "mute": await Manager.SetMuteAsync(item, !item.Muted); break;
             case "background": await Manager.SetBackgroundEnabledAsync(item, !item.BackgroundEnabled); break;
+            case "launch":
+                await Manager.LaunchAsync(item);
+                break;
+            case "collapseIcon":
+                _flash?.Hide();
+                HideHoverPreview(item);
+                await CollapseManagedWindowAsync(item);
+                break;
+            case "expandIcon":
+                await ExpandManagedWindowAsync(item);
+                break;
+            case "quickOpacity":
+                ToggleQuickOpacity(item);
+                break;
             case "park":
-                if (item.IsMinimized || item.IsHidden)
+                if (item.IsIconCollapsed)
+                    await ExpandManagedWindowAsync(item);
+                else if (item.IsMinimized || item.IsHidden)
                 {
                     await Manager.RestoreParkingAsync(item);
                 }
@@ -418,6 +447,8 @@ public partial class MainWindow : Window
     internal void PreviewPickerTarget(nint target)
     {
         HideHoverPreview();
+        _pickerPreviewActive = target != 0;
+        SyncManagedOverlays();
         if (target == 0) _flash?.Hide();
         else Outline.Show(target, transient: false);
     }
@@ -431,7 +462,9 @@ public partial class MainWindow : Window
         Mouse.OverrideCursor = null;
         if (_pickerOwner is { IsMouseCaptured: true } owner) owner.ReleaseMouseCapture();
         _pickerOwner = null;
+        _pickerPreviewActive = false;
         _flash?.Hide();
+        SyncManagedOverlays();
     }
 
     private void Picker_LostCapture(object sender, MouseEventArgs e) { if (_picking) CancelPicker(); }
@@ -655,7 +688,7 @@ public partial class MainWindow : Window
         p.EnhancedBackgroundKeep = nextEnhanced;
         p.LockBackgroundCursorPos = nextLockCursor;
         LockCursorPosBox.IsEnabled = p.EnhancedBackgroundKeep;
-        Palette.Apply(p.Dark); ApplyOwnPolicy(); _store.SaveSoon();
+        Palette.Apply(p.Dark); SyncManagedOverlays(); ApplyOwnPolicy(); _store.SaveSoon();
         if (backgroundChanged) _ = RunAsync(Manager.ApplyBackgroundPreferencesAsync);
     }
 
@@ -794,7 +827,7 @@ public partial class MainWindow : Window
     internal async Task QuitAsync()
     {
         if (_quitting) return;
-        _quitting = true; HideHoverPreview(); SnapshotHistory.Dispose(); _layout?.Dispose(); AddPopup.IsOpen = false; _flash?.Dispose(); _flash = null;
+        _quitting = true; HideHoverPreview(); DisposeManagedOverlays(); SnapshotHistory.Dispose(); _layout?.Dispose(); AddPopup.IsOpen = false; _flash?.Dispose(); _flash = null;
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
         CancelPicker(); SaveGeometry(); ApplyOwnPolicy();
         int failures = await Manager.ShutdownAsync();
@@ -804,9 +837,11 @@ public partial class MainWindow : Window
 
     internal void Cleanup()
     {
+        _ready = false;
         _pickerTimer.Stop(); _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
         _flash?.Dispose(); _flash = null;
         HideHoverPreview(); _hoverOutline?.Dispose(); _hoverOutline = null;
+        DisposeManagedOverlays();
         SnapshotHistory.Dispose();
         _layout?.Dispose(); _layout = null;
         _desktop?.Dispose(); _desktop = null;
