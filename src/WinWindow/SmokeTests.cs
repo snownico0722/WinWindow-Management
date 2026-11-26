@@ -1571,26 +1571,36 @@ internal static class SmokeTests
         Directory.CreateDirectory(wpfStore.DirectoryPath);
         File.Copy(exePath, wpfExe);
         var previousWpf = await FixtureAsync(output, true, executable: wpfExe);
-        processes.Add(previousWpf.Process);
         var wpfRule = Rule(previousWpf.Hwnd);
+        using (previousWpf.Process)
+        {
+            Stop(previousWpf.Process);
+            await previousWpf.Process.WaitForExitAsync();
+        }
         wpfRule.Title = originalTitle;
         wpfStore.Preferences.Rules.Add(wpfRule);
-        Stop(previousWpf.Process);
-        await previousWpf.Process.WaitForExitAsync();
 
+        nint launchedWpfHwnd = 0;
         var wpfManager = new WindowManager(wpfStore, Native.GetProcessMutes, Native.SetProcessMutes, async _ =>
         {
             var started = await FixtureAsync(output, true, executable: wpfExe);
             processes.Add(started.Process);
             launchedPid = started.Process.Id;
+            launchedWpfHwnd = started.Hwnd;
             return true;
         });
+        wpfManager.Notice += message => Report("WPF launch: " + message);
         await wpfManager.RefreshAsync();
-        await wpfManager.LaunchAsync(wpfManager.Items.Single(x => x.RuleId == wpfRule.Id));
+        var pendingWpf = wpfManager.Items.Single(x => x.RuleId == wpfRule.Id);
+        Assert(pendingWpf.CanLaunch, $"the previous WPF process exited and can be relaunched ({pendingWpf.ProcessPath})");
+        await wpfManager.LaunchAsync(pendingWpf);
+        Assert(launchedWpfHwnd != 0, "the WPF fixture started through the launch path");
+        var launchedClass = Native.ClassName(launchedWpfHwnd);
+        Assert(launchedClass != wpfRule.ClassName && WindowRule.MatchesClass(wpfRule.ClassName, launchedClass),
+            $"fresh WPF HWND has a different instance GUID in the same class ({wpfRule.ClassName} / {launchedClass})");
         await WaitAsync("a freshly launched WPF HWND receives its saved rule", () =>
-            wpfManager.Items.Any(x => x.Identity?.ProcessId == launchedPid && x.RuleId == wpfRule.Id &&
-                x.Pinned && x.Identity.ClassName != wpfRule.ClassName), 4000);
-        var liveWpf = wpfManager.Items.Single(x => x.Identity?.ProcessId == launchedPid && x.RuleId == wpfRule.Id);
+            wpfManager.Items.Any(x => x.Hwnd == launchedWpfHwnd && x.RuleId == wpfRule.Id && x.Pinned), 4000);
+        var liveWpf = wpfManager.Items.Single(x => x.Hwnd == launchedWpfHwnd && x.RuleId == wpfRule.Id);
         await wpfManager.ShutdownAsync();
 
         wpfRule.Title = Native.Title(liveWpf.Hwnd);
