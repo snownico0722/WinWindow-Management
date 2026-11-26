@@ -1256,6 +1256,74 @@ internal static class SmokeTests
         }
     }
 
+    private static async Task CheckUnpinInputAsync(MainWindow shell, WindowItem source, nint toolbar, Native.Rect work,
+        string output, List<Process> processes)
+    {
+        var clicked = await FixtureAsync(output, false);
+        processes.Add(clicked.Process);
+        var other = await FixtureAsync(output, false);
+        processes.Add(other.Process);
+        WindowItem? otherItem = null;
+        try
+        {
+            if (!Native.GetWindowRect(source.Hwnd, out var sourceBounds))
+                throw new InvalidOperationException("Cannot read the unpin fixture bounds.");
+            int left = sourceBounds.Right - 96;
+            int width = Math.Min(240, work.Right - left - 8);
+            int top = sourceBounds.Top + 50;
+            Assert(width >= 150 && await Task.Run(() =>
+                Native.SetWindowPos(clicked.Hwnd, 0, left, top, width, 160, Native.NoActivate) &&
+                Native.SetWindowPos(other.Hwnd, 0, work.Left + 12, work.Top + 12, 180, 160, Native.NoActivate)),
+                "place the clicked fixture across the old window edge with an exposed client area");
+            Native.SetForegroundWindow(clicked.Hwnd);
+            await WaitAsync("the exposed fixture is already in the foreground", () => Native.GetForegroundWindow() == clicked.Hwnd);
+
+            bool nativeInput = Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
+            if (nativeInput) shell.EnableNativeUnpinInputForTest();
+            await shell.Manager.SetPinAsync(source, true);
+            await shell.ExecuteRowAsync(source, "pin");
+            otherItem = shell.Manager.SelectTarget(other.Hwnd);
+            await shell.ExecuteRowAsync(otherItem, "pin");
+            Assert(Native.IsTopmost(other.Hwnd), "another managed window is pinned before the first click");
+            await shell.ExecuteRowAsync(otherItem, "pin");
+            Assert(!Native.IsTopmost(other.Hwnd) && !Native.IsTopmost(source.Hwnd) &&
+                Native.GetForegroundWindow() == clicked.Hwnd &&
+                Native.CoversForegroundAfterUnpin(source.Identity!, clicked.Hwnd) &&
+                !Native.CoversForegroundAfterUnpin(otherItem.Identity!, clicked.Hwnd),
+                "two consecutive pin changes leave the first unpinned window overlapping the same foreground");
+
+            if (!nativeInput)
+            {
+                shell.ObserveUnpinClickForTest(clicked.Hwnd);
+                await WaitAsync("consecutive toggles preserve the first window's click correction", ClickRevealedTarget);
+                return;
+            }
+
+            // CI 使用专用桌面，走 SendInput 和产品鼠标钩子。普通本地自测不挪真实鼠标。
+            Assert(Native.GetCursorPos(out var previous), "save the desktop cursor before sending input");
+            try
+            {
+                var point = new Native.Point { X = left + width - 28, Y = top + 90 };
+                Assert(Native.SendClickForTest(point, clicked.Hwnd), "send a Win32 left click to the exposed client area");
+                await WaitAsync("the production mouse hook observes the sent click and the foreground rises without reactivation",
+                    () => shell.LastUnpinClickForTest == clicked.Hwnd && ClickRevealedTarget());
+                Report("PASS: end-to-end Win32 mouse input after consecutive pin toggles");
+            }
+            finally { Native.SetCursorPos(previous.X, previous.Y); }
+
+            bool ClickRevealedTarget() => Native.GetForegroundWindow() == clicked.Hwnd &&
+                Native.IsAbove(clicked.Hwnd, toolbar) && Native.IsAbove(toolbar, source.Hwnd) &&
+                !Native.IsTopmost(clicked.Hwnd);
+        }
+        finally
+        {
+            if (otherItem is not null && shell.Manager.Items.Contains(otherItem)) await shell.Manager.RemoveAsync(otherItem);
+            Stop(other.Process);
+            Stop(clicked.Process);
+            await Task.WhenAll(other.Process.WaitForExitAsync(), clicked.Process.WaitForExitAsync());
+        }
+    }
+
     private static async Task CheckTitleBarOverlayAndLaunchAsync(MainWindow shell, WindowItem chosen, string output, List<Process> processes)
     {
         if (Native.IsTopmost(chosen.Hwnd)) await shell.Manager.SetPinAsync(chosen, false, updateRule: false);
@@ -1354,6 +1422,11 @@ internal static class SmokeTests
             shell.OnDesktopWindowsChanged(foreground: true);
             Assert(Native.IsAbove(chosen.Hwnd, coverHwnd),
                 "unpin alone does not move the old target behind the active overlapping window");
+            await shell.Manager.SetOpacityAsync(chosen, 0);
+            Assert(!Native.CoversForegroundAfterUnpin(chosen.Identity!, coverHwnd),
+                "a fully transparent window cannot justify raising the clicked foreground");
+            await shell.Manager.SetOpacityAsync(chosen, 80);
+            shell.RefreshUnpinDuringForegroundTransitionForTest();
             shell.ObserveUnpinClickForTest(chosen.Hwnd);
             Assert(Native.IsAbove(chosen.Hwnd, coverHwnd), "a click on a different window cannot raise the current foreground");
             shell.ObserveUnpinClickForTest(coverHwnd);
@@ -1376,6 +1449,7 @@ internal static class SmokeTests
         int height = (screen.Work.Bottom - screen.Work.Top) / 2;
         Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
             "position the restored fixture within the work area");
+        await CheckUnpinInputAsync(shell, chosen, barHwnd, screen.Work, output, processes);
         bool ToolbarMatchesTrack(int offset) => Native.GetWindowRect(barHwnd, out var bar) &&
             Native.TryGetTitleBarOverlayTrack(chosen.Hwnd, bar.Right - bar.Left, bar.Bottom - bar.Top,
                 Native.WindowDpi(chosen.Hwnd) / 96.0, out var track) &&

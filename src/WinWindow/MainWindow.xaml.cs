@@ -347,12 +347,10 @@ public partial class MainWindow : Window
 
     private async Task ToggleManagedPinAsync(WindowItem item)
     {
-        _unpinClickHandoff?.Dispose();
-        var handoff = item.Identity is { } identity ? new UnpinClickHandoff(this, identity) : null;
-        _unpinClickHandoff = handoff;
+        var handoff = item.Identity is { } identity ? (_unpinClickHandoff ??= new(this)).Begin(identity) : null;
         bool? pinned = null;
         try { pinned = await Manager.TogglePinAsync(item); }
-        finally { handoff?.Complete(unpinned: pinned == false); }
+        finally { if (handoff is not null) _unpinClickHandoff?.Complete(handoff, unpinned: pinned == false); }
         if (pinned is not bool value) return;
         if (item.Hwnd != 0)
         {

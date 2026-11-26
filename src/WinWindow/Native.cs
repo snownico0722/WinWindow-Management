@@ -30,6 +30,19 @@ internal static class Native
 
     [StructLayout(LayoutKind.Sequential)] public struct Point { public int X; public int Y; }
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInput
+    {
+        public int X, Y;
+        public uint Data, Flags, Time;
+        public nuint ExtraInfo;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInputEvent
+    {
+        public uint Type;
+        public MouseInput Mouse;
+    }
     [StructLayout(LayoutKind.Sequential)] public struct Placement
     {
         public uint Length; public uint Flags; public uint ShowCmd;
@@ -72,6 +85,8 @@ internal static class Native
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int virtualKey);
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(Point point);
+    [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, MouseInputEvent[] inputs, int size);
+    [DllImport("user32.dll", SetLastError = true)] internal static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] internal static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint hwnd, uint command);
     [DllImport("user32.dll")] internal static extern bool GetWindowRect(nint hwnd, out Rect rect);
@@ -1335,10 +1350,14 @@ internal static class Native
         nint old = oldWindow.Hwnd;
         return foreground != 0 && foreground != old && !IsShell(foreground) &&
             Matches(oldWindow) && !IsTopmost(old) && !IsTopmost(foreground) &&
+            !IsFullyTransparent(old) &&
             GetAncestor(foreground, 2) == foreground && GetAncestor(foreground, 3) != GetAncestor(old, 3) &&
             TryGetFrameBounds(old, out var oldBounds) && TryGetFrameBounds(foreground, out var foregroundBounds) &&
             Overlaps(oldBounds, foregroundBounds) && IsAbove(old, foreground);
     }
+
+    private static bool IsFullyTransparent(nint hwnd) => (Style(hwnd) & Layered) != 0 &&
+        GetLayeredWindowAttributes(hwnd, out _, out byte alpha, out uint flags) && (flags & 2) != 0 && alpha == 0;
 
     internal static bool RevealClickedWindowAfterUnpin(WindowIdentity oldWindow, WindowIdentity clickedWindow)
     {
@@ -1422,6 +1441,16 @@ internal static class Native
     public static nint TargetUnderPointer()
     {
         GetCursorPos(out Point p); nint hwnd = GetAncestor(WindowFromPoint(p), 2); return IsTarget(hwnd) ? hwnd : 0;
+    }
+    internal static bool SendClickForTest(Point point, nint expected)
+    {
+        if (!SetCursorPos(point.X, point.Y) || GetAncestor(WindowFromPoint(point), 2) != expected) return false;
+        var down = new MouseInputEvent { Mouse = new MouseInput { Flags = 0x0002 } };
+        var up = new MouseInputEvent { Mouse = new MouseInput { Flags = 0x0004 } };
+        int size = Marshal.SizeOf<MouseInputEvent>();
+        uint sent = SendInput(2, [down, up], size);
+        if (sent == 1) SendInput(1, [up], size);
+        return sent == 2;
     }
     public static bool OverlappingTopmostAbove(nint hwnd)
     {

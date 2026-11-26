@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -161,7 +162,10 @@ public partial class MainWindow
     internal void FinishTitleOverlayMoveForTest(WindowItem item) =>
         FollowTargetWindow(_titleMoveSizeHook, NativeMethods.EventSystemMoveSizeEnd, item.Hwnd, 0, 0, 0, 0);
 
-    internal void ObserveUnpinClickForTest(nint hwnd) => _unpinClickHandoff?.ObserveClick(hwnd);
+    internal void ObserveUnpinClickForTest(nint hwnd) => _unpinClickHandoff?.SimulateClick(hwnd);
+    internal void RefreshUnpinDuringForegroundTransitionForTest() => _unpinClickHandoff?.Refresh(0);
+    internal void EnableNativeUnpinInputForTest() => (_unpinClickHandoff ??= new(this)).ListenForMouse = true;
+    internal nint LastUnpinClickForTest => _unpinClickHandoff?.LastClick ?? 0;
 
     internal bool HasCollapsedIconOverlay(WindowItem item) =>
         _collapsedOverlays.TryGetValue(item, out var overlay) && overlay.IsVisible;
@@ -308,49 +312,93 @@ public partial class MainWindow
     private sealed class UnpinClickHandoff : IDisposable
     {
         private readonly MainWindow _owner;
-        private readonly WindowIdentity _oldWindow;
         private readonly NativeMethods.LowLevelMouseProc _mouseProc;
-        private nint _hook, _clicked;
-        private bool _unpinned, _disposed;
+        private readonly Dictionary<nint, PendingUnpin> _windows = new();
+        private nint _hook;
+        private long _inputSequence;
+        private (nint Window, long Sequence) _click;
+        private bool _revealing, _disposed;
 
-        internal UnpinClickHandoff(MainWindow owner, WindowIdentity oldWindow)
+        internal sealed class PendingUnpin(WindowIdentity identity, long startedAfter)
         {
+            internal WindowIdentity Identity { get; } = identity;
+            internal long StartedAfter { get; } = startedAfter;
+            internal long LastAttempt { get; set; }
+            internal bool Unpinned { get; set; }
+        }
+
+        internal UnpinClickHandoff(MainWindow owner)
+        {
+            ListenForMouse = !owner._testMode;
             _owner = owner;
-            _oldWindow = oldWindow;
             _mouseProc = OnMouse;
-            if (!owner._testMode)
-            {
+        }
+
+        internal bool ListenForMouse { private get; set; }
+        internal nint LastClick => _click.Window;
+
+        internal PendingUnpin Begin(WindowIdentity identity)
+        {
+            var pending = new PendingUnpin(identity, Interlocked.Read(ref _inputSequence));
+            _windows[identity.Hwnd] = pending;
+            if (ListenForMouse && _hook == 0)
                 _hook = NativeMethods.SetWindowsHookEx(NativeMethods.WhMouseLl, _mouseProc, 0, 0);
-                _disposed = _hook == 0;
-            }
+            return pending;
         }
 
-        internal void Complete(bool unpinned)
+        internal void Complete(PendingUnpin pending, bool unpinned)
         {
-            if (!unpinned) { Dispose(); return; }
-            _unpinned = true;
+            nint hwnd = pending.Identity.Hwnd;
+            if (!_windows.TryGetValue(hwnd, out var current) || current != pending) return;
+            if (unpinned)
+                pending.Unpinned = true;
+            else
+                _windows.Remove(hwnd);
             Refresh();
         }
 
-        internal void ObserveClick(nint hwnd)
+        internal void SimulateClick(nint hwnd) => ObserveClick(hwnd, Interlocked.Increment(ref _inputSequence));
+
+        private void ObserveClick(nint hwnd, long sequence)
         {
-            if (_disposed) return;
-            _clicked = hwnd;
+            if (_disposed || sequence != Interlocked.Read(ref _inputSequence)) return;
+            _click = (hwnd, sequence);
             Refresh();
         }
 
-        internal void Refresh()
+        internal void Refresh() => Refresh(Native.GetForegroundWindow());
+
+        internal void Refresh(nint foreground)
         {
-            if (_disposed || !_unpinned) return;
-            nint foreground = Native.GetForegroundWindow();
-            if (!Native.CoversForegroundAfterUnpin(_oldWindow, foreground))
+            if (_disposed || _revealing) return;
+            if (_windows.Count == 0)
             {
-                Dispose();
+                StopHook();
                 return;
             }
-            if (_clicked != foreground) return;
-            Dispose();
-            if (Native.Identity(foreground) is { } clickedWindow) _ = RevealAsync(clickedWindow);
+            // 切换前台时 HWND 可能短暂为空，等下一次窗口事件再判断是否真的不再遮挡。
+            if (foreground == 0) return;
+            long sequence = _click.Sequence;
+            bool clickedForeground = _click.Window == foreground && sequence == Interlocked.Read(ref _inputSequence);
+            PendingUnpin? highest = null;
+            foreach (var pending in _windows.Values.ToArray())
+            {
+                if (!pending.Unpinned) continue;
+                nint hwnd = pending.Identity.Hwnd;
+                if (!Native.CoversForegroundAfterUnpin(pending.Identity, foreground))
+                {
+                    _windows.Remove(hwnd);
+                    continue;
+                }
+                if (!clickedForeground || sequence <= pending.StartedAfter || sequence == pending.LastAttempt) continue;
+                pending.LastAttempt = sequence;
+                if (highest is null || Native.IsAbove(hwnd, highest.Identity.Hwnd)) highest = pending;
+            }
+            if (_windows.Count == 0) StopHook();
+            if (highest is null || Native.Identity(foreground) is not { } clickedWindow) return;
+            // 同一次点击只需越过最上面的遮挡窗口。操作期间排队的其他取消置顶完成后仍可单独核对。
+            _revealing = true;
+            _ = RevealAsync(highest.Identity, clickedWindow, sequence);
         }
 
         private nint OnMouse(int code, nint message, nint dataPointer)
@@ -362,9 +410,10 @@ public partial class MainWindow
                 {
                     var data = Marshal.PtrToStructure<NativeMethods.MsllHookStruct>(dataPointer);
                     nint hit = NativeMethods.GetAncestor(NativeMethods.WindowFromPoint(data.Point), NativeMethods.GaRoot);
+                    long sequence = Interlocked.Increment(ref _inputSequence);
                     // 全局回调只记下实际按到的窗口，退出回调后再确认前台与遮挡。
                     _owner.Dispatcher.BeginInvoke(DispatcherPriority.Background,
-                        new Action(() => ObserveClick(hit == _owner._hwnd || Native.IsTarget(hit) ? hit : 0)));
+                        new Action(() => ObserveClick(hit == _owner._hwnd || Native.IsTarget(hit) ? hit : 0, sequence)));
                 }
             }
             catch
@@ -374,19 +423,33 @@ public partial class MainWindow
             return NativeMethods.CallNextHookEx(_hook, code, message, dataPointer);
         }
 
-        private async Task RevealAsync(WindowIdentity clickedWindow)
+        private async Task RevealAsync(WindowIdentity oldWindow, WindowIdentity clickedWindow, long sequence)
         {
-            if (!await Task.Run(() => Native.RevealClickedWindowAfterUnpin(_oldWindow, clickedWindow)) || _owner._quitting) return;
-            if (_owner._titleOverlays.TryGetValue(_oldWindow.Hwnd, out var oldBar)) oldBar.SyncLayer();
-            if (_owner._titleOverlays.TryGetValue(clickedWindow.Hwnd, out var clickedBar)) clickedBar.SyncLayer();
+            try
+            {
+                if (!await Task.Run(() => sequence == Interlocked.Read(ref _inputSequence) &&
+                    Native.RevealClickedWindowAfterUnpin(oldWindow, clickedWindow)) || _disposed) return;
+                foreach (var overlay in _owner._titleOverlays.Values) overlay.SyncLayer();
+            }
+            finally
+            {
+                _revealing = false;
+                Refresh();
+            }
+        }
+
+        private void StopHook()
+        {
+            if (_hook != 0) NativeMethods.UnhookWindowsHookEx(_hook);
+            _hook = 0;
         }
 
         public void Dispose()
         {
-            if (_disposed) return;
             _disposed = true;
-            if (_hook != 0) NativeMethods.UnhookWindowsHookEx(_hook);
-            _hook = 0;
+            Interlocked.Increment(ref _inputSequence);
+            _windows.Clear();
+            StopHook();
         }
     }
 
