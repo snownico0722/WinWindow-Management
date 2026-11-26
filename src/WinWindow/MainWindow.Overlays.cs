@@ -699,6 +699,13 @@ public partial class MainWindow
             return true;
         }
 
+        public void SyncLayer()
+        {
+            if (IsVisible && _item.Identity is { } identity &&
+                Native.GetWindowThreadProcessId(identity.Hwnd, out uint pid) != 0 && pid == (uint)identity.ProcessId)
+                Native.PositionWindowControl(_hwnd, identity.Hwnd);
+        }
+
         public void Hide()
         {
             StopDrag();

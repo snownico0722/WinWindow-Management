@@ -163,13 +163,22 @@ public partial class MainWindow : Window
         _desktop = new(this, Manager);
         _desktop.ActionRequested += async action => await OnDesktopActionAsync(action);
         _desktop.RecoveryRequested += async item => await ExecuteRowAsync(item, "reset");
-        _desktop.WindowsChanged += foreground =>
-        {
-            if (_quitting) return;
-            if (foreground) { ApplyOwnPolicy(); if (CanEnforceOwn()) Native.Raise(_hwnd); }
-            if ((IsVisible && WindowState != WindowState.Minimized) || Manager.HasRules || Manager.HasManagedWindows) QueueRefresh();
-        };
+        _desktop.WindowsChanged += OnDesktopWindowsChanged;
         Run(() => _desktop.ApplyHotkeys(_store.Preferences.Hotkeys));
+    }
+
+    internal void OnDesktopWindowsChanged(bool foreground)
+    {
+        if (_quitting || !_ready) return;
+        if (foreground)
+        {
+            ApplyOwnPolicy();
+            if (CanEnforceOwn()) Native.Raise(_hwnd);
+            // 切前台只改层级时可能没有位置事件，直接校正可见浮条。
+            foreach (var overlay in _titleOverlays.Values)
+                overlay.SyncLayer();
+        }
+        if ((IsVisible && WindowState != WindowState.Minimized) || Manager.HasRules || Manager.HasManagedWindows) QueueRefresh();
     }
 
     private nint WindowMessage(nint hwnd, int msg, nint wp, nint lp, ref bool handled)

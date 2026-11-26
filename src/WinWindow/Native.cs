@@ -93,7 +93,9 @@ internal static class Native
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] private static extern int DwmGetWindowAttributeRect(nint hwnd, int attribute, out Rect rect, int size);
     [DllImport("dwmapi.dll")] internal static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
     [DllImport("gdi32.dll")] private static extern nint CreateRoundRectRgn(int left, int top, int right, int bottom, int widthEllipse, int heightEllipse);
+    [DllImport("gdi32.dll")] private static extern bool PtInRegion(nint region, int x, int y);
     [DllImport("gdi32.dll")] private static extern bool DeleteObject(nint handle);
+    [DllImport("user32.dll")] private static extern int GetWindowRgn(nint hwnd, nint region);
     [DllImport("user32.dll")] private static extern int SetWindowRgn(nint hwnd, nint region, bool redraw);
     [DllImport("user32.dll")] private static extern bool DestroyIcon(nint icon);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
@@ -386,10 +388,32 @@ internal static class Native
     {
         nint region = CreateRoundRectRgn(0, 0, width, height, diameter, diameter);
         if (region == 0) return false;
+        // 用最外侧直边的像素判断实际区域是否偏小。只补 GDI 少给的边，避免无条件放宽圆角。
+        var (right, bottom) = OverlayRegionEdges(region, width, height);
+        if (!right || !bottom)
+        {
+            DeleteObject(region);
+            region = CreateRoundRectRgn(0, 0, width + (right ? 0 : 1), height + (bottom ? 0 : 1), diameter, diameter);
+            if (region == 0) return false;
+        }
         // 系统在成功设置后接管区域句柄，此处只释放设置失败的区域。
         if (SetWindowRgn(hwnd, region, true) != 0) return true;
         DeleteObject(region);
         return false;
+    }
+
+    private static (bool Right, bool Bottom) OverlayRegionEdges(nint region, int width, int height) =>
+        (PtInRegion(region, width - 1, height / 2), PtInRegion(region, width / 2, height - 1));
+
+    internal static (bool Right, bool Bottom) GetOverlayRegionEdgesForTest(nint hwnd, int width, int height, int diameter, bool applied)
+    {
+        nint region = CreateRoundRectRgn(0, 0, width, height, diameter, diameter);
+        if (region == 0) return default;
+        try
+        {
+            return !applied || GetWindowRgn(hwnd, region) != 0 ? OverlayRegionEdges(region, width, height) : default;
+        }
+        finally { DeleteObject(region); }
     }
 
     internal static bool IsPrimaryMouseButtonDown()
@@ -409,21 +433,23 @@ internal static class Native
         return new Rect { Left = x, Top = y, Right = x + w, Bottom = y + h };
     }
 
-    public static bool PositionWindowControl(nint hwnd, nint target, Rect bounds)
+    public static bool PositionWindowControl(nint hwnd, nint target, Rect? bounds = null)
     {
         bool badge = target == 0;
         bool topmost = badge || IsTopmost(target);
         if (!SetOwnTopmost(hwnd, topmost)) return false;
         bool inLayer = badge || GetWindow(hwnd, 2) == target;
-        if (inLayer && GetWindowRect(hwnd, out var current) &&
-            (current.Left, current.Top, current.Right, current.Bottom) ==
-            (bounds.Left, bounds.Top, bounds.Right, bounds.Bottom)) return true;
+        if (inLayer && (bounds is not { } desired ||
+            (GetWindowRect(hwnd, out var current) && (current.Left, current.Top, current.Right, current.Bottom) ==
+            (desired.Left, desired.Top, desired.Right, desired.Bottom)))) return true;
         nint after = inLayer ? 0 : GetWindow(target, 3);
         // 插在目标正上方，仍让挡住目标的窗口盖住按钮。跨过置顶层边界时用 HWND_TOP 保留现有层。
         if (after != 0 && IsTopmost(after) != topmost) after = 0;
         if (after == hwnd) inLayer = true;
-        return SetWindowPos(hwnd, after, bounds.Left, bounds.Top, bounds.Right - bounds.Left,
-            bounds.Bottom - bounds.Top, NoActivate | NoOwnerZOrder | (inLayer ? NoZOrder : 0));
+        uint flags = NoActivate | NoOwnerZOrder | (inLayer ? NoZOrder : 0);
+        return bounds is { } rect
+            ? SetWindowPos(hwnd, after, rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, flags)
+            : SetWindowPos(hwnd, after, 0, 0, 0, 0, flags | NoMove | NoSize | NoSendChanging);
     }
 
     internal static void FitIconOverlayToWorkArea(nint hwnd)

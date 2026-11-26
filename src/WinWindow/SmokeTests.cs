@@ -1258,6 +1258,7 @@ internal static class SmokeTests
 
     private static async Task CheckTitleBarOverlayAndLaunchAsync(MainWindow shell, WindowItem chosen, string output, List<Process> processes)
     {
+        if (Native.IsTopmost(chosen.Hwnd)) await shell.Manager.SetPinAsync(chosen, false, updateRule: false);
         await shell.Manager.SetOpacityAsync(chosen, 80, updateRule: false);
         Native.ShowWindowAsync(chosen.Hwnd, Native.Maximized);
         await WaitAsync("fixture is maximized before collapsing", () => Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized);
@@ -1307,6 +1308,27 @@ internal static class SmokeTests
             Native.GetWindowRect(barHwnd, out var leftBar) && leftBar.Left == originalBar.Left && leftBar.Top == originalBar.Top,
             "toolbar dragging clamps both ends and leaves room for the window buttons");
 
+        // 制造一次前台窗口已切换但浮条还停在旧层级的状态，直接走桌面事件的处理入口。
+        var cover = new Window { Width = 250, Height = 120, ShowInTaskbar = false };
+        try
+        {
+            cover.Show();
+            nint coverHwnd = new WindowInteropHelper(cover).Handle;
+            Assert(Native.SetWindowPos(coverHwnd, 0, originalBar.Left, originalBar.Top, 240, 100, Native.NoActivate),
+                "place a normal foreground window over the toolbar");
+            cover.Activate();
+            await WaitAsync("cover window takes foreground", () => Native.GetForegroundWindow() == coverHwnd);
+            shell.PauseOverlayPollingForTest();
+            Assert(Native.SetWindowPos(barHwnd, 0, 0, 0, 0, 0, Native.NoMove | Native.NoSize | Native.NoActivate) &&
+                Native.IsAbove(barHwnd, coverHwnd), "leave the toolbar temporarily above the covering window");
+            shell.OnDesktopWindowsChanged(foreground: true);
+            Assert(Native.IsAbove(coverHwnd, barHwnd) && Native.IsAbove(barHwnd, chosen.Hwnd) &&
+                Native.GetForegroundWindow() == coverHwnd &&
+                Native.GetWindowRect(barHwnd, out var synced) && Native.NearFrame(synced, originalBar),
+                "foreground changes correct only the toolbar Z order before overlay polling resumes");
+        }
+        finally { cover.Close(); }
+
         Native.ShowWindowAsync(chosen.Hwnd, Native.Restore);
         await WaitAsync("fixture returns to a movable window",
             () => Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Normal);
@@ -1355,6 +1377,13 @@ internal static class SmokeTests
         nint iconHwnd = shell.GetCollapsedIconOverlayHandle(chosen);
         Assert(iconHwnd != 0 && Native.IsTopmost(iconHwnd) && (Native.Style(iconHwnd) & Native.Layered) == 0,
             "collapsed icon overlay stays topmost as a non-layered window");
+        Assert(Native.GetWindowRect(iconHwnd, out var borderBounds), "read the rounded recovery icon bounds");
+        int iconWidth = borderBounds.Right - borderBounds.Left, iconHeight = borderBounds.Bottom - borderBounds.Top;
+        int diameter = (int)Math.Round(16 * Native.WindowDpi(iconHwnd) / 96.0);
+        var originalEdges = Native.GetOverlayRegionEdgesForTest(iconHwnd, iconWidth, iconHeight, diameter, applied: false);
+        Report($"Unadjusted GDI rounded region at {iconWidth}×{iconHeight}: right={originalEdges.Right}, bottom={originalEdges.Bottom}");
+        Assert(Native.GetOverlayRegionEdgesForTest(iconHwnd, iconWidth, iconHeight, diameter, applied: true) == (true, true),
+            "the rounded recovery icon keeps the rightmost and bottommost straight-edge pixels");
 
         var second = await FixtureAsync(output, false);
         processes.Add(second.Process);
