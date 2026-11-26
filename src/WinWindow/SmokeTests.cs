@@ -1399,11 +1399,12 @@ internal static class SmokeTests
         opacitySlider.Value = 65;
         Assert(shell.DesiredOpacity(chosen) == 65 && chosen.Opacity == 50 &&
             chosen.OpacityBeforeQuickToggle == beforeQuick, "queued manual opacity keeps the baseline until the HWND changes");
-        await shell.Manager.SetPinAsync(chosen, true);
-        Assert(opacityRule.Opacity != 50, "pinning during a queued manual edit cannot persist the temporary opacity");
+        shell.Manager.SetRemembered(chosen, false);
+        shell.Manager.SetRemembered(chosen, true);
+        opacityRule = store.Preferences.Rules.Single(rule => rule.Id == chosen.RuleId);
+        Assert(opacityRule.Opacity == beforeQuick, "saving during a queued manual edit preserves the original opacity");
         await WaitAsync("manual opacity replaces the saved baseline", () =>
             !chosen.IsBusy && chosen.Opacity == 65 && opacityRule.Opacity == 65 && chosen.OpacityBeforeQuickToggle is null);
-        await shell.Manager.SetPinAsync(chosen, false);
 
         await shell.ExecuteRowAsync(chosen, "collapseIcon");
         if (!chosen.IsIconCollapsed)
