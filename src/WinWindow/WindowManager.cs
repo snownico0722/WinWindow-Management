@@ -373,7 +373,10 @@ internal sealed class WindowManager
         }
     }
 
-    public Task CollapseToIconAsync(WindowItem item) => OperateAsync(item, async () =>
+    public Task CollapseToIconAsync(WindowItem item) =>
+        CollapseToIconAsync(item, hwnd => Native.ShowWindowAsync(hwnd, Native.Hide));
+
+    internal Task CollapseToIconAsync(WindowItem item, Func<nint, bool> requestHide) => OperateAsync(item, async () =>
     {
         var snapshot = Manage(item);
         if (Native.IsIconic(item.Hwnd) || !Native.IsWindowVisible(item.Hwnd)) return;
@@ -382,7 +385,7 @@ internal sealed class WindowManager
         bool alreadyPending = snapshot.ParkingPending;
         Track(item, s => { s.BeforeParking = placement; s.Parked = s.ParkingPending = true; });
         // 图标是恢复入口。隐藏目标可同时收起任务栏项，原窗口的层级和透明度仍归原来的开关管理。
-        if (!Native.ShowWindowAsync(item.Hwnd, Native.Hide))
+        if (!requestHide(item.Hwnd))
         {
             if (!alreadyPending) Track(item, s => s.Parked = s.ParkingPending = false);
             throw new InvalidOperationException(UiText.Get("CollapseRejected"));
