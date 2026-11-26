@@ -367,6 +367,7 @@ internal sealed class WindowManager
         var snapshot = Manage(item);
         if (Native.IsIconic(item.Hwnd) || !Native.IsWindowVisible(item.Hwnd)) return;
         var placement = Native.GetPlacement(item.Hwnd);
+        item.IconWindowGeometry = Native.TryGetIconWindowGeometry(item.Hwnd, out var geometry) ? geometry : null;
         Track(item, s => { s.BeforeParking = placement; s.Parked = true; });
         // 图标是恢复入口。隐藏目标可同时收起任务栏项，原窗口的层级和透明度仍归原来的开关管理。
         if (!Native.ShowWindowAsync(item.Hwnd, Native.Hide))
@@ -796,26 +797,34 @@ internal sealed class WindowManager
     public Task RestoreParkingAsync(WindowItem item, bool activate = true, Native.Rect? movedBadge = null) => OperateAsync(item, async () =>
     {
         var s = Manage(item);
-        if (s.Parked) Native.ApplyPlacement(item.Hwnd, s.BeforeParking);
-        Native.ShowWindowAsync(item.Hwnd, s.Parked ? (int)s.BeforeParking.ShowCmd : Native.Restore);
         bool maximized = s.Parked && s.BeforeParking.ShowCmd == Native.Maximized;
-        if (!await WaitForAsync(s.Identity, item.IsIconCollapsed
-                ? h => Native.IsRestoredWindow(h, maximized)
-                : h => Native.IsWindowVisible(h) && !Native.IsIconic(h)))
-            throw new InvalidOperationException(UiText.Get("RestoreRejected"));
-
-        if (item.IsIconCollapsed && s.Parked && movedBadge is { } badge)
+        bool restoreFromIcon = item.IsIconCollapsed && s.Parked;
+        var planned = restoreFromIcon && item.IconWindowGeometry is { } geometry
+            ? Native.PlanIconRestore(item.Hwnd, s.BeforeParking, geometry, movedBadge)
+            : null;
+        if (planned is { } plan)
         {
-            bool haveOriginal = Native.TryGetFrameBounds(item.Hwnd, out var original);
-            if (!haveOriginal || !await MoveRestoredWindowToBadgeAsync(s.Identity, badge, maximized))
+            if (!await RestoreToPlannedPositionAsync(s.Identity, plan, maximized, movedBadge))
             {
-                // 定位请求可能被应用拒绝。恢复到移动前的窗口状态并验收后才清除收起日志。
-                if (haveOriginal && (!Native.ApplyPlacement(item.Hwnd, s.BeforeParking) ||
-                    !await WaitForAsync(s.Identity, h => Native.IsRestoredWindow(h, maximized) &&
-                        Native.TryGetFrameBounds(h, out var restored) && Native.NearFrame(restored, original))))
+                // 应用拒绝目标屏时仍按原有布局恢复，确认窗口可用后再移除图标。
+                if (!await ApplyRestorePlacementAsync(s.Identity, s.BeforeParking) ||
+                    !await WaitForAsync(s.Identity, h => Native.IsRestoredWindow(h, maximized)))
                     throw new InvalidOperationException(UiText.Get("RestoreRejected"));
                 Notice?.Invoke(UiText.Get("RestoreBadgeFallback"));
             }
+        }
+        else if (restoreFromIcon)
+        {
+            if (!await ApplyRestorePlacementAsync(s.Identity, s.BeforeParking) ||
+                !await WaitForAsync(s.Identity, h => Native.IsRestoredWindow(h, maximized)))
+                throw new InvalidOperationException(UiText.Get("RestoreRejected"));
+        }
+        else
+        {
+            if (s.Parked) Native.ApplyPlacement(item.Hwnd, s.BeforeParking);
+            Native.ShowWindowAsync(item.Hwnd, s.Parked ? (int)s.BeforeParking.ShowCmd : Native.Restore);
+            if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h)))
+                throw new InvalidOperationException(UiText.Get("RestoreRejected"));
         }
         Track(item, snapshot => snapshot.Parked = false);
         item.IsHidden = false;
@@ -825,30 +834,27 @@ internal sealed class WindowManager
         Finish(item, false);
     });
 
-    private static async Task<bool> MoveRestoredWindowToBadgeAsync(WindowIdentity identity, Native.Rect badge, bool maximized)
+    private static Task<bool> ApplyRestorePlacementAsync(WindowIdentity identity, Native.Placement placement) => Task.Run(() =>
     {
-        if (!Native.TryGetBadgeMonitor(badge, out nint monitor, out var work)) return false;
-        nint hwnd = identity.Hwnd;
-        if (maximized)
-        {
-            if (Native.IsRestoredWindow(hwnd, true, monitor)) return true;
-            if (!Native.ShowWindowAsync(hwnd, Native.Normal) ||
-                !await WaitForAsync(identity, h => Native.IsRestoredWindow(h, false))) return false;
-        }
+        Native.EnsureIdentity(identity);
+        return Native.ApplyPlacement(identity.Hwnd, placement);
+    });
 
-        bool AtBadge(nint h) => Native.IsRestoredWindow(h, false, monitor) && Native.IsAtBadge(h, badge, work);
-        Task<bool> PostMove() => Task.Run(() => Native.PostMoveWindowToBadge(identity, badge, work));
-        if (!AtBadge(hwnd))
-        {
-            if (!await PostMove() ||
-                !await WaitForAsync(identity, h => Native.IsRestoredWindow(h, false, monitor))) return false;
-            // 混合 DPI 下窗口到达目标屏后可能被系统重新缩放，再按目标屏上的实际尺寸贴合。
-            if (!AtBadge(hwnd) && !await PostMove()) return false;
-            if (!await WaitForAsync(identity, AtBadge)) return false;
-        }
-
-        return !maximized || (Native.ShowWindowAsync(hwnd, Native.Maximized) &&
-            await WaitForAsync(identity, h => Native.IsRestoredWindow(h, true, monitor)));
+    private static async Task<bool> RestoreToPlannedPositionAsync(WindowIdentity identity, Native.IconRestorePlacement plan,
+        bool maximized, Native.Rect? movedBadge)
+    {
+        bool OnTarget(nint hwnd) => Native.IsRestoredWindow(hwnd, maximized, plan.Monitor);
+        // SetWindowPlacement 同时提交最终位置和显示状态，隐藏窗第一次显形就在目标屏。
+        if (!await ApplyRestorePlacementAsync(identity, plan.Placement) || !await WaitForAsync(identity, OnTarget))
+            return false;
+        if (maximized) return true;
+        bool AtPosition(nint hwnd) => OnTarget(hwnd) && (movedBadge is { } badge
+            ? Native.IsAtBadge(hwnd, badge, plan.Work)
+            : Native.TryGetFrameBounds(hwnd, out var frame) && Native.FrameInside(frame, plan.Work));
+        if (AtPosition(identity.Hwnd)) return true;
+        // 跨 DPI 后实际大小可能变化，只在窗口已经出现在目标屏后补一次边缘校正。
+        return await Task.Run(() => Native.PostFitRestoredWindow(identity, movedBadge, plan.Work)) &&
+            await WaitForAsync(identity, AtPosition);
     }
     public Task ReleaseAsync(WindowItem item, bool forgetRule = false, bool updateRule = true) => OperateAsync(item, async () =>
     {

@@ -15,6 +15,7 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using NeatWin.Core;
 
 namespace WinWindow;
 
@@ -34,8 +35,11 @@ internal static class Native
         public Point MinPosition; public Point MaxPosition; public Rect NormalPosition;
     }
     [StructLayout(LayoutKind.Sequential)] internal struct MonitorInfo { public int Size; public Rect Monitor; public Rect Work; public uint Flags; }
+    internal readonly record struct IconWindowGeometry(Rect Frame, Rect Outer, MonitorInfo Display);
+    internal readonly record struct IconRestorePlacement(Placement Placement, nint Monitor, Rect Work);
     [StructLayout(LayoutKind.Sequential)] internal struct MinMaxInfo { public Point Reserved; public Point MaxSize; public Point MaxPosition; public Point MinTrack; public Point MaxTrack; }
     internal delegate bool EnumProc(nint hwnd, nint data);
+    private delegate bool MonitorEnumProc(nint monitor, nint dc, nint rect, nint data);
     internal delegate void EventProc(nint hook, uint eventType, nint hwnd, int objectId, int childId, uint threadId, uint time);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc callback, nint data);
     [DllImport("user32.dll")] internal static extern bool IsWindow(nint hwnd);
@@ -73,6 +77,8 @@ internal static class Native
     [DllImport("user32.dll")] private static extern nint MonitorFromPoint(Point point, uint flags);
     [DllImport("user32.dll")] internal static extern nint MonitorFromWindow(nint hwnd, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
+    [DllImport("user32.dll")] private static extern bool EnumDisplayMonitors(nint dc, nint clip, MonitorEnumProc callback, nint data);
+    [DllImport("user32.dll")] private static extern nint MonitorFromRect(in Rect rect, uint flags);
     [DllImport("user32.dll", SetLastError = true)] internal static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint key);
     [DllImport("user32.dll")] internal static extern bool UnregisterHotKey(nint hwnd, int id);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern uint RegisterWindowMessage(string name);
@@ -338,14 +344,92 @@ internal static class Native
     internal static bool MoveWindowControl(nint hwnd, int x, int y) =>
         SetWindowPos(hwnd, 0, x, y, 0, 0, NoSize | NoZOrder | NoActivate | NoOwnerZOrder | NoSendChanging);
 
-    internal static bool TryGetBadgeMonitor(Rect badge, out nint monitor, out Rect work)
+    internal static bool TryGetIconWindowGeometry(nint hwnd, out IconWindowGeometry geometry)
     {
-        var center = new Point { X = badge.Left + (badge.Right - badge.Left) / 2, Y = badge.Top + (badge.Bottom - badge.Top) / 2 };
-        monitor = MonitorFromPoint(center, 2);
         var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
-        bool found = GetMonitorInfo(monitor, ref info);
-        work = info.Work;
-        return found && work.Right > work.Left && work.Bottom > work.Top;
+        geometry = default;
+        if (!TryGetFrameBounds(hwnd, out var frame) || !GetWindowRect(hwnd, out var outer) ||
+            !GetMonitorInfo(MonitorFromWindow(hwnd, 2), ref info)) return false;
+        geometry = new(frame, outer, info);
+        return true;
+    }
+
+    internal static IconRestorePlacement? PlanIconRestore(nint hwnd, Placement placement, IconWindowGeometry geometry, Rect? movedBadge)
+    {
+        var frame = geometry.Frame;
+        var outer = geometry.Outer;
+        bool maximized = placement.ShowCmd == Maximized;
+        if (movedBadge is null && IsOnDesktop(frame)) return null;
+
+        var anchor = movedBadge ?? frame;
+        nint monitor = MonitorFromRect(in anchor, 2);
+        var display = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(monitor, ref display)) return null;
+        if (maximized && MonitorFromWindow(hwnd, 0) == monitor) return null;
+
+        bool toolWindow = (Style(hwnd) & ToolWindow) != 0;
+        var work = display.Work;
+        if (work.Right <= work.Left || work.Bottom <= work.Top) return null;
+        // WINDOWPLACEMENT 用工作区坐标，DWM 边框用屏幕坐标。在完成定位后才换回工作区坐标。
+        if (maximized)
+        {
+            var normal = placement.NormalPosition;
+            if (!toolWindow)
+                normal = OffsetRect(normal, geometry.Display.Work.Left - geometry.Display.Monitor.Left,
+                    geometry.Display.Work.Top - geometry.Display.Monitor.Top);
+            bool valid = normal.Right > normal.Left && normal.Bottom > normal.Top;
+            frame = valid ? normal : geometry.Frame;
+        }
+        if (movedBadge is { } badge)
+            frame = FrameByBadge(frame, badge, work, WindowDpi(hwnd));
+        else
+            frame = FitFrame(frame, work, frame.Left, frame.Top);
+
+        if (!maximized)
+        {
+            frame.Left += outer.Left - geometry.Frame.Left;
+            frame.Top += outer.Top - geometry.Frame.Top;
+            frame.Right += outer.Right - geometry.Frame.Right;
+            frame.Bottom += outer.Bottom - geometry.Frame.Bottom;
+        }
+        int workX = toolWindow ? 0 : display.Work.Left - display.Monitor.Left;
+        int workY = toolWindow ? 0 : display.Work.Top - display.Monitor.Top;
+        placement.NormalPosition = OffsetRect(frame, -workX, -workY);
+        if (maximized)
+        {
+            // 用目标屏的最大化位置和正常位置一起提交，避免先在旧屏显示后再还原换屏。
+            placement.MaxPosition = new Point
+            {
+                X = display.Work.Left - workX + geometry.Outer.Left - geometry.Display.Work.Left,
+                Y = display.Work.Top - workY + geometry.Outer.Top - geometry.Display.Work.Top
+            };
+        }
+        return new(placement, monitor, work);
+    }
+
+    private static Rect OffsetRect(Rect rect, int x, int y) =>
+        new() { Left = rect.Left + x, Top = rect.Top + y, Right = rect.Right + x, Bottom = rect.Bottom + y };
+
+    internal static bool FrameInside(Rect frame, Rect area) =>
+        frame.Left >= area.Left && frame.Top >= area.Top && frame.Right <= area.Right && frame.Bottom <= area.Bottom;
+
+    internal static int VirtualDesktopLeft() => GetSystemMetrics(76);
+
+    internal static bool IsOnDesktop(Rect frame)
+    {
+        List<RectI> uncovered = [RectI.FromEdges(frame.Left, frame.Top, frame.Right, frame.Bottom)];
+        EnumDisplayMonitors(0, 0, (monitor, _, _, _) =>
+        {
+            var display = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+            if (GetMonitorInfo(monitor, ref display))
+            {
+                var bounds = display.Monitor;
+                uncovered = RectRegion.Subtract(uncovered, RectI.FromEdges(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom),
+                    int.MaxValue);
+            }
+            return uncovered.Count != 0;
+        }, 0);
+        return uncovered.Count == 0;
     }
 
     internal static bool IsRestoredWindow(nint hwnd, bool maximized, nint monitor = 0) =>
@@ -354,11 +438,16 @@ internal static class Native
 
     private static Rect FrameByBadge(Rect frame, Rect badge, Rect work, uint dpi)
     {
+        int inset = (int)Math.Round(6 * dpi / 96.0);
+        return FitFrame(frame, work, badge.Left - inset, badge.Top - inset);
+    }
+
+    private static Rect FitFrame(Rect frame, Rect work, int left, int top)
+    {
         int width = Math.Min(frame.Right - frame.Left, work.Right - work.Left);
         int height = Math.Min(frame.Bottom - frame.Top, work.Bottom - work.Top);
-        int inset = (int)Math.Round(6 * dpi / 96.0);
-        int left = Math.Clamp(badge.Left - inset, work.Left, work.Right - width);
-        int top = Math.Clamp(badge.Top - inset, work.Top, work.Bottom - height);
+        left = Math.Clamp(left, work.Left, work.Right - width);
+        top = Math.Clamp(top, work.Top, work.Bottom - height);
         return new Rect { Left = left, Top = top, Right = left + width, Bottom = top + height };
     }
 
@@ -368,15 +457,16 @@ internal static class Native
 
     internal static bool IsAtBadge(nint hwnd, Rect badge, Rect work) =>
         TryGetFrameBounds(hwnd, out var frame) &&
-        frame.Left >= work.Left && frame.Top >= work.Top && frame.Right <= work.Right && frame.Bottom <= work.Bottom &&
+        FrameInside(frame, work) &&
         NearFrame(frame, FrameByBadge(frame, badge, work, WindowDpi(hwnd)));
 
-    internal static bool PostMoveWindowToBadge(WindowIdentity identity, Rect badge, Rect work)
+    internal static bool PostFitRestoredWindow(WindowIdentity identity, Rect? badge, Rect work)
     {
         EnsureIdentity(identity);
         nint hwnd = identity.Hwnd;
         if (!TryGetFrameBounds(hwnd, out var frame) || !GetWindowRect(hwnd, out var outer)) return false;
-        var wanted = FrameByBadge(frame, badge, work, WindowDpi(hwnd));
+        var wanted = badge is { } anchor ? FrameByBadge(frame, anchor, work, WindowDpi(hwnd))
+            : FitFrame(frame, work, frame.Left, frame.Top);
         int x = wanted.Left + outer.Left - frame.Left;
         int y = wanted.Top + outer.Top - frame.Top;
         int width = wanted.Right - wanted.Left + (outer.Right - frame.Right) - (outer.Left - frame.Left);
@@ -402,16 +492,31 @@ internal static class Native
         return false;
     }
 
+    internal static bool TryUseSystemOverlayCorners(nint hwnd)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) return false;
+        const int cornerPreference = 33, borderColor = 34;
+        int round = 2;
+        if (DwmSetWindowAttribute(hwnd, cornerPreference, ref round, sizeof(int)) != 0) return false;
+        // 外层描边由应用绘制，避免再叠一圈系统边框。
+        int noBorder = unchecked((int)0xfffffffe);
+        DwmSetWindowAttribute(hwnd, borderColor, ref noBorder, sizeof(int));
+        return true;
+    }
+
+    internal static bool UsesSystemOverlayCorners(nint hwnd) =>
+        DwmGetWindowAttribute(hwnd, 33, out int corner, sizeof(int)) == 0 && corner == 2;
+
     private static (bool Right, bool Bottom) OverlayRegionEdges(nint region, int width, int height) =>
         (PtInRegion(region, width - 1, height / 2), PtInRegion(region, width / 2, height - 1));
 
-    internal static (bool Right, bool Bottom) GetOverlayRegionEdgesForTest(nint hwnd, int width, int height, int diameter, bool applied)
+    internal static (bool Right, bool Bottom) GetOverlayRegionEdgesForTest(nint hwnd, int width, int height)
     {
-        nint region = CreateRoundRectRgn(0, 0, width, height, diameter, diameter);
+        nint region = CreateRoundRectRgn(0, 0, width, height, 0, 0);
         if (region == 0) return default;
         try
         {
-            return !applied || GetWindowRgn(hwnd, region) != 0 ? OverlayRegionEdges(region, width, height) : default;
+            return GetWindowRgn(hwnd, region) != 0 ? OverlayRegionEdges(region, width, height) : default;
         }
         finally { DeleteObject(region); }
     }

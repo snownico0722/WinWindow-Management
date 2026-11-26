@@ -182,7 +182,7 @@
   <data name="RestoreOpacity" xml:space="preserve"><value>Restore transparency</value></data>
   <data name="RestorePending" xml:space="preserve"><value>The window has not been restored yet. Recovery records were kept.</value></data>
   <data name="RestoreRejected" xml:space="preserve"><value>The window rejected the restore request.</value></data>
-  <data name="RestoreBadgeFallback" xml:space="preserve"><value>The window could not move to the icon. Its original placement was restored.</value></data>
+  <data name="RestoreBadgeFallback" xml:space="preserve"><value>The window could not move to the requested position. Its original placement was used to restore it.</value></data>
   <data name="RestoreWindow" xml:space="preserve"><value>Restore window</value></data>
   <data name="RetryNextLaunch" xml:space="preserve"><value>Could not restore {0} windows. Recovery will continue on the next launch.</value></data>
   <data name="RuleError" xml:space="preserve"><value>Could not apply all settings for “{0}”. {1}</value></data>
@@ -285,8 +285,8 @@ Click to expand · Drag to move</value></data>
   <data name="QuickActionsSection" xml:space="preserve"><value>Managed window title-bar bar</value></data>
   <data name="DefaultQuickOpacity" xml:space="preserve"><value>Quick opacity preset (default 50%)</value></data>
   <data name="DefaultQuickOpacityHint" xml:space="preserve"><value>Target opacity percentage toggled by the managed window's title-bar button; click again to restore</value></data>
-  <data name="ToggleQuickOpacity" xml:space="preserve"><value>Switch opacity to {0}%</value></data>
-  <data name="RestoreQuickOpacity" xml:space="preserve"><value>Restore opacity ({0}%)</value></data>
+  <data name="ToggleQuickOpacity" xml:space="preserve"><value>Apply quick opacity</value></data>
+  <data name="RestoreQuickOpacity" xml:space="preserve"><value>Restore previous opacity</value></data>
   <data name="ApplicationPathUnavailable" xml:space="preserve"><value>The saved application file could not be found.</value></data>
   <data name="ApplicationShellUnavailable" xml:space="preserve"><value>Windows Explorer is unavailable. The application could not be launched.</value></data>
   <data name="CollapseRejected" xml:space="preserve"><value>This window could not be collapsed to an icon.</value></data>

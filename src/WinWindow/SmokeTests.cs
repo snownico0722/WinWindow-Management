@@ -1272,7 +1272,11 @@ internal static class SmokeTests
 
         var toolbar = (Border)Application.Current.Windows.Cast<Window>()
             .Single(window => new WindowInteropHelper(window).Handle == barHwnd).Content;
-        var collapseButton = ((Panel)toolbar.Child).Children.OfType<Button>().Single();
+        var toolbarButtons = ((Panel)toolbar.Child).Children;
+        var collapseButton = toolbarButtons.OfType<Button>().Single();
+        var opacityButton = toolbarButtons.OfType<ToggleButton>().Last();
+        Assert(opacityButton.Content is Viewbox { Child: System.Windows.Shapes.Path } &&
+            opacityButton.ToolTip is string tip && !tip.Contains('%'), "the toolbar opacity button displays only its icon");
         bool ToolbarConsumesRelease(int horizontalDelta, bool shouldDrag)
         {
             int timestamp = Environment.TickCount;
@@ -1379,11 +1383,19 @@ internal static class SmokeTests
             "collapsed icon overlay stays topmost as a non-layered window");
         Assert(Native.GetWindowRect(iconHwnd, out var borderBounds), "read the rounded recovery icon bounds");
         int iconWidth = borderBounds.Right - borderBounds.Left, iconHeight = borderBounds.Bottom - borderBounds.Top;
-        int diameter = (int)Math.Round(16 * Native.WindowDpi(iconHwnd) / 96.0);
-        var originalEdges = Native.GetOverlayRegionEdgesForTest(iconHwnd, iconWidth, iconHeight, diameter, applied: false);
-        Report($"Unadjusted GDI rounded region at {iconWidth}×{iconHeight}: right={originalEdges.Right}, bottom={originalEdges.Bottom}");
-        Assert(Native.GetOverlayRegionEdgesForTest(iconHwnd, iconWidth, iconHeight, diameter, applied: true) == (true, true),
-            "the rounded recovery icon keeps the rightmost and bottommost straight-edge pixels");
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+            Assert(Native.UsesSystemOverlayCorners(iconHwnd), "Windows 11 recovery icon requests DWM rounded corners");
+        // 独立 HWND 验证旧系统的区域回退。应用区域会禁用 DWM 圆角，因此在单独窗口上测试。
+        var fallbackIcon = new Window { WindowStyle = WindowStyle.None, Width = 50, Height = 50, ShowInTaskbar = false };
+        try
+        {
+            nint fallbackHandle = new WindowInteropHelper(fallbackIcon).EnsureHandle();
+            int diameter = (int)Math.Round(16 * Native.WindowDpi(iconHwnd) / 96.0);
+            Assert(Native.RoundOverlayRegion(fallbackHandle, iconWidth, iconHeight, diameter) &&
+                Native.GetOverlayRegionEdgesForTest(fallbackHandle, iconWidth, iconHeight) == (true, true),
+                "GDI fallback keeps the rightmost and bottommost straight-edge pixels");
+        }
+        finally { fallbackIcon.Close(); }
 
         var second = await FixtureAsync(output, false);
         processes.Add(second.Process);
@@ -1419,15 +1431,51 @@ internal static class SmokeTests
         await WaitAsync("an unmoved icon restores the original normal window geometry", () => !chosen.IsIconCollapsed &&
             Native.TryGetFrameBounds(chosen.Hwnd, out var restored) && Native.NearFrame(restored, originalFrame));
 
+        // 用虚拟桌面的最左边界给半离屏用例留出确定没有显示器的区域。
+        int desktopLeft = Native.VirtualDesktopLeft();
+        int clippedX = desktopLeft - width / 3;
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, clippedX, y, width, height, Native.NoActivate | noZOrder)),
+            "place the fixture partly outside the desktop before collapse");
+        await WaitAsync("part of the original frame is outside all displays", () =>
+            Native.TryGetFrameBounds(chosen.Hwnd, out var clipped) && clipped.Left < desktopLeft);
+        await shell.ExecuteRowAsync(chosen, "collapseIcon");
+        await WaitAsync("the partly off-screen fixture collapses", () => chosen.IsIconCollapsed);
+        await shell.ExecuteRowAsync(chosen, "expandIcon");
+        await WaitAsync("an unmoved icon brings an off-screen window fully back onto the desktop", () =>
+            !chosen.IsIconCollapsed && Native.TryGetFrameBounds(chosen.Hwnd, out var recovered) && Native.IsOnDesktop(recovered));
+
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
+            "return the fixture to the original display before dragging its icon");
+        await WaitAsync("the fixture has returned to the original display position", () =>
+            Native.TryGetFrameBounds(chosen.Hwnd, out var positioned) && Native.NearFrame(positioned, originalFrame));
         await shell.ExecuteRowAsync(chosen, "collapseIcon");
         await WaitAsync("the normal fixture collapses again", () => chosen.IsIconCollapsed && shell.HasCollapsedIconOverlay(chosen));
         Assert(shell.MoveCollapsedIconForTest(chosen, screen.Work.Right - 44, screen.Work.Bottom - 44) &&
             Native.GetWindowRect(shell.GetCollapsedIconOverlayHandle(chosen), out _), "the recovery icon can be dropped at the far edge");
         if (!Native.GetWindowRect(shell.GetCollapsedIconOverlayHandle(chosen), out var badge))
             throw new InvalidOperationException("Cannot read the dragged recovery icon bounds.");
-        await shell.ExecuteRowAsync(chosen, "expandIcon");
-        await WaitAsync("the normal window opens within the work area beside the dragged icon", () =>
-            !chosen.IsIconCollapsed && Native.IsAtBadge(chosen.Hwnd, badge, screen.Work));
+        var firstShownBounds = new TaskCompletionSource<Native.Rect>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Native.EventProc onShow = (_, _, hwnd, objectId, childId, _, _) =>
+        {
+            if (hwnd == chosen.Hwnd && objectId == 0 && childId == 0 && Native.GetWindowRect(hwnd, out var bounds))
+                firstShownBounds.TrySetResult(bounds);
+        };
+        nint showHook = Native.SetWinEventHook(0x8002, 0x8002, 0, onShow, (uint)chosen.Identity!.ProcessId, 0, 0);
+        Assert(showHook != 0, "register the target window show hook");
+        try
+        {
+            await shell.ExecuteRowAsync(chosen, "expandIcon");
+            await WaitAsync("the normal window opens within the work area beside the dragged icon", () =>
+                !chosen.IsIconCollapsed && Native.IsAtBadge(chosen.Hwnd, badge, screen.Work));
+            var firstShown = await firstShownBounds.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert(Native.GetWindowRect(chosen.Hwnd, out var finalBounds) && Native.NearFrame(firstShown, finalBounds),
+                "the expanded window is already at its destination on the first show event");
+        }
+        finally
+        {
+            Native.UnhookWinEvent(showHook);
+            GC.KeepAlive(onShow);
+        }
 
         Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
             "move the expanded window back to the original side");

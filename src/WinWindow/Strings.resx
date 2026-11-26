@@ -182,7 +182,7 @@
   <data name="RestoreOpacity" xml:space="preserve"><value>恢复透明状态</value></data>
   <data name="RestorePending" xml:space="preserve"><value>窗口尚未恢复，记录已保留。</value></data>
   <data name="RestoreRejected" xml:space="preserve"><value>窗口未接受恢复操作。</value></data>
-  <data name="RestoreBadgeFallback" xml:space="preserve"><value>窗口未能移到图标位置，已按原位置恢复。</value></data>
+  <data name="RestoreBadgeFallback" xml:space="preserve"><value>窗口未能移到目标位置，已尝试按原位置恢复。</value></data>
   <data name="RestoreWindow" xml:space="preserve"><value>恢复窗口</value></data>
   <data name="RetryNextLaunch" xml:space="preserve"><value>{0} 个窗口未恢复，记录已保留，下次启动继续恢复。</value></data>
   <data name="RuleError" xml:space="preserve"><value>“{0}”的规则未完全应用：{1}</value></data>
@@ -285,8 +285,8 @@
   <data name="QuickActionsSection" xml:space="preserve"><value>被管窗口顶栏快捷栏</value></data>
   <data name="DefaultQuickOpacity" xml:space="preserve"><value>顶栏快捷不透明度（默认 50%）</value></data>
   <data name="DefaultQuickOpacityHint" xml:space="preserve"><value>点击被管理窗口顶栏透明度按钮时切换的目标百分比，再次点击恢复原值</value></data>
-  <data name="ToggleQuickOpacity" xml:space="preserve"><value>切换不透明度为 {0}%</value></data>
-  <data name="RestoreQuickOpacity" xml:space="preserve"><value>恢复不透明度（{0}%）</value></data>
+  <data name="ToggleQuickOpacity" xml:space="preserve"><value>应用快捷不透明度</value></data>
+  <data name="RestoreQuickOpacity" xml:space="preserve"><value>恢复原不透明度</value></data>
   <data name="ApplicationPathUnavailable" xml:space="preserve"><value>找不到保存的程序文件。</value></data>
   <data name="ApplicationShellUnavailable" xml:space="preserve"><value>Windows 资源管理器暂时不可用，无法启动程序。</value></data>
   <data name="CollapseRejected" xml:space="preserve"><value>此窗口未能收起为图标。</value></data>

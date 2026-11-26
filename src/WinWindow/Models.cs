@@ -146,7 +146,16 @@ internal sealed class WindowItem : Observable
     private bool _hidden;
     public bool IsHidden { get => _hidden; set { if (Set(ref _hidden, value)) NotifyState(); } }
     private bool _iconCollapsed;
-    public bool IsIconCollapsed { get => _iconCollapsed; set { if (Set(ref _iconCollapsed, value)) NotifyState(); } }
+    public bool IsIconCollapsed
+    {
+        get => _iconCollapsed;
+        set
+        {
+            if (!value) IconWindowGeometry = null;
+            if (Set(ref _iconCollapsed, value)) NotifyState();
+        }
+    }
+    internal Native.IconWindowGeometry? IconWindowGeometry { get; set; }
     private bool _busy;
     public bool IsBusy { get => _busy; set { if (Set(ref _busy, value)) { Changed(nameof(CanOperate)); Changed(nameof(CanLaunch)); NotifyState(); } } }
     public bool CanOperate => IsAvailable && !IsBusy;

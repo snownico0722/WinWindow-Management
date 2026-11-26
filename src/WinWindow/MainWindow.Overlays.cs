@@ -9,6 +9,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Shell;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 
@@ -294,7 +295,7 @@ public partial class MainWindow
 
     private sealed class TitleBarOverlay : IDisposable
     {
-        private const int DefaultWidthDip = 98;
+        private const int WidthDip = 78;
         private const int HeightDip = 26;
         private const int DragThresholdDip = 4;
 
@@ -307,7 +308,6 @@ public partial class MainWindow
         private readonly ToggleButton _pinButton;
         private readonly Path _pinPath;
         private readonly ToggleButton _opacityButton;
-        private readonly TextBlock _opacityText;
         private readonly Border _toolbar;
         private HwndSource? _source;
         private nint _hwnd;
@@ -399,29 +399,11 @@ public partial class MainWindow
                 RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.FindAncestor, typeof(ToggleButton), 1)
             });
 
-            _opacityText = new TextBlock
-            {
-                FontSize = 10.5,
-                FontWeight = FontWeights.SemiBold,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(2.5, 0, 0, 0)
-            };
-
-            var opacityContent = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(4, 0, 4, 0)
-            };
-            opacityContent.Children.Add(new Viewbox { Width = 11.5, Height = 11.5, VerticalAlignment = VerticalAlignment.Center, Child = opacityPath });
-            opacityContent.Children.Add(_opacityText);
-
             _opacityButton = new ToggleButton
             {
-                Width = double.NaN,
-                MinWidth = 38,
+                Width = 22,
                 Height = 20,
-                Content = opacityContent
+                Content = new Viewbox { Width = 13, Height = 13, Child = opacityPath }
             };
             _opacityButton.SetResourceReference(FrameworkElement.StyleProperty, "IconToggle");
             _opacityButton.Click += (_, _) =>
@@ -459,7 +441,7 @@ public partial class MainWindow
                 ShowActivated = false,
                 ResizeMode = ResizeMode.NoResize,
                 Focusable = false,
-                SizeToContent = SizeToContent.Width,
+                Width = WidthDip,
                 Height = HeightDip,
                 Content = _toolbar
             };
@@ -617,11 +599,9 @@ public partial class MainWindow
                 bool isQuickActive = currentOpacity == quickOpacity;
                 _opacityButton.IsChecked = isQuickActive;
                 _opacityButton.IsEnabled = !_item.IsBusy;
-                _opacityText.Text = quickOpacity + "%";
-                int restorePreview = _item.OpacityBeforeQuickToggle is int prev && prev > 0 && prev != quickOpacity ? prev : 100;
-                _opacityButton.ToolTip = isQuickActive
-                    ? UiText.Format("RestoreQuickOpacity", restorePreview)
-                    : UiText.Format("ToggleQuickOpacity", quickOpacity);
+                string opacityAction = UiText.Get(isQuickActive ? "RestoreQuickOpacity" : "ToggleQuickOpacity");
+                _opacityButton.ToolTip = opacityAction;
+                System.Windows.Automation.AutomationProperties.SetName(_opacityButton, opacityAction);
             }
             finally { _syncing = false; }
         }
@@ -630,8 +610,7 @@ public partial class MainWindow
         {
             bounds = default;
             double scale = Native.WindowDpi(_item.Hwnd) / 96.0;
-            double widthDip = _window.ActualWidth > 1 ? _window.ActualWidth : DefaultWidthDip;
-            int widthPx = (int)Math.Ceiling(widthDip * scale);
+            int widthPx = (int)Math.Ceiling(WidthDip * scale);
             int heightPx = (int)Math.Ceiling(HeightDip * scale);
             if (!Native.TryGetTitleBarOverlayTrack(_item.Hwnd, widthPx, heightPx, scale, out var track))
                 return false;
@@ -742,6 +721,7 @@ public partial class MainWindow
         private HwndSource? _source;
         private nint _hwnd;
         private bool _disposed, _placed, _capturing, _dragged;
+        private bool _systemCorners;
         private (int Width, int Height, uint Dpi) _clipSize;
         private (int X, int Y) _lastDragPosition;
         private Native.Point _downCursor;
@@ -829,6 +809,18 @@ public partial class MainWindow
                 Content = _card
             };
             _window.SetResourceReference(Control.BackgroundProperty, "Panel");
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+            {
+                // 留一像素玻璃框供 DWM 合成圆角，按钮区仍由应用处理鼠标输入。
+                WindowChrome.SetWindowChrome(_window, new WindowChrome
+                {
+                    CaptionHeight = 0,
+                    ResizeBorderThickness = new Thickness(0),
+                    GlassFrameThickness = new Thickness(1),
+                    UseAeroCaptionButtons = false
+                });
+                WindowChrome.SetIsHitTestVisibleInChrome(_card, true);
+            }
             _window.SourceInitialized += OnSourceInitialized;
             _window.DpiChanged += (_, _) =>
                 _window.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(ApplyCorners));
@@ -839,13 +831,14 @@ public partial class MainWindow
         {
             _hwnd = new WindowInteropHelper(_window).Handle;
             Native.ConfigureInteractiveOverlay(_hwnd);
+            _systemCorners = Native.TryUseSystemOverlayCorners(_hwnd);
             _source = HwndSource.FromHwnd(_hwnd);
             _source?.AddHook(WndProc);
         }
 
         private void ApplyCorners()
         {
-            if (_disposed || !Native.GetWindowRect(_hwnd, out var bounds)) return;
+            if (_disposed || _systemCorners || !Native.GetWindowRect(_hwnd, out var bounds)) return;
             var size = (Width: bounds.Right - bounds.Left, Height: bounds.Bottom - bounds.Top, Dpi: Native.WindowDpi(_hwnd));
             if (size == _clipSize || size.Width <= 0 || size.Height <= 0) return;
             int diameter = (int)Math.Round(2 * CornerRadiusDip * size.Dpi / 96.0);
