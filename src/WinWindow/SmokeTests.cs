@@ -1405,7 +1405,14 @@ internal static class SmokeTests
 
         Native.ShowWindowAsync(chosen.Hwnd, Native.Restore);
         await WaitAsync("the fixture returns to its normal state", () => Native.IsRestoredWindow(chosen.Hwnd, false));
-        Assert(Native.TryGetFrameBounds(chosen.Hwnd, out var originalFrame), "read the normal window position before collapse");
+        // 显示状态和 DWM 边界可能先后更新。先放到已知位置，再等可见边框离开最大化区域。
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
+            "place the restored fixture at the baseline position");
+        Native.Rect originalFrame = default;
+        await WaitAsync("the normal fixture has settled at the baseline before collapse", () =>
+            Native.TryGetFrameBounds(chosen.Hwnd, out originalFrame) &&
+            Math.Abs(originalFrame.Left - x) < 24 && Math.Abs(originalFrame.Top - y) < 24 &&
+            Math.Abs(originalFrame.Right - (x + width)) < 24 && Math.Abs(originalFrame.Bottom - (y + height)) < 24);
         await shell.ExecuteRowAsync(chosen, "collapseIcon");
         await WaitAsync("the normal fixture collapses", () => chosen.IsIconCollapsed && shell.HasCollapsedIconOverlay(chosen));
         await shell.ExecuteRowAsync(chosen, "expandIcon");
