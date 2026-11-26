@@ -17,6 +17,19 @@ public sealed class LogicalLocalProposalTests
             (m.TargetVisualRect.Width, m.TargetVisualRect.Height)));
     }
 
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(-2560, -100)]
+    public void FractionalDpiBottomSnapPreservesPhysicalSizeAndUnmovedAxis(int x, int y)
+    {
+        var area = new RectI(x, y, 2560, 1380);
+        var rect = new RectI(x + 96, y + 359, 800, 1001);
+        var visible = V(1, rect);
+        visible = visible with { Window = visible.Window with { WorkArea = area, Dpi = 144 } };
+        var target = Assert.Single(IntentLayoutPlanner.LogicalLocalPlan([visible], new())).TargetVisualRect;
+        Assert.Equal(rect with { Y = area.Bottom - rect.Height }, target);
+    }
+
     [Fact]
     public void LogicalLocalProposalUsesWorkAreaRelativeCoordinates()
     {

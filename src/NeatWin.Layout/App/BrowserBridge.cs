@@ -52,7 +52,7 @@ internal sealed class BrowserBridge : IDisposable
             _socket.Dispose();
             throw;
         }
-        _ = ReceiveAsync();
+        _ = ReceiveUntilClosedAsync(ReceiveOneAsync);
     }
 
     internal BrowserExtensionSample[] Read(long now)
@@ -62,39 +62,44 @@ internal sealed class BrowserBridge : IDisposable
         lock (_gate) return _latest.Values.Where(sample => sample.IsFresh(now)).ToArray();
     }
 
-    private async Task ReceiveAsync()
+    internal static async Task ReceiveUntilClosedAsync(Func<Task> receiveOne)
     {
-        try
+        while (true)
         {
-            while (true)
-            {
-                var datagram = await _socket.ReceiveAsync().ConfigureAwait(false);
-                byte[] packet = datagram.Buffer;
-                if (packet.Length <= TokenLength || packet.Length > TokenLength + MaxMessage ||
-                    !CryptographicOperations.FixedTimeEquals(_token, packet.AsSpan(0, TokenLength))) continue;
-                if (packet.Length == TokenLength + 1 && packet[TokenLength] <= 1)
-                {
-                    bool wanted = packet[TokenLength] == 1 || Environment.TickCount64 - Volatile.Read(ref _lastDemand) <= 2500;
-                    await _socket.SendAsync(new byte[] { wanted ? (byte)1 : (byte)0 }, datagram.RemoteEndPoint).ConfigureAwait(false);
-                    continue;
-                }
-                BrowserExtensionSample? sample;
-                try { sample = JsonSerializer.Deserialize<BrowserExtensionSample>(packet.AsSpan(TokenLength), Json); }
-                catch (JsonException) { continue; }
-                long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                if (sample == null || !sample.IsFresh(now)) continue;
-                lock (_gate)
-                {
-                    var key = (sample.Session, sample.WindowId);
-                    if (_latest.TryGetValue(key, out var old) && old.SampledAt > sample.SampledAt) continue;
-                    if (_latest.Count >= 32)
-                        foreach (var stale in _latest.Where(pair => !pair.Value.IsFresh(now)).Select(pair => pair.Key).ToArray())
-                            _latest.Remove(stale);
-                    if (_latest.Count < 32 || _latest.ContainsKey(key)) _latest[key] = sample;
-                }
-            }
+            try { await receiveOne().ConfigureAwait(false); }
+            // 旧中继关闭端口后，Windows 可能在下一次收包时交付上次回包的 ICMP 错误。
+            // 它只属于那个数据报；已释放或其他不可恢复的套接字仍结束，不循环重试。
+            catch (SocketException ex) when (ex.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionRefused) { }
+            catch (Exception ex) when (ex is ObjectDisposedException or SocketException) { return; }
         }
-        catch (Exception ex) when (ex is ObjectDisposedException or SocketException) { }
+    }
+
+    private async Task ReceiveOneAsync()
+    {
+        var datagram = await _socket.ReceiveAsync().ConfigureAwait(false);
+        byte[] packet = datagram.Buffer;
+        if (packet.Length <= TokenLength || packet.Length > TokenLength + MaxMessage ||
+            !CryptographicOperations.FixedTimeEquals(_token, packet.AsSpan(0, TokenLength))) return;
+        if (packet.Length == TokenLength + 1 && packet[TokenLength] <= 1)
+        {
+            bool wanted = packet[TokenLength] == 1 || Environment.TickCount64 - Volatile.Read(ref _lastDemand) <= 2500;
+            await _socket.SendAsync(new byte[] { wanted ? (byte)1 : (byte)0 }, datagram.RemoteEndPoint).ConfigureAwait(false);
+            return;
+        }
+        BrowserExtensionSample? sample;
+        try { sample = JsonSerializer.Deserialize<BrowserExtensionSample>(packet.AsSpan(TokenLength), Json); }
+        catch (JsonException) { return; }
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (sample == null || !sample.IsFresh(now)) return;
+        lock (_gate)
+        {
+            var key = (sample.Session, sample.WindowId);
+            if (_latest.TryGetValue(key, out var old) && old.SampledAt > sample.SampledAt) return;
+            if (_latest.Count >= 32)
+                foreach (var stale in _latest.Where(pair => !pair.Value.IsFresh(now)).Select(pair => pair.Key).ToArray())
+                    _latest.Remove(stale);
+            if (_latest.Count < 32 || _latest.ContainsKey(key)) _latest[key] = sample;
+        }
     }
 
     internal static async Task<int> RunNativeHostAsync(string origin, string directory, Stream input, Stream output)

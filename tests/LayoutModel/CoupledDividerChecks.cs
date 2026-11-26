@@ -15,7 +15,7 @@ internal static class CoupledDividerChecks
             WindowSnapshot Make(int id, RectI r) => new(id, r, r, area, 1, default, true, id == 1, true, id - 1, 96, (uint)id);
             var main = Make(1, end);
             var peer = Make(2, other);
-            var gesture = new ManualWindowGesture(1, start, end, area, ManualGestureKind.Resize, [], 400, 0) { ProcessId = 1 };
+            var gesture = new ManualWindowGesture(1, start, end, area, mirror ? ManualGestureKind.MoveAndResize : ManualGestureKind.Resize, [], 400, 0) { ProcessId = 1 };
             var ctx = new TaskLayoutContext(RecentGesture: gesture, GestureAnchor: 1, Focus: new(1, 2, 2),
                 Attention: new Dictionary<nint, LayoutAttention>(), UseWorkingPairs: true) { Diagnostics = new(TraceCandidateAxes: true) };
             IntentLayoutPlan Plan(TaskLayoutContext c, params WindowSnapshot[] windows) => LayoutDispatch.Create(LayoutRoute.Smart,
@@ -43,6 +43,11 @@ internal static class CoupledDividerChecks
             check(Plan(ctx, main, peer, unrelated).Moves.All(m => m.Window.Handle == 2) &&
                 Plan(ctx with { AllowGestureAssist = false }, main, peer).Groups.All(g => g.Selected != "coupled-divider"),
                 "a distant third surface stays put and a focus-only event cannot use the divider");
+            var translated = end with { X = end.X + 32 };
+            var translatedMain = Make(1, translated);
+            var bothEdges = ctx with { RecentGesture = gesture with { EndRect = translated, Kind = ManualGestureKind.MoveAndResize } };
+            check(Plan(bothEdges, translatedMain, peer).Groups.All(g => g.Selected != "coupled-divider"),
+                "combined move and resize that changes the opposite edge must not drive the divider");
             var fromMove = ctx with { RecentGesture = gesture with { Kind = ManualGestureKind.Move } };
             check(Plan(fromMove, main, peer).Groups.All(g => g.Selected != "coupled-divider") &&
                 Plan(ctx with { RecentGesture = gesture with { EndRect = end with { Height = end.Height + 50 } } }, main, peer)

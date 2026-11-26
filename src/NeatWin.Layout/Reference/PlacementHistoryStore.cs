@@ -20,27 +20,38 @@ internal sealed class PlacementHistoryStore(string directory)
     private SolverRating[]? _ratings;
     private bool _feedbackDirty;
 
-    internal SolverFeedback[] DurableFeedback()
+    internal SolverFeedback[] DurableFeedback() => ReadFeedback() ?? [];
+
+    private SolverFeedback[]? ReadFeedback()
     {
         if (_durableFeedback != null) return _durableFeedback;
         try
         {
             using var stream = File.OpenRead(FeedbackPath);
-            _durableFeedback = JsonSerializer.Deserialize<SolverFeedback[]>(stream)?
+            return _durableFeedback = JsonSerializer.Deserialize<SolverFeedback[]>(stream)?
                 .Where(f => f is { RequestId.Length: > 0, Context.Length: > 0, Edits.Length: > 0, Votes.Count: > 1 })
                 .DistinctBy(f => f.RequestId).TakeLast(1024).ToArray();
         }
-        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { }
-        return _durableFeedback ??= [];
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return _durableFeedback = []; }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { return null; }
     }
 
-    internal SolverRating[] Ratings() => _ratings ??= SolverFeedbackSession.Ratings(DurableFeedback().Concat(_sessionFeedback));
+    internal SolverRating[] Ratings()
+    {
+        if (_ratings != null) return _ratings;
+        var durable = ReadFeedback();
+        var ratings = SolverFeedbackSession.Ratings((durable ?? []).Concat(_sessionFeedback));
+        if (durable != null) _ratings = ratings;
+        return ratings;
+    }
     internal void LearnFeedback(SolverFeedback sample, bool durable)
     {
-        if (DurableFeedback().Any(f => f.RequestId == sample.RequestId) || _sessionFeedback.Any(f => f.RequestId == sample.RequestId)) return;
+        var previous = ReadFeedback();
+        if (previous?.Any(f => f.RequestId == sample.RequestId) == true || _sessionFeedback.Any(f => f.RequestId == sample.RequestId)) return;
         if (durable)
         {
-            _durableFeedback = DurableFeedback().Append(sample).TakeLast(1024).ToArray();
+            if (previous == null) return; // 暂时读不到旧反馈，放弃本条，下一次仍会重读。
+            _durableFeedback = previous.Append(sample).TakeLast(1024).ToArray();
             _feedbackDirty = true;
         }
         else
@@ -85,23 +96,22 @@ internal sealed class PlacementHistoryStore(string directory)
         return Convert.ToHexString(HMACSHA256.HashData(_key, Encoding.UTF8.GetBytes(identity)))[..24];
     }
 
-    internal LayoutHabit[] Read()
+    internal LayoutHabit[] Read() => ReadHistory() ?? [];
+
+    private LayoutHabit[]? ReadHistory()
     {
         if (_samples != null) return _samples;
         try
         {
-            if (File.Exists(HistoryPath))
-            {
-                // 原始标题和路径可使正常的 1024 个样本超过旧字节上限。按样本数限制历史。
-                using var input = File.OpenRead(HistoryPath);
-                _samples = JsonSerializer.Deserialize<LayoutHabit[]>(input)?
-                    .Where(s => s != null && double.IsFinite(s.Center) && double.IsFinite(s.Width) &&
-                        s.Center is >= 0 and <= 1 && s.Width is > 0 and <= 1 && s.RevealedCell is >= -1 and < 16)
-                    .TakeLast(1024).ToArray();
-            }
+            // 原始标题和路径可使正常的 1024 个样本超过旧字节上限。按样本数限制历史。
+            using var input = File.OpenRead(HistoryPath);
+            return _samples = JsonSerializer.Deserialize<LayoutHabit[]>(input)?
+                .Where(s => s != null && double.IsFinite(s.Center) && double.IsFinite(s.Width) &&
+                    s.Center is >= 0 and <= 1 && s.Width is > 0 and <= 1 && s.RevealedCell is >= -1 and < 16)
+                .TakeLast(1024).ToArray();
         }
-        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { }
-        return _samples ??= [];
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return _samples = []; }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { return null; }
     }
 
     internal void Learn(WindowAdjustmentObservation observation)
@@ -111,7 +121,8 @@ internal sealed class PlacementHistoryStore(string directory)
 
     internal void Learn(LayoutHabit edit)
     {
-        var next = LayoutHabits.Add(Read(), edit);
+        if (ReadHistory() is not { } previous) return;
+        var next = LayoutHabits.Add(previous, edit);
         Directory.CreateDirectory(directory);
         File.WriteAllText(HistoryPath + ".tmp", JsonSerializer.Serialize(next));
         File.Move(HistoryPath + ".tmp", HistoryPath, true);

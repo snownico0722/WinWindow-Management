@@ -10,7 +10,7 @@ internal static partial class IntentLayoutPlanner
         if (release == null && ctx.ReplayDivider is { } replay)
             release = new(ctx.GestureAnchor, replay.Start, replay.End, replay.WorkArea, ManualGestureKind.Resize, [], 0, 0);
         if (!ctx.AllowGestureAssist || ctx.ExplicitArrange || ctx.GeometryOnlyWindow != 0 ||
-            release is not { Kind: ManualGestureKind.Resize } g || ctx.GestureAnchor != g.WindowHandle ||
+            release is not { Kind: ManualGestureKind.Resize or ManualGestureKind.MoveAndResize } g || ctx.GestureAnchor != g.WindowHandle ||
             ctx.Focus?.NavigationAncestors is { Length: > 0 } || ctx.Focus?.Navigation is { Length: > 0 }) return null;
         var source = visible.FirstOrDefault(v => v.Window.Handle == g.WindowHandle)?.Window;
         if (source is not { IsForeground: true, IsManageable: true, IsTopmost: false, IsResizable: true, Owner: 0 } ||

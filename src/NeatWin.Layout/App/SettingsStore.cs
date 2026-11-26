@@ -17,7 +17,7 @@ internal sealed class SettingsStore
 
     internal void SaveAutomaticLayoutMode(AutomaticLayoutMode mode)
     {
-        var settings = LoadStoredSettings();
+        if (ReadStoredSettings() is not { } settings) return;
         mode = AutomaticLayoutPolicy.Read((int)mode, false);
         settings.AutomaticLayoutMode = (int)mode;
         settings.AutoTidyEnabled = mode != AutomaticLayoutMode.Off; // Older versions keep their toggle.
@@ -83,7 +83,7 @@ internal sealed class SettingsStore
 
     internal void SaveBehaviorConfiguration(BehaviorConfiguration behavior)
     {
-        var settings = LoadStoredSettings();
+        if (ReadStoredSettings() is not { } settings) return;
         settings.Behavior = behavior;
         WriteStoredSettings(settings);
     }
@@ -91,13 +91,13 @@ internal sealed class SettingsStore
     internal bool UseImportedPlacement
     {
         get => LoadStoredSettings().UseImportedPlacement ?? true;
-        set { var settings = LoadStoredSettings(); settings.UseImportedPlacement = value; WriteStoredSettings(settings); }
+        set { if (ReadStoredSettings() is not { } settings) return; settings.UseImportedPlacement = value; WriteStoredSettings(settings); }
     }
 
     internal bool VisualSampling
     {
         get => LoadStoredSettings().VisualSampling;
-        set { var settings = LoadStoredSettings(); settings.VisualSampling = value; WriteStoredSettings(settings); }
+        set { if (ReadStoredSettings() is not { } settings) return; settings.VisualSampling = value; WriteStoredSettings(settings); }
     }
 
     internal bool RecordingEnabled
@@ -105,7 +105,7 @@ internal sealed class SettingsStore
         get => LoadStoredSettings().RecordingEnabled;
         set
         {
-            var settings = LoadStoredSettings();
+            if (ReadStoredSettings() is not { } settings) return;
             settings.RecordingEnabled = value;
             WriteStoredSettings(settings);
         }
@@ -116,7 +116,7 @@ internal sealed class SettingsStore
 
     internal void SaveLayoutOptions(TidyOptions options, SmartBehaviorOptions behavior)
     {
-        var settings = LoadStoredSettings();
+        if (ReadStoredSettings() is not { } settings) return;
         settings.AlgorithmMode = (int)options.AlgorithmMode;
         settings.SmartStrength = (int)options.SmartStrength;
         settings.SmartHitTendency = (int)SmartHitTendency.Balanced;
@@ -143,7 +143,7 @@ internal sealed class SettingsStore
     internal void SaveSmartPersonalization(SmartPersonalizationState state)
     {
         state = state.Normalize();
-        var settings = LoadStoredSettings();
+        if (ReadStoredSettings() is not { } settings) return;
         settings.AutoFeatureWeights = state.AutoFeatureWeights;
         settings.AutoArchetypeBias = state.AutoArchetypeBias;
         settings.FollowTargetBias = state.FollowTargetBias;
@@ -154,21 +154,18 @@ internal sealed class SettingsStore
         WriteStoredSettings(settings);
     }
 
-    private StoredSettings LoadStoredSettings()
-    {
-        try
-        {
-            if (!File.Exists(_settingsPath))
-            {
-                return StoredSettings.CreateDefault();
-            }
+    private StoredSettings LoadStoredSettings() => ReadStoredSettings() ?? StoredSettings.CreateDefault();
 
-            var json = File.ReadAllText(_settingsPath);
-            return JsonSerializer.Deserialize<StoredSettings>(json) ?? StoredSettings.CreateDefault();
-        }
-        catch
+    // 只有文件确实不存在才从默认值开始写。读失败时界面可以用默认值，但不能用它覆盖原文件。
+    private StoredSettings? ReadStoredSettings()
+    {
+        try { return JsonSerializer.Deserialize<StoredSettings>(File.ReadAllText(_settingsPath)); }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+        { return StoredSettings.CreateDefault(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException)
         {
-            return StoredSettings.CreateDefault();
+            System.Diagnostics.Trace.TraceWarning($"Layout settings unavailable: {e.Message}");
+            return null;
         }
     }
 
