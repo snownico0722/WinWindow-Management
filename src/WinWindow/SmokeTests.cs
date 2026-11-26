@@ -1274,7 +1274,8 @@ internal static class SmokeTests
             .Single(window => new WindowInteropHelper(window).Handle == barHwnd).Content;
         var toolbarButtons = ((Panel)toolbar.Child).Children;
         var collapseButton = toolbarButtons.OfType<Button>().Single();
-        var opacityButton = toolbarButtons.OfType<ToggleButton>().Last();
+        var pinButton = (ToggleButton)toolbarButtons[1];
+        var opacityButton = (ToggleButton)toolbarButtons[2];
         Assert(opacityButton.Content is Viewbox { Child: System.Windows.Shapes.Path } &&
             opacityButton.ToolTip is string tip && !tip.Contains('%'), "the toolbar opacity button displays only its icon");
         bool ToolbarConsumesRelease(int horizontalDelta, bool shouldDrag)
@@ -1330,6 +1331,24 @@ internal static class SmokeTests
                 Native.GetForegroundWindow() == coverHwnd &&
                 Native.GetWindowRect(barHwnd, out var synced) && Native.NearFrame(synced, originalBar),
                 "foreground changes correct only the toolbar Z order before overlay polling resumes");
+
+            await shell.Manager.SetPinAsync(chosen, false);
+            Native.SetForegroundWindow(chosen.Hwnd);
+            await WaitAsync("target starts in the foreground before the pin click", () => Native.GetForegroundWindow() == chosen.Hwnd);
+            Native.SetTopmost(chosen.Hwnd, true);
+            Assert(!chosen.Pinned && Native.IsTopmost(chosen.Hwnd), "the target can change topmost before the toolbar refreshes");
+            Task opacity = shell.Manager.SetOpacityAsync(chosen, 80);
+            chosen.Changed(nameof(chosen.Opacity));
+            Assert(chosen.IsBusy && pinButton.IsEnabled, "an opacity operation leaves the toolbar pin click available");
+            pinButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            cover.Activate();
+            await WaitAsync("another window takes foreground after the queued click", () => Native.GetForegroundWindow() == coverHwnd);
+            await opacity;
+            await WaitAsync("queued pin click unpins the live target and yields to the new foreground", () =>
+                !chosen.IsBusy && !Native.IsTopmost(chosen.Hwnd) && Native.IsAbove(coverHwnd, barHwnd) &&
+                Native.IsAbove(barHwnd, chosen.Hwnd) && Native.GetForegroundWindow() == coverHwnd);
+            await shell.Manager.ReinforcePinnedAsync();
+            Assert(!chosen.WantsPin && !Native.IsTopmost(chosen.Hwnd), "a completed unpin clears the reinforcement request");
         }
         finally { cover.Close(); }
 

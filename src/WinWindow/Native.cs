@@ -1310,6 +1310,33 @@ internal static class Native
         Check(SetWindowPos(hwnd, value ? (nint)(-1) : (nint)(-2), 0, 0, 0, 0, NoMove | NoSize | NoActivate), UiText.Get("TogglePin"));
         if (IsTopmost(hwnd) != value) throw new InvalidOperationException(UiText.Get("PinRejected"));
     }
+    internal static void UnpinBelowForeground(nint hwnd, nint workbench, nint lastExternalForeground)
+    {
+        // HWND_NOTOPMOST 会把目标留在普通层的最前面。已有其他前台窗口时，直接降到它后方。
+        const uint flags = NoMove | NoSize | NoActivate | NoOwnerZOrder;
+        nint after = FindAnchor();
+        if (after == 0 || !SetWindowPos(hwnd, after, 0, 0, 0, 0, flags) || IsTopmost(hwnd))
+        {
+            after = 0;
+            SetTopmost(hwnd, false);
+        }
+
+        // SetWindowPos 期间用户也可能切了前台。只在目标实际挡在新前台之前时补调层级。
+        nint current = FindAnchor();
+        if (current != 0 && current != after && IsAbove(hwnd, current))
+            SetWindowPos(hwnd, current, 0, 0, 0, 0, flags);
+
+        nint FindAnchor()
+        {
+            nint foreground = GetForegroundWindow();
+            if (foreground == workbench) foreground = lastExternalForeground;
+            if (foreground == 0 || foreground == hwnd || !IsWindowVisible(foreground) ||
+                IsIconic(foreground) || IsTopmost(foreground) || IsShell(foreground) ||
+                GetAncestor(foreground, 2) != foreground || GetAncestor(foreground, 3) == GetAncestor(hwnd, 3))
+                return 0;
+            return DwmGetWindowAttribute(foreground, 14, out int cloaked, 4) == 0 && cloaked != 0 ? 0 : foreground;
+        }
+    }
     public static bool SetOwnTopmost(nint hwnd, bool value)
     {
         if (IsTopmost(hwnd) == value) return true;

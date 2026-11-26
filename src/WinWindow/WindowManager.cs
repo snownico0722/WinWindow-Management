@@ -566,16 +566,47 @@ internal sealed class WindowManager
         }
     }
 
-    public Task SetPinAsync(WindowItem item, bool value, bool updateRule = true) => OperateAsync(item, async () =>
+    public Task SetPinAsync(WindowItem item, bool value, bool updateRule = true) =>
+        ChangePinAsync(item, value, updateRule);
+
+    internal async Task<bool?> TogglePinAsync(WindowItem item, nint workbench, nint lastExternalForeground)
     {
-        Track(item, s => s.EditedTopmost = true);
-        await Task.Run(() => { Native.EnsureIdentity(item.Identity!); Native.SetTopmost(item.Hwnd, value); });
-        item.Pinned = Native.IsTopmost(item.Hwnd);
-        if (item.Pinned != value) throw new InvalidOperationException(UiText.Get("PinRejected"));
-        item.WantsPin = value;
-        if (updateRule && value) AutoRemember(item);
-        Finish(item, updateRule);
-    });
+        // 透明度等操作可能恰好在按下图钉时开始。保留这次点击，等同一窗口的操作完成再读取状态。
+        while (!_stopping && _operations.TryGetValue(item, out var pending)) await pending;
+        if (_stopping || !Items.Contains(item)) return null;
+
+        if (item.Identity is not null)
+            return await ChangePinAsync(item, value: null, updateRule: true, workbench, lastExternalForeground);
+
+        bool savedPin = !item.Pinned;
+        await SetListedPinAsync(item, savedPin);
+        return savedPin;
+    }
+
+    private async Task<bool> ChangePinAsync(WindowItem item, bool? value, bool updateRule,
+        nint workbench = 0, nint lastExternalForeground = 0)
+    {
+        bool pinned = item.Pinned;
+        await OperateAsync(item, async () =>
+        {
+            Track(item, s => s.EditedTopmost = true);
+            var identity = item.Identity!;
+            bool wanted = await Task.Run(() =>
+            {
+                Native.EnsureIdentity(identity);
+                bool next = value ?? !Native.IsTopmost(identity.Hwnd);
+                if (value is null && !next) Native.UnpinBelowForeground(identity.Hwnd, workbench, lastExternalForeground);
+                else Native.SetTopmost(identity.Hwnd, next);
+                return next;
+            });
+            pinned = item.Pinned = Native.IsTopmost(identity.Hwnd);
+            if (pinned != wanted) throw new InvalidOperationException(UiText.Get("PinRejected"));
+            item.WantsPin = wanted;
+            if (updateRule && wanted) AutoRemember(item);
+            Finish(item, updateRule);
+        });
+        return pinned;
+    }
     public Task SetOpacityAsync(WindowItem item, int value, bool updateRule = true) => OperateAsync(item, async () =>
     {
         value = Math.Clamp(value, 0, 100); Track(item, s => s.EditedOpacity = true);

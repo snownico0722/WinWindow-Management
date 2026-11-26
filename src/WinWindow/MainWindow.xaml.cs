@@ -305,10 +305,7 @@ public partial class MainWindow : Window
                 else await Manager.ActivateAsync(item);
                 break;
             case "pin":
-                bool nextPin = !item.Pinned;
-                await Manager.SetListedPinAsync(item, nextPin);
-                if (item.Hwnd != 0) Outline.Show(item.Hwnd, transient: true, muted: !nextPin);
-                PinFeedback(item, nextPin);
+                await ToggleManagedPinAsync(item);
                 break;
             case "through": await Manager.SetClickThroughAsync(item, !item.ClickThrough); break;
             case "mute": await Manager.SetMuteAsync(item, !item.Muted); break;
@@ -346,6 +343,19 @@ public partial class MainWindow : Window
             case "copy": Clipboard.SetText($"{item.Title}\n{item.Details}\n{item.ProcessPath}"); ShowStatus(UiText.Get("InfoCopied")); break;
         }
     });
+
+    private async Task ToggleManagedPinAsync(WindowItem item)
+    {
+        bool? pinned = await Manager.TogglePinAsync(item, _hwnd, _desktop?.LastExternalForeground ?? 0);
+        if (pinned is not bool value) return;
+        if (item.Hwnd != 0)
+        {
+            if (value) Outline.Show(item.Hwnd, transient: true);
+            // 描边自身置顶，取消置顶后也应立即让出前台窗口。
+            else _flash?.Hide();
+        }
+        PinFeedback(item, value);
+    }
 
     private void PinFeedback(WindowItem item, bool pinned)
     {
@@ -792,10 +802,7 @@ public partial class MainWindow : Window
             switch (action)
             {
                 case "pin":
-                    bool nextPin = !Native.IsTopmost(item.Hwnd);
-                    await Manager.SetPinAsync(item, nextPin);
-                    Outline.Show(item.Hwnd, transient: true, muted: !nextPin);
-                    PinFeedback(item, nextPin);
+                    await ToggleManagedPinAsync(item);
                     break;
                 case "park":
                     _flash?.Hide();
@@ -857,7 +864,6 @@ public partial class MainWindow : Window
         private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(460) };
         private nint _hwnd;
         private bool _disposed;
-        private bool _muted;
 
         public nint Handle => _hwnd;
         public bool IsVisible => _window.IsVisible;
@@ -889,7 +895,7 @@ public partial class MainWindow : Window
             _timer.Tick += (_, _) => Hide();
         }
 
-        public void Show(nint targetHwnd, bool transient, bool muted = false)
+        public void Show(nint targetHwnd, bool transient)
         {
             if (_disposed || targetHwnd == 0 || !Native.TryGetFrameBounds(targetHwnd, out var rect))
             {
@@ -897,11 +903,6 @@ public partial class MainWindow : Window
                 return;
             }
             _timer.Stop();
-            if (_muted != muted)
-            {
-                _muted = muted;
-                _frame.SetResourceReference(Border.BorderBrushProperty, muted ? "Muted" : "Accent");
-            }
             if (_hwnd == 0) new WindowInteropHelper(_window).EnsureHandle();
             const int inset = 5;
             var bounds = new Native.Rect { Left = rect.Left - inset, Top = rect.Top - inset, Right = rect.Right + inset, Bottom = rect.Bottom + inset };

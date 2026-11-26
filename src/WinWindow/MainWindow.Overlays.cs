@@ -592,7 +592,6 @@ public partial class MainWindow
                 _collapseButton.ToolTip = UiText.Get("CollapseToIcon");
 
                 _pinButton.IsChecked = _item.Pinned;
-                _pinButton.IsEnabled = !_item.IsBusy;
                 _pinButton.ToolTip = _item.Pinned ? UiText.Get("UnpinKeepListed") : UiText.Get("PinWindow");
                 _pinPath.Data = Geometry.Parse(_item.Pinned ? PinActiveGeometry : PinInactiveGeometry);
 
