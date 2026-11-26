@@ -43,11 +43,34 @@ jobs:
         run: dotnet test tests/NeatWin.Tests/NeatWin.Tests.csproj -c Release --logger "console;verbosity=minimal"
       - name: Build WPF
         run: dotnet build src/WinWindow/WinWindow.csproj -c Release
+      # Manual uploads and asset refreshes target existing releases. Resolve the actual
+      # release before choosing a package; a manually entered tag may be a prerelease.
+      - name: Resolve existing release for asset upload
+        id: existing
+        if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && env.CREATE_RELEASE != 'true' && contains(github.event.head_commit.message, '[publish-assets]'))
+        uses: actions/github-script@v7
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+        with:
+          script: |
+            const explicit = (process.env.INPUT_TAG || '').trim();
+            if (context.eventName === 'workflow_dispatch' && !explicit) throw new Error('An explicit release tag is required.');
+            const version = require('fs').readFileSync('src/WinWindow/WinWindow.csproj', 'utf8')
+              .match(/<Version>(\d+\.\d+\.\d+)<\/Version>/)?.[1];
+            if (!explicit && !version) throw new Error('A release tag or stable project version is required.');
+            const { data: release } = await github.rest.repos.getReleaseByTag({
+              ...context.repo, tag: explicit || `v${version}`,
+            });
+            core.setOutput('tag', release.tag_name);
+            core.setOutput('stable', !release.prerelease);
       - name: Publish standalone Windows executables
+        id: package
         shell: pwsh
         env:
-          INCLUDE_RUNTIME: ${{ env.CREATE_RELEASE == 'true' || (github.event_name == 'release' && !github.event.release.prerelease) || (github.event_name == 'workflow_dispatch' && (inputs.include_runtime || inputs.release_tag != '')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-assets]')) }}
-        run: ./scripts/package.ps1 -TestNative -IncludeRuntime:($env:INCLUDE_RUNTIME -eq 'true')
+          INCLUDE_RUNTIME: ${{ env.CREATE_RELEASE == 'true' || (github.event_name == 'release' && !github.event.release.prerelease) || (github.event_name == 'workflow_dispatch' && inputs.include_runtime) || steps.existing.outputs.stable == 'true' }}
+        run: |
+          ./scripts/package.ps1 -TestNative -IncludeRuntime:($env:INCLUDE_RUNTIME -eq 'true')
+          "include_runtime=$($env:INCLUDE_RUNTIME.ToLowerInvariant())" >> $env:GITHUB_OUTPUT
       - name: Native window and UI smoke tests from the published executables
         shell: pwsh
         run: |
@@ -74,11 +97,11 @@ jobs:
             if ($p.ExitCode -ne 0) { throw "Smoke tests failed for $($entry.Name) ($($p.ExitCode))" }
           }
       - name: Attach standalone executables to GitHub Release
-        if: env.CREATE_RELEASE == 'true' || github.event_name == 'release' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-assets]')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        if: env.CREATE_RELEASE == 'true' || github.event_name == 'release' || steps.existing.outputs.tag != ''
         uses: actions/github-script@v7
         env:
-          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || (github.event_name == 'workflow_dispatch' && inputs.release_tag) || 'v0.1.0' }}
-          PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || false }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || steps.existing.outputs.tag }}
+          INCLUDE_RUNTIME_ASSET: ${{ steps.package.outputs.include_runtime }}
         with:
           script: |
             const fs = require('fs');
@@ -88,14 +111,14 @@ jobs:
               .match(/<Version>(\d+\.\d+\.\d+)<\/Version>/)?.[1];
             if (createRelease && !version) throw new Error('A stable project version is required.');
             const tag = createRelease ? `v${version}` : process.env.RELEASE_TAG;
-            const prerelease = process.env.PRERELEASE === 'true';
+            if (!tag) throw new Error('No release tag was resolved.');
 
             const files = [
               { name: 'WinWindow-win-x64.exe', path: 'artifacts/WinWindow-win-x64.exe', contentType: 'application/octet-stream' },
               { name: 'NoFocusLoss-LICENSE.txt', path: 'artifacts/NoFocusLoss-LICENSE.txt', contentType: 'text/plain' },
               { name: 'MinHook-LICENSE.txt', path: 'artifacts/MinHook-LICENSE.txt', contentType: 'text/plain' },
             ];
-            if (!prerelease) {
+            if (process.env.INCLUDE_RUNTIME_ASSET === 'true') {
               files.push({
                 name: 'WinWindow-win-x64-self-contained.exe',
                 path: 'artifacts/WinWindow-win-x64-self-contained.exe',

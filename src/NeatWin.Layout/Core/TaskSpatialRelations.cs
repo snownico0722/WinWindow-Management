@@ -53,10 +53,18 @@ internal static partial class IntentLayoutPlanner
         {
             var w = byHandle[m.Window.Handle].Window;
             var old = oldLogical[w.Handle]; var next = m.TargetVisualRect; var r = w.VisualRect;
-            return new TidyMove(w, new(r.X + (int)Math.Round((next.X - old.X) * scale),
+            var physical = new RectI(r.X + (int)Math.Round((next.X - old.X) * scale),
                 r.Y + (int)Math.Round((next.Y - old.Y) * scale),
                 r.Width + (int)Math.Round((next.Width - old.Width) * scale),
-                r.Height + (int)Math.Round((next.Height - old.Height) * scale)));
+                r.Height + (int)Math.Round((next.Height - old.Height) * scale));
+            // 工作区边缘是准确的物理像素。分数缩放下，舍入后的 DIP 位移未必正好到边。
+            // 只修正在这一轴移动到边缘的候选，不改变未动轴的坐标或原有窗口大小。
+            var bounds = m.Window.WorkArea;
+            if (old.Left != next.Left && next.Left == bounds.Left) physical = physical with { X = area.Left };
+            else if (old.Right != next.Right && next.Right == bounds.Right) physical = physical with { X = area.Right - physical.Width };
+            if (old.Top != next.Top && next.Top == bounds.Top) physical = physical with { Y = area.Top };
+            else if (old.Bottom != next.Bottom && next.Bottom == bounds.Bottom) physical = physical with { Y = area.Bottom - physical.Height };
+            return new TidyMove(w, physical);
         }).ToArray();
     }
 }

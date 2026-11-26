@@ -47,6 +47,25 @@ public class BrowserBridgeTests
         finally { Directory.Delete(layout, recursive: true); }
     }
 
+    [Fact]
+    public async Task ReceiverProcessesNextPacketAfterPeerResetButStopsOnBrokenSocket()
+    {
+        int calls = 0, delivered = 0;
+        Task ReceiveOne()
+        {
+            switch (++calls)
+            {
+                case 1: throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionReset);
+                case 2: delivered++; return Task.CompletedTask;
+                case 3: throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.NotSocket);
+                default: throw new InvalidOperationException("Retried a terminal error.");
+            }
+        }
+        await BrowserBridge.ReceiveUntilClosedAsync(ReceiveOne);
+        Assert.Equal(1, delivered);
+        Assert.Equal(3, calls);
+    }
+
     private static MemoryStream Frame<T>(T sample)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(sample, new JsonSerializerOptions(JsonSerializerDefaults.Web));

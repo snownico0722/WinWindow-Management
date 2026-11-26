@@ -210,7 +210,7 @@ public sealed record RecordedTaskSignals(int Main, int Companion, int Switches, 
             context.VerifiedTaskRepeat, context.ReadingInput is { Count: > 0 } input
                 ? input.Where(e => Id(e.Key) != 0).ToDictionary(e => Id(e.Key), e => e.Value) : null, context.ObservedChangeEvents, context.OmittedChanges,
             context.AllowGestureAssist && Id(context.GestureAnchor) != 0 &&
-            context.RecentGesture is { Kind: ManualGestureKind.Resize } release && release.WindowHandle == context.GestureAnchor
+            context.RecentGesture is { Kind: ManualGestureKind.Resize or ManualGestureKind.MoveAndResize } release && release.WindowHandle == context.GestureAnchor
                 ? new(release.StartRect, release.EndRect, release.WorkArea) : null,
             context.InstanceUses?.Where(e => Id(e.Key) != 0).ToDictionary(e => Id(e.Key), e => e.Value),
             context.SolverRatings is { Length: > 0 } ratings ? ratings : null);
