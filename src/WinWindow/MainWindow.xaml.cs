@@ -292,7 +292,8 @@ public partial class MainWindow : Window
         switch (action)
         {
             case "activate":
-                await Manager.ActivateAsync(item);
+                if (item.IsIconCollapsed) await ExpandManagedWindowAsync(item);
+                else await Manager.ActivateAsync(item);
                 break;
             case "pin":
                 bool nextPin = !item.Pinned;
@@ -312,13 +313,15 @@ public partial class MainWindow : Window
                 await CollapseManagedWindowAsync(item);
                 break;
             case "expandIcon":
-                await Manager.RestoreParkingAsync(item, activate: true);
+                await ExpandManagedWindowAsync(item);
                 break;
             case "quickOpacity":
                 ToggleQuickOpacity(item);
                 break;
             case "park":
-                if (item.IsMinimized || item.IsHidden || item.IsIconCollapsed)
+                if (item.IsIconCollapsed)
+                    await ExpandManagedWindowAsync(item);
+                else if (item.IsMinimized || item.IsHidden)
                 {
                     await Manager.RestoreParkingAsync(item);
                 }

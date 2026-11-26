@@ -1272,18 +1272,21 @@ internal static class SmokeTests
         var toolbar = (Border)Application.Current.Windows.Cast<Window>()
             .Single(window => new WindowInteropHelper(window).Handle == barHwnd).Content;
         var collapseButton = ((Panel)toolbar.Child).Children.OfType<Button>().Single();
-        bool ToolbarConsumesRelease(int holdMilliseconds)
+        bool ToolbarConsumesRelease(int horizontalDelta, bool shouldDrag)
         {
             int timestamp = Environment.TickCount;
             collapseButton.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, timestamp, MouseButton.Left)
                 { RoutedEvent = Mouse.PreviewMouseDownEvent });
-            var released = new MouseButtonEventArgs(Mouse.PrimaryDevice, unchecked(timestamp + holdMilliseconds), MouseButton.Left)
+            Assert(shell.MovePressedTitleOverlayForTest(chosen, horizontalDelta) == shouldDrag && toolbar.Cursor == Cursors.Arrow,
+                "the toolbar applies a horizontal threshold and keeps the normal pointer");
+            var released = new MouseButtonEventArgs(Mouse.PrimaryDevice, timestamp + 15, MouseButton.Left)
                 { RoutedEvent = Mouse.PreviewMouseUpEvent };
             collapseButton.RaiseEvent(released);
             return released.Handled;
         }
-        Assert(!ToolbarConsumesRelease(100) && ToolbarConsumesRelease(400),
-            "a short toolbar press reaches the button and a long press consumes its release");
+        Assert(!ToolbarConsumesRelease(1, false) && ToolbarConsumesRelease(18, true),
+            "a click with slight movement reaches the button and a quick horizontal drag consumes its release");
+        shell.MoveTitleOverlayForTest(chosen, int.MinValue);
 
         if (!Native.GetWindowRect(barHwnd, out var originalBar))
             throw new InvalidOperationException("Cannot read the title toolbar bounds.");
@@ -1370,6 +1373,34 @@ internal static class SmokeTests
         await WaitAsync("clicking collapsed icon restores the maximized target window", () =>
             !chosen.IsIconCollapsed && !shell.HasCollapsedIconOverlay(chosen) &&
             Native.IsWindowVisible(chosen.Hwnd) && Native.GetPlacement(chosen.Hwnd).ShowCmd == Native.Maximized, 3000);
+
+        Native.ShowWindowAsync(chosen.Hwnd, Native.Restore);
+        await WaitAsync("the fixture returns to its normal state", () => Native.IsRestoredWindow(chosen.Hwnd, false));
+        Assert(Native.TryGetFrameBounds(chosen.Hwnd, out var originalFrame), "read the normal window position before collapse");
+        await shell.ExecuteRowAsync(chosen, "collapseIcon");
+        await WaitAsync("the normal fixture collapses", () => chosen.IsIconCollapsed && shell.HasCollapsedIconOverlay(chosen));
+        await shell.ExecuteRowAsync(chosen, "expandIcon");
+        await WaitAsync("an unmoved icon restores the original normal window geometry", () => !chosen.IsIconCollapsed &&
+            Native.TryGetFrameBounds(chosen.Hwnd, out var restored) && Native.NearFrame(restored, originalFrame));
+
+        await shell.ExecuteRowAsync(chosen, "collapseIcon");
+        await WaitAsync("the normal fixture collapses again", () => chosen.IsIconCollapsed && shell.HasCollapsedIconOverlay(chosen));
+        Assert(shell.MoveCollapsedIconForTest(chosen, screen.Work.Right - 44, screen.Work.Bottom - 44) &&
+            Native.GetWindowRect(shell.GetCollapsedIconOverlayHandle(chosen), out _), "the recovery icon can be dropped at the far edge");
+        if (!Native.GetWindowRect(shell.GetCollapsedIconOverlayHandle(chosen), out var badge))
+            throw new InvalidOperationException("Cannot read the dragged recovery icon bounds.");
+        await shell.ExecuteRowAsync(chosen, "expandIcon");
+        await WaitAsync("the normal window opens within the work area beside the dragged icon", () =>
+            !chosen.IsIconCollapsed && Native.IsAtBadge(chosen.Hwnd, badge, screen.Work));
+
+        Assert(await Task.Run(() => Native.SetWindowPos(chosen.Hwnd, 0, x, y, width, height, Native.NoActivate | noZOrder)),
+            "move the expanded window back to the original side");
+        await shell.ExecuteRowAsync(chosen, "collapseIcon");
+        await WaitAsync("a fresh collapse places a new icon near the current window", () => chosen.IsIconCollapsed &&
+            Native.GetWindowRect(shell.GetCollapsedIconOverlayHandle(chosen), out var newBadge) &&
+            newBadge.Left < x + 80 && newBadge.Top < y + 80);
+        await shell.ExecuteRowAsync(chosen, "activate");
+        await WaitAsync("the row opens the collapsed window", () => !chosen.IsIconCollapsed && Native.IsWindowVisible(chosen.Hwnd));
 
         string launchData = Path.Combine(output, "launch-check-" + Guid.NewGuid().ToString("N"));
         var launchStore = new StateStore(launchData);

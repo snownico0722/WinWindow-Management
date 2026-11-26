@@ -336,6 +336,52 @@ internal static class Native
     internal static bool MoveWindowControl(nint hwnd, int x, int y) =>
         SetWindowPos(hwnd, 0, x, y, 0, 0, NoSize | NoZOrder | NoActivate | NoOwnerZOrder | NoSendChanging);
 
+    internal static bool TryGetBadgeMonitor(Rect badge, out nint monitor, out Rect work)
+    {
+        var center = new Point { X = badge.Left + (badge.Right - badge.Left) / 2, Y = badge.Top + (badge.Bottom - badge.Top) / 2 };
+        monitor = MonitorFromPoint(center, 2);
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        bool found = GetMonitorInfo(monitor, ref info);
+        work = info.Work;
+        return found && work.Right > work.Left && work.Bottom > work.Top;
+    }
+
+    internal static bool IsRestoredWindow(nint hwnd, bool maximized, nint monitor = 0) =>
+        IsWindowVisible(hwnd) && !IsIconic(hwnd) && IsZoomed(hwnd) == maximized &&
+        (monitor == 0 || MonitorFromWindow(hwnd, 0) == monitor);
+
+    private static Rect FrameByBadge(Rect frame, Rect badge, Rect work, uint dpi)
+    {
+        int width = Math.Min(frame.Right - frame.Left, work.Right - work.Left);
+        int height = Math.Min(frame.Bottom - frame.Top, work.Bottom - work.Top);
+        int inset = (int)Math.Round(6 * dpi / 96.0);
+        int left = Math.Clamp(badge.Left - inset, work.Left, work.Right - width);
+        int top = Math.Clamp(badge.Top - inset, work.Top, work.Bottom - height);
+        return new Rect { Left = left, Top = top, Right = left + width, Bottom = top + height };
+    }
+
+    internal static bool NearFrame(Rect first, Rect second) =>
+        Math.Abs(first.Left - second.Left) <= 2 && Math.Abs(first.Top - second.Top) <= 2 &&
+        Math.Abs(first.Right - second.Right) <= 2 && Math.Abs(first.Bottom - second.Bottom) <= 2;
+
+    internal static bool IsAtBadge(nint hwnd, Rect badge, Rect work) =>
+        TryGetFrameBounds(hwnd, out var frame) &&
+        frame.Left >= work.Left && frame.Top >= work.Top && frame.Right <= work.Right && frame.Bottom <= work.Bottom &&
+        NearFrame(frame, FrameByBadge(frame, badge, work, WindowDpi(hwnd)));
+
+    internal static bool PostMoveWindowToBadge(WindowIdentity identity, Rect badge, Rect work)
+    {
+        EnsureIdentity(identity);
+        nint hwnd = identity.Hwnd;
+        if (!TryGetFrameBounds(hwnd, out var frame) || !GetWindowRect(hwnd, out var outer)) return false;
+        var wanted = FrameByBadge(frame, badge, work, WindowDpi(hwnd));
+        int x = wanted.Left + outer.Left - frame.Left;
+        int y = wanted.Top + outer.Top - frame.Top;
+        int width = wanted.Right - wanted.Left + (outer.Right - frame.Right) - (outer.Left - frame.Left);
+        int height = wanted.Bottom - wanted.Top + (outer.Bottom - frame.Bottom) - (outer.Top - frame.Top);
+        return SetWindowPos(hwnd, 0, x, y, width, height, NoZOrder | NoActivate | NoOwnerZOrder | AsyncPosition);
+    }
+
     internal static bool RoundOverlayRegion(nint hwnd, int width, int height, int diameter)
     {
         nint region = CreateRoundRectRgn(0, 0, width, height, diameter, diameter);

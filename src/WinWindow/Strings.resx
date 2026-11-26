@@ -182,6 +182,7 @@
   <data name="RestoreOpacity" xml:space="preserve"><value>恢复透明状态</value></data>
   <data name="RestorePending" xml:space="preserve"><value>窗口尚未恢复，记录已保留。</value></data>
   <data name="RestoreRejected" xml:space="preserve"><value>窗口未接受恢复操作。</value></data>
+  <data name="RestoreBadgeFallback" xml:space="preserve"><value>窗口未能移到图标位置，已按原位置恢复。</value></data>
   <data name="RestoreWindow" xml:space="preserve"><value>恢复窗口</value></data>
   <data name="RetryNextLaunch" xml:space="preserve"><value>{0} 个窗口未恢复，记录已保留，下次启动继续恢复。</value></data>
   <data name="RuleError" xml:space="preserve"><value>“{0}”的规则未完全应用：{1}</value></data>

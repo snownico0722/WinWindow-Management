@@ -793,12 +793,30 @@ internal sealed class WindowManager
 
         await Task.WhenAll(RestoreActivationAsync(), RestoreAudioAsync(s), RestoreWindowAsync());
     }
-    public Task RestoreParkingAsync(WindowItem item, bool activate = true) => OperateAsync(item, async () =>
+    public Task RestoreParkingAsync(WindowItem item, bool activate = true, Native.Rect? movedBadge = null) => OperateAsync(item, async () =>
     {
         var s = Manage(item);
         if (s.Parked) Native.ApplyPlacement(item.Hwnd, s.BeforeParking);
         Native.ShowWindowAsync(item.Hwnd, s.Parked ? (int)s.BeforeParking.ShowCmd : Native.Restore);
-        if (!await WaitForAsync(s.Identity, h => Native.IsWindowVisible(h) && !Native.IsIconic(h))) throw new InvalidOperationException(UiText.Get("RestoreRejected"));
+        bool maximized = s.Parked && s.BeforeParking.ShowCmd == Native.Maximized;
+        if (!await WaitForAsync(s.Identity, item.IsIconCollapsed
+                ? h => Native.IsRestoredWindow(h, maximized)
+                : h => Native.IsWindowVisible(h) && !Native.IsIconic(h)))
+            throw new InvalidOperationException(UiText.Get("RestoreRejected"));
+
+        if (item.IsIconCollapsed && s.Parked && movedBadge is { } badge)
+        {
+            bool haveOriginal = Native.TryGetFrameBounds(item.Hwnd, out var original);
+            if (!haveOriginal || !await MoveRestoredWindowToBadgeAsync(s.Identity, badge, maximized))
+            {
+                // 定位请求可能被应用拒绝。恢复到移动前的窗口状态并验收后才清除收起日志。
+                if (haveOriginal && (!Native.ApplyPlacement(item.Hwnd, s.BeforeParking) ||
+                    !await WaitForAsync(s.Identity, h => Native.IsRestoredWindow(h, maximized) &&
+                        Native.TryGetFrameBounds(h, out var restored) && Native.NearFrame(restored, original))))
+                    throw new InvalidOperationException(UiText.Get("RestoreRejected"));
+                Notice?.Invoke(UiText.Get("RestoreBadgeFallback"));
+            }
+        }
         Track(item, snapshot => snapshot.Parked = false);
         item.IsHidden = false;
         item.IsMinimized = false;
@@ -806,6 +824,32 @@ internal sealed class WindowManager
         if (activate && !_stopping) Native.SetForegroundWindow(item.Hwnd);
         Finish(item, false);
     });
+
+    private static async Task<bool> MoveRestoredWindowToBadgeAsync(WindowIdentity identity, Native.Rect badge, bool maximized)
+    {
+        if (!Native.TryGetBadgeMonitor(badge, out nint monitor, out var work)) return false;
+        nint hwnd = identity.Hwnd;
+        if (maximized)
+        {
+            if (Native.IsRestoredWindow(hwnd, true, monitor)) return true;
+            if (!Native.ShowWindowAsync(hwnd, Native.Normal) ||
+                !await WaitForAsync(identity, h => Native.IsRestoredWindow(h, false))) return false;
+        }
+
+        bool AtBadge(nint h) => Native.IsRestoredWindow(h, false, monitor) && Native.IsAtBadge(h, badge, work);
+        Task<bool> PostMove() => Task.Run(() => Native.PostMoveWindowToBadge(identity, badge, work));
+        if (!AtBadge(hwnd))
+        {
+            if (!await PostMove() ||
+                !await WaitForAsync(identity, h => Native.IsRestoredWindow(h, false, monitor))) return false;
+            // 混合 DPI 下窗口到达目标屏后可能被系统重新缩放，再按目标屏上的实际尺寸贴合。
+            if (!AtBadge(hwnd) && !await PostMove()) return false;
+            if (!await WaitForAsync(identity, AtBadge)) return false;
+        }
+
+        return !maximized || (Native.ShowWindowAsync(hwnd, Native.Maximized) &&
+            await WaitForAsync(identity, h => Native.IsRestoredWindow(h, true, monitor)));
+    }
     public Task ReleaseAsync(WindowItem item, bool forgetRule = false, bool updateRule = true) => OperateAsync(item, async () =>
     {
         if (item.Original is { } s)

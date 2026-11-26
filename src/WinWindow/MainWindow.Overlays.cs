@@ -117,8 +117,7 @@ public partial class MainWindow
     {
         var size = CollapsedIconOverlay.WindowSizeDip;
         int inset = (int)Math.Round(6 * Native.WindowDpi(item.Hwnd) / 96.0);
-        var start = _collapsedIconPositions.TryGetValue(item, out var saved) ? saved : (frame.Left + inset, frame.Top + inset);
-        var anchor = new Native.Point { X = start.Item1, Y = start.Item2 };
+        var anchor = new Native.Point { X = frame.Left + inset, Y = frame.Top + inset };
         var first = Native.OverlayBounds(item.Hwnd, anchor, size, size);
         var others = _collapsedOverlays.Where(pair => pair.Key != item).Select(pair => pair.Value.VisibleBounds)
             .OfType<Native.Rect>().ToArray();
@@ -150,6 +149,9 @@ public partial class MainWindow
     internal bool MoveTitleOverlayForTest(WindowItem item, int deltaX) =>
         _titleOverlays.TryGetValue(item.Hwnd, out var overlay) && overlay.MoveHorizontally(deltaX);
 
+    internal bool MovePressedTitleOverlayForTest(WindowItem item, int deltaX) =>
+        _titleOverlays.TryGetValue(item.Hwnd, out var overlay) && overlay.MovePressedForTest(deltaX);
+
     internal void PauseOverlayPollingForTest() => _overlayTimer.Stop();
 
     internal bool HasCollapsedIconOverlay(WindowItem item) =>
@@ -157,6 +159,16 @@ public partial class MainWindow
 
     internal nint GetCollapsedIconOverlayHandle(WindowItem item) =>
         _collapsedOverlays.TryGetValue(item, out var overlay) ? overlay.Handle : 0;
+
+    internal bool MoveCollapsedIconForTest(WindowItem item, int x, int y) =>
+        _collapsedOverlays.TryGetValue(item, out var overlay) && overlay.MoveAndDropForTest(x, y);
+
+    private Task ExpandManagedWindowAsync(WindowItem item)
+    {
+        Native.Rect? movedBadge = _collapsedOverlays.TryGetValue(item, out var overlay) && overlay.UserMoved
+            ? overlay.VisibleBounds : null;
+        return Manager.RestoreParkingAsync(item, movedBadge: movedBadge);
+    }
 
     private void UpdateTitleLocationHook(bool enabled)
     {
@@ -217,7 +229,8 @@ public partial class MainWindow
             _collapsedOverlays.Remove(stale);
         }
 
-        foreach (var stale in _collapsedIconPositions.Keys.Where(item => !activeItems.Contains(item)).ToArray())
+        foreach (var stale in _collapsedIconPositions.Keys.Where(item => !activeItems.Contains(item) ||
+            (!item.IsIconCollapsed && !_collapsingIcons.Contains(item))).ToArray())
             _collapsedIconPositions.Remove(stale);
 
         if (activeItems.Count == 0)
@@ -283,7 +296,7 @@ public partial class MainWindow
     {
         private const int DefaultWidthDip = 98;
         private const int HeightDip = 26;
-        private const int DragHoldMilliseconds = 300;
+        private const int DragThresholdDip = 4;
 
         private readonly MainWindow _owner;
         private readonly WindowItem _item;
@@ -304,8 +317,8 @@ public partial class MainWindow
         private int _barWidthPixels;
         private double _scale = 1;
         private double _horizontalOffsetDip;
-        private int? _pressTimestamp;
         private int? _dragCursorX;
+        private bool _dragging;
         private DispatcherTimer? _dragTimer;
 
         public nint Handle => _hwnd;
@@ -470,72 +483,76 @@ public partial class MainWindow
 
         private void OnToolbarMouseDown(object sender, MouseButtonEventArgs e)
         {
-            _pressTimestamp = e.Timestamp;
+            if (!Native.GetCursorPos(out var cursor)) return;
+            _dragCursorX = cursor.X;
+            _dragging = false;
             if (_dragTimer is null)
             {
-                _dragTimer = new DispatcherTimer(DispatcherPriority.Input);
+                _dragTimer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(8) };
                 _dragTimer.Tick += OnDragTick;
             }
-            _dragTimer.Interval = TimeSpan.FromMilliseconds(16);
             _dragTimer.Start();
-            // 短按沿用按钮自己的按下和点击行为。达到长按阈值后才接管捕获。
         }
 
         private void OnDragTick(object? sender, EventArgs e)
         {
             if (!Native.IsPrimaryMouseButtonDown())
             {
-                StopDrag();
+                // 按钮仍持有捕获时等它收到松手事件，避免提前把一次快速横拖判成点击。
+                _dragTimer?.Stop();
+                if (_dragging || !_toolbar.IsMouseCaptureWithin) StopDrag();
                 return;
             }
-            if (_dragCursorX.HasValue)
-            {
-                UpdateDragPosition();
-                return;
-            }
-            if (_pressTimestamp is not int pressedAt ||
-                unchecked(Environment.TickCount - pressedAt) < DragHoldMilliseconds ||
-                !Native.GetCursorPos(out var cursor)) return;
-            _dragCursorX = cursor.X;
-            _toolbar.CaptureMouse();
-            // 非激活浮层在指针离开时可能收不到鼠标消息，仅在拖动期间补读位置和按键状态。
-            _dragTimer!.Interval = TimeSpan.FromMilliseconds(8);
+            if (Native.GetCursorPos(out var cursor)) UpdateDragPosition(cursor.X);
         }
 
         private void OnToolbarMouseMove(object sender, MouseEventArgs e)
         {
             if (_dragCursorX is null || e.LeftButton != MouseButtonState.Pressed) return;
-            UpdateDragPosition();
-            e.Handled = true;
+            if (Native.GetCursorPos(out var cursor)) UpdateDragPosition(cursor.X);
+            if (_dragging) e.Handled = true;
         }
 
         private void OnToolbarMouseUp(object sender, MouseButtonEventArgs e)
         {
-            if (_pressTimestamp is not int pressedAt) return;
-            _pressTimestamp = null;
-            if (_dragCursorX.HasValue || unchecked(e.Timestamp - pressedAt) >= DragHoldMilliseconds)
+            if (_dragCursorX is null) return;
+            if (Native.GetCursorPos(out var cursor)) UpdateDragPosition(cursor.X);
+            if (_dragging)
             {
-                UpdateDragPosition();
                 e.Handled = true;
-                // 定时器可能排在松手消息之后。只要已经长按，就取消按钮捕获，避免触发按钮。
                 if (Mouse.Captured is UIElement captured && _toolbar.IsAncestorOf(captured))
                     captured.ReleaseMouseCapture();
             }
             StopDrag();
         }
 
-        private void UpdateDragPosition()
+        private void UpdateDragPosition(int cursorX)
         {
-            if (_dragCursorX is not int previousX || !Native.GetCursorPos(out var cursor) || cursor.X == previousX) return;
-            _dragCursorX = cursor.X;
-            MoveHorizontally(cursor.X - previousX);
+            if (_dragCursorX is not int previousX || cursorX == previousX) return;
+            int deltaX = cursorX - previousX;
+            if (!_dragging)
+            {
+                if (Math.Abs(deltaX) < Math.Max(1, (int)Math.Ceiling(DragThresholdDip * _scale))) return;
+                // 只在越过水平阈值后接管捕获。轻微抖动交给按钮的点击逻辑。
+                _dragging = true;
+                _toolbar.CaptureMouse();
+            }
+            _dragCursorX = cursorX;
+            MoveHorizontally(deltaX);
+        }
+
+        internal bool MovePressedForTest(int deltaX)
+        {
+            if (_dragCursorX is not int x) return false;
+            UpdateDragPosition(x + deltaX);
+            return _dragging;
         }
 
         private void StopDrag()
         {
             _dragTimer?.Stop();
-            _pressTimestamp = null;
             _dragCursorX = null;
+            _dragging = false;
             if (_toolbar.IsMouseCaptured) _toolbar.ReleaseMouseCapture();
         }
 
@@ -726,6 +743,7 @@ public partial class MainWindow
 
         public nint Handle => _hwnd;
         public bool IsVisible => !_disposed && _window.IsVisible;
+        public bool UserMoved { get; private set; }
         public Native.Rect? VisibleBounds => IsVisible && Native.GetWindowRect(_hwnd, out var rect) ? rect : null;
 
         public CollapsedIconOverlay(MainWindow owner, WindowItem item)
@@ -881,15 +899,29 @@ public partial class MainWindow
 
             if (wasDragged)
             {
-                Native.FitIconOverlayToWorkArea(_hwnd);
-                ApplyCorners();
-                if (Native.GetWindowRect(_hwnd, out var rect))
-                    _savePosition?.Invoke((rect.Left, rect.Top));
+                FinishDrop();
                 return;
             }
 
             if (!_disposed && _item.IsIconCollapsed && _item.CanOperate)
                 await _owner.ExecuteRowAsync(_item, "expandIcon");
+        }
+
+        private void FinishDrop()
+        {
+            Native.FitIconOverlayToWorkArea(_hwnd);
+            ApplyCorners();
+            if (!Native.GetWindowRect(_hwnd, out var rect)) return;
+            UserMoved |= rect.Left != _downRect.Left || rect.Top != _downRect.Top;
+            _savePosition?.Invoke((rect.Left, rect.Top));
+        }
+
+        internal bool MoveAndDropForTest(int x, int y)
+        {
+            if (!IsVisible || !Native.GetWindowRect(_hwnd, out _downRect) || !Native.MoveWindowControl(_hwnd, x, y))
+                return false;
+            FinishDrop();
+            return UserMoved;
         }
 
         private void SyncVisuals()

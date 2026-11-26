@@ -182,6 +182,7 @@
   <data name="RestoreOpacity" xml:space="preserve"><value>Restore transparency</value></data>
   <data name="RestorePending" xml:space="preserve"><value>The window has not been restored yet. Recovery records were kept.</value></data>
   <data name="RestoreRejected" xml:space="preserve"><value>The window rejected the restore request.</value></data>
+  <data name="RestoreBadgeFallback" xml:space="preserve"><value>The window could not move to the icon. Its original placement was restored.</value></data>
   <data name="RestoreWindow" xml:space="preserve"><value>Restore window</value></data>
   <data name="RetryNextLaunch" xml:space="preserve"><value>Could not restore {0} windows. Recovery will continue on the next launch.</value></data>
   <data name="RuleError" xml:space="preserve"><value>Could not apply all settings for “{0}”. {1}</value></data>
