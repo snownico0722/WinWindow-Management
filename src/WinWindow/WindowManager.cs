@@ -569,22 +569,21 @@ internal sealed class WindowManager
     public Task SetPinAsync(WindowItem item, bool value, bool updateRule = true) =>
         ChangePinAsync(item, value, updateRule);
 
-    internal async Task<bool?> TogglePinAsync(WindowItem item, nint workbench, nint lastExternalForeground)
+    internal async Task<bool?> TogglePinAsync(WindowItem item)
     {
         // 透明度等操作可能恰好在按下图钉时开始。保留这次点击，等同一窗口的操作完成再读取状态。
         while (!_stopping && _operations.TryGetValue(item, out var pending)) await pending;
         if (_stopping || !Items.Contains(item)) return null;
 
         if (item.Identity is not null)
-            return await ChangePinAsync(item, value: null, updateRule: true, workbench, lastExternalForeground);
+            return await ChangePinAsync(item, value: null, updateRule: true);
 
         bool savedPin = !item.Pinned;
         await SetListedPinAsync(item, savedPin);
         return savedPin;
     }
 
-    private async Task<bool> ChangePinAsync(WindowItem item, bool? value, bool updateRule,
-        nint workbench = 0, nint lastExternalForeground = 0)
+    private async Task<bool> ChangePinAsync(WindowItem item, bool? value, bool updateRule)
     {
         bool pinned = item.Pinned;
         await OperateAsync(item, async () =>
@@ -595,8 +594,7 @@ internal sealed class WindowManager
             {
                 Native.EnsureIdentity(identity);
                 bool next = value ?? !Native.IsTopmost(identity.Hwnd);
-                if (value is null && !next) Native.UnpinBelowForeground(identity.Hwnd, workbench, lastExternalForeground);
-                else Native.SetTopmost(identity.Hwnd, next);
+                Native.SetTopmost(identity.Hwnd, next);
                 return next;
             });
             pinned = item.Pinned = Native.IsTopmost(identity.Hwnd);

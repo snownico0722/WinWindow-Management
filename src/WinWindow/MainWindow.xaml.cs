@@ -170,6 +170,7 @@ public partial class MainWindow : Window
     internal void OnDesktopWindowsChanged(bool foreground)
     {
         if (_quitting || !_ready) return;
+        _unpinClickHandoff?.Refresh();
         if (foreground)
         {
             ApplyOwnPolicy();
@@ -346,12 +347,17 @@ public partial class MainWindow : Window
 
     private async Task ToggleManagedPinAsync(WindowItem item)
     {
-        bool? pinned = await Manager.TogglePinAsync(item, _hwnd, _desktop?.LastExternalForeground ?? 0);
+        _unpinClickHandoff?.Dispose();
+        var handoff = item.Identity is { } identity ? new UnpinClickHandoff(this, identity) : null;
+        _unpinClickHandoff = handoff;
+        bool? pinned = null;
+        try { pinned = await Manager.TogglePinAsync(item); }
+        finally { handoff?.Complete(unpinned: pinned == false); }
         if (pinned is not bool value) return;
         if (item.Hwnd != 0)
         {
             if (value) Outline.Show(item.Hwnd, transient: true);
-            // 描边自身置顶，取消置顶后也应立即让出前台窗口。
+            // 取消置顶时一并收起仍在置顶层的反馈描边。
             else _flash?.Hide();
         }
         PinFeedback(item, value);
@@ -835,6 +841,7 @@ public partial class MainWindow : Window
     {
         if (_quitting) return;
         _quitting = true; HideHoverPreview(); DisposeManagedOverlays(); SnapshotHistory.Dispose(); _layout?.Dispose(); AddPopup.IsOpen = false; _flash?.Dispose(); _flash = null;
+        _unpinClickHandoff?.Dispose();
         _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _pendingOpacity.Clear();
         CancelPicker(); SaveGeometry(); ApplyOwnPolicy();
         int failures = await Manager.ShutdownAsync();
@@ -845,6 +852,7 @@ public partial class MainWindow : Window
     internal void Cleanup()
     {
         _ready = false;
+        _unpinClickHandoff?.Dispose();
         _pickerTimer.Stop(); _refreshTimer.Stop(); _aggressiveTimer.Stop(); _pinReinforceTimer.Stop(); _opacityTimer.Stop(); _statusTimer.Stop();
         _flash?.Dispose(); _flash = null;
         HideHoverPreview(); _hoverOutline?.Dispose(); _hoverOutline = null;

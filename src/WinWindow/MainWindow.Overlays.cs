@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -28,6 +29,7 @@ public partial class MainWindow
         { Interval = TimeSpan.FromMilliseconds(220) };
     private Native.EventProc? _titleWindowEventCallback;
     private nint _titleLocationHook, _titleMoveSizeHook;
+    private UnpinClickHandoff? _unpinClickHandoff;
     private bool _pickerPreviewActive;
     private readonly DispatcherTimer _launchAvailabilityTimer = new(DispatcherPriority.Background)
         { Interval = TimeSpan.FromSeconds(1) };
@@ -158,6 +160,8 @@ public partial class MainWindow
 
     internal void FinishTitleOverlayMoveForTest(WindowItem item) =>
         FollowTargetWindow(_titleMoveSizeHook, NativeMethods.EventSystemMoveSizeEnd, item.Hwnd, 0, 0, 0, 0);
+
+    internal void ObserveUnpinClickForTest(nint hwnd) => _unpinClickHandoff?.ObserveClick(hwnd);
 
     internal bool HasCollapsedIconOverlay(WindowItem item) =>
         _collapsedOverlays.TryGetValue(item, out var overlay) && overlay.IsVisible;
@@ -299,6 +303,91 @@ public partial class MainWindow
         foreach (var icon in _collapsedOverlays.Values) icon.Dispose();
         _collapsedOverlays.Clear();
         _collapsedIconPositions.Clear();
+    }
+
+    private sealed class UnpinClickHandoff : IDisposable
+    {
+        private readonly MainWindow _owner;
+        private readonly WindowIdentity _oldWindow;
+        private readonly NativeMethods.LowLevelMouseProc _mouseProc;
+        private nint _hook, _clicked;
+        private bool _unpinned, _disposed;
+
+        internal UnpinClickHandoff(MainWindow owner, WindowIdentity oldWindow)
+        {
+            _owner = owner;
+            _oldWindow = oldWindow;
+            _mouseProc = OnMouse;
+            if (!owner._testMode)
+            {
+                _hook = NativeMethods.SetWindowsHookEx(NativeMethods.WhMouseLl, _mouseProc, 0, 0);
+                _disposed = _hook == 0;
+            }
+        }
+
+        internal void Complete(bool unpinned)
+        {
+            if (!unpinned) { Dispose(); return; }
+            _unpinned = true;
+            Refresh();
+        }
+
+        internal void ObserveClick(nint hwnd)
+        {
+            if (_disposed) return;
+            _clicked = hwnd;
+            Refresh();
+        }
+
+        internal void Refresh()
+        {
+            if (_disposed || !_unpinned) return;
+            nint foreground = Native.GetForegroundWindow();
+            if (!Native.CoversForegroundAfterUnpin(_oldWindow, foreground))
+            {
+                Dispose();
+                return;
+            }
+            if (_clicked != foreground) return;
+            Dispose();
+            _ = RevealAsync(foreground);
+        }
+
+        private nint OnMouse(int code, nint message, nint dataPointer)
+        {
+            try
+            {
+                if (!_disposed && code >= NativeMethods.HcAction && (int)message == NativeMethods.WmLButtonDown &&
+                    !_owner.Dispatcher.HasShutdownStarted)
+                {
+                    var data = Marshal.PtrToStructure<NativeMethods.MsllHookStruct>(dataPointer);
+                    nint hit = NativeMethods.GetAncestor(NativeMethods.WindowFromPoint(data.Point), NativeMethods.GaRoot);
+                    // 全局回调只记下实际按到的窗口，退出回调后再确认前台与遮挡。
+                    _owner.Dispatcher.BeginInvoke(DispatcherPriority.Background,
+                        new Action(() => ObserveClick(hit == _owner._hwnd || Native.IsTarget(hit) ? hit : 0)));
+                }
+            }
+            catch
+            {
+                // 鼠标消息始终继续交给系统。
+            }
+            return NativeMethods.CallNextHookEx(_hook, code, message, dataPointer);
+        }
+
+        private async Task RevealAsync(nint foreground)
+        {
+            if (!await Task.Run(() => Native.RevealClickedWindowAfterUnpin(_oldWindow, foreground)) || _owner._quitting) return;
+            if (_owner._titleOverlays.TryGetValue(_oldWindow.Hwnd, out var oldBar)) oldBar.SyncLayer();
+            if (_owner._titleOverlays.TryGetValue(foreground, out var clickedBar)) clickedBar.SyncLayer();
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            if (_hook != 0) NativeMethods.UnhookWindowsHookEx(_hook);
+            _hook = 0;
+        }
     }
 
     private sealed class TitleBarOverlay : IDisposable

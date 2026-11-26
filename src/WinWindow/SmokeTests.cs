@@ -1349,7 +1349,15 @@ internal static class SmokeTests
             cover.Activate();
             await WaitAsync("another window takes foreground after the queued click", () => Native.GetForegroundWindow() == coverHwnd);
             await opacity;
-            await WaitAsync("queued pin click unpins the live target and yields to the new foreground", () =>
+            await WaitAsync("queued pin click unpins the live target without changing the foreground", () =>
+                !chosen.IsBusy && !Native.IsTopmost(chosen.Hwnd) && Native.GetForegroundWindow() == coverHwnd);
+            shell.OnDesktopWindowsChanged(foreground: true);
+            Assert(Native.IsAbove(chosen.Hwnd, coverHwnd),
+                "unpin alone does not move the old target behind the active overlapping window");
+            shell.ObserveUnpinClickForTest(chosen.Hwnd);
+            Assert(Native.IsAbove(chosen.Hwnd, coverHwnd), "a click on a different window cannot raise the current foreground");
+            shell.ObserveUnpinClickForTest(coverHwnd);
+            await WaitAsync("click on the already-focused window brings it in front of the old target and toolbar", () =>
                 !chosen.IsBusy && !Native.IsTopmost(chosen.Hwnd) && Native.IsAbove(coverHwnd, barHwnd) &&
                 Native.IsAbove(barHwnd, chosen.Hwnd) && Native.GetForegroundWindow() == coverHwnd);
             await shell.Manager.ReinforcePinnedAsync();
