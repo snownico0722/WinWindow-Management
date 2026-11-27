@@ -255,7 +255,7 @@ internal sealed class DesktopIntegration : IDisposable
         dynamic folder = service.GetFolder(@"\");
         bool hadTask;
         try { _ = folder.GetTask(taskName); hadTask = true; }
-        catch (COMException e) when (e.HResult == TaskNotFound) { hadTask = false; }
+        catch (Exception e) when (e.HResult == TaskNotFound) { hadTask = false; }
 
         if (enabled && administrator && elevated)
         {
