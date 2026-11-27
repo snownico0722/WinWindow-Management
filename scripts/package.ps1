@@ -27,7 +27,7 @@ function Publish-Application([bool] $SelfContained) {
     $name = if ($SelfContained) { 'WinWindow-win-x64-self-contained' } else { 'WinWindow-win-x64' }
     $publish = Join-Path $stage $name
     $bundleRuntime = $SelfContained.ToString().ToLowerInvariant()
-    dotnet publish $project -c Release -r win-x64 --self-contained $bundleRuntime '-p:PublishSingleFile=true' "-p:NoFocusLossResourceDirectory=$nativeResources" -p:IncludeNativeLibrariesForSelfExtract=true -o $publish
+    dotnet publish $project -c Release -r win-x64 --self-contained $bundleRuntime '-p:PublishSingleFile=true' "-p:EnableCompressionInSingleFile=$bundleRuntime" "-p:NoFocusLossResourceDirectory=$nativeResources" -p:IncludeNativeLibrariesForSelfExtract=true -o $publish
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $name ($LASTEXITCODE)" }
 
     $executable = Join-Path $publish 'WinWindow.exe'
