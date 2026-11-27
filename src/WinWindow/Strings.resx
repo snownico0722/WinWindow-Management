@@ -125,6 +125,8 @@
   <data name="Minimized" xml:space="preserve"><value>已最小化</value></data>
   <data name="MinimizedStatus" xml:space="preserve"><value>已最小化。</value></data>
   <data name="MissingExePath" xml:space="preserve"><value>无法获取程序路径。</value></data>
+  <data name="StartupIdentityUnavailable" xml:space="preserve"><value>无法为当前登录账户配置自启。</value></data>
+  <data name="AutostartRegistrationFailed" xml:space="preserve"><value>管理员自启注册失败，保留原来的自启方式。{0}</value></data>
   <data name="MissingShortcutKey" xml:space="preserve"><value>快捷键需要修饰键和普通按键。</value></data>
   <data name="MoreActions" xml:space="preserve"><value>更多操作</value></data>
   <data name="NativeFailed" xml:space="preserve"><value>{0}失败，请检查目标权限或兼容性。</value></data>

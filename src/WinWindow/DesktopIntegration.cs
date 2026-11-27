@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Media;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -213,19 +214,96 @@ internal sealed class DesktopIntegration : IDisposable
         catch { _actions = Register(_hotkeys); throw; }
     }
 
-    public static void SetAutostart(bool enabled)
+    internal const string NoStartupElevation = "--no-startup-elevation";
+    private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const int TaskNotFound = unchecked((int)0x80070002);
+
+    private static bool DevelopmentStartup => Environment.GetCommandLineArgs().Contains("--dev");
+    private static string StartupName => DevelopmentStartup ? "WinWindowManagement-dev" : "WinWindowManagement";
+    private static string StartupExecutable =>
+        Environment.ProcessPath ?? throw new InvalidOperationException(UiText.Get("MissingExePath"));
+
+    private static string StartupArguments(bool suppressElevation)
     {
-        bool dev = Environment.GetCommandLineArgs().Contains("--dev");
-        string name = dev ? "WinWindowManagement-dev" : "WinWindowManagement";
-        using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-        if (enabled)
+        string host = string.Equals(Path.GetFileNameWithoutExtension(StartupExecutable), "dotnet",
+            StringComparison.OrdinalIgnoreCase) ? $"\"{Path.GetFullPath(Environment.GetCommandLineArgs()[0])}\" " : "";
+        return host + (DevelopmentStartup ? "--dev " : "") + "--minimized" +
+            (suppressElevation ? " " + NoStartupElevation : "");
+    }
+
+    private static string StartupCommand(bool suppressElevation) =>
+        $"\"{StartupExecutable}\" {StartupArguments(suppressElevation)}";
+
+    internal static void MigrateElevatedAutostart()
+    {
+        // 只迁移我们正在用的旧自启项；手动启动不改写最后一次设置。
+        using var key = Registry.CurrentUser.OpenSubKey(RunKey);
+        if (key?.GetValue(StartupName) is string command &&
+            string.Equals(command, StartupCommand(false), StringComparison.OrdinalIgnoreCase))
+            SetAutostart(true, true, true);
+    }
+
+    internal static void SetAutostart(bool enabled, bool administrator, bool elevated)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        string sid = identity.User?.Value ?? throw new InvalidOperationException(UiText.Get("StartupIdentityUnavailable"));
+        string taskName = StartupName + "-" + sid;
+        using var key = Registry.CurrentUser.CreateSubKey(RunKey);
+        var serviceType = Type.GetTypeFromProgID("Schedule.Service", throwOnError: true)!;
+        dynamic service = Activator.CreateInstance(serviceType)!;
+        service.Connect();
+        dynamic folder = service.GetFolder(@"\");
+        bool hadTask;
+        try { _ = folder.GetTask(taskName); hadTask = true; }
+        catch (COMException e) when (e.HResult == TaskNotFound) { hadTask = false; }
+
+        if (enabled && administrator && elevated)
         {
-            string exe = Environment.ProcessPath ?? throw new InvalidOperationException(UiText.Get("MissingExePath"));
-            string command = $"\"{exe}\"";
-            if (string.Equals(Path.GetFileNameWithoutExtension(exe), "dotnet", StringComparison.OrdinalIgnoreCase)) command += $" \"{Environment.GetCommandLineArgs()[0]}\"";
-            key.SetValue(name, command + (dev ? " --dev" : "") + " --minimized");
+            const int logonTrigger = 9, execAction = 0, interactiveToken = 3, highest = 1;
+            const int createOrUpdate = 6, doNotAddPrincipalAce = 0x10;
+            dynamic definition = service.NewTask(0);
+            definition.RegistrationInfo.Description = "Start WinWindow in the current user's notification area.";
+            definition.Principal.UserId = sid;
+            definition.Principal.LogonType = interactiveToken;
+            definition.Principal.RunLevel = highest;
+            definition.Settings.DisallowStartIfOnBatteries = false;
+            definition.Settings.StopIfGoingOnBatteries = false;
+            definition.Settings.ExecutionTimeLimit = "PT0S";
+            dynamic trigger = definition.Triggers.Create(logonTrigger);
+            trigger.UserId = sid;
+            dynamic action = definition.Actions.Create(execAction);
+            action.Path = StartupExecutable;
+            action.Arguments = StartupArguments(true);
+            action.WorkingDirectory = Path.GetDirectoryName(StartupExecutable)!;
+            // 当前用户可查询状态，但必须以管理员身份修改高权限任务。
+            string sddl = $"O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;{sid})";
+            folder.RegisterTaskDefinition(taskName, definition, createOrUpdate | doNotAddPrincipalAce,
+                sid, null, interactiveToken, sddl);
+            try { key.DeleteValue(StartupName, false); }
+            catch
+            {
+                if (!hadTask) folder.DeleteTask(taskName, 0);
+                throw;
+            }
+            return;
         }
-        else key.DeleteValue(name, false);
+
+        if (enabled && administrator && hadTask) return;
+
+        string? previous = key.GetValue(StartupName) as string;
+        if (enabled) key.SetValue(StartupName, StartupCommand(!administrator));
+        else key.DeleteValue(StartupName, false);
+        try
+        {
+            if (hadTask) folder.DeleteTask(taskName, 0);
+        }
+        catch
+        {
+            // 删除失败时恢复旧入口，不留下两条自启动作。
+            if (previous is null) key.DeleteValue(StartupName, false);
+            else key.SetValue(StartupName, previous);
+            throw;
+        }
     }
 
     public void Dispose()

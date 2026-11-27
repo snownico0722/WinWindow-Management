@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private const string PinInactiveGeometry = "M5.2,2.2 L10.8,2.2 M10,2.2 L10,6.8 L12.4,9.5 L9.6,9.5 M6,2.2 L6,4.4 M3.6,9.5 L6.8,9.5 M8,11.2 L8,14.5 M2.5,2.5 L13.5,13.5";
 
     private readonly StateStore _store;
+    private readonly bool _canConfigureStartup;
     internal WindowManager Manager { get; }
     private readonly bool _testMode;
     private readonly ListCollectionView _view, _pickView;
@@ -54,8 +55,9 @@ public partial class MainWindow : Window
     internal WindowItem? Selected => WindowList.SelectedItem as WindowItem;
     internal bool IsEditingHotkey => _keyEditors.Values.Any(x => x.IsKeyboardFocusWithin);
 
-    internal MainWindow(StateStore store, bool testMode = false)
+    internal MainWindow(StateStore store, bool testMode = false, bool canConfigureStartup = true)
     {
+        _canConfigureStartup = canConfigureStartup;
         _store = store; _testMode = testMode; Manager = new(store);
         ApplyLanguage(store.Preferences.Language);
         InitializeComponent();
@@ -711,13 +713,27 @@ public partial class MainWindow : Window
 
     private void Startup_Click(object sender, RoutedEventArgs e)
     {
-        Run(() => { bool enabled = StartupBox.IsChecked == true; DesktopIntegration.SetAutostart(enabled); _store.Preferences.StartWithWindows = enabled; _store.SaveSoon(); });
+        Run(() => UpdateStartupPreferences(StartupBox.IsChecked == true, _store.Preferences.RunAsAdministrator));
         StartupBox.IsChecked = _store.Preferences.StartWithWindows;
     }
 
     private void AdministratorStartup_Click(object sender, RoutedEventArgs e)
     {
-        _store.Preferences.RunAsAdministrator = AdministratorStartupBox.IsChecked == true;
+        Run(() => UpdateStartupPreferences(_store.Preferences.StartWithWindows, AdministratorStartupBox.IsChecked == true));
+        AdministratorStartupBox.IsChecked = _store.Preferences.RunAsAdministrator;
+    }
+
+    private void UpdateStartupPreferences(bool enabled, bool administrator)
+    {
+        var preferences = _store.Preferences;
+        if (enabled || preferences.StartWithWindows)
+        {
+            if (!_canConfigureStartup)
+                throw new InvalidOperationException(UiText.Get("StartupIdentityUnavailable"));
+            DesktopIntegration.SetAutostart(enabled, administrator, App.IsAdministrator());
+        }
+        preferences.StartWithWindows = enabled;
+        preferences.RunAsAdministrator = administrator;
         _store.SavePreferences();
     }
 

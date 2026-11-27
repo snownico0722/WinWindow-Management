@@ -46,17 +46,22 @@ public partial class App : Application
             string title = dev ? "WinWindow Management · Dev" : "WinWindow Management";
             bool isAdministrator = IsAdministrator();
             string? handoffDirectory = null;
-            if (isAdministrator && e.Args.Length >= 3 && e.Args[^3] == ElevationHandoff &&
-                int.TryParse(e.Args[^2], NumberStyles.None, CultureInfo.InvariantCulture, out int parentId) &&
+            bool sameStartupUser = true;
+            bool trayLaunch = e.Args.Contains("--minimized");
+            if (isAdministrator && e.Args.Length >= 4 && e.Args[^4] == ElevationHandoff &&
+                int.TryParse(e.Args[^3], NumberStyles.None, CultureInfo.InvariantCulture, out int parentId) &&
                 parentId > 0 && parentId != Environment.ProcessId)
             {
                 await WaitForStartupParentAsync(parentId);
+                using var identity = WindowsIdentity.GetCurrent();
+                sameStartupUser = string.Equals(e.Args[^2], identity.User?.Value, StringComparison.Ordinal);
                 handoffDirectory = e.Args[^1];
             }
             try { _instance = new Mutex(true, @"Local\WinWindow.Management." + (dev ? "dev" : "main"), out _ownsInstance); }
             catch (UnauthorizedAccessException) { _ownsInstance = false; }
             if (!_ownsInstance)
             {
+                if (trayLaunch) { Shutdown(); return; }
                 // An elevated owner's mutex can deny access. Its window still
                 // accepts the dedicated Show message; never start a duplicate.
                 nint existing = 0;
@@ -77,7 +82,8 @@ public partial class App : Application
             if (dev && dataIndex >= 0 && dataIndex + 1 < e.Args.Length) directory = Path.GetFullPath(e.Args[dataIndex + 1]);
             directory = handoffDirectory ?? directory;
             string? elevationError = null;
-            if (!isAdministrator && StateStore.RequestAdministratorOnLaunch(directory))
+            if (!isAdministrator && !e.Args.Contains(DesktopIntegration.NoStartupElevation) &&
+                StateStore.RequestAdministratorOnLaunch(directory))
             {
                 try
                 {
@@ -89,16 +95,28 @@ public partial class App : Application
                 catch (Exception ex) when (ex is Win32Exception or InvalidOperationException) { elevationError = ex.Message; }
             }
             var store = new StateStore(directory);
-            var window = new MainWindow(store) { Title = title };
+            string? startupError = null;
+            if (trayLaunch && isAdministrator && sameStartupUser &&
+                store.Preferences.StartWithWindows && store.Preferences.RunAsAdministrator)
+            {
+                try { DesktopIntegration.MigrateElevatedAutostart(); }
+                catch (Exception ex)
+                {
+                    // 注册失败不能让本次登录启动失败；旧自启配置保持原状。
+                    startupError = ex.Message;
+                }
+            }
+            var window = new MainWindow(store, canConfigureStartup: sameStartupUser) { Title = title };
             MainWindow = window;
             SessionEnding += (_, _) => { window.SaveGeometry(); window.Manager.RestoreForSessionEnd(); };
             // A tray launch creates the native message endpoint without showing
             // and later hiding it. Otherwise initialization can hide a window
             // that the user has already woken, or briefly expose a false wake.
-            if (e.Args.Contains("--minimized")) new WindowInteropHelper(window).EnsureHandle();
+            if (trayLaunch) new WindowInteropHelper(window).EnsureHandle();
             else window.Show();
             await window.InitializeAsync();
             if (elevationError is not null) window.ShowStatus(UiText.Format("AdministratorLaunchFailed", elevationError));
+            if (startupError is not null) window.ShowStatus(UiText.Format("AutostartRegistrationFailed", startupError));
         }
         catch (Exception exception)
         {
@@ -107,7 +125,7 @@ public partial class App : Application
         }
     }
 
-    private static bool IsAdministrator()
+    internal static bool IsAdministrator()
     {
         using var identity = WindowsIdentity.GetCurrent();
         return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
@@ -131,6 +149,8 @@ public partial class App : Application
         foreach (string arg in args) start.ArgumentList.Add(arg);
         start.ArgumentList.Add(ElevationHandoff);
         start.ArgumentList.Add(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
+        using var identity = WindowsIdentity.GetCurrent();
+        start.ArgumentList.Add(identity.User?.Value ?? "unknown");
         start.ArgumentList.Add(dataDirectory);
         using var process = Process.Start(start) ?? throw new InvalidOperationException(UiText.Get("AdministratorProcessMissing"));
     }
